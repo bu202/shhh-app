@@ -1,0 +1,12 @@
+{
+  "name": "수어 번역기",
+  "short_name": "수어번역",
+  "description": "텍스트를 한국수어(KSL)로 표현해주는 PWA",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f5f6f8",
+  "theme_color": "#03c75a",
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

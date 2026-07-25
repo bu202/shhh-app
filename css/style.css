@@ -1,0 +1,60 @@
+:root {
+  --brand: #03c75a;
+  --brand-dark: #02a94d;
+  --bg: #f5f6f8;
+  --fg: #1a1a1a;
+  --muted: #888;
+  --card: #fff;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; } /* display:flex 등이 hidden 속성을 덮어쓰지 않게 */
+html, body { margin: 0; height: 100%; }
+body {
+  font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+.app { max-width: 640px; margin: 0 auto; min-height: 100%; display: flex; flex-direction: column; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+.topbar { padding: 16px; background: var(--brand); color: #fff; }
+.topbar h1 { margin: 0; font-size: 20px; }
+
+.modes { display: flex; gap: 8px; padding: 12px 16px 0; }
+.mode {
+  flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 10px;
+  background: #fff; color: var(--muted); font-size: 14px; cursor: pointer;
+}
+.mode.active { border-color: var(--brand); color: var(--brand); font-weight: 700; }
+.mode:disabled { cursor: not-allowed; opacity: .55; }
+
+.io { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+#input {
+  width: 100%; min-height: 96px; padding: 14px; font-size: 16px;
+  border: 1px solid #ddd; border-radius: 12px; resize: vertical; font-family: inherit;
+}
+#input:focus { outline: none; border-color: var(--brand); }
+.btn-primary {
+  padding: 14px; font-size: 16px; font-weight: 700; color: #fff;
+  background: var(--brand); border: none; border-radius: 12px; cursor: pointer;
+}
+.btn-primary:active { background: var(--brand-dark); }
+
+.result { flex: 1; padding: 0 16px 16px; }
+.hint { color: var(--muted); text-align: center; padding: 24px; }
+.card {
+  background: var(--card); border-radius: 12px; padding: 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.08); text-align: center;
+}
+.card .word { font-size: 22px; font-weight: 700; margin: 0 0 8px; }
+.card .frame { width: 200px; height: 200px; object-fit: contain; margin: 8px auto; display: block; }
+.card .desc { color: #555; font-size: 15px; margin: 8px 0 0; }
+.card.unsupported .word { color: var(--muted); }
+
+.camera { padding: 16px; }
+.cam-wrap { position: relative; width: 100%; aspect-ratio: 4 / 3; background: #000; border-radius: 12px; overflow: hidden; }
+.cam-wrap video, .cam-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.cam-wrap video { transform: scaleX(-1); } /* 거울 모드 */
+.cam-wrap canvas { transform: scaleX(-1); }
+
+.status { text-align: center; color: var(--muted); font-size: 12px; padding: 8px; }

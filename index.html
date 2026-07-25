@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#03c75a" />
+  <title>수어 번역기</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <h1>수어 번역기</h1>
+    </header>
+
+    <nav class="modes" role="tablist" aria-label="번역 모드">
+      <button id="mode-t2s" class="mode active" aria-selected="true">텍스트 → 수어</button>
+      <button id="mode-s2t" class="mode" aria-selected="false">수어 → 텍스트</button>
+    </nav>
+
+    <section class="io">
+      <label class="visually-hidden" for="input">번역할 텍스트</label>
+      <textarea id="input" placeholder="번역할 말을 입력하세요 (예: 안녕하세요)"></textarea>
+      <button id="translate" class="btn-primary">번역</button>
+    </section>
+
+    <section id="result" class="result" aria-live="polite">
+      <p class="hint">번역할 말을 입력하면 바로 표시돼요.</p>
+    </section>
+
+    <!-- Phase 2 (수어→텍스트): 카메라 + 손 랜드마크 검출 스캐폴드 -->
+    <section id="camera" class="camera" hidden>
+      <div class="cam-wrap">
+        <video id="cam" playsinline muted></video>
+        <canvas id="overlay"></canvas>
+      </div>
+      <p id="cam-status" class="status">카메라 준비 중…</p>
+      <p class="hint">손을 화면에 비추면 뼈대가 표시됩니다. (동작 인식→텍스트는 다음 단계)</p>
+    </section>
+
+    <p id="status" class="status"></p>
+    <footer class="credit">
+      지화 이미지: <a href="https://commons.wikimedia.org/wiki/Category:Korean_manual_alphabet" target="_blank" rel="noopener">Wikimedia Commons</a>
+      (Kwamikagami), <a href="https://creativecommons.org/licenses/by-sa/3.0/" target="_blank" rel="noopener">CC BY-SA 3.0</a>
+    </footer>
+  </main>
+  <script src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+# 임시/응답 덤프
+scripts/last-response.txt
+scripts/all-resp.xml
+
+# OS
+.DS_Store
+
+# 로그
+*.log
