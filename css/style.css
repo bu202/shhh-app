@@ -57,4 +57,5 @@ body {
 .cam-wrap video { transform: scaleX(-1); } /* 거울 모드 */
 .cam-wrap canvas { transform: scaleX(-1); }
 
+.sign-out { text-align: center; font-size: 48px; font-weight: 700; color: var(--accent, #03c75a); min-height: 60px; margin: 8px 0 0; }
 .status { text-align: center; color: var(--muted); font-size: 12px; padding: 8px; }

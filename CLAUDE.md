@@ -79,7 +79,10 @@ node scripts/fetch-ksl.mjs --mock           # 매핑 로직 자가검증(키·�
 ## 진행 상황
 - ✅ Phase 1 (텍스트→수어): PWA 골격 / 사전 스키마 / UI / 그리디 문장매칭 / 지화 하이브리드
 - ✅ 실 API 연동(전체 3478 표제어) / 실시간 변환(debounce+IME가드)
-- ✅ Phase 2 (C 스캐폴드): 카메라(getUserMedia) + MediaPipe Hand Landmarker 손뼈대 오버레이 + 모드전환. 다음: 손모양→자모(지문자 A) 분류.
+- ✅ Phase 2 (C 스캐폴드): 카메라(getUserMedia) + MediaPipe Hand Landmarker 손뼈대 오버레이 + 모드전환.
+- ✅ 지문자 인식(규칙기반): 자음 6종 ㄱ·ㄴ·ㅅ·ㅁ·ㅂ·ㅇ. 관절각 손가락 판정 + 시간 평활(6프레임). 실손 검증 완료.
+  - 판정은 네 손가락(검지~새끼) 위주, 엄지는 ㄱ/ㄴ 구분에만(신뢰도 낮음). ㅇ=핀치+나머지3폄. 매핑은 assets/fingerspelling 대조로 교정.
+  - ⚠️ 카메라는 정적 지문자만 가능. 단어 수어(안녕/사랑 등 고유 동작)는 궤적·양손·표정 필요 → 시간축 ML 영역, $0 정적 규칙 밖.
 - ✅ 배포: GitHub Pages (main 브랜치) → https://bu202.github.io/sueo-translator/ · 라이브 검증 완료(텍스트→수어, 카메라 손검출 both)
+- ⬜ 지문자 확장: 기본 모음(ㅏㅓㅗㅜㅡㅣ) + 한글 음절 조합기(이름 스펠링용)
 - ⬜ MediaPipe 로컬 vendoring(오프라인 카메라용)
-- ⬜ 동작 인식(손모양→자모 지문자 A)

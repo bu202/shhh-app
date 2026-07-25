@@ -270,8 +270,17 @@ function loopDetect() {
       drawUtils.drawConnectors(lm, MpHand.HAND_CONNECTIONS, { color: "#03c75a", lineWidth: 3 });
       drawUtils.drawLandmarks(lm, { color: "#fff", radius: 3 });
     });
-    const labels = (res.handedness || []).map((h) => (h[0]?.categoryName === "Right" ? "오른손" : "왼손"));
-    status.textContent = hands.length ? `손 ${hands.length}개 검출 (${labels.join(", ")}) · 21점` : "손이 보이지 않아요.";
+    const out = document.getElementById("sign-out");
+    if (hands.length) {
+      const label = recognizeSign(hands[0]);              // 첫 손 기준
+      const confirmed = smoothSign(label);                // undefined=대기, null=미인식, "X"=확정
+      if (confirmed !== undefined) out.textContent = confirmed || "—";
+      status.textContent = `손 ${hands.length}개 검출 · 21점`;
+    } else {
+      signHist.length = 0;
+      out.textContent = "—";
+      status.textContent = "손이 보이지 않아요.";
+    }
     rafId = requestAnimationFrame(tick);
   };
   tick();
@@ -282,6 +291,60 @@ function stopHandTracking() {
   if (camStream) { camStream.getTracks().forEach((t) => t.stop()); camStream = null; }
   const video = document.getElementById("cam");
   if (video) video.srcObject = null;
+  signHist.length = 0;
+}
+
+// --- 지문자 인식 (규칙기반, 손 21점 → 자모) ---
+// 엔진(손가락 굽힘 판정)은 방향 무관하게 안정적. 매핑표 SIGNS는 추론값이라 [?] 표기 —
+// ponytail: assets/fingerspelling/*.jpg 참조이미지로 각 자모 손모양을 보고 교정할 것.
+function angleDeg(a, b, c) {
+  const v1x = a.x - b.x, v1y = a.y - b.y, v2x = c.x - b.x, v2y = c.y - b.y;
+  const m = Math.hypot(v1x, v1y) * Math.hypot(v2x, v2y) || 1e-9;
+  return (Math.acos(Math.max(-1, Math.min(1, (v1x * v2x + v1y * v2y) / m))) * 180) / Math.PI;
+}
+// [엄지,검지,중지,약지,새끼] 각 1=폄 0=굽힘. 관절각으로 판정(회전 불변).
+function fingerStates(lm) {
+  const bent = ([a, b, c], th) => (angleDeg(lm[a], lm[b], lm[c]) > th ? 1 : 0);
+  return [
+    bent([2, 3, 4], 150),   // 엄지: IP각
+    bent([5, 6, 8], 150),   // 검지: PIP각 (약지·새끼가 잘 안 펴져 150으로 관대)
+    bent([9, 10, 12], 150), // 중지
+    bent([13, 14, 16], 150),// 약지
+    bent([17, 18, 20], 150),// 새끼
+  ];
+}
+// ㅇ(원 O): 엄지·검지 끝이 붙고 + 중지·약지·새끼가 펴짐(주먹과 구분). 손 크기로 정규화.
+function isPinch(lm) {
+  const hand = Math.hypot(lm[0].x - lm[9].x, lm[0].y - lm[9].y) || 1e-9;
+  const touch = Math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y) / hand < 0.4;
+  const rest = fingerStates(lm).slice(2).reduce((a, b) => a + b, 0); // 중지+약지+새끼
+  return touch && rest >= 2;
+}
+// 엄지가 검지에서 벌어졌나(ㄱ vs ㄴ 구분용). 엄지방향(2→4)과 검지방향(5→8) 사잇각.
+// ponytail: 임계 35°는 실손 튜닝값. 오구분 나면 이 숫자만 조정.
+function thumbOut(lm) {
+  const t = { x: lm[4].x - lm[2].x, y: lm[4].y - lm[2].y };
+  const i = { x: lm[8].x - lm[5].x, y: lm[8].y - lm[5].y };
+  const m = Math.hypot(t.x, t.y) * Math.hypot(i.x, i.y) || 1e-9;
+  return (Math.acos(Math.max(-1, Math.min(1, (t.x * i.x + t.y * i.y) / m))) * 180) / Math.PI > 35;
+}
+// 자모 판정은 네 손가락(검지·중지·약지·새끼)만으로. 엄지는 신뢰도 낮아 ㄱ/ㄴ 구분에만 사용.
+const SIGNS = { "0000": "ㅁ", "1100": "ㅅ" }; // key=검지중지약지새끼
+function recognizeSign(lm) {
+  if (isPinch(lm)) return "ㅇ";
+  const f = fingerStates(lm).slice(1); // [검지,중지,약지,새끼]
+  if (f.join("") === "1000") return thumbOut(lm) ? "ㄴ" : "ㄱ";
+  if (f[0] && f[1] && f[2]) return "ㅂ"; // 검지·중지·약지 폄(새끼 무관)
+  return SIGNS[f.join("")] || null;
+}
+// 시간 평활: 같은 라벨이 연속 N프레임 잡혀야 확정(깜빡임/오검출 억제).
+const signHist = [];
+const SIGN_HOLD = 6;
+function smoothSign(label) {
+  signHist.push(label);
+  if (signHist.length > SIGN_HOLD) signHist.shift();
+  if (signHist.length === SIGN_HOLD && signHist.every((s) => s === signHist[0])) return signHist[0];
+  return undefined; // 아직 확정 안 됨
 }
 
 if ("serviceWorker" in navigator) {
