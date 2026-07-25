@@ -183,7 +183,11 @@ function renderToken(token) {
       const det = document.createElement("details");
       det.className = "alts";
       const sum = document.createElement("summary");
-      sum.textContent = "다른 뜻 " + alts.length + "개 (" + alts.map((a) => a.word).join(", ") + ")";
+      // 같은 표제어면 이형태(다른 수형), 다른 표제어면 다른 뜻.
+      const sameWord = alts.every((a) => a.word === primary.word);
+      sum.textContent = sameWord
+        ? "다른 수형 " + alts.length + "개"
+        : "다른 뜻 " + alts.length + "개 (" + alts.map((a) => a.word).join(", ") + ")";
       det.appendChild(sum);
       for (const a of alts) det.appendChild(entryCard(a));
       group.appendChild(det);
