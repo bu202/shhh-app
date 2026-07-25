@@ -39,6 +39,11 @@ node scripts/fetch-ksl.mjs --mock           # 매핑 로직 자가검증(키·�
 - **서비스키**는 culture.go.kr 활용신청 → `data@kcisa.kr` 이메일 발송. (data.go.kr "일반 인증키"와 다름 — 이건 안 씀)
 - 응답 필드: `title`, `signDescription`, `signImages`(쉼표구분 이미지 URL), `alternativeTitle`, `referenceIdentifier`
 - 매핑은 `normalizeEntry()` 한 곳에서. 필드/구조 바뀌면 여기만 수정.
+- `toDict`는 **표제어+수형(이미지)** 기준 중복판정 → 이형태(변이) 보존. 재수집(키 필요) 후 변이 채워짐.
+- **더 큰 사전 업그레이드 경로**(현 kcisa 일상생활수어 ~3,478보다 큼, 로그인 없이 파일 다운로드):
+  - `data.go.kr/data/15135637` 한국수어사전_한국어대응표현정보(수형설명·대응표현·결합정보·대/소분류=이형태 포함)
+  - `data.go.kr/data/15122687` 한국수어사전 표제어 및 용례
+  - 채택 시 파일 컬럼에 맞춰 `normalizeEntry`만 교체(이음새). 문장 번역이 아닌 단어 커버리지 확대용.
 
 ---
 
