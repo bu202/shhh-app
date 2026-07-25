@@ -1,6 +1,9 @@
 # CLAUDE.md — 수어 번역기 (텍스트 → 한국수어 KSL)
 
-빌드 도구 없는 Vanilla PWA. 파파고풍 UI. **Phase 1 = 텍스트→수어** (Phase 2 = 카메라 수어→텍스트, 예정).
+빌드 도구 없는 Vanilla PWA. 파파고풍 UI. **Phase 1 = 텍스트→수어** (Phase 2 = 카메라 수어→텍스트).
+
+- **라이브**: https://bu202.github.io/sueo-translator/
+- **레포**: https://github.com/bu202/sueo-translator (main 브랜치 = Pages 소스)
 
 ## 제약 (바뀌지 않는 전제)
 - 예산 **$0**. 정적 호스팅(GitHub/Cloudflare Pages). 서버·백엔드 없음.
@@ -77,5 +80,6 @@ node scripts/fetch-ksl.mjs --mock           # 매핑 로직 자가검증(키·�
 - ✅ Phase 1 (텍스트→수어): PWA 골격 / 사전 스키마 / UI / 그리디 문장매칭 / 지화 하이브리드
 - ✅ 실 API 연동(전체 3478 표제어) / 실시간 변환(debounce+IME가드)
 - ✅ Phase 2 (C 스캐폴드): 카메라(getUserMedia) + MediaPipe Hand Landmarker 손뼈대 오버레이 + 모드전환. 다음: 손모양→자모(지문자 A) 분류.
-- ⬜ MediaPipe 로컬 vendoring(오프라인/배포용)
-- ⬜ 배포(GitHub/Cloudflare Pages)
+- ✅ 배포: GitHub Pages (main 브랜치) → https://bu202.github.io/sueo-translator/ · 라이브 검증 완료(텍스트→수어, 카메라 손검출 both)
+- ⬜ MediaPipe 로컬 vendoring(오프라인 카메라용)
+- ⬜ 동작 인식(손모양→자모 지문자 A)
