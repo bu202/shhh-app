@@ -1438,6 +1438,25 @@
     }
   },
   {
+    "word": "망하다",
+    "aliases": [
+      "멸망",
+      "붕괴",
+      "쇠망",
+      "무너지다",
+      "부서지다",
+      "허물어지다",
+      "헐다"
+    ],
+    "description": "두 손의 손끝을 맞대어 좌우로 비스듬히 세웠다가 손끝이 아래로 향하게 내린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151221/231704/IMG000225794_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "돌연",
     "aliases": [
       "홀연"
@@ -1581,6 +1600,19 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151130/219132/IMG000210894_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "과거",
+    "aliases": [
+      "지나다"
+    ],
+    "description": "오른손을 펴서 등이 밖으로 향하게 세워 오른쪽 어깨 너머로 넘긴다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151215/228217/IMG000221285_700X466.jpg"
       ]
     }
   },
@@ -1964,6 +1996,17 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151228/235817/IMG000231127_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "넘어오다",
+    "aliases": [],
+    "description": "손바닥이 위로 향하게 약간 구부린 오른손을 오른쪽에서 왼쪽으로 이동한다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151206/222603/IMG000214735_700X466.jpg"
       ]
     }
   },
@@ -4235,6 +4278,20 @@
     }
   },
   {
+    "word": "뜻밖에",
+    "aliases": [
+      "의외"
+    ],
+    "description": "오른 주먹의 1지를 펴서 끝을 오른쪽 관자놀이에 댄 다음, 두 손 각각 1·5지 끝을 맞대어, 손바닥이 밖으로 향하게 세워 마주 댔다가 양쪽으로 벌리며 붙였던 손을 활짝 편다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151127/217275/IMG000208574_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151127/217276/IMG000208575_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "혼령",
     "aliases": [
       "심령",
@@ -4737,6 +4794,19 @@
     }
   },
   {
+    "word": "십",
+    "aliases": [
+      "열"
+    ],
+    "description": "오른 주먹의 1지를 펴서 약간 구부려 끝이 밖으로 향하게 하여 좌우로 약간 흔든다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151225/234351/IMG000229202_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "사격",
     "aliases": [],
     "description": "왼손을 구부려 손바닥이 위로 향하게 하여 내 놓고, 그 뒤에서 모로 세운 오른 주먹의 1·5지를 펴서 1지를 구부리며 반동의 동작을 한다(장총을 쏘는 경우).",
@@ -5139,6 +5209,23 @@
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151118/211980/IMG000202498_700X466.jpg",
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151118/211981/IMG000202499_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "오랜만",
+    "aliases": [
+      "오래간만",
+      "오랫동안",
+      "오랜",
+      "모처럼"
+    ],
+    "description": "두 주먹의 1·5지 끝을 맞댔다가 양옆으로 벌린 다음, 손끝이 밖으로 향하게 편 두 손을 모로 세워 어깨 높이에서 가슴 높이로 내린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151118/211988/IMG000202510_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151118/211989/IMG000202511_700X466.jpg"
       ]
     }
   },
@@ -6663,6 +6750,19 @@
     }
   },
   {
+    "word": "보내다",
+    "aliases": [
+      "파견"
+    ],
+    "description": "왼 주먹의 5지를 펴서 바닥이 밖으로 향하게 세우고, 그 등을 손등이 위로 손끝이 아래로 향하게 편 오른손의 손끝으로 밀어낸다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151222/232634/IMG000227001_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "먹",
     "aliases": [
       "먹을 갈다"
@@ -6849,6 +6949,17 @@
     }
   },
   {
+    "word": "내몰다",
+    "aliases": [],
+    "description": "왼 주먹의 5지를 펴서 바닥이 밖으로 향하게 세우고, 그 등에 오른 주먹의 1지를 펴서 끝을 대고 손목을 좌우로 돌리며 밖으로 내민다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20190726/604548/IMG000214397_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "백",
     "aliases": [
       "하양",
@@ -6866,6 +6977,19 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151205/222334/IMG000214417_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "쌓다",
+    "aliases": [
+      "차곡차곡"
+    ],
+    "description": "손등이 위로 향하게 편 두 손을 교대로 올려놓는다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151206/222656/IMG000214818_700X466.jpg"
       ]
     }
   },
@@ -7202,6 +7326,25 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151215/228170/IMG000221257_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "멀다",
+    "aliases": [
+      "멀리",
+      "영원",
+      "무궁",
+      "길이",
+      "불후",
+      "영구",
+      "영영"
+    ],
+    "description": "두 주먹의 1·5지 끝을 맞댔다가 오른 주먹만 밖으로 포물선을 그리며 내민다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151226/234928/IMG000229983_700X466.jpg"
       ]
     }
   },
@@ -9502,6 +9645,20 @@
     }
   },
   {
+    "word": "금주",
+    "aliases": [
+      "술을 끊다"
+    ],
+    "description": "오른 주먹의 1·2지를 펴서 끝이 왼쪽으로 향하게 하여 바닥을 턱에 댔다가 이마에 댄 다음, 오른 주먹의 1·2지를 벌려 펴서 끝이 왼쪽으로 향하게 하여 입 오른쪽에서 왼쪽으로 힘주어 움직이며 1·2지를 붙인다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151124/215936/IMG000207029_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151215/228536/IMG000221704_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "졸리다",
     "aliases": [],
     "description": "오른 주먹의 1지를 펴서 오른쪽 눈 밑에서 밑으로 내린 다음, 1지를 접고 5지를 펴서 바닥으로 턱 밑을 스쳐 낸다.",
@@ -10284,6 +10441,17 @@
     }
   },
   {
+    "word": "짜다",
+    "aliases": [],
+    "description": "두 주먹을 마주 보게 하여 전후로 엇갈리게 돌린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151231/237819/IMG000233671_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "광주",
     "aliases": [
       "광주시"
@@ -10725,6 +10893,19 @@
     }
   },
   {
+    "word": "넷",
+    "aliases": [
+      "사"
+    ],
+    "description": "5지를 접고 1·2·3·4지를 벌려 바닥이 밖으로 향하게 세운다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151129/218535/IMG000210060_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "년",
     "aliases": [
       "해"
@@ -10861,6 +11042,19 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151229/236752/IMG000232339_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "그만",
+    "aliases": [
+      "그만이다"
+    ],
+    "description": "손끝이 밖으로 향하게 펴서 모로 세운 왼 손바닥에 오른 손끝을 두 번 가져다 댄다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151117/211390/IMG000201699_700X466.jpg"
       ]
     }
   },
@@ -11777,6 +11971,21 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151223/233165/IMG000227694_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "배",
+    "aliases": [
+      "갑절",
+      "곱",
+      "곱절"
+    ],
+    "description": "왼 주먹의 1지와 오른 주먹의 1·2지를 펴서 등이 위로 끝이 마주 보게 하여 손목을 굽혔다 편다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151224/233630/IMG000228354_700X466.jpg"
       ]
     }
   },
@@ -13617,6 +13826,19 @@
     }
   },
   {
+    "word": "맡기다",
+    "aliases": [
+      "임명"
+    ],
+    "description": "왼 주먹의 5지를 펴서 세우고 5지가 오른손의 1·5지 사이로 나오게 오른손으로 왼손을 위에서부터 내려 덮는다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151217/229708/IMG000223201_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "매니큐어",
     "aliases": [],
     "description": "오른 주먹의 1지를 펴서 왼손의 1지 손톱을 스쳐 낸다.",
@@ -13827,6 +14049,17 @@
     }
   },
   {
+    "word": "영국",
+    "aliases": [],
+    "description": "두 손을 펴서 손등이 밖으로 향하게 하여 포갰다가 양 옆으로 벌린 다음, 손바닥이 아래로 향하게 하여 두 번 약간 내린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151226/234916/IMG000229964_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "할머니",
     "aliases": [
       "조모"
@@ -14031,6 +14264,21 @@
     }
   },
   {
+    "word": "돌아서다",
+    "aliases": [
+      "갈다",
+      "교체하다",
+      "대체하다"
+    ],
+    "description": "오른 주먹의 1‧2지를 펴서 벌려 오른쪽으로 젖힌다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151124/215852/IMG000206939_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "양",
     "aliases": [],
     "description": "1지를 펴서 구부린 두 주먹을 머리 양쪽에 댔다가 원을 그리며 밖으로 내민다.",
@@ -14097,6 +14345,17 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151226/234990/IMG000230124_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "예",
+    "aliases": [],
+    "description": "오른 주먹의 1·2·4지를 펴서 등이 밖으로 향하게 벌려 1·2지 끝을 오른쪽 눈 옆에 댄다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151226/234997/IMG000230137_700X466.jpg"
       ]
     }
   },
@@ -15012,6 +15271,17 @@
     }
   },
   {
+    "word": "소매치기",
+    "aliases": [],
+    "description": "오른 주먹의 1‧2지를 펴서, 왼팔 겨드랑이 가까이에서 오른쪽 밖으로 이동하면서 손가락 끝을 붙인다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151211/225683/IMG000218360_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "여행사",
     "aliases": [],
     "description": "두 주먹의 1지를 펴서 끝이 양 어깨 뒤로 향하게 하여 돌리며 앞으로 내민 다음, 두 주먹의 1·2지를 펴서 반쯤 구부려 어깨 위에서 전후로 엇갈리게 움직인다.",
@@ -15169,6 +15439,33 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151216/229043/IMG000222343_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "회장",
+    "aliases": [
+      "사장"
+    ],
+    "description": "두 주먹의 1·2지를 펴서 반쯤 구부려 어깨 위에서 전후로 엇갈리게 움직인 다음, 오른주먹의 5지를 펴서 세운다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20210203/808901/IMG000358368_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20210203/808902/IMG000358369_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "삼",
+    "aliases": [
+      "인삼"
+    ],
+    "description": "오른 주먹의 1·2지를 펴서 2지 바닥을 1지 손톱에 대고 끝이 위로 향하게 한다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151224/233671/IMG000228253_700X466.jpg"
       ]
     }
   },
@@ -15942,6 +16239,21 @@
     }
   },
   {
+    "word": "과",
+    "aliases": [
+      "-꾼",
+      "전공",
+      "똑바로"
+    ],
+    "description": "오른손을 펴서 손바닥이 왼쪽으로 손끝이 밖으로 향하게 하여 곧바로 내민다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151117/211228/IMG000201533_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "취업",
     "aliases": [
       "취직"
@@ -16170,6 +16482,17 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151220/231248/IMG000225229_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "만",
+    "aliases": [],
+    "description": "손끝이 밖으로 향하게 편 오른손의 5지 끝에 나머지 손가락 끝을 모아 붙인다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151220/231282/IMG000225239_700X466.jpg"
       ]
     }
   },
@@ -17127,6 +17450,17 @@
     }
   },
   {
+    "word": "미국",
+    "aliases": [],
+    "description": "오른 주먹의 1·2지를 펴서 눈 밑에 대고 교대로 움직인다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20190731/605625/IMG000223799_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "브라질",
     "aliases": [],
     "description": "둥글게 구부린 왼손을 모로 세우고 그 안에 오른 주먹의 1지를 펴서 넣어 돌린다.",
@@ -17145,6 +17479,17 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151226/235083/IMG000230114_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "이집트",
+    "aliases": [],
+    "description": "두 손의 손끝을 맞대어 좌우로 비스듬히 세웠다가 내려 두 손 각각 손끝을 모은다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151228/235813/IMG000231120_700X466.jpg"
       ]
     }
   },
@@ -18356,6 +18701,22 @@
     }
   },
   {
+    "word": "공중",
+    "aliases": [
+      "민간",
+      "서민",
+      "일반인"
+    ],
+    "description": "두 주먹의 1‧5지를 펴서 약간 구부려 끝이 밖으로 향하게 하여 맞댔다가 양옆으로 벌린 다음, 두 주먹의 4·5지를 펴서 끝이 위로 향하게 맞대고 세워 양옆으로 두 번 약간 돌리며 벌린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151117/211223/IMG000201526_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151117/211224/IMG000201527_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "이어 내리다",
     "aliases": [
       "전통",
@@ -18434,6 +18795,19 @@
     }
   },
   {
+    "word": "거두다",
+    "aliases": [
+      "수확"
+    ],
+    "description": "주먹을 쥔 왼팔을 오른쪽으로 비스듬히 세운 다음, 그 밑으로 손바닥이 위로 향하게 편 오른손을 끌어들이며 주먹을 쥔다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151215/228040/IMG000221086_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "책방",
     "aliases": [
       "서점"
@@ -18484,6 +18858,22 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151218/230350/IMG000224040_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "참다",
+    "aliases": [
+      "견디다",
+      "인내",
+      "자제",
+      "억제"
+    ],
+    "description": "오른 주먹의 5지를 펴서 세워 가슴에 대고 천천히 아래로 내린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151212/226240/IMG000218981_700X466.jpg"
       ]
     }
   },
@@ -19107,6 +19497,19 @@
     }
   },
   {
+    "word": "쌓다",
+    "aliases": [
+      "쌓이다"
+    ],
+    "description": "왼 주먹의 1·2지를 펴서 등이 위로 향하게 하고, 그 위에 오른 주먹의 1·2지를 펴서 바닥을 대고 위로 올린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151206/222654/IMG000214816_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "예전",
     "aliases": [
       "옛날",
@@ -19177,6 +19580,17 @@
     }
   },
   {
+    "word": "배달",
+    "aliases": [],
+    "description": "왼쪽 옆구리에 끼고 있는 신문을 오른손으로 잡아 빼서 밖으로 던지는 동작을 한다.(신문을 돌리는 경우)",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151224/233639/IMG000228369_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "배신(당하다)",
     "aliases": [],
     "description": "오른 주먹의 1·2·5지를 펴서 약간 구부려 턱 오른쪽 목살을 잡는다.",
@@ -19184,6 +19598,19 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151224/233728/IMG000228522_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "백",
+    "aliases": [
+      "일백"
+    ],
+    "description": "오른 손의 1·2·5지 끝을 붙여 끝이 밖으로 향하게 한다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151224/233842/IMG000228542_700X466.jpg"
       ]
     }
   },
@@ -19556,6 +19983,20 @@
     }
   },
   {
+    "word": "훌륭하다",
+    "aliases": [
+      "장하다",
+      "우수하다"
+    ],
+    "description": "4·5지를 편 오른 주먹의 5지 끝을 코끝에 댔다가 약간 위로 내민다(선행 따위가 월등한 경우).",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151129/218780/IMG000210350_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "유치하다",
     "aliases": [],
     "description": "오른 주먹의 1·2지를 펴서 끝 바닥을 코에 댔다가 아래로 내린다.",
@@ -19870,6 +20311,19 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151207/223379/IMG000215689_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "아니다",
+    "aliases": [
+      "않다"
+    ],
+    "description": "손바닥이 밖으로 향하게 세운 오른손을 좌우로 흔든다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151206/223149/IMG000215306_700X466.jpg"
       ]
     }
   },
@@ -20412,6 +20866,18 @@
     }
   },
   {
+    "word": "보고서",
+    "aliases": [],
+    "description": "오른 주먹의 1지를 펴서 세워 입술에 댔다가 밖으로 약간 올리며 내민 다음, 손바닥이 위로 향하게 약간 구부린 왼 손바닥을, 약간 구부린 오른 손등으로 두 번 두드린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151207/223291/IMG000215581_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151207/223292/IMG000215582_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "겉",
     "aliases": [],
     "description": "밖으로 향하게 편 왼 손등에 오른 주먹의 1지를 펴서 끝을 댄다.",
@@ -20875,6 +21341,20 @@
     }
   },
   {
+    "word": "자각",
+    "aliases": [
+      "독각",
+      "연각"
+    ],
+    "description": "오른쪽 눈앞에서 오른 주먹의 1·5를 펴서 맞댔다가 뗀다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20210112/798359/IMG000358200_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "폐",
     "aliases": [],
     "description": "오른손의 손바닥으로 왼쪽 가슴을 두 번 두드린다.",
@@ -20982,6 +21462,23 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151226/234937/IMG000229997_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "마찬가지",
+    "aliases": [
+      "같다",
+      "동일",
+      "맞다",
+      "동",
+      "똑같다"
+    ],
+    "description": "두 주먹의 1·5지를 펴서 끝이 위로 향하게 하여 1·5지를 두 번 붙인다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151128/218256/IMG000209715_700X466.jpg"
       ]
     }
   },
@@ -21940,6 +22437,19 @@
     }
   },
   {
+    "word": "제사",
+    "aliases": [
+      "제"
+    ],
+    "description": "손바닥이 위로 손끝이 왼쪽으로 향하게 편 오른손의 4지 옆면에, 손바닥이 위로 손끝이 밖으로 향하게 편 왼 손끝을 대고 가슴 앞에서 위로 올린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20160412/289817/IMG000279775_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "사용자",
     "aliases": [
       "소비자",
@@ -22274,6 +22784,17 @@
     }
   },
   {
+    "word": "네덜란드",
+    "aliases": [],
+    "description": "두 주먹의 3·5지만 접어 손바닥이 밖으로 향하게 하여 오른손은 안쪽에서 왼손은 바깥쪽에서 엇갈리게 두 번 돌린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151220/231214/IMG000225168_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "뇌물을 주다",
     "aliases": [
       "매수"
@@ -22320,6 +22841,20 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151221/231697/IMG000225782_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "무조건",
+    "aliases": [
+      "무작정",
+      "불사하다"
+    ],
+    "description": "두 주먹의 1지를 펴서 얼굴 왼쪽에서 ‘+’자로 맞대어 오른쪽으로 돌려 세운다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20190726/604508/IMG000354334_700X466.jpg"
       ]
     }
   },
@@ -22587,6 +23122,21 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151222/232348/IMG000226549_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "싫다",
+    "aliases": [
+      "거부",
+      "거절",
+      "난색"
+    ],
+    "description": "오른 주먹의 1·5지를 펴서 약간 구부려 끝을 턱에 댄다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151215/228157/IMG000221234_700X466.jpg"
       ]
     }
   },
@@ -22892,6 +23442,22 @@
     }
   },
   {
+    "word": "분홍",
+    "aliases": [
+      "분홍색",
+      "핑크",
+      "핑크색"
+    ],
+    "description": "손등이 위로 손끝이 왼쪽으로 향하게 편 오른손의 1지 옆면으로 입술 밑을 오른쪽으로 스쳐 내면서 2지 끝을 5지 끝에 튕겨 편 다음, 오른손의 손가락을 구부려 턱에 대고 오른쪽에서 왼쪽으로 움직인다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20210217/813672/IMG000358473_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20210217/813673/IMG000358474_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "백점",
     "aliases": [],
     "description": "오른 주먹의 1지를 펴서 바닥이 밖으로 향하게 세워 오른쪽 눈 옆에 세운다.",
@@ -22912,6 +23478,17 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151229/236533/IMG000232030_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "항복",
+    "aliases": [],
+    "description": "오른 손바닥을 이마에 댔다가 내리며 손끝을 모아 쥐고 손등이 위로 향하게 편 왼 손바닥 밑으로 내밀어 올리며 편다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151117/211632/IMG000202006_700X466.jpg"
       ]
     }
   },
@@ -23301,6 +23878,17 @@
     }
   },
   {
+    "word": "설거지",
+    "aliases": [],
+    "description": "손끝이 오른쪽으로 향하게 모로 세운 왼 손바닥에 오른손의 5지를 대고 나머지 손가락을 왼 손등에 대고 좌우로 반원을 그리며 문지른다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151208/224302/IMG000216769_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "인도(공화국)",
     "aliases": [],
     "description": "오른 주먹의 1지를 펴서 치아를 가리킨 다음, 두 손바닥을 이마 중앙에서 겹쳤다가 양옆으로 돌린다.",
@@ -23664,6 +24252,20 @@
     }
   },
   {
+    "word": "가느다랗다",
+    "aliases": [
+      "가냘프다",
+      "가늘다"
+    ],
+    "description": "두 주먹의 4지를 펴서 등이 밖으로 향하게 하여 끝을 상하로 맞댔다가 뗀다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151129/218501/IMG000210011_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "갚았다",
     "aliases": [],
     "description": "손바닥이 아래로 손끝이 밖으로 향하게 편 왼 손바닥을 모로 세운 오른손의 4지 밑면으로 스쳐낸다.",
@@ -23708,6 +24310,18 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151127/217500/IMG000208766_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "동해",
+    "aliases": [],
+    "description": "두 주먹의 1·5지를 펴고 1지가 위로 향하게 쥔 두 주먹을 가슴 앞에서 동시에 위로 올린 다음, 손등이 위로 손끝이 밖으로 향하게 편 두 손을 상하로 흔들며 오른쪽에서 왼쪽으로 이동시킨다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151126/217106/IMG000208360_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151126/217107/IMG000208361_700X466.jpg"
       ]
     }
   },
@@ -23757,6 +24371,18 @@
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151224/233848/IMG000228551_700X466.jpg",
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151224/233849/IMG000228552_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "성인",
+    "aliases": [],
+    "description": "오른 손끝을 약간 구부려 끝이 위로 향하게 하여 코 밑까지 서서히 올리며 손끝을 모은 다음, 두 주먹의 4·5지를 펴서 끝이 위로 향하게 맞대고 세워 양옆으로 두 번 약간 돌리며 벌린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20160325/263344/IMG000278530_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20160325/263345/IMG000278531_700X466.jpg"
       ]
     }
   },
@@ -23965,6 +24591,20 @@
     }
   },
   {
+    "word": "징그럽다",
+    "aliases": [
+      "(좋지 않은 기억이나 생각이) 떠오르다",
+      "(마음에) 걸리다"
+    ],
+    "description": "오른 주먹의 1지의 끝을 머리 오른쪽에 댔다가 떼면서, 1·5지 끝을 붙여 옆, 밖으로 내민다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20210208/810618/IMG000358376_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "(양복을)맞추다",
     "aliases": [],
     "description": "두 주먹의 1‧5지 끝을 붙여 양쪽 가슴에 대고 상하로 엇갈리게 움직인다(옷인 경우).",
@@ -23983,6 +24623,17 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151128/218394/IMG000209925_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "매일",
+    "aliases": [],
+    "description": "두 주먹의 1지를 펴서 끝이 위로 향하게 하여 오른쪽 관자놀이 옆에 세워 좌우로 2회 엇갈리게 움직인다(‘2일마다’, ‘3일마다’는 1지 대신 1·2지, 1·2·3지를 편다).",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151128/218395/IMG000209926_700X466.jpg"
       ]
     }
   },
@@ -24315,6 +24966,41 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151126/216780/IMG000207996_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "들키다",
+    "aliases": [
+      "탄로"
+    ],
+    "description": "손등이 밖으로 향하게 펴서 비스듬히 세운 왼손의 1지와 2지 사이로 밖에서부터 안으로 오른 주먹의 1지를 펴서 끼워 넣는다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151126/217131/IMG000208398_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "멕시코",
+    "aliases": [],
+    "description": "손등이 밖으로 향하게 1·2지를 편 두 주먹을 ‘X’자로 맞댔다가 1·2지를 구부리며 어깨 넓이로 벌린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151218/230131/IMG000223762_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "몽골",
+    "aliases": [],
+    "description": "두 손의 1·5지 사이를 크게 벌려 약간 구부려 배 앞에서 마주 보게 한다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151220/231197/IMG000225139_700X466.jpg"
       ]
     }
   },
@@ -24655,6 +25341,17 @@
     }
   },
   {
+    "word": "이스라엘",
+    "aliases": [],
+    "description": "오른 손을 약간 구부려 세워 바닥을 코에 두 번 댄다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151227/235666/IMG000230931_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "이탈리아",
     "aliases": [],
     "description": "오른 주먹을 머리 오른쪽에, 왼 주먹을 턱 오른쪽에 대고 손목을 돌린다.",
@@ -24673,6 +25370,17 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20210112/798398/IMG000358202_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "태국",
+    "aliases": [],
+    "description": "양손 각각 2·5지 끝을 맞대어 동그라미를 만들어 오른손은 오른쪽 어깨 앞에 왼손은 왼쪽 배 앞에 위치하여 손목을 두 번 돌린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151115/210196/IMG000200228_700X466.jpg"
       ]
     }
   },
@@ -24804,6 +25512,24 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20190722/603383/IMG000355709_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "광",
+    "aliases": [
+      "광선",
+      "라이트",
+      "빛",
+      "조명",
+      "비추다",
+      "비치다"
+    ],
+    "description": "손가락을 모아 쥔 오른손을 머리 오른쪽에서 가슴 앞으로 내리며 손가락을 편다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151127/217729/IMG000209090_700X466.jpg"
       ]
     }
   },
@@ -24953,6 +25679,17 @@
     }
   },
   {
+    "word": "필리핀",
+    "aliases": [],
+    "description": "오른 손을 펴서 손끝이 위로 손바닥이 입으로 향하게 하여, 내민 혀 앞에서 왼쪽으로 두 번 돌린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151118/211851/IMG000202268_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "호주",
     "aliases": [
       "오스트레일리아"
@@ -25017,6 +25754,20 @@
     }
   },
   {
+    "word": "튀르키예공화국(약칭 튀르키예)",
+    "aliases": [
+      "터키"
+    ],
+    "description": "오른 주먹의 1·5지 끝을 맞대고 끝이 위로 향하게 하여 내리면서 벌리다가 좁히며 내려 다시 맞댄 다음, 손가락이 위로 향하게 하여 손끝을 모아 댔다가 펴는 동작을 두 번 반복한다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151115/210233/IMG000200288_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151115/210234/IMG000200289_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "접다",
     "aliases": [],
     "description": "왼손을 펴서 손바닥이 위로 손끝이 밖으로 향하게 하고 그 오른쪽에서 같은 모양의 오른손을 왼쪽으로 돌려 왼 손바닥에 댄다.",
@@ -25038,6 +25789,17 @@
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151221/231824/IMG000225945_700X466.jpg",
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151221/231825/IMG000225946_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "만",
+    "aliases": [],
+    "description": "오른 주먹의 1·5지를 펴서 끝이 밖으로 향하게 하여 맞댄다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151220/231283/IMG000225241_700X466.jpg"
       ]
     }
   },
@@ -25522,6 +26284,17 @@
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151227/235300/IMG000230461_700X466.jpg",
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151227/235301/IMG000230462_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "이탈리아",
+    "aliases": [],
+    "description": "오른 주먹의 1·5지를 펴서 약간 구부려 밖으로 향하게 세워 좌우로 약간 흔들며 아래로 내린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151228/235815/IMG000231124_700X466.jpg"
       ]
     }
   },
@@ -26774,6 +27547,20 @@
     }
   },
   {
+    "word": "당사자",
+    "aliases": [
+      "본인"
+    ],
+    "description": "오른 주먹의 1지를 펴서 끝이 아래로 향하게 하여 끝으로 명치 부위를 스쳐 올려 바닥이 안으로 향하게 세운 다음, 두 주먹의 4·5지를 펴서 끝이 위로 향하게 맞대고 세워 양옆으로 두 번 약간 돌리며 벌린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151213/226988/IMG000219731_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151213/226989/IMG000219732_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "기원",
     "aliases": [
       "빌다"
@@ -27170,6 +27957,19 @@
     }
   },
   {
+    "word": "보다",
+    "aliases": [
+      "시각"
+    ],
+    "description": "두 손의 1·5지 끝을 맞대어 동그라미를 만들어 두 눈에 댔다가 약간 힘주어 밖으로 내민다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151222/232639/IMG000227009_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "위하다",
     "aliases": [
       "-러"
@@ -27195,6 +27995,20 @@
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20210105/795055/IMG000358115_700X466.jpg",
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20210105/795056/IMG000358116_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "받다",
+    "aliases": [
+      "얻다",
+      "타다"
+    ],
+    "description": "손바닥이 위로 손끝이 밖으로 향하게 비스듬히 세운 두 손을 안으로 당긴다(예의를 갖추어 받는 경우).",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151205/222191/IMG000214248_700X466.jpg"
       ]
     }
   },
@@ -27538,6 +28352,23 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151128/218237/IMG000209684_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "종류",
+    "aliases": [
+      "가지",
+      "종목",
+      "종",
+      "다각",
+      "다각도"
+    ],
+    "description": "왼 손바닥에 오른손을 펴서 모로 세워 왼쪽에서 오른쪽으로 돌리며 짚어 나간다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151231/238063/IMG000233979_700X466.jpg"
       ]
     }
   },
@@ -28163,6 +28994,22 @@
     }
   },
   {
+    "word": "일치",
+    "aliases": [
+      "동감",
+      "동의",
+      "공감"
+    ],
+    "description": "① 오른 주먹의 1지를 펴서 끝을 오른쪽 관자놀이에 댄 다음, 두 주먹의 1지를 펴서 약간 구부려 끝을 마주 댄다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151116/210763/IMG000200957_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151116/210764/IMG000200958_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "개구리",
     "aliases": [],
     "description": "두 주먹의 바닥으로 배를 번갈아 두 번 두드린다.",
@@ -28521,6 +29368,30 @@
     }
   },
   {
+    "word": "배부르다",
+    "aliases": [
+      "부르다"
+    ],
+    "description": "두 손 각각 손가락을 모아 붙여 끝이 옆으로 향하게 하여 5지 등을 배에 대고 1·2·3·4지를 동시에 뗀다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151206/223090/IMG000215371_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "씩씩하다",
+    "aliases": [],
+    "description": "주먹을 쥔 두 팔의 팔꿈치를 어깨에 수평이 되게 올리고 팔을 전후로 동시에 힘차게 흔든다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151206/222664/IMG000214831_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "과테말라",
     "aliases": [],
     "description": "오른 주먹의 1·2·5지를 펴서 1·2지는 왼쪽으로 5지는 위로 향하게 하여, 모로 세운 왼 주먹에 두 번 내려 놓는다.",
@@ -28603,6 +29474,32 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20160408/252649/IMG000261968_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "경상남도",
+    "aliases": [
+      "경남"
+    ],
+    "description": "왼 주먹의 1·5지를 펴서 1지 끝이 오른쪽으로 등이 밖으로 향하게 하고, 오른주먹의 1·5지를 펴서 1지를 왼 주먹의 5지에 5지를 왼 주먹의 1지에 댄다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151216/229024/IMG000222312_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "대회",
+    "aliases": [
+      "회"
+    ],
+    "description": "손등이 밖으로 손끝이 위로 향하게 하여 약간 구부려 벌린 왼 손등에 같은 모양의 오른 손바닥을 댔다가 밖으로 내민다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151219/230973/IMG000224859_700X466.jpg"
       ]
     }
   },
@@ -28739,6 +29636,20 @@
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20210210/811183/IMG000358434_700X466.jpg",
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20210210/811184/IMG000358435_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "반대",
+    "aliases": [
+      "반하다",
+      "반-"
+    ],
+    "description": "손바닥이 위로 향하게 하고 손끝이 위로 향하게 구부린 두 손의 손가락 등을 마주친다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151223/233147/IMG000227663_700X466.jpg"
       ]
     }
   },
@@ -28890,6 +29801,18 @@
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151220/231477/IMG000225507_700X466.jpg",
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151220/231478/IMG000225508_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "집행",
+    "aliases": [],
+    "description": "두 주먹의 5지를 펴서 세워 가슴 앞에서 약간 내린 다음, 손등이 위로 향하게 쥔 두 주먹을 전후로 엇갈리게 움직인다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151210/225461/IMG000218118_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151210/225462/IMG000218119_700X466.jpg"
       ]
     }
   },
@@ -29416,6 +30339,20 @@
     }
   },
   {
+    "word": "고의",
+    "aliases": [
+      "일부러"
+    ],
+    "description": "오른 손바닥으로 가슴을 한 번 쓸어내린 다음, 오른 주먹의 1·2지를 벌려 펴서 끝이 왼쪽으로 등이 밖으로 향하게 한다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151116/211101/IMG000201350_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151116/211102/IMG000201351_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "간혹",
     "aliases": [
       "가끔",
@@ -29497,6 +30434,23 @@
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151125/216367/IMG000207434_700X466.jpg",
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151125/216368/IMG000207435_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "그만",
+    "aliases": [
+      "금지",
+      "그만두다",
+      "금하다",
+      "말다",
+      "하지 마"
+    ],
+    "description": "손끝이 밖으로 향하게 모로 세운 오른손으로 왼 손바닥을 내려친다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151128/218050/IMG000209480_700X466.jpg"
       ]
     }
   },
@@ -29769,6 +30723,48 @@
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151121/213671/IMG000204356_700X466.jpg",
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151121/213672/IMG000204357_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "넘어가다",
+    "aliases": [
+      "빠지다"
+    ],
+    "description": "왼손으로, 펴서 세운 오른 주먹의 5지를 잡으며 오른 주먹을 아래로 쑥 빼낸다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151205/222594/IMG000214720_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "넘어가다",
+    "aliases": [
+      "대충",
+      "무성의하다"
+    ],
+    "description": "오른 주먹의 1․5지를 펴서 끝을 맞대어 왼팔의 팔목 위쪽에 댔다가 밖으로 내밀며 1․5지를 편다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151205/222599/IMG000214730_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "이론",
+    "aliases": [
+      "논하다",
+      "설"
+    ],
+    "description": "오른 주먹의 1지를 펴서 입 주위를 한 바퀴 돌린 다음, 손바닥이 위로 향하게 편 왼손바닥에 오른손을 모로 세워 4지 끝을 두 번 댔다 뗀다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151116/210700/IMG000200859_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151116/210701/IMG000200860_700X466.jpg"
       ]
     }
   },
@@ -30789,6 +31785,17 @@
     }
   },
   {
+    "word": "중국",
+    "aliases": [],
+    "description": "오른 주먹의 1지를 펴서 끝을 목 아래에 댔다가 오른쪽 약간 아래로 이동시켜 아래로 내린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151229/236486/IMG000232001_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "요리",
     "aliases": [],
     "description": "왼 주먹의 1·2지를 펴서 등이 위로 향하게 하고, 그 위에 오른 주먹의 1·2지를 펴서 모로 세워 전후로 움직인다.",
@@ -30820,6 +31827,21 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151228/235944/IMG000231320_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "인상",
+    "aliases": [
+      "용모",
+      "표정"
+    ],
+    "description": "오른 주먹의 1지를 펴서 얼굴을 왼쪽으로 한 바퀴 돌린 다음, 두 주먹의 1·5지를 펴서 1지 끝이 위로 바닥이 밖으로 향하게 세워 얼굴 앞에서 상하로 엇갈리게 두 번 움직인다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151228/235946/IMG000231324_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151228/235947/IMG000231325_700X466.jpg"
       ]
     }
   },
@@ -31187,6 +32209,17 @@
     }
   },
   {
+    "word": "유행",
+    "aliases": [],
+    "description": "가볍게 오므린 오른 손끝을 턱에 댔다가 손을 펴면서 오른쪽으로 손목을 돌린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151226/234935/IMG000229994_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "만족",
     "aliases": [
       "여유",
@@ -31269,6 +32302,19 @@
     }
   },
   {
+    "word": "경과",
+    "aliases": [
+      "흐르다"
+    ],
+    "description": "오른손을 펴서 손바닥이 위로 손끝이 왼쪽으로 향하게 하여 상하로 약간 흔들며 오른쪽으로 이동시킨다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151119/212732/IMG000203330_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "나중",
     "aliases": [
       "밖",
@@ -31303,6 +32349,19 @@
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20210104/794413/IMG000358070_700X466.jpg",
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20210104/794415/IMG000358071_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "말",
+    "aliases": [
+      "승마"
+    ],
+    "description": "왼 주먹의 5지를 펴서 끝이 밖으로 향하게 모로 세우고 그 위에 오른 주먹의 1·2지를 펴서 벌려 올려 끼우고 상하로 두 번 움직인다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151220/231442/IMG000225445_700X466.jpg"
       ]
     }
   },
@@ -32167,6 +33226,20 @@
     }
   },
   {
+    "word": "서대문",
+    "aliases": [
+      "돈의문"
+    ],
+    "description": "오른 주먹의 1지를 펴서 치아를 가리킨 다음, 두 주먹의 1지를 펴서 좌우로 비스듬히 마주 보게 세워 내리며 구부린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151222/232346/IMG000226547_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151222/232347/IMG000226548_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "공항",
     "aliases": [
       "비행장"
@@ -32190,6 +33263,19 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151218/230344/IMG000224029_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "뜨다",
+    "aliases": [
+      "개안"
+    ],
+    "description": "오른 주먹의 1·5지를 펴서 붙여 오른쪽 눈앞에서 뗀다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151219/230575/IMG000224393_700X466.jpg"
       ]
     }
   },
@@ -32672,6 +33758,18 @@
     }
   },
   {
+    "word": "익숙하다",
+    "aliases": [],
+    "description": "손등이 위로 향하게 편 왼 손등에 오른 손바닥을 댄 다음, 오른 손끝을 코 오른쪽에 댔다가 떼면서 5지로 나머지 손가락을 4지부터 차례로 비빈다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151228/235823/IMG000231139_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151228/235824/IMG000231140_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "잘못",
     "aliases": [
       "못하다"
@@ -32984,6 +34082,17 @@
     }
   },
   {
+    "word": "의리",
+    "aliases": [],
+    "description": "두 주먹의 손목을 상하로 마주 댄다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151116/210680/IMG000200827_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "출발점",
     "aliases": [],
     "description": "손끝이 밖으로 손등이 옆으로 향하게 편 두 손의 손바닥을 맞댔다가 양옆으로 벌린 다음, 손바닥이 아래로 향하게 반쯤 구부린 오른손을 가슴 앞에서 약간 내리다가 멈춘다.",
@@ -33124,6 +34233,20 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151130/219265/IMG000210934_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "도시",
+    "aliases": [
+      "도회",
+      "시"
+    ],
+    "description": "손끝이 밖으로 향하게 모로 세운 두 손을 맞댔다가 오른손만 위로 올린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151220/231358/IMG000225368_700X466.jpg"
       ]
     }
   },
@@ -33369,6 +34492,20 @@
     }
   },
   {
+    "word": "극복",
+    "aliases": [
+      "이겨냄"
+    ],
+    "description": "손바닥이 가슴으로 향하게 펴서 모로 세운 왼 손바닥에 오른 주먹의 1지를 펴서 끝을 대고 밖으로 내민 다음, 5지를 펴서 세운 왼 주먹의 5지 등을, 5지를 펴서 세운 오른 주먹의 4지 밑면으로 스쳐 내민다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151231/237974/IMG000233881_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20171006/466798/IMG000354306_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "삼겹살",
     "aliases": [],
     "description": "1·2·3지를 벌려 편 오른손의 3지 끝으로 손바닥이 위로 향하게 편 왼손의 손바닥을 두번 친다.",
@@ -33419,6 +34556,22 @@
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151212/226688/IMG000219464_700X466.jpg",
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151212/226689/IMG000219465_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "발전",
+    "aliases": [
+      "발달",
+      "번영",
+      "진흥",
+      "향상"
+    ],
+    "description": "손바닥이 안으로 향하게 편 왼 손바닥에 오른 손등을 스쳐 댔다 뗐다 하면서 두 손을 동시에 위로 올린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151224/233401/IMG000227995_700X466.jpg"
       ]
     }
   },
@@ -33679,6 +34832,18 @@
     }
   },
   {
+    "word": "(총을 쏘는)사수",
+    "aliases": [],
+    "description": "오른 주먹의 1‧5지를 펴서 1지가 밖으로 향하게 모로 세우고 1지를 구부리며 몸 안쪽으로 당긴 다음, 두 주먹의 4·5지를 펴서 끝이 위로 향하게 맞대고 세워 양옆으로 벌린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20210217/813785/IMG000358487_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20210217/813786/IMG000358488_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "기금",
     "aliases": [
       "기본금"
@@ -33701,6 +34866,20 @@
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151208/223866/IMG000216243_700X466.jpg",
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151208/223867/IMG000216244_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "수단",
+    "aliases": [
+      "수법"
+    ],
+    "description": "왼 손등에 오른 손끝 바닥을 댄 다음, 1·2지를 펴서 구부려 세운 두 주먹의 4지 옆면을 두 번 댔다 뗀다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151221/232062/IMG000226238_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151221/232063/IMG000226239_700X466.jpg"
       ]
     }
   },
@@ -34185,6 +35364,20 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151215/228088/IMG000221118_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "병원",
+    "aliases": [
+      "의원"
+    ],
+    "description": "손등이 밖으로 향하게 편 왼 손등을 오른 주먹의 1·2지를 펴서 끝으로 두 번 두드린 다음, 두손의 손끝을 맞대어 좌우로 비스듬히 세운다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151222/232512/IMG000226843_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151222/232513/IMG000226844_700X466.jpg"
       ]
     }
   },
@@ -34919,6 +36112,17 @@
     }
   },
   {
+    "word": "버스",
+    "aliases": [],
+    "description": "왼손을 펴서 손등이 위로 손끝이 오른쪽을 향하게 하고, 그 등 위쪽에 오른 주먹의 1·2지를 펴서 구부려 모로 세우고 왼손을 전후로 움직인다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151221/232091/IMG000226286_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "뽑다",
     "aliases": [
       "당선",
@@ -35189,6 +36393,22 @@
     }
   },
   {
+    "word": "그만하다",
+    "aliases": [
+      "고만하다",
+      "이만하다",
+      "저만하다"
+    ],
+    "description": "오른 주먹의 1·5지 끝을 맞대어 왼 손목 등에서 팔꿈치쪽으로 빠르게 올렸다 내린 다음, 오른 주먹의 1·2지를 펴서 끝이 왼쪽으로 향하게 하여 바닥을 턱에 댄다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151128/218160/IMG000209609_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20201209/784224/IMG000356866_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "훈화",
     "aliases": [],
     "description": "왼손을 펴서 손등이 밖으로 손끝이 위로 향하게 벌려 세우고, 오른 주먹의 1지를 펴서 끝이 왼손의 손가락으로 향하게 하여 좌우로 흔든 다음, 왼 손바닥에 손바닥이 왼쪽으로 향하게 세운 오른손의 팔꿈치를 올려놓고 전후로 흔든다.",
@@ -35256,6 +36476,20 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151227/235448/IMG000230668_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "오후",
+    "aliases": [
+      "점심 후"
+    ],
+    "description": "오른 주먹의 1·2지를 펴서 1지만 구부려 이마 앞에 세운 다음, 오른손을 펴서 손바닥이 밖으로 손끝이 위로 향하게 세운 오른손을 밖으로 내민다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151227/235454/IMG000230680_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151227/235455/IMG000230681_700X466.jpg"
       ]
     }
   },
@@ -35364,6 +36598,23 @@
     }
   },
   {
+    "word": "중앙",
+    "aliases": [
+      "도중",
+      "중",
+      "중도",
+      "가운데",
+      "중심"
+    ],
+    "description": "손끝이 오른쪽으로 향하게 모로 세운 왼손의 1·5지 중간에 오른 손을 4지 옆면이 닿게 세운다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151229/236532/IMG000232029_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "더하기",
     "aliases": [
       "플러스",
@@ -35449,6 +36700,20 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151117/211494/IMG000201831_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "대비",
+    "aliases": [
+      "상왕비"
+    ],
+    "description": "손등이 위로 향하게 편 왼손의 2지 옆면을 오른 주먹의 1·5지 끝으로 스쳐 올린 다음, 오른 주먹의 1지를 펴서 끝 바닥을 코 오른쪽에 댔다가 떼며 1지를 접고 4지를 펴서 세운다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151227/235651/IMG000230907_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151227/235652/IMG000230908_700X466.jpg"
       ]
     }
   },
@@ -35638,6 +36903,18 @@
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151208/224280/IMG000216736_700X466.jpg",
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151208/224281/IMG000216737_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "두통",
+    "aliases": [],
+    "description": "오른 주먹의 1지를 펴서 오른쪽 관자놀이에 댄 다음, 손등이 밖으로 향하게 모로 세운 두 주먹의 손가락 등을 두 번 맞부딪친다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151218/229968/IMG000223524_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151218/229870/IMG000223525_700X466.jpg"
       ]
     }
   },
@@ -36006,6 +37283,19 @@
     }
   },
   {
+    "word": "복사",
+    "aliases": [
+      "카피"
+    ],
+    "description": "손바닥이 위로 향하게 편 왼 손바닥에 오른 손의 손가락을 벌려 올려 놓았다가 들어 올리면서 손가락 끝을 모은다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151223/233024/IMG000227508_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "주교",
     "aliases": [],
     "description": "두 손을 펴서 양쪽 뺨 옆에 세워 위로 올리다가 중앙으로 비스듬히 올려 끝을 맞댄다.",
@@ -36074,6 +37364,19 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151126/217120/IMG000208381_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "턱",
+    "aliases": [
+      "한턱"
+    ],
+    "description": "오른손으로 손가락으로 턱을 잡았다가 위로 올린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20210203/808847/IMG000358315_700X466.jpg"
       ]
     }
   },
@@ -36297,6 +37600,17 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151226/234702/IMG000229695_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "모금",
+    "aliases": [],
+    "description": "왼손을 구부려 손끝이 오른쪽으로 향하게 하고, 그 사이로 오른손의 1‧5지 끝을 맞대어 동그라미를 만들어 내려 넣는다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151204/221448/IMG000213391_700X466.jpg"
       ]
     }
   },
@@ -36607,6 +37921,17 @@
     }
   },
   {
+    "word": "스키",
+    "aliases": [],
+    "description": "오른 주먹의 1·2지를 펴서 등으로 왼손의 손등을 스쳐 내려가게 한다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151226/235049/IMG000230054_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "장애인 등에 대한 특수 교육법",
     "aliases": [],
     "description": "3‧4지를 접고 1지를 반쯤 구부린 두 손의 2‧5지 끝을 맞댄 다음, 오른 주먹의 1‧5지 끝을 맞대어 왼 손목 등에서 팔꿈치 쪽으로 빠르게 올렸다 내리고, 왼 주먹의 5지를 펴서 바닥이 밖으로 향하게 세우고, 오른 주먹의 1지를 펴서 끝이 왼 주먹의 5지 등으로 향하게 하여 좌우로 두 번 흔든 다음, 1·2지를 펴서 구부려 모로 세운 오른 주먹으로 손바닥이 위로 향하게 편 왼 손바닥을 두 번 두드린다.",
@@ -36708,6 +38033,17 @@
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151213/227113/IMG000219951_700X466.jpg",
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151213/227114/IMG000219952_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "프랑스",
+    "aliases": [],
+    "description": "오른 주먹의 1·5지 끝을 맞대고 나머지 손가락을 펴서 손바닥이 밖으로 향하게 세워 왼쪽에서 오른쪽으로 이동시킨다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151117/211773/IMG000202183_700X466.jpg"
       ]
     }
   },
@@ -36923,6 +38259,19 @@
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151229/236800/IMG000232384_700X466.jpg",
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151229/236801/IMG000232385_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "천",
+    "aliases": [
+      "일천"
+    ],
+    "description": "손끝이 밖으로 향하게 오른 손의 1·2·3지를 5지 끝에 댄다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151229/236803/IMG000232389_700X466.jpg"
       ]
     }
   },
@@ -37213,6 +38562,18 @@
     }
   },
   {
+    "word": "의지",
+    "aliases": [],
+    "description": "왼손을 손등이 밖으로 손끝이 오른쪽으로 향하게 하고, 오른 주먹의 1지를 펴서 끝을 왼 손등에 댔다가 손바닥에 댄 다음, 오른 주먹의 1·5지를 펴서 약간 구부려 오른쪽 어깨 높이에서 가슴 앞으로 힘주어 내린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151227/235260/IMG000230394_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151227/235261/IMG000230395_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "무섭다",
     "aliases": [
       "겁",
@@ -37454,6 +38815,17 @@
     }
   },
   {
+    "word": "마리아",
+    "aliases": [],
+    "description": "오른 손바닥으로 머리 오른쪽을 스쳐 내리면서 주먹을 쥐고 4지를 펴서 등이 밖으로 향하게 세운다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20171217/475838/IMG000354340_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "리모컨",
     "aliases": [],
     "description": "모로 세운 오른 주먹의 5지 바닥을 1지 옆면에 두 번 댄다(가전 제품을 조정할 경우).",
@@ -37472,6 +38844,17 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151219/230894/IMG000224726_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "러시아",
+    "aliases": [],
+    "description": "오른 주먹의 1지를 옆면으로 펴서 입술 밑을 오른쪽으로 스쳐내며 손을 아래로 턴다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20230404/1133390/PIC000361278_700X466.jpg"
       ]
     }
   },
@@ -37585,6 +38968,17 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151225/234368/IMG000229233_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "아르헨티나",
+    "aliases": [],
+    "description": "오른 손가락을 약간 구부려 오른쪽 가슴에서 상하로 두 번 흔든다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151226/234880/IMG000229900_700X466.jpg"
       ]
     }
   },
@@ -37766,6 +39160,17 @@
     }
   },
   {
+    "word": "인도(공화국)",
+    "aliases": [],
+    "description": "오른 주먹의 5지를 펴서 바닥이 위로 향하게 하여 이마 중앙에 대고 위로 올린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151228/235935/IMG000231305_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "민주",
     "aliases": [],
     "description": "오른 주먹의 1지를 펴서 끝으로 치아를 가리킨 다음, 손끝이 오른쪽으로 향하게 모로 세운 왼손 위에 손끝이 왼쪽으로 향하게 모로 세운 오른손을 내려놓는다.",
@@ -37937,6 +39342,19 @@
     }
   },
   {
+    "word": "맞지 않다",
+    "aliases": [
+      "적합하지 않다"
+    ],
+    "description": "손바닥이 위로 향하게 편 왼손의 4지 옆면에 오른손 4지 옆면을 맞댔다가 아래로 돌려 내린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20210113/798984/IMG000358224_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "끓다",
     "aliases": [
       "끓이다",
@@ -37962,6 +39380,19 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151127/217272/IMG000208569_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "공",
+    "aliases": [
+      "볼"
+    ],
+    "description": "두 주먹의 1·2·5지를 벌려 마주 보게 하여 탄력있게 두 번 구부렸다 편다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151214/227652/IMG000220598_700X466.jpg"
       ]
     }
   },
@@ -38090,6 +39521,20 @@
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151204/221844/IMG000213856_700X466.jpg",
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151204/221845/IMG000213857_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "고기",
+    "aliases": [
+      "가죽",
+      "살"
+    ],
+    "description": "오른손의 1·5지로 왼 손등을 살짝 잡는다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151217/229306/IMG000222681_700X466.jpg"
       ]
     }
   },
@@ -38227,6 +39672,33 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151210/225030/IMG000217606_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "당사자",
+    "aliases": [
+      "본인"
+    ],
+    "description": "두 손을 펴서 손끝이 밖으로 향하게 하여 맞댔다가 손목을 양옆으로 돌려 편 다음, 두 주먹의 4·5지를 펴서 끝이 위로 향하게 맞대고 세워 양옆으로 두 번 약간 돌리며 벌린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151213/226990/IMG000219733_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151213/226991/IMG000219734_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "당연하다",
+    "aliases": [
+      "물론"
+    ],
+    "description": "오른 주먹의 2지를 펴서 끝을 턱에 댄 다음, 밖으로 내밀며 2지와 5지 바닥을 맞대어 끝이 밖으로 향하게 한다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20201223/791003/IMG000357914_700X466.jpg"
       ]
     }
   },
@@ -38775,6 +40247,19 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151222/232748/IMG000227148_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "보라",
+    "aliases": [
+      "보라색"
+    ],
+    "description": "오른손을 펴서 손바닥이 밖으로 향하게 세웠다가 끝이 밖으로 향하게 내리다가 손바닥이 위로 향하게 돌려 오른쪽으로 움직인다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151222/232749/IMG000227150_700X466.jpg"
       ]
     }
   },
@@ -39560,6 +41045,20 @@
     }
   },
   {
+    "word": "난청인",
+    "aliases": [
+      "난청자"
+    ],
+    "description": "5지를 약간 구부린 왼손을 손바닥이 오른쪽으로 향하게 세워 입 중심에 대고, 오른손은 손바닥이 밖으로 향하게 하여 1지 옆면을 오른쪽 귀 중심에 댄 다음, 두 손을 동시에 상하로 움직이고, 두 주먹의 4·5지를 펴서 끝이 위로 향하게 맞대고 세워 양옆으로 벌린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20201223/790911/IMG000357862_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20201223/790913/IMG000357864_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "절",
     "aliases": [
       "참배",
@@ -39732,6 +41231,17 @@
     }
   },
   {
+    "word": "스위스",
+    "aliases": [],
+    "description": "오른 주먹의 1·5지를 펴서 구부려 왼쪽 가슴에 ‘+’자를 아래로 먼저 긋고 옆으로 긋는다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151226/235040/IMG000230039_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "스캐너",
     "aliases": [],
     "description": "왼손을 펴서 손바닥이 아래로 손끝이 오른쪽으로 향하게 하고, 오른 주먹의 1지를 굽혀 등이 왼 손바닥으로 향하게 하여 좌우로 두 번 서서히 움직인다.",
@@ -39739,6 +41249,20 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151226/235045/IMG000230047_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "절반",
+    "aliases": [
+      "반",
+      "반절"
+    ],
+    "description": "왼 주먹의 1지를 펴서 ‘+’자로 맞대고 오른손을 전후로 움직인다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151229/236747/IMG000232331_700X466.jpg"
       ]
     }
   },
@@ -40080,6 +41604,22 @@
     }
   },
   {
+    "word": "말실수",
+    "aliases": [
+      "실언",
+      "실구",
+      "실어"
+    ],
+    "description": "오른 주먹의 1지를 펴서 세워 옆면을 입에 댔다가 밖으로 내민 다음, 두 주먹의 4·5지를 펴서 오른 주먹이 안쪽에 놓이게 이어 대고 목으로 당긴다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151128/218380/IMG000209902_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151128/218381/IMG000209903_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "여기",
     "aliases": [
       "이곳",
@@ -40201,6 +41741,19 @@
     }
   },
   {
+    "word": "둘",
+    "aliases": [
+      "이"
+    ],
+    "description": "오른 주먹의 1·2지를 펴서 벌려 바닥이 밖으로 향하게 세운다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151128/217929/IMG000209339_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "막내딸",
     "aliases": [
       "막내"
@@ -40234,6 +41787,17 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151229/236662/IMG000232188_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "스페인",
+    "aliases": [],
+    "description": "5지 끝에 1지 끝바닥을 댄 오른 주먹을 4지 옆면이 닿게 가슴 아래에 댔다가 위로 올려 5지 옆면이 닿게 돌려 가슴 위에 댄다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151226/235053/IMG000230061_700X466.jpg"
       ]
     }
   },
@@ -40375,6 +41939,20 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151231/238151/IMG000234129_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "내밀다",
+    "aliases": [
+      "무소뿔",
+      "내세우다"
+    ],
+    "description": "둥글게 쥔 오른손을 1․5지 옆면이 닿게 이마에 댔다가 빠르게 내밀며 주먹을 쥔다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151205/222327/IMG000214405_700X466.jpg"
       ]
     }
   },
@@ -40698,6 +42276,20 @@
     }
   },
   {
+    "word": "설",
+    "aliases": [
+      "설날"
+    ],
+    "description": "오른 주먹의 1지를 펴서 끝이 왼쪽으로 향하게 모로 세우고, 그 아래에 왼 주먹의 1지를 펴서 끝이 오른쪽으로 향하게 모로 세운 다음, 손등이 아래로 향하게 가볍게 쥔 두 주먹을 위로 올리며 손가락을 활짝 편다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151207/223477/IMG000215838_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151207/223478/IMG000215839_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "머리",
     "aliases": [
       "뇌",
@@ -40874,6 +42466,17 @@
     }
   },
   {
+    "word": "깨다",
+    "aliases": [],
+    "description": "두 주먹의 1·5지를 펴서 맞댄 후, 4지의 옆면이 밖으로 향하게 하여 두 눈앞에 대고, 1·5지 사이를 벌린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20201223/790857/IMG000357841_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "보행자",
     "aliases": [],
     "description": "두 주먹의 1·2지를 펴서 끝이 아래로 등이 마주 보게 하여 두 손을 교차하면서 1·2지를 번갈아 움직인 다음, 두 주먹의 4·5지를 펴서 끝이 위로 향하게 맞대고 세워 양옆으로 벌린다.",
@@ -41021,6 +42624,17 @@
     }
   },
   {
+    "word": "학수고대",
+    "aliases": [],
+    "description": "오른손을 구부려 손가락 등을 턱 밑에 대고 왼손의 손바닥으로 오른팔의 팔꿈치를 받친다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151201/219984/IMG000211727_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "초대",
     "aliases": [
       "객",
@@ -41137,6 +42751,19 @@
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151223/233160/IMG000227685_700X466.jpg",
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151223/233161/IMG000227686_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "복잡하다",
+    "aliases": [
+      "산만하다"
+    ],
+    "description": "두 손을 구부려 머리 양쪽에 대고 좌우로 돌린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151223/233032/IMG000227521_700X466.jpg"
       ]
     }
   },
@@ -41314,6 +42941,17 @@
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151210/225155/IMG000217747_700X466.jpg",
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151210/225156/IMG000217748_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "아프리카",
+    "aliases": [],
+    "description": "오른 손끝을 맞댔다가 바닥이 밖으로 향하게 펴면서 아프리카의 지형을 그리듯이 오른쪽으로 돌려 내려 손끝을 맞댄다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151226/235082/IMG000230113_700X466.jpg"
       ]
     }
   },
@@ -41883,6 +43521,19 @@
     }
   },
   {
+    "word": "호주",
+    "aliases": [
+      "오스트레일리아"
+    ],
+    "description": "손등이 위로 향하게 편 두 손의 2·5지 끝을 맞댔다 뗐다 하며 밖으로 내민다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151121/213635/IMG000204458_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "혼신",
     "aliases": [
       "온몸",
@@ -42062,6 +43713,22 @@
     }
   },
   {
+    "word": "절대",
+    "aliases": [
+      "공",
+      "공공",
+      "결코",
+      "절대로"
+    ],
+    "description": "비스듬히 세운 왼손 밑에 오른손으로 ‘ム’ 모양을 그린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151121/213927/IMG000204789_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "뒤떨어지다",
     "aliases": [
       "뒤지다"
@@ -42071,6 +43738,49 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151126/217121/IMG000208383_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "갑자기",
+    "aliases": [
+      "냅다",
+      "별안간",
+      "갑작스럽다",
+      "갑작스레"
+    ],
+    "description": "4지 옆면이 밖으로 향하게 가볍게 쥔 오른주먹을 얼굴 오른쪽에서 얼굴 앞으로 재빠르게 돌리며 활짝 펴서 얼굴을 가린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151130/219146/IMG000210756_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "때리다",
+    "aliases": [
+      "손찌검",
+      "패다",
+      "후려치다"
+    ],
+    "description": "왼 주먹의 5지를 펴서 바닥이 밖으로 향하게 세우고, 그 등을 오른 손바닥으로 후려치는 동작을 한다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151127/217265/IMG000208558_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "-관",
+    "aliases": [],
+    "description": "약간 구부린 오른손을 오른쪽 어깨에 올려놓은 다음, 오른 주먹의 5지를 펴서 바닥이 밖으로 향하게 세워 약간 내민다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151128/217838/IMG000209211_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151128/217839/IMG000209212_700X466.jpg"
       ]
     }
   },
@@ -42535,6 +44245,18 @@
     }
   },
   {
+    "word": "오전",
+    "aliases": [],
+    "description": "오른 주먹의 1·2지를 펴서 1지만 구부려 이마 앞에 세운 다음, 손가락을 구부려 손끝이 위로 향하게 한 오른 손을 안으로 당긴다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151211/225779/IMG000218456_700X466.jpg",
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151211/225780/IMG000218457_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "담배",
     "aliases": [
       "흡연"
@@ -42691,6 +44413,28 @@
     }
   },
   {
+    "word": "브라질",
+    "aliases": [],
+    "description": "오른 손의 5지를 접고 1·2·3·4지를 펴서 손끝이 위로 바닥이 옆으로 향하게 세워 이마 앞에서 흔들며 가슴 앞으로 내린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151221/232117/IMG000226332_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "인터뷰",
+    "aliases": [],
+    "description": "두 주먹을 4․5지를 펴서 마주보게 세워 서로 엇갈리게 전후로 움직인다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151205/222512/IMG000214639_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "일본",
     "aliases": [
       "왜국"
@@ -42700,6 +44444,19 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151228/236143/IMG000231520_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "일본",
+    "aliases": [
+      "왜국"
+    ],
+    "description": "오른 주먹의 1, 5지를 펴서 오른쪽 볼을 잡고 스쳐낸다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151211/225777/IMG000218452_700X466.jpg"
       ]
     }
   },
@@ -43297,6 +45054,17 @@
     }
   },
   {
+    "word": "끊어지다",
+    "aliases": [],
+    "description": "두 주먹의 1지를 펴서 등이 위로 향하게 하여 끝을 마주 보게 하였다가 전후로 엇갈리게 빠르게 움직인다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151117/211489/IMG000201822_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "장수",
     "aliases": [
       "상인"
@@ -43451,6 +45219,19 @@
     }
   },
   {
+    "word": "수",
+    "aliases": [
+      "자수"
+    ],
+    "description": "왼 주먹에서 1·5지만 펴고 1지는 조금 구부린 다음, 왼손의 1·5지 안에서 오른손의 1·5지 끝을 맞대어 손끝이 아래로 향하게 하여 내렸다가 손목을 돌려 올리는 동작을 두 번 반복한다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20210217/813837/IMG000358520_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "수고",
     "aliases": [
       "노고",
@@ -43534,6 +45315,19 @@
     }
   },
   {
+    "word": "잘하다",
+    "aliases": [
+      "좋다"
+    ],
+    "description": "오른 주먹의 5지를 펴서 세워 전후로 두 번 움직인다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151117/211392/IMG000201703_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "승강장",
     "aliases": [
       "플랫폼"
@@ -43584,6 +45378,23 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151219/230856/IMG000224710_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "갈다",
+    "aliases": [
+      "바꾸다",
+      "교대",
+      "교체",
+      "변경",
+      "변동"
+    ],
+    "description": "1지를 펴서 등이 옆으로 향하게 세운 두 주먹을 중앙으로 모아 두 팔이 교차하게 한다",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151126/217010/IMG000208261_700X466.jpg"
       ]
     }
   },
@@ -43658,6 +45469,19 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151205/222488/IMG000214603_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "삼",
+    "aliases": [
+      "셋"
+    ],
+    "description": "오른 주먹의 1·2·3지를 펴서 바닥이 밖으로 향하게 세운다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151208/223809/IMG000216204_700X466.jpg"
       ]
     }
   },
@@ -43949,6 +45773,21 @@
     }
   },
   {
+    "word": "남대문",
+    "aliases": [
+      "교량",
+      "육교",
+      "다리"
+    ],
+    "description": "오른 주먹의 1·2지를 펴서 끝을, 수평으로 들어 올린 왼 팔의 손목 밑에 댔다가 팔꿈치 쪽으로 옮겨 댄다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151215/228407/IMG000221548_700X466.jpg"
+      ]
+    }
+  },
+  {
     "word": "낫다",
     "aliases": [
       "치유"
@@ -43990,6 +45829,22 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151219/230825/IMG000224656_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "내몰다",
+    "aliases": [
+      "배척",
+      "추방",
+      "내쫓다",
+      "쫓아내다"
+    ],
+    "description": "손바닥이 위로 향하게 편 왼 손바닥을 오른 손끝으로 쓸어낸다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151205/222321/IMG000214395_700X466.jpg"
       ]
     }
   },
@@ -44199,6 +46054,45 @@
       "type": "images",
       "src": [
         "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151219/230423/IMG000224121_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "독일",
+    "aliases": [],
+    "description": "오른 주먹의 1지를 펴서 끝이 위를 향하게 세워 머리 위에 올려 놓는다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151220/231541/IMG000225577_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "(시간)시",
+    "aliases": [
+      "시간"
+    ],
+    "description": "손등이 위로 향하게 쥔 왼 주먹의 1·5지사이에 오른 주먹의 1·5지를 펴서 5지를 끼우고 밖으로 돌린다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151209/224948/IMG000217526_700X466.jpg"
+      ]
+    }
+  },
+  {
+    "word": "비교",
+    "aliases": [
+      "비례",
+      "견주다",
+      "대다"
+    ],
+    "description": "두 손의 1·2지를 펴서 손등이 밖으로 향하게 나란히 세워 상하로 엇갈리게 두 번 움직인다.",
+    "media": {
+      "type": "images",
+      "src": [
+        "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151203/220963/IMG000212893_700X466.jpg"
       ]
     }
   },
