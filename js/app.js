@@ -184,6 +184,7 @@ async function main() {
   input.addEventListener("compositionend", debouncedRun);
 
   setupModes();
+  setupSignInput();
 }
 
 function debounce(fn, ms) {
@@ -272,12 +273,19 @@ function loopDetect() {
     });
     const out = document.getElementById("sign-out");
     if (hands.length) {
-      const label = recognizeSign(hands[0]);              // 첫 손 기준
+      lastLm = hands[0];                                  // 녹화 버튼이 쓸 최신 손
+      const knn = knnClassify(lastLm);                    // 샘플 있으면 KNN
+      const label = knn === undefined ? recognizeSign(lastLm) : knn; // 없으면 규칙 폴백
       const confirmed = smoothSign(label);                // undefined=대기, null=미인식, "X"=확정
       if (confirmed !== undefined) out.textContent = confirmed || "—";
-      status.textContent = `손 ${hands.length}개 검출 · 21점`;
+      // 엣지 트리거: 미인식(재장전) 상태를 거쳐야 다음 자모 커밋. 같은 자모 연속은 손 내렸다 다시.
+      if (confirmed && armed) { commitJamo(confirmed); armed = false; }
+      else if (confirmed === null) armed = true;
+      status.textContent = `손 검출 · KNN 샘플 ${knnSamples.length}`;
     } else {
       signHist.length = 0;
+      lastLm = null;
+      armed = true;
       out.textContent = "—";
       status.textContent = "손이 보이지 않아요.";
     }
@@ -292,6 +300,37 @@ function stopHandTracking() {
   const video = document.getElementById("cam");
   if (video) video.srcObject = null;
   signHist.length = 0;
+}
+
+// --- 한글 음절 조합기 (자모 스트림 → 완성형 문자열) ---
+// 인식 방식(규칙/KNN)과 무관하게 재사용. 표준 자모 인덱스 테이블(라인 74의 지화용 CHO와 별개).
+function assembleHangul(jamos) {
+  const CHO = "ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ";
+  const JUNG = "ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ";
+  const JONG = "ㄱㄲㄳㄴㄵㄶㄷㄹㄺㄻㄼㄽㄾㄿㅀㅁㅂㅄㅅㅆㅇㅈㅊㅋㅌㅍㅎ"; // 인덱스+1=종성코드
+  let out = "", cho = -1, jung = -1, jong = -1;
+  const flush = () => {
+    if (cho >= 0 && jung >= 0) out += String.fromCharCode(0xAC00 + (cho * 21 + jung) * 28 + (jong + 1));
+    else if (cho >= 0) out += CHO[cho];
+    else if (jung >= 0) out += JUNG[jung];
+    cho = jung = jong = -1;
+  };
+  for (const j of jamos) {
+    const ci = CHO.indexOf(j), ji = JUNG.indexOf(j), gi = JONG.indexOf(j);
+    if (ji >= 0) {                      // 모음
+      const moved = jong >= 0 ? CHO.indexOf(JONG[jong]) : -1; // 받침→다음 초성(연음)
+      if (moved >= 0) { jong = -1; flush(); cho = moved; jung = ji; }
+      else if (cho >= 0 && jung < 0) jung = ji;
+      else { flush(); jung = ji; }
+    } else if (ci >= 0) {               // 자음
+      if (cho < 0) cho = ci;
+      else if (jung < 0) { flush(); cho = ci; }   // 자음+자음
+      else if (jong < 0 && gi >= 0) jong = gi;     // 받침
+      else { flush(); cho = ci; }
+    } else { flush(); out += j; }      // 공백 등 비자모 통과
+  }
+  flush();
+  return out;
 }
 
 // --- 지문자 인식 (규칙기반, 손 21점 → 자모) ---
@@ -345,6 +384,62 @@ function smoothSign(label) {
   if (signHist.length > SIGN_HOLD) signHist.shift();
   if (signHist.length === SIGN_HOLD && signHist.every((s) => s === signHist[0])) return signHist[0];
   return undefined; // 아직 확정 안 됨
+}
+
+// --- KNN 지문자 분류 (손 21점 정규화 벡터 → 자모) ---
+// 좌표를 통째로 특징으로 → 방향/회전 보존(방향 모음 구분 가능). 샘플은 localStorage에 사용자가 직접 학습.
+// ponytail: k=3, 거리임계 KNN_MAX는 실손 튜닝값. 미인식 많으면 올리고, 오인식 많으면 내림.
+const SAMPLE_KEY = "ksl-knn-samples";
+const KNN_K = 3, KNN_MAX = 1.2;
+let knnSamples = (() => { try { return JSON.parse(localStorage.getItem(SAMPLE_KEY)) || []; } catch { return []; } })();
+const saveSamples = () => localStorage.setItem(SAMPLE_KEY, JSON.stringify(knnSamples));
+// 손목 원점 이동 + 손크기 스케일 정규화. 회전은 일부러 보존(방향이 자모 구분에 필요).
+function features(lm) {
+  const wx = lm[0].x, wy = lm[0].y;
+  const scale = Math.hypot(lm[9].x - wx, lm[9].y - wy) || 1e-9;
+  const f = [];
+  for (const p of lm) f.push((p.x - wx) / scale, (p.y - wy) / scale);
+  return f;
+}
+function knnClassify(lm) {
+  if (knnSamples.length < KNN_K) return undefined; // 샘플 부족 → 규칙 폴백 신호
+  const f = features(lm);
+  const d = knnSamples
+    .map((s) => ({ label: s.label, dist: s.f.reduce((a, v, i) => a + (v - f[i]) ** 2, 0) }))
+    .sort((a, b) => a.dist - b.dist);
+  if (d[0].dist > KNN_MAX) return null; // 너무 멀면 미인식
+  const votes = {};
+  d.slice(0, KNN_K).forEach((t) => (votes[t.label] = (votes[t.label] || 0) + 1));
+  return Object.entries(votes).sort((a, b) => b[1] - a[1])[0][0];
+}
+
+// --- 자모 버퍼 → 한글 조합 표시 ---
+let jamoBuf = [], armed = true, lastLm = null;
+function renderText() {
+  const t = document.getElementById("text-out");
+  if (t) t.textContent = assembleHangul(jamoBuf) || "…";
+}
+function commitJamo(j) { jamoBuf.push(j); renderText(); }
+
+function setupSignInput() {
+  const rec = document.getElementById("btn-record");
+  const label = document.getElementById("train-label");
+  const count = document.getElementById("sample-count");
+  const showCount = () => (count.textContent = `샘플 ${knnSamples.length}개`);
+  rec.addEventListener("click", () => {
+    const j = (label.value || "").trim();
+    if (!j || !lastLm) return;
+    knnSamples.push({ label: j, f: features(lastLm) });
+    saveSamples(); showCount();
+  });
+  document.getElementById("btn-reset-samples").addEventListener("click", () => {
+    if (!confirm("저장된 KNN 샘플을 모두 지울까요?")) return;
+    knnSamples = []; saveSamples(); showCount();
+  });
+  document.getElementById("btn-space").addEventListener("click", () => { jamoBuf.push(" "); renderText(); });
+  document.getElementById("btn-del").addEventListener("click", () => { jamoBuf.pop(); renderText(); });
+  document.getElementById("btn-clear").addEventListener("click", () => { jamoBuf = []; renderText(); });
+  showCount();
 }
 
 if ("serviceWorker" in navigator) {

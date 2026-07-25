@@ -37,8 +37,24 @@
         <canvas id="overlay"></canvas>
       </div>
       <p id="sign-out" class="sign-out" aria-live="polite">—</p>
+      <p id="text-out" class="text-out" aria-live="polite">…</p>
+      <div class="cam-controls">
+        <button id="btn-space">스페이스</button>
+        <button id="btn-del">지우기</button>
+        <button id="btn-clear">전체지우기</button>
+      </div>
       <p id="cam-status" class="status">카메라 준비 중…</p>
-      <p class="hint">지문자 인식: ㄱ ㄴ ㅁ ㅂ ㅅ ㅇ (자음 6종). 손을 카메라에 또렷이 비추세요.</p>
+      <p class="hint">손모양을 6프레임 유지하면 자모 확정 → 한글 조합. 같은 자모 연속은 손을 내렸다 다시.</p>
+      <details class="knn-train">
+        <summary>자모 직접 가르치기 (KNN 학습)</summary>
+        <p class="hint">인식할 자모를 입력하고, 그 손모양을 카메라에 비춘 채 "녹화"를 여러 번(자모당 5~10회) 눌러 샘플을 모으세요. 샘플이 쌓이면 규칙 대신 KNN이 인식합니다.</p>
+        <div class="cam-controls">
+          <input id="train-label" maxlength="1" placeholder="자모 (예: ㅏ)" />
+          <button id="btn-record">이 손모양 녹화</button>
+          <span id="sample-count" class="status"></span>
+          <button id="btn-reset-samples">샘플 초기화</button>
+        </div>
+      </details>
     </section>
 
     <p id="status" class="status"></p>

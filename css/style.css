@@ -58,4 +58,10 @@ body {
 .cam-wrap canvas { transform: scaleX(-1); }
 
 .sign-out { text-align: center; font-size: 48px; font-weight: 700; color: var(--accent, #03c75a); min-height: 60px; margin: 8px 0 0; }
+.text-out { text-align: center; font-size: 28px; font-weight: 600; min-height: 40px; margin: 4px 0; word-break: break-all; }
+.cam-controls { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; align-items: center; padding: 8px 16px; }
+.cam-controls button { padding: 8px 12px; border: 1px solid #ccc; border-radius: 8px; background: #fff; cursor: pointer; }
+.cam-controls input { padding: 8px; border: 1px solid #ccc; border-radius: 8px; width: 90px; }
+.knn-train { padding: 8px 16px; }
+.knn-train summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .status { text-align: center; color: var(--muted); font-size: 12px; padding: 8px; }
