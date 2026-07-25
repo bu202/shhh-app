@@ -15,6 +15,9 @@ const MOCK = [
   { word: "모두", aliases: ["다"] },       // "다"=모두 별칭(오매칭 유발원)
   { word: "반갑다", aliases: [] },
   { word: "먹", aliases: [] },
+  { word: "보다", aliases: [] },
+  { word: "보고", aliases: [] },       // report (다른 수형)
+  { word: "싶다", aliases: [] },
 ];
 M.buildIndex(MOCK);
 const words = (t) => M.matchSentence(t).map((k) => (k.type === "entry" ? k.entries.map((e) => e.word).join("|") : "?" + k.text));
@@ -35,4 +38,7 @@ eq(words("해"), ["년"], "해 홀로 → 년(어미 흡수는 매칭 뒤에만)
 eq(words("반갑습니다"), ["반갑다"], "반갑습니다 → 반갑다(습니다→다 정규화)");
 eq(words("먹다"), ["먹"], "먹다 → 먹(다 흡수, 모두 오매칭 아님)");
 eq(words("다"), ["모두"], "다 홀로 → 모두(정규화·흡수는 매칭 뒤에만)");
+eq(words("보고싶다"), ["보다", "싶다"], "보고싶다 → 보다+싶다(보고=report 아님)");
+eq(words("보고싶어요"), ["보다", "싶다"], "보고싶어요 → 보다+싶다");
+eq(words("보고"), ["보고"], "보고 홀로 → 보고(report, 고싶 규칙 오작동 없음)");
 process.exit(fail ? 1 : 0);

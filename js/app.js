@@ -55,10 +55,14 @@ function stripEnding(s, i) {
   for (const end of ENDINGS) if (s.startsWith(end, i)) return end.length;
   return 0;
 }
-// 활용 정규화: 격식체를 사전 표제어(다-형)로. 반갑습니다→반갑다, 죄송합니다→죄송하다.
+// 활용 정규화: 격식체·구문을 사전 표제어(다-형)로. 반갑습니다→반갑다, 보고싶다→보다+싶다.
 // ponytail: 형태소 분석 없는 최소 규칙. 감사합니다(완전표제) → 감사하다→감사(하다 흡수)로 바뀌나 뜻은 유지.
 function conjugationNormalize(s) {
-  return s.replace(/합니다/g, "하다").replace(/습니다/g, "다");
+  return s
+    .replace(/합니다/g, "하다")
+    .replace(/습니다/g, "다")
+    .replace(/고싶/g, "다싶")          // V고싶다 → V다+싶다 (보고싶다→보다싶다, 먹고싶다→먹다싶다)
+    .replace(/싶어요|싶어/g, "싶다");   // 싶다 활용 정규화
 }
 
 // 최장일치 그리디. 띄어쓰기 무관 스캔. 매칭 뒤 활용 어미는 흡수.
