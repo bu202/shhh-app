@@ -12,6 +12,9 @@ const MOCK = [
   { word: "죄송하다", aliases: ["사과", "미안하다"] }, // 사죄
   { word: "학교", aliases: [] },
   { word: "사랑", aliases: [] },
+  { word: "모두", aliases: ["다"] },       // "다"=모두 별칭(오매칭 유발원)
+  { word: "반갑다", aliases: [] },
+  { word: "먹", aliases: [] },
 ];
 M.buildIndex(MOCK);
 const words = (t) => M.matchSentence(t).map((k) => (k.type === "entry" ? k.entries.map((e) => e.word).join("|") : "?" + k.text));
@@ -29,4 +32,7 @@ eq(words("사랑해"), ["사랑"], "사랑해 → 사랑");
 eq(words("사과"), ["사과|죄송하다"], "사과 → 과일+사죄 후보 둘");
 eq(words("학교에서"), ["학교"], "학교에서 → 학교(에서 흡수)");
 eq(words("해"), ["년"], "해 홀로 → 년(어미 흡수는 매칭 뒤에만)");
+eq(words("반갑습니다"), ["반갑다"], "반갑습니다 → 반갑다(습니다→다 정규화)");
+eq(words("먹다"), ["먹"], "먹다 → 먹(다 흡수, 모두 오매칭 아님)");
+eq(words("다"), ["모두"], "다 홀로 → 모두(정규화·흡수는 매칭 뒤에만)");
 process.exit(fail ? 1 : 0);

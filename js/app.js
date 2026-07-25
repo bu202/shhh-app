@@ -45,18 +45,27 @@ async function loadDictionary() {
 const ENDINGS = [
   "했습니다", "하겠습니다", "하였다", "합니다", "했어요", "하세요", "해요", "했어", "했다",
   "해서", "하고", "하는", "하지", "하게", "해도", "하면", "한다", "하다", "해",
-  "습니다", "입니다", "이에요", "예요", "에서", "에게", "으로", "부터", "까지", "보다",
+  "습니다", "입니다", "이에요", "예요",
+  "었습니다", "았습니다", "였습니다", "었어요", "았어요", "였어요", "었어", "았어", "였어",
+  "어요", "아요", "네요", "군요",
+  "에서", "에게", "으로", "부터", "까지", "보다",
+  "다", // ← 종결어미. 매칭 뒤에만 흡수하므로 "다리"(단어)는 안전. (없으면 간"다"→모두 오매칭)
 ].sort((a, b) => b.length - a.length); // 최장 우선
 function stripEnding(s, i) {
   for (const end of ENDINGS) if (s.startsWith(end, i)) return end.length;
   return 0;
+}
+// 활용 정규화: 격식체를 사전 표제어(다-형)로. 반갑습니다→반갑다, 죄송합니다→죄송하다.
+// ponytail: 형태소 분석 없는 최소 규칙. 감사합니다(완전표제) → 감사하다→감사(하다 흡수)로 바뀌나 뜻은 유지.
+function conjugationNormalize(s) {
+  return s.replace(/합니다/g, "하다").replace(/습니다/g, "다");
 }
 
 // 최장일치 그리디. 띄어쓰기 무관 스캔. 매칭 뒤 활용 어미는 흡수.
 // 반환: [{type:"entry", entries:[...], text} | {type:"unknown", text}] 순서대로.
 // ponytail: 매 위치 최대 MAX_KEY까지 substring 조회 → O(n·MAX_KEY). 커지면 트라이로 교체.
 function matchSentence(text) {
-  const s = norm(text);
+  const s = conjugationNormalize(norm(text));
   const out = [];
   let i = 0, unknown = "";
   const flush = () => { if (unknown) { out.push({ type: "unknown", text: unknown }); unknown = ""; } };
