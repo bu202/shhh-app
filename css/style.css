@@ -50,6 +50,10 @@ body {
 .card .frame { width: 200px; height: 200px; object-fit: contain; margin: 8px auto; display: block; }
 .card .desc { color: #555; font-size: 15px; margin: 8px 0 0; }
 .card.unsupported .word { color: var(--muted); }
+.token-group { margin-bottom: 12px; }
+.alts { margin-top: 6px; }
+.alts summary { cursor: pointer; color: var(--muted); font-size: 13px; text-align: center; padding: 4px; }
+.alts .card { margin-top: 8px; background: #f6f6f6; }
 
 .camera { padding: 16px; }
 .cam-wrap { position: relative; width: 100%; aspect-ratio: 4 / 3; background: #000; border-radius: 12px; overflow: hidden; }

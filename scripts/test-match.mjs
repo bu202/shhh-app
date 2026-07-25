@@ -1,0 +1,32 @@
+// 문장 매칭 자체검증. `node scripts/test-match.mjs`
+// app.js 실제 buildIndex/matchSentence를 mock 사전으로 검증(로직 중복 없음).
+import { readFileSync } from "node:fs";
+
+const src = readFileSync(new URL("../js/app.js", import.meta.url), "utf8").replace(/\nmain\(\);\s*$/, "\n");
+const M = new Function(src + "\n; return { buildIndex, matchSentence };")();
+
+const MOCK = [
+  { word: "미안", aliases: [] },
+  { word: "년", aliases: ["해"] },
+  { word: "사과", aliases: [] },          // 과일
+  { word: "죄송하다", aliases: ["사과", "미안하다"] }, // 사죄
+  { word: "학교", aliases: [] },
+  { word: "사랑", aliases: [] },
+];
+M.buildIndex(MOCK);
+const words = (t) => M.matchSentence(t).map((k) => (k.type === "entry" ? k.entries.map((e) => e.word).join("|") : "?" + k.text));
+
+let fail = 0;
+const eq = (got, exp, name) => {
+  const g = JSON.stringify(got), e = JSON.stringify(exp);
+  if (g !== e) { console.error(`FAIL ${name}: ${g} (기대 ${e})`); fail++; }
+  else console.log(`OK   ${name}: ${g}`);
+};
+
+eq(words("미안해"), ["미안"], "미안해 → 미안(해 흡수, 년 아님)");
+eq(words("미안해요"), ["미안"], "미안해요 → 미안");
+eq(words("사랑해"), ["사랑"], "사랑해 → 사랑");
+eq(words("사과"), ["사과|죄송하다"], "사과 → 과일+사죄 후보 둘");
+eq(words("학교에서"), ["학교"], "학교에서 → 학교(에서 흡수)");
+eq(words("해"), ["년"], "해 홀로 → 년(어미 흡수는 매칭 뒤에만)");
+process.exit(fail ? 1 : 0);

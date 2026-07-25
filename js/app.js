@@ -9,7 +9,7 @@ function normalizeEntry(raw) {
 }
 
 let DICT = [];
-let INDEX = new Map(); // 표제어/alias(정규화) -> entry
+let INDEX = new Map(); // 표제어/alias(정규화) -> entry[] (동음이의 전부 보유, 표제어 먼저)
 let MAX_KEY = 1;       // 최장 키 길이 (그리디 스캔 상한)
 
 function norm(s) {
@@ -19,15 +19,16 @@ function norm(s) {
 function buildIndex(dict) {
   const idx = new Map();
   let max = 1;
-  const consider = (key, e, isPrimary) => {
+  const add = (key, e) => {
     const k = norm(key);
     if (!k) return;
-    // 표제어는 항상 등록(고유), 별칭은 빈 자리만 채움 → 표제어 우선 + 별칭 충돌은 먼저 온 것이 이김.
-    if (isPrimary || !idx.has(k)) idx.set(k, e);
+    let arr = idx.get(k);
+    if (!arr) idx.set(k, (arr = []));
+    if (!arr.includes(e)) arr.push(e); // 동음이의 누적. 표제어 루프가 먼저라 표제어가 배열 앞.
     if (k.length > max) max = k.length;
   };
-  for (const e of dict) consider(e.word, e, true);
-  for (const e of dict) for (const a of e.aliases || []) consider(a, e, false);
+  for (const e of dict) add(e.word, e);                       // 표제어 먼저(후보 배열 앞자리)
+  for (const e of dict) for (const a of e.aliases || []) add(a, e); // 별칭 뒤
   INDEX = idx;
   MAX_KEY = max;
 }
@@ -38,10 +39,22 @@ async function loadDictionary() {
   return (await res.json()).map(normalizeEntry);
 }
 
-// Step 4-B: 최장일치 그리디. 띄어쓰기 무관하게 문장을 스캔.
-// 반환: [{type:"entry", entry} | {type:"unknown", text}] 순서대로.
-// ponytail: 매 위치마다 최대 MAX_KEY까지 substring 조회 → O(n·MAX_KEY).
-//           사전 수십 개 규모엔 충분. 커지면 트라이(trie)로 교체.
+// 표제어 매칭 뒤에 붙는 한글 활용 어미/일부 조사. 별도 수어로 내지 않고 흡수(미안"해"→년 오매칭 방지).
+// ponytail: 형태소 분석기($0 vanilla 불가)의 대용 휴리스틱. 하다-활용 + 안전한 다음절 조사만.
+//           단음절 조사(은/는/이/가…)는 단어 첫음절과 흔히 충돌해 일부러 제외. 오작동 시 이 목록만 손봄.
+const ENDINGS = [
+  "했습니다", "하겠습니다", "하였다", "합니다", "했어요", "하세요", "해요", "했어", "했다",
+  "해서", "하고", "하는", "하지", "하게", "해도", "하면", "한다", "하다", "해",
+  "습니다", "입니다", "이에요", "예요", "에서", "에게", "으로", "부터", "까지", "보다",
+].sort((a, b) => b.length - a.length); // 최장 우선
+function stripEnding(s, i) {
+  for (const end of ENDINGS) if (s.startsWith(end, i)) return end.length;
+  return 0;
+}
+
+// 최장일치 그리디. 띄어쓰기 무관 스캔. 매칭 뒤 활용 어미는 흡수.
+// 반환: [{type:"entry", entries:[...], text} | {type:"unknown", text}] 순서대로.
+// ponytail: 매 위치 최대 MAX_KEY까지 substring 조회 → O(n·MAX_KEY). 커지면 트라이로 교체.
 function matchSentence(text) {
   const s = norm(text);
   const out = [];
@@ -54,8 +67,11 @@ function matchSentence(text) {
       const e = INDEX.get(s.slice(i, i + L));
       if (e) { hit = e; len = L; break; }
     }
-    if (hit) { flush(); out.push({ type: "entry", entry: hit }); i += len; }
-    else { unknown += s[i]; i += 1; }
+    if (hit) {
+      flush();
+      out.push({ type: "entry", entries: hit, text: s.slice(i, i + len) });
+      i += len + stripEnding(s, i + len); // 표제어 뒤 활용 어미 흡수
+    } else { unknown += s[i]; i += 1; }
   }
   flush();
   return out;
@@ -97,13 +113,20 @@ function decomposeToJamo(text) {
 let playTimers = [];
 function stopPlayers() { playTimers.forEach(clearInterval); playTimers = []; }
 
-function cardHTML(word, desc, cls) {
-  return (
-    '<div class="card' + (cls ? " " + cls : "") + '">' +
-    '<p class="word">' + word + "</p>" +
-    '<img class="frame" alt="' + word + ' 수형" />' +
-    '<p class="desc">' + desc + "</p></div>"
-  );
+// 카드 DOM 생성(textContent로 XSS 안전, 플레이어 인라인 연결).
+function card(word, desc, frames, cls) {
+  const el = document.createElement("div");
+  el.className = "card" + (cls ? " " + cls : "");
+  const w = document.createElement("p");
+  w.className = "word"; w.textContent = word; el.appendChild(w);
+  if (frames) {
+    const img = document.createElement("img");
+    img.className = "frame"; img.alt = word + " 수형"; el.appendChild(img);
+    startPlayer(img, frames);
+  }
+  const d = document.createElement("p");
+  d.className = "desc"; d.textContent = desc; el.appendChild(d);
+  return el;
 }
 
 function startPlayer(img, frames) {
@@ -124,42 +147,41 @@ function jamoFrames(jamo) {
   return jamo.map((j) => "assets/fingerspelling/" + JAMO_IMG[j] + ".jpg");
 }
 
-// 토큰 -> 렌더 카드 명세. frames 있으면 이미지 재생, 없으면 안내.
-function toCard(token) {
+const entryCard = (e) => card(e.word, e.description, entryFrames(e));
+
+// 토큰 -> DOM 노드. 동음이의는 첫 후보를 대표로, 나머지는 "다른 뜻 N개" 안에.
+function renderToken(token) {
   if (token.type === "entry") {
-    const e = token.entry;
-    return { html: cardHTML(e.word, e.description), frames: entryFrames(e) };
+    const [primary, ...alts] = token.entries;
+    const group = document.createElement("div");
+    group.className = "token-group";
+    group.appendChild(entryCard(primary));
+    if (alts.length) {
+      const det = document.createElement("details");
+      det.className = "alts";
+      const sum = document.createElement("summary");
+      sum.textContent = "다른 뜻 " + alts.length + "개 (" + alts.map((a) => a.word).join(", ") + ")";
+      det.appendChild(sum);
+      for (const a of alts) det.appendChild(entryCard(a));
+      group.appendChild(det);
+    }
+    return group;
   }
-  // 미지원 단어: 하이브리드 C — 지화 가능하면 지문자, 아니면 안내.
+  // 미지원 단어: 하이브리드 — 지화 가능하면 지문자, 아니면 안내.
   const jamo = decomposeToJamo(token.text);
-  if (jamo) {
-    return {
-      html: cardHTML(token.text, "지문자(지화): " + jamo.join(" · "), "finger"),
-      frames: jamoFrames(jamo),
-    };
-  }
-  return {
-    html:
-      '<div class="card unsupported"><p class="word">미지원: ' + token.text + "</p>" +
-      '<p class="desc">지화로도 표현할 수 없는 문자예요.</p></div>',
-    frames: null,
-  };
+  if (jamo) return card(token.text, "지문자(지화): " + jamo.join(" · "), jamoFrames(jamo), "finger");
+  return card("미지원: " + token.text, "지화로도 표현할 수 없는 문자예요.", null, "unsupported");
 }
 
 function renderResults(tokens) {
   stopPlayers();
   const box = document.getElementById("result");
+  box.innerHTML = "";
   if (tokens.length === 0) {
     box.innerHTML = '<p class="hint">번역할 말을 입력하면 바로 표시돼요.</p>';
     return;
   }
-  const cards = tokens.map(toCard);
-  box.innerHTML = cards.map((c) => c.html).join("");
-
-  // frames 있는 카드에 순서대로 플레이어 연결.
-  const imgs = box.querySelectorAll(".frame");
-  let k = 0;
-  for (const c of cards) if (c.frames) startPlayer(imgs[k++], c.frames);
+  for (const t of tokens) box.appendChild(renderToken(t));
 }
 
 async function main() {
