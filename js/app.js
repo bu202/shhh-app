@@ -36,7 +36,20 @@ function buildIndex(dict) {
 async function loadDictionary() {
   const res = await fetch("data/ksl-dict.json");
   if (!res.ok) throw new Error("dict load failed: " + res.status);
-  return (await res.json()).map(normalizeEntry);
+  const dict = (await res.json()).map(normalizeEntry);
+  // 전체 수어사전(수형설명 텍스트, 이미지 없음) 병합 — 이미지 사전에 없는 표제어만 추가(이미지 우선).
+  try {
+    const full = await fetch("data/ksl-fulldict.json");
+    if (full.ok) {
+      const known = new Set(dict.map((e) => e.word));
+      for (const r of await full.json()) {
+        if (known.has(r.word)) continue; // 이미지 있는 단어는 그림 우선. 텍스트 이형태도 첫 것만.
+        known.add(r.word);
+        dict.push({ word: r.word, aliases: r.aliases || [], description: r.description, media: { type: "images", src: [] } });
+      }
+    }
+  } catch { /* 전체 사전 파일 없으면 이미지 사전만 사용 */ }
+  return dict;
 }
 
 // 표제어 매칭 뒤에 붙는 한글 활용 어미/일부 조사. 별도 수어로 내지 않고 흡수(미안"해"→년 오매칭 방지).
@@ -164,13 +177,21 @@ function startPlayer(img, frames) {
 }
 
 function entryFrames(entry) {
-  return entry.media.type === "images" ? entry.media.src : [entry.media.src];
+  const src = entry.media.src;
+  if (src && src.length) return entry.media.type === "images" ? src : [src];
+  // 이미지 없는 텍스트 표제어(전체 사전) → 지화로 시각 표현. 지화 불가면 null(텍스트만).
+  const jamo = decomposeToJamo(entry.word);
+  return jamo ? jamoFrames(jamo) : null;
 }
 function jamoFrames(jamo) {
   return jamo.map((j) => "assets/fingerspelling/" + JAMO_IMG[j] + ".jpg");
 }
 
-const entryCard = (e) => card(e.word, e.description, entryFrames(e));
+function entryCard(e) {
+  const noImg = !(e.media.src && e.media.src.length);
+  const desc = noImg ? "손모양 설명: " + e.description + " · (그림 없어 지화로 표시)" : e.description;
+  return card(e.word, desc, entryFrames(e), noImg ? "text-sign" : "");
+}
 
 // 토큰 -> DOM 노드. 동음이의는 첫 후보를 대표로, 나머지는 "다른 뜻 N개" 안에.
 function renderToken(token) {

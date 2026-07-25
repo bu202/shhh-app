@@ -26,8 +26,10 @@ node scripts/fetch-ksl.mjs --mock           # 매핑 로직 자가검증(키·�
 |---|---|
 | `index.html` | 진입점: 모드탭(수어→텍스트는 Phase2 자리) + 입력창 + 번역버튼 + 결과영역 + 크레딧 푸터 |
 | `js/app.js` | 사전 인덱스·매칭·렌더·지화. 흐름: 입력→`matchSentence`(그리디)→`renderResults` |
-| `data/ksl-dict.json` | 사전(내부 스키마). `scripts/fetch-ksl.mjs`가 생성 |
-| `scripts/fetch-ksl.mjs` | 빌드타임 수집. `normalizeEntry`/`parseItems`가 API 교체 이음새 |
+| `data/ksl-dict.json` | 이미지 사전(kcisa, 3,622·수형그림 O). `scripts/fetch-ksl.mjs`가 생성 |
+| `data/ksl-fulldict.json` | 전체 텍스트 사전(13,797·수형설명만, 그림 X). `scripts/fetch-fulldict.mjs`가 생성 |
+| `scripts/fetch-ksl.mjs` | kcisa 이미지 사전 수집. `normalizeEntry`/`parseItems`가 API 교체 이음새 |
+| `scripts/fetch-fulldict.mjs` | data.go.kr odcloud 전체 사전 수집. `<일반인증키>` 필요 |
 | `assets/fingerspelling/*.jpg` | 지화(한글 지문자) 32장 (CC BY-SA 3.0) |
 | `service-worker.js` | network-first + 캐시 폴백 |
 | `docs/API_KEY_GUIDE.md` | 서비스키 발급 절차 |
@@ -83,7 +85,7 @@ node scripts/fetch-ksl.mjs --mock           # 매핑 로직 자가검증(키·�
 
 ## 진행 상황
 - ✅ Phase 1 (텍스트→수어): PWA 골격 / 사전 스키마 / UI / 그리디 문장매칭 / 지화 하이브리드
-- ✅ 실 API 연동(3,622 표제어 · 변이 137단어 포함) / 실시간 변환(debounce+IME가드)
+- ✅ 실 API 연동: 이미지 사전 3,622(변이 137) + 전체 텍스트 사전 병합 → **총 12,943 표제어**. 그림 없는 9,321단어는 수형설명+지화로 표시. 실시간 변환(debounce+IME가드)
 - ✅ 매칭 개선: (1) 활용 어미 흡수(`ENDINGS`, 미안"해"→년 오매칭 방지) (2) 동음이의 다중후보(`INDEX: Map<key,entry[]>`, "다른 뜻 N개" 파파고식 표시). `node scripts/test-match.mjs`로 검증.
   - ⚠️ 형태소 분석기 없음($0 vanilla) → 어미 흡수는 휴리스틱. KSL 문법 재배열 안 함 → 단어나열(수지한국어)이지 진짜 KSL 어순 아님. 문맥 기반 동음이의 선택 불가(후보 전부 노출).
 - ✅ Phase 2 (C 스캐폴드): 카메라(getUserMedia) + MediaPipe Hand Landmarker 손뼈대 오버레이 + 모드전환.
