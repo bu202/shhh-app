@@ -351,7 +351,9 @@ function loopDetect() {
       // 엣지 트리거: 미인식(재장전) 상태를 거쳐야 다음 자모 커밋. 같은 자모 연속은 손 내렸다 다시.
       if (confirmed && armed) { commitJamo(confirmed); armed = false; }
       else if (confirmed === null) armed = true;
-      status.textContent = `손 검출 · KNN 샘플 ${knnSamples.length}`;
+      status.textContent = knnDbg
+        ? `KNN 샘플 ${knnSamples.length} · 최근접 ${knnDbg.label} d=${knnDbg.dist.toFixed(2)} (임계 ${KNN_MAX})`
+        : `손 검출 · KNN 샘플 ${knnSamples.length} (규칙 폴백)`;
     } else {
       signHist.length = 0;
       lastLm = null;
@@ -460,7 +462,8 @@ function smoothSign(label) {
 // 좌표를 통째로 특징으로 → 방향/회전 보존(방향 모음 구분 가능). 샘플은 localStorage에 사용자가 직접 학습.
 // ponytail: k=3, 거리임계 KNN_MAX는 실손 튜닝값. 미인식 많으면 올리고, 오인식 많으면 내림.
 const SAMPLE_KEY = "ksl-knn-samples";
-const KNN_K = 3, KNN_MAX = 1.2;
+const KNN_K = 3, KNN_MAX = 40; // 실손 측정: 같은자모 d~8, 다른자모(ㅏ↔ㅜ) d~183. 그 사이. 비슷한 자모 추가 시 재조정.
+let knnDbg = null; // ponytail: 실손 튜닝 계기판. {dist, label} 최근접 이웃. KNN_MAX 조정용.
 let knnSamples = (() => { try { return JSON.parse(localStorage.getItem(SAMPLE_KEY)) || []; } catch { return []; } })();
 const saveSamples = () => localStorage.setItem(SAMPLE_KEY, JSON.stringify(knnSamples));
 // 손목 원점 이동 + 손크기 스케일 정규화. 회전은 일부러 보존(방향이 자모 구분에 필요).
@@ -477,6 +480,7 @@ function knnClassify(lm) {
   const d = knnSamples
     .map((s) => ({ label: s.label, dist: s.f.reduce((a, v, i) => a + (v - f[i]) ** 2, 0) }))
     .sort((a, b) => a.dist - b.dist);
+  knnDbg = { dist: d[0].dist, label: d[0].label };
   if (d[0].dist > KNN_MAX) return null; // 너무 멀면 미인식
   const votes = {};
   d.slice(0, KNN_K).forEach((t) => (votes[t.label] = (votes[t.label] || 0) + 1));
@@ -496,6 +500,15 @@ function setupSignInput() {
   const label = document.getElementById("train-label");
   const count = document.getElementById("sample-count");
   const showCount = () => (count.textContent = `샘플 ${knnSamples.length}개`);
+  const refBox = document.getElementById("ref-box");
+  const ref = document.getElementById("ref-hand");
+  const refLabel = document.getElementById("ref-label");
+  label.addEventListener("input", () => {          // 라벨 자모 → 참고 손모양 그림 + 글자
+    const j = (label.value || "").trim();
+    const file = JAMO_IMG[j];
+    refBox.hidden = !file;
+    if (file) { ref.src = "assets/fingerspelling/" + file + ".jpg"; refLabel.textContent = j; }
+  });
   rec.addEventListener("click", () => {
     const j = (label.value || "").trim();
     if (!j || !lastLm) return;
