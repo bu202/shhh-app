@@ -351,9 +351,7 @@ function loopDetect() {
       // 엣지 트리거: 미인식(재장전) 상태를 거쳐야 다음 자모 커밋. 같은 자모 연속은 손 내렸다 다시.
       if (confirmed && armed) { commitJamo(confirmed); armed = false; }
       else if (confirmed === null) armed = true;
-      status.textContent = knnDbg
-        ? `KNN 샘플 ${knnSamples.length} · 최근접 ${knnDbg.label} d=${knnDbg.dist.toFixed(2)} (임계 ${KNN_MAX})`
-        : `손 검출 · KNN 샘플 ${knnSamples.length} (규칙 폴백)`;
+      status.textContent = `KNN 샘플 ${knnSamples.length} · ${knnDbg ? `최근접 ${knnDbg.label} d=${knnDbg.dist.toFixed(2)} (임계 ${KNN_MAX})` : "규칙 폴백"}`;
     } else {
       signHist.length = 0;
       lastLm = null;
@@ -462,7 +460,9 @@ function smoothSign(label) {
 // 좌표를 통째로 특징으로 → 방향/회전 보존(방향 모음 구분 가능). 샘플은 localStorage에 사용자가 직접 학습.
 // ponytail: k=3, 거리임계 KNN_MAX는 실손 튜닝값. 미인식 많으면 올리고, 오인식 많으면 내림.
 const SAMPLE_KEY = "ksl-knn-samples";
-const KNN_K = 3, KNN_MAX = 40; // 실손 측정: 같은자모 d~8, 다른자모(ㅏ↔ㅜ) d~183. 그 사이. 비슷한 자모 추가 시 재조정.
+// 256샘플(32자모×8) 실측: 같은자모 최근접 최대 5.32, 다른자모 최근접 최소 0.42/중앙 1.42.
+// 클래스가 0.42까지 붙어있어 임계로 자모를 "가려낼" 수는 없음 — 임계의 역할은 자모 아닌 손 거부뿐.
+const KNN_K = 3, KNN_MAX = 15; // ponytail: 계기판(상태줄 d=)으로 실사용 중 조정. 미인식↑→올림, 아무거나 잡힘↑→내림.
 let knnDbg = null; // ponytail: 실손 튜닝 계기판. {dist, label} 최근접 이웃. KNN_MAX 조정용.
 let knnSamples = (() => { try { return JSON.parse(localStorage.getItem(SAMPLE_KEY)) || []; } catch { return []; } })();
 const saveSamples = () => localStorage.setItem(SAMPLE_KEY, JSON.stringify(knnSamples));
@@ -501,16 +501,13 @@ function setupSignInput() {
   const count = document.getElementById("sample-count");
   const showCount = () => (count.textContent = `샘플 ${knnSamples.length}개`);
   const refBox = document.getElementById("ref-box");
-  const ref = document.getElementById("ref-hand");
-  const refLabel = document.getElementById("ref-label");
-  label.addEventListener("input", () => {          // 라벨 자모 → 참고 손모양 그림 + 글자
-    const j = (label.value || "").trim();
-    const file = JAMO_IMG[j];
+  label.addEventListener("input", () => {          // 라벨 자모 → 참고 손모양 그림
+    const file = JAMO_IMG[label.value.trim()];
     refBox.hidden = !file;
-    if (file) { ref.src = "assets/fingerspelling/" + file + ".jpg"; refLabel.textContent = j; }
+    if (file) refBox.querySelector("img").src = "assets/fingerspelling/" + file + ".jpg";
   });
   rec.addEventListener("click", () => {
-    const j = (label.value || "").trim();
+    const j = label.value.trim();
     if (!j || !lastLm) return;
     knnSamples.push({ label: j, f: features(lastLm) });
     saveSamples(); showCount();
