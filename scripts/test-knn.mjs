@@ -3,10 +3,9 @@
 // ⚠️ 샘플 8장이 1.8초 정지버스트라 서로 near-duplicate → LOO는 과대평가. 클래스간 거리가 진짜 신호.
 import { readFileSync } from "node:fs";
 import assert from "node:assert";
+import { loadApp } from "./_app.mjs";
 
-const localStorage = { getItem: () => null, setItem: () => {} };
-const src = readFileSync(new URL("../js/app.js", import.meta.url), "utf8").replace(/\nmain\(\);\s*$/, "\n");
-const M = new Function("localStorage", src + "\n; return { features, knnClassify, KNN_MAX, set: (s) => (knnSamples = s) };")(localStorage);
+const M = loadApp("features, knnClassify, KNN_MAX, set: (s) => (knnSamples = s)");
 const S = JSON.parse(readFileSync(new URL("../data/ksl-knn-samples.backup.json", import.meta.url), "utf8"));
 
 // 정규화 벡터 → 가짜 랜드마크. features()가 손목원점·|p9|=1로 정규화하므로 왕복 불변.

@@ -52,6 +52,26 @@ async function loadDictionary() {
   return dict;
 }
 
+// 합성 수어: 단일 손짓이 없고 두 수어를 이어서 표현하는 말. 예 헌금 = 바치다 + 돈.
+// data.go.kr 15135637 '결합정보' 컬럼 → scripts/build-compounds.mjs 가 생성.
+let DICT_SUB = "단어를 손으로"; // 헤더 부제 — 사전 로드 후 개수로 채워진다
+let COMPOUNDS = new Map(); // 정규화 표제어 -> { parts:[표제어], labels?, source? }
+async function loadCompounds() {
+  // 자동 추출본을 먼저 깔고, 사람이 영상으로 확인한 것(ksl-verified.json)으로 덮어쓴다.
+  // 사람이 이긴다 — 자동 추출은 사전에 있는 말만 알고, 사전에 없는 말(보고싶다)은 못 본다.
+  for (const [path, verified] of [["data/ksl-compounds.json", false], ["data/ksl-verified.json", true]]) {
+    try {
+      const res = await fetch(path);
+      if (!res.ok) continue;
+      // 키도 문장과 똑같이 정규화한다. matchSentence 가 conjugationNormalize(norm(text)) 로 훑으므로
+      // 그 위에서 찾으려면 키도 같은 처리를 거쳐야 한다. (보고싶다 → 보다싶다 ← 보고싶어)
+      for (const [w, v] of Object.entries(await res.json())) {
+        COMPOUNDS.set(conjugationNormalize(norm(w)), { ...v, verified, word: w });
+      }
+    } catch { /* 파일 없으면 그 단계만 건너뜀 */ }
+  }
+}
+
 // 표제어 매칭 뒤에 붙는 한글 활용 어미/일부 조사. 별도 수어로 내지 않고 흡수(미안"해"→년 오매칭 방지).
 // ponytail: 형태소 분석기($0 vanilla 불가)의 대용 휴리스틱. 하다-활용 + 안전한 다음절 조사만.
 //           단음절 조사(은/는/이/가…)는 단어 첫음절과 흔히 충돌해 일부러 제외. 오작동 시 이 목록만 손봄.
@@ -85,7 +105,7 @@ function conjugationNormalize(s) {
     .replace(/합니다/g, "하다")
     .replace(/습니다/g, "다")
     .replace(/고싶/g, "다싶")          // V고싶다 → V다+싶다 (보고싶다→보다싶다, 먹고싶다→먹다싶다)
-    .replace(/싶어요|싶어/g, "싶다");   // 싶다 활용 정규화
+    .replace(/싶었어요|싶었습니다|싶었어|싶었다|싶어요|싶어/g, "싶다"); // 싶다 활용 정규화(과거형 포함)
 }
 
 // 최장일치 그리디. 띄어쓰기 무관 스캔. 매칭 뒤 활용 어미는 흡수.
@@ -100,12 +120,16 @@ function matchSentence(text) {
   while (i < s.length) {
     let hit = null, len = 0;
     for (let L = Math.min(MAX_KEY, s.length - i); L >= 1; L--) {
-      const e = INDEX.get(s.slice(i, i + L));
-      if (e) { hit = e; len = L; break; }
+      const key = s.slice(i, i + L);
+      const e = INDEX.get(key);
+      if (e) { hit = { type: "entry", entries: e }; len = L; break; }
+      // 같은 길이면 단일 표제어 우선. 사전에 없는 말만 합성으로 받는다.
+      const c = COMPOUNDS.get(key);
+      if (c) { hit = { type: "compound", combo: c }; len = L; break; }
     }
     if (hit) {
       flush();
-      out.push({ type: "entry", entries: hit, text: s.slice(i, i + len) });
+      out.push({ ...hit, text: s.slice(i, i + len) });
       i += len + stripEnding(s, i + len); // 표제어 뒤 활용 어미 흡수
     } else { unknown += s[i]; i += 1; }
   }
@@ -151,15 +175,16 @@ function stopPlayers() { playTimers.forEach(clearInterval); playTimers = []; }
 
 // 카드 DOM 생성(textContent로 XSS 안전, 플레이어 인라인 연결).
 function card(word, desc, frames, cls) {
+  // 시안 순서: 그림 → 단어 → 설명. 손모양이 먼저 눈에 들어와야 한다.
   const el = document.createElement("div");
   el.className = "card" + (cls ? " " + cls : "");
-  const w = document.createElement("p");
-  w.className = "word"; w.textContent = word; el.appendChild(w);
   if (frames) {
     const img = document.createElement("img");
     img.className = "frame"; img.alt = word + " 수형"; el.appendChild(img);
     startPlayer(img, frames);
   }
+  const w = document.createElement("p");
+  w.className = "word"; w.textContent = word; el.appendChild(w);
   const d = document.createElement("p");
   d.className = "desc"; d.textContent = desc; el.appendChild(d);
   return el;
@@ -187,19 +212,80 @@ function jamoFrames(jamo) {
   return jamo.map((j) => "assets/fingerspelling/" + JAMO_IMG[j] + ".jpg");
 }
 
+// 한국수어 수형 표기의 손가락 번호는 상식과 반대다: 1지=검지 … 5지=엄지.
+// 그대로 보여주면 "4지"를 약지로 읽는다(실제로는 새끼). 사전 설명의 84%가 이 표기를 쓴다.
+const FINGERS = ["검지", "중지", "약지", "새끼", "엄지"];
+const JOSA = { 를: "을", 는: "은", 가: "이" }; // "…손가락"은 받침으로 끝나 조사가 바뀐다
+function namedFingers(s) {
+  return s
+    .replace(/([1-5])(?:·([1-5]))*지/g, (m) =>
+      m.slice(0, -1).split("·").map((n) => FINGERS[n - 1]).join("·") + "손가락")
+    .replace(/손가락([를는가])/g, (_, j) => "손가락" + JOSA[j]);
+}
+
 function entryCard(e) {
   const noImg = !(e.media.src && e.media.src.length);
-  const desc = noImg ? "손모양 설명: " + e.description + " · (그림 없어 지화로 표시)" : e.description;
+  const raw = namedFingers(e.description);
+  const desc = noImg ? "손모양 설명: " + raw + " · (그림 없어 지화로 표시)" : raw;
   return card(e.word, desc, entryFrames(e), noImg ? "text-sign" : "");
+}
+
+// 합성 수어를 ① ② … 순서대로. 부품이 사전에 있는 것만 빌드에 들어오므로 여기선 못 찾을 일이 없다.
+function compoundGroup(word, combo, showHead = true) {
+  const group = document.createElement("div");
+  group.className = "token-group compound";
+  const labels = combo.labels || combo.parts; // 영상에서 부르는 이름이 사전 표제어와 다를 수 있음(원하다/내키다)
+  if (showHead) {
+    const head = document.createElement("p");
+    head.className = "note";
+    const b = document.createElement("b");
+    b.textContent = "두 수어를 이어서 표현해요";
+    const parts = document.createElement("b");
+    parts.className = "inline";
+    parts.textContent = labels.join(" + ");
+    head.append(b, `'${word}'는 하나의 손짓이 아니라 `, parts, "입니다. 한국어의 말끝은 수어에 없어서 떼고 찾았어요.");
+    group.appendChild(head);
+  }
+  const cards = document.createElement("div");
+  cards.className = "cards" + (combo.parts.length === 1 ? " one" : "");
+  group.appendChild(cards);
+  combo.parts.forEach((p, n) => {
+    const e = (INDEX.get(norm(p)) || [])[0];
+    if (!e) return;
+    const name = labels[n] === p ? p : labels[n] + " (" + p + ")";
+    cards.appendChild(card("①②③④⑤"[n] + " " + name, namedFingers(e.description), entryFrames(e), ""));
+  });
+  if (combo.verified && combo.source) {
+    const src = document.createElement("p");
+    src.className = "combo-src";
+    const a = document.createElement("a");
+    a.href = combo.source; a.target = "_blank"; a.rel = "noopener";
+    a.textContent = combo.by || "영상 출처";
+    src.append("영상으로 확인함 · ", a);
+    group.appendChild(src);
+  }
+  return group;
 }
 
 // 토큰 -> DOM 노드. 동음이의는 첫 후보를 대표로, 나머지는 "다른 뜻 N개" 안에.
 function renderToken(token) {
+  if (token.type === "compound") return compoundGroup(token.combo.word || token.text, token.combo);
   if (token.type === "entry") {
     const [primary, ...alts] = token.entries;
     const group = document.createElement("div");
     group.className = "token-group";
-    group.appendChild(entryCard(primary));
+    group.appendChild(cardRow([entryCard(primary)]));
+    // 사전에 그림이 있어도 합성으로 만들어진 말이면 어떻게 만들어졌는지 같이 보여준다(학습용).
+    const combo = COMPOUNDS.get(norm(primary.word));
+    if (combo) {
+      const det = document.createElement("details");
+      det.className = "alts";
+      const sum = document.createElement("summary");
+      sum.textContent = "어떻게 만들어졌나: " + combo.parts.join(" + ");
+      det.appendChild(sum);
+      det.appendChild(compoundGroup(primary.word, combo, false));
+      group.appendChild(det);
+    }
     if (alts.length) {
       const det = document.createElement("details");
       det.className = "alts";
@@ -210,15 +296,23 @@ function renderToken(token) {
         ? "다른 수형 " + alts.length + "개"
         : "다른 뜻 " + alts.length + "개 (" + alts.map((a) => a.word).join(", ") + ")";
       det.appendChild(sum);
-      for (const a of alts) det.appendChild(entryCard(a));
+      det.appendChild(cardRow(alts.map(entryCard)));
       group.appendChild(det);
     }
     return group;
   }
   // 미지원 단어: 하이브리드 — 지화 가능하면 지문자, 아니면 안내.
   const jamo = decomposeToJamo(token.text);
-  if (jamo) return card(token.text, "지문자(지화): " + jamo.join(" · "), jamoFrames(jamo), "finger");
-  return card("미지원: " + token.text, "지화로도 표현할 수 없는 문자예요.", null, "unsupported");
+  if (jamo) return cardRow([card(token.text, "지문자(지화): " + jamo.join(" · "), jamoFrames(jamo), "finger")]);
+  return cardRow([card("미지원: " + token.text, "지화로도 표현할 수 없는 문자예요.", null, "unsupported")]);
+}
+
+// 카드를 시안의 2열 그리드에 담는다. 하나뿐이면 한 칸을 다 쓴다(.one).
+function cardRow(cards) {
+  const row = document.createElement("div");
+  row.className = "cards" + (cards.length === 1 ? " one" : "");
+  cards.forEach((c) => row.appendChild(c));
+  return row;
 }
 
 function renderResults(tokens) {
@@ -226,10 +320,16 @@ function renderResults(tokens) {
   const box = document.getElementById("result");
   box.innerHTML = "";
   if (tokens.length === 0) {
-    box.innerHTML = '<p class="hint">번역할 말을 입력하면 바로 표시돼요.</p>';
+    box.innerHTML = '<p class="hint">찾을 말을 입력하면 바로 표시돼요.<br>예: 보고싶어 · 사랑 · 고맙습니다</p>';
+    lastWords = []; refreshStash();
     return;
   }
   for (const t of tokens) box.appendChild(renderToken(t));
+
+  // 담기 대상: 화면에 뜬 실제 표제어. 합성이면 부품을 각각 담는다(그래야 연습에 낼 수 있다).
+  lastWords = [...new Set(tokens.flatMap((t) =>
+    t.type === "entry" ? [t.entries[0].word] : t.type === "compound" ? t.combo.parts : []))];
+  refreshStash();
 }
 
 async function main() {
@@ -237,24 +337,41 @@ async function main() {
   try {
     DICT = await loadDictionary();
     buildIndex(DICT);
-    status.textContent = "사전 " + DICT.length + "개 로드됨";
+    await loadCompounds();
+    DICT_SUB = DICT.length.toLocaleString() + "개 단어를 손으로";
+    document.getElementById("screen-sub").textContent = DICT_SUB;
+    status.textContent = "";
   } catch (e) {
     status.textContent = "사전 로드 실패: " + e.message;
     return;
   }
+  setupIntro();
 
   const input = document.getElementById("input");
-  const btn = document.getElementById("translate");
   const run = () => renderResults(matchSentence(input.value));
   const debouncedRun = debounce(run, 250);
 
-  btn.addEventListener("click", run);
-  // 실시간(A): 입력 즉시 변환. IME 조합 중(e.isComposing)엔 건너뛰고 조합 완료 시 실행.
+  // 실시간 변환. IME 조합 중(e.isComposing)엔 건너뛰고 조합 완료 시 실행.
   input.addEventListener("input", (e) => { if (!e.isComposing) debouncedRun(); });
   input.addEventListener("compositionend", debouncedRun);
 
-  setupModes();
-  setupSignInput();
+  setupWordbook();
+  const go = setupTabs();
+
+  // 링크로 들어온 것 처리. #w=단어장 / #q=단어 하나.
+  // 앱을 열어둔 채 링크를 누르면 해시만 바뀌고 리로드가 안 된다 → hashchange 로도 받는다.
+  const openHash = () => {
+    const q = decodeURIComponent((location.hash.match(/[#&]q=([^&]*)/) || [])[1] || "");
+    if (q) { input.value = q; run(); go("dict"); }
+    const added = mergeFromHash(); // 사전 로드 뒤라야 lookup 이 된다
+    if (added) { go("book"); toast(`링크에서 ${added}개를 단어장에 담았어요`); }
+    refreshStash();
+  };
+  addEventListener("hashchange", openHash);
+  openHash();
+
+  // 카메라(손 읽기)는 6단계로 미뤄 화면에서 뺐다. 아래 코드는 그대로 살아 있으니
+  // #camera 마크업만 되살리고 setupModes()/setupSignInput() 호출을 켜면 다시 동작한다.
 }
 
 function debounce(fn, ms) {
@@ -262,24 +379,323 @@ function debounce(fn, ms) {
   return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
 }
 
-// --- 모드 전환 (텍스트→수어 / 수어→텍스트) ---
+// --- 화면 전환 (사전 / 손 읽기) ---
 function setupModes() {
   const t2s = document.getElementById("mode-t2s");
   const s2t = document.getElementById("mode-s2t");
   const textSections = [document.querySelector(".io"), document.getElementById("result")];
   const cam = document.getElementById("camera");
+  const title = document.getElementById("screen-title");
+  const sub = document.getElementById("screen-sub");
 
   const setMode = (isCamera) => {
-    t2s.classList.toggle("active", !isCamera);
-    s2t.classList.toggle("active", isCamera);
+    t2s.classList.toggle("on", !isCamera);
+    s2t.classList.toggle("on", isCamera);
     t2s.setAttribute("aria-selected", String(!isCamera));
     s2t.setAttribute("aria-selected", String(isCamera));
     textSections.forEach((el) => (el.hidden = isCamera));
     cam.hidden = !isCamera;
+    title.firstChild.textContent = isCamera ? "손 읽기" : "사전";
+    sub.textContent = isCamera ? "지문자를 카메라로" : DICT_SUB;
     if (isCamera) startHandTracking(); else stopHandTracking();
   };
   t2s.addEventListener("click", () => setMode(false));
   s2t.addEventListener("click", () => setMode(true));
+}
+
+// ══ 우리 단어장 ══════════════════════════════════════════════════════
+// 저장하는 건 표제어 문자열뿐. 뜻도 그림도 사전에서 다시 찾는다 —
+// 사용자가 뜻을 정하지 않는다는 수칙(CLAUDE.md ⛔)이 자료구조에서부터 지켜지도록.
+const BOOK_KEY = "shh-wordbook";
+const FREE_LIMIT = 5; // 무료 단어장 상한. 프로면 무제한.
+
+// ── 프로 상태 ────────────────────────────────────────────────────────
+// 결제는 아직 붙이지 않았다. Play Billing 은 구매 승인(acknowledge)에 백엔드가 필요하고
+// (안 하면 3일 뒤 자동 환불), 스토어에 서명된 빌드가 올라가야 동작해서 지금은 검증이 불가능하다.
+// 그래서 지금은 상태와 벽만 만들고, 결제 호출은 requestPro() 한 곳으로 격리해 둔다.
+// 5단계에서 여기만 Play Billing(getDigitalGoodsService + PaymentRequest)으로 바꾸면 된다.
+const PRO_KEY = "shh-pro";
+const PRO_PRICE = "₩4,900 / 월";
+let isPro = localStorage.getItem(PRO_KEY) === "1";
+const limit = () => (isPro ? Infinity : FREE_LIMIT);
+
+// 개발용: ?pro=1 로 벽 너머 화면을 지금 확인할 수 있게. ?pro=0 이면 해제.
+(() => {
+  const v = new URLSearchParams(location.search).get("pro");
+  if (v === "1" || v === "0") { isPro = v === "1"; localStorage.setItem(PRO_KEY, v); }
+})();
+
+async function requestPro() {
+  // ponytail: 5단계에서 여기에 Play Billing 을 넣는다. 그때까지는 정직하게 안내만 한다.
+  //   1) window.getDigitalGoodsService("https://play.google.com/billing")
+  //   2) service.getDetails([SKU]) → PaymentRequest → show()
+  //   3) purchaseToken 을 백엔드로 보내 검증 + acknowledge  ← 서버가 필요한 지점
+  //   4) service.listPurchases() 로 다른 기기 복원 (이건 서버 없이 됨)
+  if (!("getDigitalGoodsService" in window)) {
+    toast("결제는 앱(Play 스토어) 버전에서 열려요");
+    return false;
+  }
+  toast("결제 준비 중이에요");
+  return false;
+}
+let BOOK = (() => { try { return JSON.parse(localStorage.getItem(BOOK_KEY)) || []; } catch { return []; } })();
+const saveBook = () => localStorage.setItem(BOOK_KEY, JSON.stringify(BOOK));
+const bookHas = (w) => BOOK.includes(w);
+
+// 표제어 -> 사전 항목. 없으면 null(사전이 바뀌어 사라진 단어).
+const lookup = (w) => (INDEX.get(norm(w)) || [])[0] || null;
+
+// 링크 공유: 서버가 없으므로 단어 목록 자체를 URL 조각에 담는다.
+// UTF-8 → base64url. 12단어면 150자 안쪽이라 압축은 아직 필요 없다.
+function encodeBook(words) {
+  const bytes = new TextEncoder().encode(words.join("\n"));
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function decodeBook(s) {
+  const b64 = s.replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4));
+  return new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)))
+    .split("\n").map((x) => x.trim()).filter(Boolean);
+}
+
+function shareLink() {
+  return location.origin + location.pathname + "#w=" + encodeBook(BOOK);
+}
+
+// 링크로 들어온 단어를 합친다. 겹치는 건 건너뛴다.
+function mergeFromHash() {
+  const m = location.hash.match(/[#&]w=([^&]+)/);
+  if (!m) return 0;
+  history.replaceState(null, "", location.pathname); // 새로고침해도 다시 합쳐지지 않게
+  let added = 0;
+  try {
+    for (const w of decodeBook(m[1])) {
+      if (!bookHas(w) && lookup(w)) { BOOK.push(w); added++; }
+    }
+  } catch { return 0; }
+  if (added) saveBook();
+  return added;
+}
+
+function renderWordbook() {
+  const box = document.getElementById("wordbook");
+  box.innerHTML = "";
+  if (!BOOK.length) {
+    box.innerHTML = '<p class="hint">아직 담은 단어가 없어요.<br>사전에서 찾아 <b>단어장에 담기</b>를 눌러보세요.</p>';
+    return;
+  }
+  for (const w of BOOK) {
+    const e = lookup(w);
+    const item = document.createElement("div");
+    item.className = "item";
+
+    const thumb = document.createElement("div");
+    thumb.className = "thumb";
+    const frames = e && entryFrames(e);
+    if (frames) { const img = document.createElement("img"); img.alt = ""; startPlayer(img, frames); thumb.appendChild(img); }
+    item.appendChild(thumb);
+
+    const txt = document.createElement("div");
+    const t = document.createElement("div"); t.className = "t"; t.textContent = w;
+    const s = document.createElement("div"); s.className = "s";
+    s.textContent = e ? (e.aliases?.length ? e.aliases.join(" · ") : "국립국어원 한국수어사전") : "사전에서 찾을 수 없어요";
+    txt.append(t, s); item.appendChild(txt);
+
+    const del = document.createElement("button");
+    del.className = "chk"; del.type = "button";
+    del.setAttribute("aria-label", w + " 빼기"); del.textContent = "✕";
+    del.addEventListener("click", () => {
+      BOOK = BOOK.filter((x) => x !== w); saveBook(); renderWordbook(); refreshStash();
+    });
+    item.appendChild(del);
+    box.appendChild(item);
+  }
+  if (!isPro && BOOK.length >= FREE_LIMIT) box.appendChild(upsell());
+}
+
+// 벽에 닿았을 때의 안내. 한 곳에서만 만든다 — 문구가 갈리지 않게.
+function upsell() {
+  const lock = document.createElement("div");
+  lock.className = "locked";
+  const t = document.createElement("div");
+  t.className = "t"; t.textContent = `무료 단어장은 ${FREE_LIMIT}개까지예요`;
+  const s = document.createElement("p");
+  s.className = "s"; s.textContent = "둘 중 한 명만 프로면 둘 다 무제한이에요";
+  const b = document.createElement("button");
+  b.className = "btn-primary sm"; b.textContent = PRO_PRICE;
+  b.addEventListener("click", async () => { if (await requestPro()) { renderWordbook(); refreshStash(); } });
+  lock.append(t, s, b);
+  return lock;
+}
+
+// 사전 화면 하단의 담기 버튼 — 지금 결과에 뜬 표제어를 담는다.
+let lastWords = []; // renderResults가 채운다
+function refreshStash() {
+  const box = document.getElementById("stash");
+  const label = document.getElementById("stash-label");
+  const btn = document.getElementById("stash-btn");
+  const fresh = lastWords.filter((w) => !bookHas(w));
+  box.hidden = lastWords.length === 0;
+  if (!fresh.length) {
+    label.textContent = lastWords.length ? "이미 단어장에 있어요" : "";
+    btn.disabled = true; btn.textContent = "담김 ✓";
+    return;
+  }
+  const full = BOOK.length + fresh.length > limit();
+  label.textContent = full
+    ? `자리가 ${Math.max(0, FREE_LIMIT - BOOK.length)}칸 남았어요 (이 단어는 ${fresh.length}칸)`
+    : `찾은 단어 ${fresh.length}개를 우리 단어장에`;
+  btn.textContent = full ? PRO_PRICE + "로 무제한" : "단어장에 담기";
+  btn.disabled = false;
+  box.classList.toggle("upsell", full);
+  btn.onclick = full
+    ? async () => { if (await requestPro()) refreshStash(); }
+    : () => { for (const w of lastWords) if (!bookHas(w)) BOOK.push(w); saveBook(); refreshStash(); renderWordbook(); };
+}
+function setupWordbook() {
+  // 담기/업그레이드 동작은 refreshStash 가 상황에 따라 btn.onclick 으로 갈아끼운다.
+  document.getElementById("share-btn").addEventListener("click", async () => {
+    if (!BOOK.length) return toast("담은 단어가 없어요");
+    const url = shareLink();
+    try {
+      if (navigator.share) await navigator.share({ title: "쉿 — 우리 단어장", url });
+      else { await navigator.clipboard.writeText(url); toast("링크를 복사했어요"); }
+    } catch { /* 사용자가 공유를 취소함 */ }
+  });
+}
+
+function toast(msg) {
+  const el = document.getElementById("status");
+  el.textContent = msg;
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => { el.textContent = ""; }, 2500);
+}
+
+// ══ 연습 (플래시카드) ═════════════════════════════════════════════════
+// 손모양을 보여주고 뜻을 맞힌다. 문제는 단어장에서만 낸다 — 안 배운 걸 묻지 않는다.
+const QUIZ_LEN = 5;
+let quiz = null;
+const pick = (arr, n) => [...arr].sort(() => Math.random() - 0.5).slice(0, n);
+
+function startQuiz() {
+  const pool = BOOK.filter((w) => lookup(w) && entryFrames(lookup(w)));
+  if (pool.length < 3) { quiz = null; return; }
+  quiz = { pool, n: 0, ok: 0, q: null };
+  nextQuestion();
+}
+function nextQuestion() {
+  const answer = pick(quiz.pool, 1)[0];
+  const wrong = pick(quiz.pool.filter((w) => w !== answer), 2);
+  quiz.q = { answer, options: pick([answer, ...wrong], 3), done: false };
+  renderPractice();
+}
+function renderPractice() {
+  const box = document.getElementById("practice");
+  box.innerHTML = "";
+  if (!quiz) {
+    box.innerHTML = `<p class="hint">연습하려면 단어장에 <b>3개 이상</b> 담아주세요.<br>사전에서 찾아 담으면 여기서 문제로 나와요.</p>`;
+    return;
+  }
+  if (quiz.n >= QUIZ_LEN) {
+    const done = document.createElement("div");
+    done.className = "note";
+    done.innerHTML = `<b>${QUIZ_LEN}문제 끝!</b>${quiz.ok}개 맞혔어요.`;
+    const again = document.createElement("button");
+    again.className = "btn-primary"; again.textContent = "한 번 더";
+    again.addEventListener("click", startQuiz);
+    box.append(done, again);
+    return;
+  }
+
+  const dots = document.createElement("div");
+  dots.className = "dots";
+  for (let i = 0; i < QUIZ_LEN; i++) {
+    const d = document.createElement("i");
+    if (i < quiz.n) d.className = "on";
+    dots.appendChild(d);
+  }
+  box.appendChild(dots);
+
+  const e = lookup(quiz.q.answer);
+  const q = document.createElement("div");
+  q.className = "card quiz";
+  const lab = document.createElement("p");
+  lab.className = "quiz-lab"; lab.textContent = "이 손, 무슨 뜻일까요?";
+  const img = document.createElement("img");
+  img.className = "frame"; img.alt = "수형";
+  q.append(lab, img); box.appendChild(q);
+  startPlayer(img, entryFrames(e));
+
+  for (const opt of quiz.q.options) {
+    const b = document.createElement("button");
+    b.className = "opt"; b.textContent = opt;
+    b.addEventListener("click", () => {
+      if (quiz.q.done) return;
+      quiz.q.done = true;
+      const right = opt === quiz.q.answer;
+      if (right) quiz.ok++;
+      b.classList.add(right ? "right" : "wrong");
+      if (!right) [...box.querySelectorAll(".opt")].find((x) => x.textContent === quiz.q.answer)?.classList.add("right");
+
+      const fb = document.createElement("div");
+      fb.className = "note" + (right ? "" : " bad");
+      fb.innerHTML = right
+        ? "<b>잘했어요!</b>" + namedFingers(e.description)
+        : `<b>아쉬워요 — 정답은 '${quiz.q.answer}'</b>` + namedFingers(e.description);
+      box.appendChild(fb);
+
+      const next = document.createElement("button");
+      next.className = "btn-primary";
+      next.textContent = quiz.n + 1 >= QUIZ_LEN ? "결과 보기" : "다음";
+      next.addEventListener("click", () => { quiz.n++; quiz.n >= QUIZ_LEN ? renderPractice() : nextQuestion(); });
+      box.appendChild(next);
+    });
+    box.appendChild(b);
+  }
+}
+
+// ══ 화면 전환 ════════════════════════════════════════════════════════
+const SCREEN_TITLE = {
+  dict: ["사전", () => DICT_SUB],
+  book: ["우리 단어장", () => (BOOK.length ? `둘이 같이 외우는 ${BOOK.length}개` : "아직 비어 있어요")],
+  quiz: ["연습", () => "손모양 보고 뜻 맞히기"],
+};
+function setupTabs() {
+  const tabs = [...document.querySelectorAll(".tab[data-go]")];
+  const go = (name) => {
+    document.querySelectorAll("[data-screen]").forEach((el) => (el.hidden = el.dataset.screen !== name));
+    tabs.forEach((t) => {
+      const on = t.dataset.go === name;
+      t.classList.toggle("on", on);
+      t.setAttribute("aria-selected", String(on));
+    });
+    const [title, sub] = SCREEN_TITLE[name];
+    document.getElementById("screen-title").firstChild.textContent = title;
+    document.getElementById("screen-sub").textContent = sub();
+    if (name === "book") renderWordbook();
+    if (name === "quiz") { startQuiz(); renderPractice(); }
+  };
+  tabs.forEach((t) => t.addEventListener("click", () => go(t.dataset.go)));
+  return go;
+}
+
+// --- 첫 실행 안내문 ---
+// 나가는 길은 둘: ✕(이번만 닫기) / "오늘 그만 보기"(오늘 날짜 기록 → 내일 다시 뜸).
+// ponytail: 날짜 문자열 하나로 끝. "다시 보지 않기"는 안 만든다 — 수어 문법은 한 번 봐서 안 외워진다.
+const INTRO_KEY = "shh-intro-muted";
+function setupIntro() {
+  const box = document.getElementById("intro");
+  const today = new Date().toISOString().slice(0, 10);
+  if (localStorage.getItem(INTRO_KEY) === today) return;
+  box.hidden = false;
+
+  const close = () => { box.hidden = true; };
+  document.getElementById("intro-close").addEventListener("click", close);
+  document.getElementById("intro-ok").addEventListener("click", close);
+  document.getElementById("intro-mute").addEventListener("click", () => {
+    localStorage.setItem(INTRO_KEY, today);
+    close();
+  });
 }
 
 // --- Phase 2 (C): 카메라 + 손 랜드마크 검출 스캐폴드 ---
@@ -462,7 +878,10 @@ function smoothSign(label) {
 const SAMPLE_KEY = "ksl-knn-samples";
 // 256샘플(32자모×8) 실측: 같은자모 최근접 최대 5.32, 다른자모 최근접 최소 0.42/중앙 1.42.
 // 클래스가 0.42까지 붙어있어 임계로 자모를 "가려낼" 수는 없음 — 임계의 역할은 자모 아닌 손 거부뿐.
-const KNN_K = 3, KNN_MAX = 15; // ponytail: 계기판(상태줄 d=)으로 실사용 중 조정. 미인식↑→올림, 아무거나 잡힘↑→내림.
+// 자세를 바꿔 찍은(정지버스트 아닌) 샘플의 같은자모 최근접: 중앙 1.92 · 90퍼센타일 5.18 · 최대 9.16.
+// 8이면 정상 자세의 ~90%를 통과시킨다.
+// ⚠️ 틀릴 때 거리가 더 가깝다(라이브 오분류 d=0.43~0.97) → 임계로는 오분류를 못 거른다. 역할은 비지문자 거부뿐.
+const KNN_K = 3, KNN_MAX = 8; // ponytail: 계기판(상태줄 d=)으로 실사용 중 조정. 미인식↑→올림.
 let knnDbg = null; // ponytail: 실손 튜닝 계기판. {dist, label} 최근접 이웃. KNN_MAX 조정용.
 let knnSamples = (() => { try { return JSON.parse(localStorage.getItem(SAMPLE_KEY)) || []; } catch { return []; } })();
 const saveSamples = () => localStorage.setItem(SAMPLE_KEY, JSON.stringify(knnSamples));

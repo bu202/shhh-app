@@ -2,67 +2,119 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#03c75a" />
-  <title>수어 번역기</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#FFF7F0" />
+  <title>쉿 — 소리 없이 말하는 법</title>
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
+  <!-- 첫 실행 안내문. 나가는 길 두 개: 우측 상단 ✕ · 하단 "오늘 그만 보기" -->
+  <div id="intro" class="intro-backdrop" hidden>
+    <section class="intro" role="dialog" aria-modal="true" aria-labelledby="intro-title">
+      <div class="intro-top">
+        <svg class="mascot sm" viewBox="0 0 100 100" aria-hidden="true">
+          <circle cx="50" cy="46" r="33" fill="#FFE3D5"/>
+          <circle cx="37" cy="40" r="4" fill="#241C1A"/><circle cx="63" cy="40" r="4" fill="#241C1A"/>
+          <ellipse cx="28" cy="52" rx="6.5" ry="4" fill="#FF6B5B" opacity=".4"/>
+          <ellipse cx="72" cy="52" rx="6.5" ry="4" fill="#FF6B5B" opacity=".4"/>
+          <g transform="rotate(-16 50 60)">
+            <rect x="45" y="44" width="11" height="27" rx="5.5" fill="#FFF7F0" stroke="#241C1A" stroke-width="3.2"/>
+            <rect x="29" y="64" width="33" height="22" rx="11" fill="#FFF7F0" stroke="#241C1A" stroke-width="3.2"/>
+          </g>
+        </svg>
+        <button id="intro-close" class="intro-x" aria-label="안내문 닫기">✕</button>
+      </div>
+      <div class="intro-h">
+        <b id="intro-title">수어는 한국어를<br>손으로 옮긴 게 아닙니다</b>
+        <span>농인이 쓰는, 문법이 따로 있는 언어예요.<br>시작하기 전에 다섯 가지만 알아두세요.</span>
+      </div>
+      <div class="intro-body">
+        <div class="rule a">
+          <div class="t">어미가 변하지 않아요</div>
+          <div class="d">한국어는 말끝이 계속 바뀌지만 수어는 하나입니다.
+            <span class="eg">보고싶다 · 보고싶어 · 보고싶었어 → 전부 같은 수어</span></div>
+        </div>
+        <div class="rule b">
+          <div class="t">조사가 없어요</div>
+          <div class="d">'이/가', '을/를'에 해당하는 손짓이 없습니다. 독자적인 기호가 있는 건 '부터'와 '와/과' 정도예요.</div>
+        </div>
+        <div class="rule c">
+          <div class="t">표정과 고개가 문법이에요</div>
+          <div class="d">눈썹을 올리면 질문이 되고, 고개를 저으면 부정이 됩니다. 손만 봐서는 문장이 끝나지 않아요.</div>
+        </div>
+        <div class="rule a">
+          <div class="t">시제는 동사 뒤에 붙여요</div>
+          <div class="d">'마침'·'중'·'계획'을 동사 뒤에 붙여 과거·현재·미래를 나타냅니다.</div>
+        </div>
+        <div class="rule n">
+          <div class="t">쉿은 '단어'를 가르쳐요</div>
+          <div class="d">문장은 어순과 표정이 달라서, 단어를 이어 붙인다고 수어 문장이 되지는 않아요.</div>
+        </div>
+      </div>
+      <div class="intro-foot">
+        <button id="intro-ok" class="btn-primary">알겠어요, 시작할게요</button>
+        <button id="intro-mute" class="btn-ghost">오늘 그만 보기</button>
+      </div>
+    </section>
+  </div>
+
   <main class="app">
     <header class="topbar">
-      <h1>수어 번역기</h1>
+      <svg class="mascot" viewBox="0 0 100 100" aria-hidden="true">
+        <circle cx="50" cy="46" r="33" fill="#FFE3D5"/>
+        <circle cx="37" cy="40" r="4" fill="#241C1A"/><circle cx="63" cy="40" r="4" fill="#241C1A"/>
+        <ellipse cx="28" cy="52" rx="6.5" ry="4" fill="#FF6B5B" opacity=".4"/>
+        <ellipse cx="72" cy="52" rx="6.5" ry="4" fill="#FF6B5B" opacity=".4"/>
+        <g transform="rotate(-16 50 60)">
+          <rect x="45" y="44" width="11" height="27" rx="5.5" fill="#FFF7F0" stroke="#241C1A" stroke-width="3.2"/>
+          <rect x="29" y="64" width="33" height="22" rx="11" fill="#FFF7F0" stroke="#241C1A" stroke-width="3.2"/>
+        </g>
+      </svg>
+      <h1 id="screen-title">사전<small id="screen-sub">단어를 손으로</small></h1>
     </header>
 
-    <nav class="modes" role="tablist" aria-label="번역 모드">
-      <button id="mode-t2s" class="mode active" aria-selected="true">텍스트 → 수어</button>
-      <button id="mode-s2t" class="mode" aria-selected="false">수어 → 텍스트</button>
-    </nav>
-
-    <section class="io">
-      <label class="visually-hidden" for="input">번역할 텍스트</label>
-      <textarea id="input" placeholder="번역할 말을 입력하세요 (예: 안녕하세요)"></textarea>
-      <button id="translate" class="btn-primary">번역</button>
-    </section>
-
-    <section id="result" class="result" aria-live="polite">
-      <p class="hint">번역할 말을 입력하면 바로 표시돼요.</p>
-    </section>
-
-    <!-- Phase 2 (수어→텍스트): 카메라 + 손 랜드마크 검출 스캐폴드 -->
-    <section id="camera" class="camera" hidden>
-      <div class="cam-wrap">
-        <video id="cam" playsinline muted></video>
-        <canvas id="overlay"></canvas>
-        <div id="ref-box" class="ref-box" hidden><img alt="참고 손모양"></div>
+    <!-- ── 사전 ── -->
+    <div class="io" data-screen="dict">
+      <label class="visually-hidden" for="input">찾을 말</label>
+      <div class="search">
+        <span aria-hidden="true">🔍</span>
+        <input id="input" type="search" autocomplete="off" placeholder="찾을 말을 입력하세요" />
       </div>
-      <p id="sign-out" class="sign-out" aria-live="polite">—</p>
-      <p id="text-out" class="text-out" aria-live="polite">…</p>
-      <div class="cam-controls">
-        <button id="btn-space">스페이스</button>
-        <button id="btn-del">지우기</button>
-        <button id="btn-clear">전체지우기</button>
-      </div>
-      <p id="cam-status" class="status">카메라 준비 중…</p>
-      <p class="hint">손모양을 6프레임 유지하면 자모 확정 → 한글 조합. 같은 자모 연속은 손을 내렸다 다시.</p>
-      <details class="knn-train">
-        <summary>자모 직접 가르치기 (KNN 학습)</summary>
-        <p class="hint">인식할 자모를 입력하고, 그 손모양을 카메라에 비춘 채 "녹화"를 여러 번(자모당 5~10회) 눌러 샘플을 모으세요. 샘플이 쌓이면 규칙 대신 KNN이 인식합니다.</p>
-        <div class="cam-controls">
-          <input id="train-label" maxlength="1" placeholder="자모 (예: ㅏ)" />
-          <button id="btn-record">이 손모양 녹화</button>
-          <span id="sample-count" class="status"></span>
-          <button id="btn-reset-samples">샘플 초기화</button>
-        </div>
-      </details>
+    </div>
+
+    <section id="result" class="result" data-screen="dict" aria-live="polite">
+      <p class="hint">찾을 말을 입력하면 바로 표시돼요.<br>예: 보고싶어 · 사랑 · 고맙습니다</p>
     </section>
+
+    <div id="stash" class="locked" data-screen="dict" hidden>
+      <div class="t" id="stash-label">찾은 단어를 우리 단어장에</div>
+      <button id="stash-btn" class="btn-primary sm">단어장에 담기</button>
+    </div>
+
+    <!-- ── 우리 단어장 ── -->
+    <section id="wordbook" class="result" data-screen="book" hidden></section>
+    <div class="io" data-screen="book" hidden>
+      <button id="share-btn" class="btn-primary">🔗 링크로 함께 외우기</button>
+    </div>
+
+    <!-- ── 연습 ── -->
+    <section id="practice" class="result" data-screen="quiz" hidden></section>
 
     <p id="status" class="status"></p>
     <footer class="credit">
-      지화 이미지: <a href="https://commons.wikimedia.org/wiki/Category:Korean_manual_alphabet" target="_blank" rel="noopener">Wikimedia Commons</a>
-      (Kwamikagami), <a href="https://creativecommons.org/licenses/by-sa/3.0/" target="_blank" rel="noopener">CC BY-SA 3.0</a>
+      한국수어 · <a href="https://sldict.korean.go.kr" target="_blank" rel="noopener">국립국어원 한국수어사전</a><br>
+      지화 이미지 <a href="https://commons.wikimedia.org/wiki/Category:Korean_manual_alphabet" target="_blank" rel="noopener">Wikimedia</a>
+      <a href="https://creativecommons.org/licenses/by-sa/3.0/" target="_blank" rel="noopener">CC BY-SA 3.0</a>
     </footer>
+
+    <nav class="tabs" aria-label="화면">
+      <button class="tab" disabled title="곧 나와요"><i>🏠</i>홈</button>
+      <button class="tab on" data-go="dict" aria-selected="true"><i>🔤</i>사전</button>
+      <button class="tab" data-go="book" aria-selected="false"><i>💌</i>우리</button>
+      <button class="tab" data-go="quiz" aria-selected="false"><i>🎯</i>연습</button>
+    </nav>
   </main>
   <script src="js/app.js"></script>
 </body>

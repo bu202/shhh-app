@@ -1,0 +1,18 @@
+{
+  "보고싶다": {
+    "parts": ["보다", "내키다"],
+    "labels": ["보다", "원하다"],
+    "source": "https://www.youtube.com/shorts/dZIfpZp2Mgs",
+    "by": "유손생 (@dbthstod)",
+    "checked": "2026-08-05",
+    "note": "24초 자막에 [보다 + 원하다] 보고싶다 로 명시. 15초에 [원하다] 단독 시연(목 앞 검지·엄지). 사전 표제어 '내키다'의 별칭에 원하다·싶다·바라다가 들어 있어 그 항목으로 연결."
+  },
+  "보고 싶다": {
+    "parts": ["보다", "내키다"],
+    "labels": ["보다", "원하다"],
+    "source": "https://www.youtube.com/shorts/dZIfpZp2Mgs",
+    "by": "유손생 (@dbthstod)",
+    "checked": "2026-08-05",
+    "note": "띄어쓰기 변형. 위와 동일 영상."
+  }
+}

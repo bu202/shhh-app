@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>쉿 — 화면 시안</title>
+<style>
+/* ── 디자인 토큰. 승인되면 이 :root 블록만 css/style.css로 옮기면 됩니다 ── */
+:root{
+  --ink:#241C1A; --sub:#6B5D57; --muted:#A0938D;
+  --cream:#FFF7F0; --paper:#fff; --line:#F0E4DA;
+  --coral:#FF6B5B; --coral-d:#E85445; --peach:#FFE3D5;
+  --lilac:#B9A9FF; --lilac-s:#EFEAFF; --lilac-d:#5A46C4;
+  --mint:#7FD8B0; --mint-s:#E3F7EE; --mint-d:#1D8A5F;
+  --r-card:26px; --r-btn:18px;
+  --sh:0 8px 24px rgba(120,80,64,.10);
+}
+/* 페이지 배경(폰 바깥)만 테마를 따릅니다. 폰 안쪽은 앱의 고정 아이덴티티. */
+:root{ --sheet:#E7DDD5; --sheet-fg:#241C1A; --sheet-sub:#6B5D57; }
+@media (prefers-color-scheme:dark){ :root{ --sheet:#1A1512; --sheet-fg:#F2E9E2; --sheet-sub:#A6968C; } }
+:root[data-theme="dark"]{ --sheet:#1A1512; --sheet-fg:#F2E9E2; --sheet-sub:#A6968C; }
+:root[data-theme="light"]{ --sheet:#E7DDD5; --sheet-fg:#241C1A; --sheet-sub:#6B5D57; }
+
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family:-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+  background:var(--sheet); color:var(--sheet-fg); padding:40px 24px 80px;
+  -webkit-font-smoothing:antialiased;
+}
+.page-head{max-width:1200px;margin:0 auto 28px}
+.page-head h1{font-size:28px;letter-spacing:-.02em;text-wrap:balance}
+.page-head p{color:var(--sheet-sub);margin-top:8px;font-size:14px;max-width:64ch;line-height:1.65}
+.page-head .rule{margin-top:14px;padding:12px 16px;border-radius:14px;background:rgba(255,107,91,.12);
+  font-size:13px;line-height:1.6;max-width:64ch;border:1px solid rgba(255,107,91,.3)}
+.swatches{display:flex;gap:8px;margin-top:16px;flex-wrap:wrap}
+.sw{width:64px;height:44px;border-radius:12px;display:flex;align-items:flex-end;justify-content:center;
+    font-size:9px;color:#fff;padding-bottom:4px;text-shadow:0 1px 2px rgba(0,0,0,.3)}
+
+.grid{display:flex;flex-wrap:wrap;gap:28px;justify-content:center;max-width:1240px;margin:0 auto}
+.frame{width:300px;flex:0 0 auto}
+.frame > .cap{text-align:center;font-size:12px;color:var(--sheet-sub);margin-top:10px;font-weight:600;line-height:1.5}
+.phone{
+  width:300px;height:640px;background:var(--cream);border-radius:38px;
+  border:8px solid #1C1614;box-shadow:0 20px 40px rgba(80,50,40,.25);
+  overflow:hidden;position:relative;display:flex;flex-direction:column;
+}
+.notch{position:absolute;top:0;left:50%;transform:translateX(-50%);width:100px;height:22px;
+  background:#1C1614;border-radius:0 0 14px 14px;z-index:9}
+.statusbar{display:flex;justify-content:space-between;padding:8px 18px 2px;font-size:10px;font-weight:700}
+.screen{flex:1;overflow:hidden;display:flex;flex-direction:column;padding:6px 16px 0}
+
+/* ── 공통 부품 ── */
+.hi{font-size:19px;font-weight:800;letter-spacing:-.02em;line-height:1.35}
+.hi small{display:block;font-size:12px;font-weight:600;color:var(--muted);margin-top:3px;letter-spacing:0}
+.row{display:flex;align-items:center;gap:8px}
+.card{background:var(--paper);border-radius:var(--r-card);padding:16px;box-shadow:var(--sh)}
+.pill{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:999px;
+  font-size:10px;font-weight:700;background:var(--peach);color:var(--coral-d)}
+.btn{border:none;border-radius:var(--r-btn);padding:13px;font-size:14px;font-weight:800;
+  font-family:inherit;width:100%;cursor:pointer;letter-spacing:-.01em}
+.btn.primary{background:var(--coral);color:#fff;box-shadow:0 6px 14px rgba(255,107,91,.35)}
+.btn.soft{background:var(--lilac-s);color:var(--lilac-d)}
+.btn.ghost{background:none;color:var(--muted);font-weight:700;font-size:12px;box-shadow:none}
+.avatar{width:26px;height:26px;border-radius:50%;border:2px solid #fff;display:grid;place-items:center;font-size:12px}
+
+/* 사전 손그림은 흰 배경 위 실사진. multiply로 흰 배경을 죽여
+   카드 색이 그대로 비치게 하면 앱 톤에 섞입니다. 이미지 재가공 불필요. */
+.today .hand img,.thumb img,.res .c img,.quiz .big,.share .mini img,.rule-img{
+  mix-blend-mode:multiply;filter:contrast(1.06)}
+
+/* 하단 탭 */
+.tabs{display:flex;justify-content:space-around;padding:9px 4px 14px;background:var(--paper);
+  border-top:1px solid var(--line);margin:auto -16px 0}
+.tab{display:flex;flex-direction:column;align-items:center;gap:2px;font-size:9px;font-weight:700;color:var(--muted)}
+.tab i{font-style:normal;font-size:17px;filter:grayscale(1);opacity:.45}
+.tab.on{color:var(--coral)} .tab.on i{filter:none;opacity:1}
+
+/* ── 안내문(첫 실행) ── */
+.intro{background:var(--paper);flex:1;display:flex;flex-direction:column;margin:0 -16px;padding:0}
+.intro-top{display:flex;align-items:flex-start;justify-content:space-between;padding:10px 18px 0}
+.intro-x{font-size:19px;color:var(--muted);line-height:1;cursor:pointer}
+.intro-h{padding:2px 18px 10px}
+.intro-h b{font-size:18px;font-weight:900;letter-spacing:-.03em;line-height:1.32;display:block}
+.intro-h span{font-size:10.5px;color:var(--muted);display:block;margin-top:5px;line-height:1.55}
+.intro-body{flex:1;overflow:hidden;padding:0 18px;display:flex;flex-direction:column;gap:8px}
+.rule{border-radius:16px;padding:10px 12px}
+.rule .t{font-size:12px;font-weight:900;letter-spacing:-.02em}
+.rule .d{font-size:10px;line-height:1.55;margin-top:3px}
+.rule.a{background:var(--peach)} .rule.a .t{color:var(--coral-d)} .rule.a .d{color:#7A4A3D}
+.rule.b{background:var(--lilac-s)} .rule.b .t{color:var(--lilac-d)} .rule.b .d{color:#5C5270}
+.rule.c{background:var(--mint-s)} .rule.c .t{color:var(--mint-d)} .rule.c .d{color:#356B57}
+.rule.n{background:#F5EFE9;border:1px solid var(--line)} .rule.n .t{color:var(--ink)} .rule.n .d{color:var(--sub)}
+.rule .eg{display:block;margin-top:4px;font-weight:800;color:var(--ink);font-size:10px}
+.intro-foot{padding:9px 18px 13px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:4px}
+.intro-foot .btn.primary{padding:12px}
+.intro-foot .btn.ghost{padding:7px}
+
+/* 오늘의 수어 */
+.today{background:linear-gradient(150deg,#C9BCFF,#EFEAFF 70%);border-radius:var(--r-card);
+  padding:16px;position:relative;overflow:hidden;box-shadow:var(--sh)}
+.today .lab{font-size:10px;font-weight:800;color:var(--lilac-d);letter-spacing:.02em}
+.today .word{font-size:24px;font-weight:900;margin-top:2px;letter-spacing:-.03em}
+.today .also{font-size:10px;color:var(--lilac-d);font-weight:700;margin-top:2px}
+.today .desc{font-size:10.5px;color:#5C5270;margin-top:6px;line-height:1.55;max-width:60%}
+.today .hand{position:absolute;right:8px;bottom:10px;width:92px;height:92px;border-radius:18px;
+  background:var(--cream);padding:5px;box-shadow:0 6px 16px rgba(90,70,196,.2);transform:rotate(-5deg)}
+.today .hand img{width:100%;height:100%;object-fit:contain}
+
+.bar{height:7px;border-radius:99px;background:var(--line);overflow:hidden}
+.bar > i{display:block;height:100%;border-radius:99px;background:var(--mint)}
+
+/* 단어장 리스트 */
+.item{display:flex;align-items:center;gap:11px;background:var(--paper);border-radius:16px;
+  padding:6px 12px;box-shadow:0 3px 10px rgba(120,80,64,.06)}
+.thumb{width:36px;height:36px;border-radius:11px;background:var(--peach);flex:0 0 auto;
+  display:grid;place-items:center;overflow:hidden}
+.thumb img{width:100%;height:100%;object-fit:cover}
+.item .t{font-size:13px;font-weight:800;letter-spacing:-.01em}
+.item .s{font-size:9.5px;color:var(--muted);margin-top:1px}
+.chk{margin-left:auto;font-size:15px}
+
+.locked{border:2px dashed var(--lilac);background:var(--lilac-s);border-radius:20px;padding:13px;text-align:center}
+.locked .t{font-size:12px;font-weight:900;color:var(--lilac-d)}
+.locked .s{font-size:10px;color:#7A6BB8;margin:4px 0 9px;line-height:1.55}
+
+/* 연습 */
+.quiz{background:var(--peach);border-radius:var(--r-card);padding:14px;box-shadow:var(--sh);text-align:center}
+.quiz .lab{font-size:11px;font-weight:800;color:var(--coral-d)}
+.quiz .big{width:100%;height:148px;object-fit:contain;margin-top:4px}
+.opt{background:var(--paper);border:2px solid var(--line);border-radius:16px;padding:11px;
+  font-size:13px;font-weight:700;text-align:center}
+.opt.right{border-color:var(--mint);background:var(--mint-s);color:var(--mint-d)}
+.dots{display:flex;gap:4px;justify-content:center}
+.dots i{width:16px;height:4px;border-radius:99px;background:var(--line)}
+.dots i.on{background:var(--coral)}
+
+/* 사전 */
+.search{background:var(--paper);border-radius:18px;padding:12px 14px;font-size:13px;
+  box-shadow:var(--sh);display:flex;align-items:center;gap:8px;font-weight:600}
+.note{background:var(--mint-s);border-radius:16px;padding:11px 13px;font-size:10.5px;
+  line-height:1.6;color:#356B57}
+.note b{color:var(--mint-d);display:block;margin-bottom:3px;font-size:11.5px}
+.res{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.res .c{background:var(--peach);border-radius:18px;padding:10px;text-align:center;
+  box-shadow:0 3px 10px rgba(120,80,64,.06)}
+.res .c img{width:100%;height:74px;object-fit:contain}
+.res .c b{display:block;font-size:12.5px;margin-top:4px}
+.res .c span{font-size:9px;color:#8A6A5C;display:block;margin-top:1px}
+
+/* 공유 카드 */
+.share{background:linear-gradient(160deg,#FF8A72,#FF6B5B 55%,#E85445);border-radius:24px;
+  padding:18px;color:#fff;flex:1;display:flex;flex-direction:column}
+.share .brand{font-size:13px;font-weight:900;letter-spacing:-.02em}
+.share .ttl{font-size:18px;font-weight:900;line-height:1.4;margin-top:10px;letter-spacing:-.02em}
+.share .mini{background:var(--peach);border-radius:14px;padding:7px;text-align:center;color:var(--ink)}
+.share .mini img{width:100%;height:46px;object-fit:contain}
+.share .mini b{font-size:9.5px;display:block;margin-top:3px}
+.share .quote{margin:auto 0;font-size:12.5px;font-weight:600;line-height:1.7}
+.share .foot{margin-top:auto;font-size:8.5px;opacity:.85;line-height:1.55}
+
+.mascot{width:46px;height:46px;flex:0 0 auto}
+.gap{display:flex;flex-direction:column}
+.g8{gap:8px}.g10{gap:10px}.g12{gap:12px}
+</style>
+</head>
+<body>
+
+<div class="page-head">
+  <h1>쉿 — 화면 시안 v2</h1>
+  <p>실제 폰 크기(300×640) 프레임. 손 그림은 전부 <b>국립국어원 한국수어사전의 실제 해당 단어 이미지</b>입니다(원격 URL 직접 로드).</p>
+  <div class="rule">
+    <b>수칙 1 — 단어의 뜻을 바꾸지 않습니다.</b><br>
+    <b>보고싶다 = [보다] + [원하다]</b> 두 수어의 합성입니다(유손생 「‘보고싶다’ ’그립다‘ 수어배우기」 영상에서 확인).
+    <b>그립다는 별개 단어</b>이고요. 사전에 '보고싶다' 표제어가 없다고 해서 그립다와 같은 말이 아니었습니다 —
+    <b>사전에 없는 단어 = 없는 개념이 아니라, 합성으로 표현되는 개념</b>입니다.
+    손가락 번호도 상식과 반대라(1지=검지 … 5지=엄지) 앱에서 이름으로 바꿔 보여줍니다.
+  </div>
+  <div class="swatches">
+    <div class="sw" style="background:#FF6B5B">coral</div>
+    <div class="sw" style="background:#B9A9FF">lilac</div>
+    <div class="sw" style="background:#FFE3D5;color:#8A5B4A;text-shadow:none">peach</div>
+    <div class="sw" style="background:#7FD8B0;color:#14503A;text-shadow:none">mint</div>
+    <div class="sw" style="background:#FFF7F0;color:#8A7A70;text-shadow:none">cream</div>
+    <div class="sw" style="background:#241C1A">ink</div>
+  </div>
+</div>
+
+<div class="grid">
+
+<!-- ══ 0. 첫 실행 안내문 ══ -->
+<div class="frame">
+<div class="phone"><div class="notch"></div>
+  <div class="statusbar"><span>9:41</span><span>●●● ⌁ ▮</span></div>
+  <div class="screen" style="padding:6px 0 0">
+    <div class="intro">
+      <div class="intro-top">
+        <svg class="mascot" style="width:34px;height:34px" viewBox="0 0 100 100" aria-hidden="true">
+          <circle cx="50" cy="46" r="33" fill="#FFE3D5"/>
+          <circle cx="37" cy="40" r="4" fill="#241C1A"/><circle cx="63" cy="40" r="4" fill="#241C1A"/>
+          <ellipse cx="28" cy="52" rx="6.5" ry="4" fill="#FF6B5B" opacity=".4"/>
+          <ellipse cx="72" cy="52" rx="6.5" ry="4" fill="#FF6B5B" opacity=".4"/>
+          <g transform="rotate(-16 50 60)">
+            <rect x="45" y="44" width="11" height="27" rx="5.5" fill="#FFF7F0" stroke="#241C1A" stroke-width="3.2"/>
+            <rect x="29" y="64" width="33" height="22" rx="11" fill="#FFF7F0" stroke="#241C1A" stroke-width="3.2"/>
+          </g>
+        </svg>
+        <span class="intro-x">✕</span>
+      </div>
+      <div class="intro-h">
+        <b>수어는 한국어를<br>손으로 옮긴 게 아닙니다</b>
+        <span>농인이 쓰는, 문법이 따로 있는 언어예요.<br>시작하기 전에 네 가지만 알아두세요.</span>
+      </div>
+      <div class="intro-body">
+        <div class="rule a">
+          <div class="t">어미가 변하지 않아요</div>
+          <div class="d">한국어는 말끝이 계속 바뀌지만 수어는 하나입니다.
+            <span class="eg">보고싶다 · 보고싶어 · 보고싶었어 → 전부 같은 수어</span></div>
+        </div>
+        <div class="rule b">
+          <div class="t">조사가 없어요</div>
+          <div class="d">'이/가', '을/를'에 해당하는 손짓이 없습니다. 독자적인 기호가 있는 건 '부터'와 '와/과' 정도예요.</div>
+        </div>
+        <div class="rule c">
+          <div class="t">표정과 고개가 문법이에요</div>
+          <div class="d">눈썹을 올리면 질문이 되고, 고개를 저으면 부정이 됩니다. 손만 봐서는 문장이 끝나지 않아요.</div>
+        </div>
+        <div class="rule a">
+          <div class="t">시제는 동사 뒤에 붙여요</div>
+          <div class="d">'마침'·'중'·'계획'을 동사 뒤에 붙여 과거·현재·미래를 나타냅니다.</div>
+        </div>
+        <div class="rule n">
+          <div class="t">쉿은 '단어'를 가르쳐요</div>
+          <div class="d">문장은 어순과 표정이 달라서, 단어를 이어 붙인다고 수어 문장이 되지는 않아요.</div>
+        </div>
+      </div>
+      <div class="intro-foot">
+        <button class="btn primary">알겠어요, 시작할게요</button>
+        <button class="btn ghost">오늘 그만 보기</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="cap">0. 첫 실행 안내문 — 나가는 길 두 개<br>(우측 상단 ✕ · 하단 "오늘 그만 보기")</div>
+</div>
+
+<!-- ══ 1. 홈 ══ -->
+<div class="frame">
+<div class="phone"><div class="notch"></div>
+  <div class="statusbar"><span>9:41</span><span>●●● ⌁ ▮</span></div>
+  <div class="screen gap g12">
+
+    <div class="row" style="padding-top:6px">
+      <svg class="mascot" viewBox="0 0 100 100" aria-hidden="true">
+        <circle cx="50" cy="46" r="33" fill="#FFE3D5"/>
+        <circle cx="37" cy="40" r="4" fill="#241C1A"/><circle cx="63" cy="40" r="4" fill="#241C1A"/>
+        <ellipse cx="28" cy="52" rx="6.5" ry="4" fill="#FF6B5B" opacity=".4"/>
+        <ellipse cx="72" cy="52" rx="6.5" ry="4" fill="#FF6B5B" opacity=".4"/>
+        <g transform="rotate(-16 50 60)">
+          <rect x="45" y="44" width="11" height="27" rx="5.5" fill="#FFF7F0" stroke="#241C1A" stroke-width="3.2"/>
+          <rect x="29" y="64" width="33" height="22" rx="11" fill="#FFF7F0" stroke="#241C1A" stroke-width="3.2"/>
+        </g>
+      </svg>
+      <div class="hi">은비님, 오늘도 조용히<small>우리 단어 5개 · 3개 외웠어요</small></div>
+    </div>
+
+    <div class="today">
+      <div class="lab">오늘의 수어</div>
+      <div class="word">그리워하다</div>
+      <div class="also">그립다 · 사모 · 동경</div>
+      <div class="desc">오른손을 펴서 손바닥이 아래로 향하게 하여 오른쪽 관자놀이 가까이에 댔다가…</div>
+      <div class="hand"><img src="https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151117/211389/IMG000201697_700X466.jpg" alt="그리워하다 수어"></div>
+    </div>
+
+    <div class="card gap g10">
+      <div class="row">
+        <div class="row">
+          <div class="avatar" style="background:#FFE3D5">🐰</div>
+          <div class="avatar" style="background:#EFEAFF;margin-left:-8px">🐻</div>
+        </div>
+        <b style="font-size:13px">은비 &amp; 도현</b>
+        <span class="pill" style="margin-left:auto">3 / 5</span>
+      </div>
+      <div class="bar"><i style="width:60%"></i></div>
+      <div style="font-size:10px;color:var(--muted)">2개만 더 외우면 다 통해요</div>
+    </div>
+
+    <div class="row" style="gap:8px">
+      <button class="btn primary">연습하기</button>
+      <button class="btn soft">단어 찾기</button>
+    </div>
+
+    <div class="card" style="display:flex;align-items:center;gap:10px;padding:12px 14px">
+      <div class="avatar" style="background:#EFEAFF;width:30px;height:30px;font-size:14px">🐻</div>
+      <div style="font-size:11px;line-height:1.5">
+        <b>도현님이 방금 <span style="color:var(--coral)">만나다</span>를 외웠어요</b>
+        <div style="color:var(--muted)">이제 둘 다 아는 단어 3개</div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab on"><i>🏠</i>홈</div><div class="tab"><i>🔤</i>사전</div>
+      <div class="tab"><i>💌</i>우리</div><div class="tab"><i>🎯</i>연습</div>
+    </div>
+  </div>
+</div>
+<div class="cap">1. 홈 — 오늘의 수어(실제 단어·실제 설명)</div>
+</div>
+
+<!-- ══ 2. 사전 ══ -->
+<div class="frame">
+<div class="phone"><div class="notch"></div>
+  <div class="statusbar"><span>9:41</span><span>●●● ⌁ ▮</span></div>
+  <div class="screen gap g10">
+    <div class="hi" style="padding-top:6px">사전<small>12,943개 단어를 손으로</small></div>
+    <div class="search"><span>🔍</span><span>보고싶어</span></div>
+
+    <div class="note">
+      <b>두 수어를 이어서 표현해요</b>
+      '보고싶다'는 하나의 손짓이 아니라 <b style="display:inline">보다 + 원하다</b>입니다.
+      어미 '-어'는 수어에 없어서 떼고 찾았어요.
+    </div>
+
+    <div class="res">
+      <div class="c">
+        <img src="https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151222/232640/IMG000227011_700X466.jpg" alt="보다 수어">
+        <b>① 보다</b><span>검지손가락을 편 두 주먹을 상하로 엇갈리게</span>
+      </div>
+      <div class="c">
+        <img src="https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151117/211586/IMG000201931_700X466.jpg" alt="원하다 수어">
+        <b>② 원하다</b><span>검지·엄지손가락 끝을 목에 댔다가 내밀며</span>
+      </div>
+    </div>
+
+    <div class="locked" style="margin-top:auto;margin-bottom:8px;padding:11px">
+      <div class="t">두 단어를 우리 단어장에</div>
+      <button class="btn primary" style="padding:9px;font-size:12px;margin-top:8px">단어장에 담기</button>
+    </div>
+
+    <div class="tabs">
+      <div class="tab"><i>🏠</i>홈</div><div class="tab on"><i>🔤</i>사전</div>
+      <div class="tab"><i>💌</i>우리</div><div class="tab"><i>🎯</i>연습</div>
+    </div>
+  </div>
+</div>
+<div class="cap">2. 사전 — 어미를 떼고, 합성 단어는 순서대로<br>(손가락 번호는 이름으로 치환)</div>
+</div>
+
+<!-- ══ 3. 우리(단어장) ══ -->
+<div class="frame">
+<div class="phone"><div class="notch"></div>
+  <div class="statusbar"><span>9:41</span><span>●●● ⌁ ▮</span></div>
+  <div class="screen gap g10">
+    <div class="hi" style="padding-top:6px">우리 단어장<small>둘이 같이 외우는 5개</small></div>
+
+    <button class="btn primary">🔗 도현님에게 링크 보내기</button>
+
+    <div class="gap g8" style="overflow:hidden">
+      <div class="item">
+        <div class="thumb"><img src="https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151117/211389/IMG000201697_700X466.jpg" alt=""></div>
+        <div><div class="t">그리워하다</div><div class="s">그립다 · 사모 · 동경</div></div>
+        <div class="chk">💚</div>
+      </div>
+      <div class="item">
+        <div class="thumb"><img src="https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151223/232946/IMG000227380_700X466.jpg" alt=""></div>
+        <div><div class="t">사랑</div><div class="s">별칭 -애</div></div>
+        <div class="chk">💚</div>
+      </div>
+      <div class="item">
+        <div class="thumb"><img src="https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151220/231284/IMG000225243_700X466.jpg" alt=""></div>
+        <div><div class="t">만나다</div><div class="s">둘 다 외웠어요</div></div>
+        <div class="chk">💚</div>
+      </div>
+      <div class="item">
+        <div class="thumb"><img src="https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151216/228644/IMG000221836_700X466.jpg" alt=""></div>
+        <div><div class="t">괜찮다</div><div class="s">도현님이 아직</div></div>
+        <div class="chk">🌱</div>
+      </div>
+      <div class="item">
+        <div class="thumb"><img src="https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151219/230511/IMG000224279_700X466.jpg" alt=""></div>
+        <div><div class="t">미안</div><div class="s">도현님이 아직</div></div>
+        <div class="chk">🌱</div>
+      </div>
+
+      <div class="locked" style="padding:11px">
+        <div class="t">무료 단어장은 5개까지예요</div>
+        <div class="s">둘 중 한 명만 프로면 돼요</div>
+        <button class="btn primary" style="padding:9px;font-size:12px">₩4,900 / 월</button>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab"><i>🏠</i>홈</div><div class="tab"><i>🔤</i>사전</div>
+      <div class="tab on"><i>💌</i>우리</div><div class="tab"><i>🎯</i>연습</div>
+    </div>
+  </div>
+</div>
+<div class="cap">3. 우리 — 뜻은 사전 그대로. 고르는 것만 우리 몫</div>
+</div>
+
+<!-- ══ 4. 연습 ══ -->
+<div class="frame">
+<div class="phone"><div class="notch"></div>
+  <div class="statusbar"><span>9:41</span><span>●●● ⌁ ▮</span></div>
+  <div class="screen gap g12">
+    <div class="row" style="padding-top:8px">
+      <span style="font-size:15px">✕</span>
+      <div class="dots" style="flex:1"><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></div>
+      <span class="pill">3 / 5</span>
+    </div>
+
+    <div class="quiz">
+      <div class="lab">이 손, 무슨 뜻일까요?</div>
+      <img class="big" src="https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151223/232946/IMG000227380_700X466.jpg" alt="사랑 수어">
+    </div>
+
+    <div class="gap g8">
+      <div class="opt">만나다</div>
+      <div class="opt right">사랑 ✓</div>
+      <div class="opt">그리워하다</div>
+    </div>
+
+    <div class="card" style="margin-top:auto;margin-bottom:8px;background:var(--mint-s);box-shadow:none;
+         display:flex;align-items:center;gap:10px;padding:12px 14px">
+      <span style="font-size:22px">🎉</span>
+      <div><b style="font-size:13px;color:var(--mint-d)">잘했어요!</b>
+      <div style="font-size:10px;color:#3E8A6B;margin-top:2px">도현님도 이거 외웠대요</div></div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab"><i>🏠</i>홈</div><div class="tab"><i>🔤</i>사전</div>
+      <div class="tab"><i>💌</i>우리</div><div class="tab on"><i>🎯</i>연습</div>
+    </div>
+  </div>
+</div>
+<div class="cap">4. 연습 — 플래시카드 (카메라 채점은 여기 자리)</div>
+</div>
+
+<!-- ══ 5. 공유 카드 ══ -->
+<div class="frame">
+<div class="phone"><div class="notch"></div>
+  <div class="statusbar"><span>9:41</span><span>●●● ⌁ ▮</span></div>
+  <div class="screen gap g10">
+    <div class="hi" style="padding-top:6px">공유 카드<small>인스타 스토리에 올릴 크기</small></div>
+
+    <div class="share">
+      <div class="row">
+        <svg style="width:24px;height:24px;flex:0 0 auto" viewBox="0 0 100 100" aria-hidden="true">
+          <circle cx="50" cy="46" r="33" fill="rgba(255,255,255,.3)"/>
+          <circle cx="37" cy="40" r="4.5" fill="#fff"/><circle cx="63" cy="40" r="4.5" fill="#fff"/>
+          <g transform="rotate(-16 50 60)">
+            <rect x="45" y="44" width="11" height="27" rx="5.5" fill="none" stroke="#fff" stroke-width="4"/>
+            <rect x="29" y="64" width="33" height="22" rx="11" fill="none" stroke="#fff" stroke-width="4"/>
+          </g>
+        </svg>
+        <span class="brand">쉿</span>
+      </div>
+      <div class="ttl">오늘 우리가 배운<br>한국수어 3개</div>
+      <div class="res" style="grid-template-columns:1fr 1fr 1fr;gap:7px;margin-top:12px">
+        <div class="mini"><img src="https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151117/211389/IMG000201697_700X466.jpg" alt=""><b>그리워하다</b></div>
+        <div class="mini"><img src="https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151223/232946/IMG000227380_700X466.jpg" alt=""><b>사랑</b></div>
+        <div class="mini"><img src="https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20151220/231284/IMG000225243_700X466.jpg" alt=""><b>만나다</b></div>
+      </div>
+      <div class="quote">소리를 내지 않아도<br>전해지는 말이 있습니다.</div>
+      <div class="foot">한국수어 · 국립국어원 한국수어사전<br><b>쉿 — 소리 없이 말하는 법</b></div>
+    </div>
+
+    <button class="btn primary" style="margin-bottom:8px">이미지로 저장</button>
+
+    <div class="tabs">
+      <div class="tab"><i>🏠</i>홈</div><div class="tab"><i>🔤</i>사전</div>
+      <div class="tab on"><i>💌</i>우리</div><div class="tab"><i>🎯</i>연습</div>
+    </div>
+  </div>
+</div>
+<div class="cap">5. 공유 카드 — 실제 단어만. 크레딧 항상 노출</div>
+</div>
+
+</div>
+</body>
+</html>

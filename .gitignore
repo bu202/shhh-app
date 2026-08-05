@@ -7,3 +7,4 @@ scripts/all-resp.xml
 
 # 로그
 *.log
+node_modules/

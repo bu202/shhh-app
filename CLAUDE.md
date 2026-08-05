@@ -1,6 +1,43 @@
-# CLAUDE.md — 수어 번역기 (텍스트 → 한국수어 KSL)
+# CLAUDE.md — 쉿 (수어 번역기 → 앱 출시)
 
-빌드 도구 없는 Vanilla PWA. 파파고풍 UI. **Phase 1 = 텍스트→수어** (Phase 2 = 카메라 수어→텍스트).
+빌드 도구 없는 Vanilla PWA. **목표: 앱 출시.** 이름 `쉿`.
+연인·친구가 **실제 한국수어를 배워서** 소리 없이 대화하게 만드는 앱. 수어를 알리는 게 목적.
+
+## 📍 단계 — 어디까지 왔나
+
+완성(=Play 스토어 출시)까지 6단계. **현재 1·3단계 진행 중.**
+
+| 단계 | 내용 | 상태 |
+|---|---|---|
+| **0. 데이터 기반** | 사전 12,943 · 합성 2,481 · 손가락 표기 교정 · 검증 대장 구조 | ✅ **완료** |
+| **1. 정확성 보증** | 단어를 영상으로 대조해 대장에 쌓기 | 🔶 **도구 완성, 데이터 2건** |
+| **2. 제품 골격** | 우리 단어장 · 링크 공유 · 연습 | ✅ **완료** |
+| **3. 디자인 적용** | `design/mockup.html` → 실제 앱 | ✅ **완료** |
+| **4. 수익 구조** | 무료 5단어 벽 · 프로 상태 · 결제 이음새 | 🔶 **벽 완성, 결제는 5단계** |
+| **5. 출시** | 이름·아이콘·개인정보처리방침 → Bubblewrap → Play($25) | ⬜ 미착수 |
+| **6. 카메라 채점** (후순위) | 지화 32자모 점수 + 교정 안내 | ⬜ 뒤로 미룸 |
+
+**다음 할 일**: 5단계(출시 준비 — 아이콘·개인정보처리방침 → Bubblewrap → Play $25). 1단계는 단어를 넣을 때마다 계속.
+
+### 4단계에서 정한 것
+- **결제는 5단계로 미뤘다.** Play Billing 의 `acknowledge` 는 백엔드가 있어야 하고(안 하면 3일 뒤 자동 환불),
+  볼트 노트의 「안 할 것: 서버·백엔드」와 정면으로 부딪힌다. 그래서 지금은 **벽과 상태만** 만들고
+  결제 호출은 `requestPro()` **한 곳으로 격리**해 뒀다(그 안에 4단계 구현 순서가 주석으로 있음).
+  실제 수익을 켜려면 A) Cloudflare Worker($0, 서버 규칙 깸) B) 후원 링크 C) 현행 유지 중에서 사용자와 합의해야 한다.
+- 프로 상태는 `localStorage: shh-pro`. 개발 중엔 `?pro=1` / `?pro=0` 으로 벽 너머를 볼 수 있다.
+- 벽 문구는 `upsell()` 한 곳에서만 만든다 — 사전 화면과 단어장 화면에서 말이 갈리지 않게.
+
+### 2단계에서 정한 것
+- **단어장에 저장하는 건 표제어 문자열뿐** (`localStorage: shh-wordbook`). 뜻·그림은 매번 사전에서 다시 찾는다 —
+  사용자가 뜻을 정하지 않는다는 수칙이 자료구조에서부터 지켜지도록.
+- **링크 공유는 URL 조각**: `#w=<base64url(단어\n단어…)>`. 5단어 66자, 서버 0. 받으면 병합하고
+  `history.replaceState`로 해시를 지운다(새로고침 중복 방지). `scripts/test-book.mjs`가 한글 왕복을 검증.
+- **무료 5개**(`FREE_LIMIT`). 합성어는 부품 수만큼 차지한다(보고싶어 = 2칸).
+- **연습 문제는 단어장에서만 출제.** 안 배운 걸 묻지 않는다. 3개 미만이면 안내만.
+- 화면 전환은 `[data-screen]` ↔ `.tab[data-go]` 한 쌍. 새 화면은 이 두 속성만 붙이면 붙는다.
+
+⚠️ 볼트 노트(`~/Desktop/claude_brain/01-projects/translator.md`)의 「안 할 것」에 **서버·백엔드**가 있음.
+4단계 계정/결제가 여기 걸림 — 그 단계 들어가기 전에 사용자와 다시 합의할 것.
 
 - **라이브**: https://bu202.github.io/sueo-translator/
 - **레포**: https://github.com/bu202/sueo-translator (main 브랜치 = Pages 소스)
@@ -12,8 +49,11 @@
 
 ## 명령어
 ```bash
-# 로컬 실행 (SW는 file://에서 안 돎)
-python3 -m http.server 8000        # http://localhost:8000
+# 로컬 실행 (SW는 file://에서 안 돎). no-store 라 옛 JS/CSS 를 안 문다 — 함정 6 회피
+python3 scripts/serve.py 8000       # http://localhost:8000
+
+# 검증 (전부 통과해야 함)
+for t in book fingers compounds match assemble knn screen; do node scripts/test-$t.mjs; done
 
 # 데이터 수집 (키는 로컬 전용, 결과 JSON엔 키 미포함)
 node scripts/fetch-ksl.mjs '<서비스키>'     # 전체 사전 수집(~3700+)
@@ -28,8 +68,14 @@ node scripts/fetch-ksl.mjs --mock           # 매핑 로직 자가검증(키·�
 | `js/app.js` | 사전 인덱스·매칭·렌더·지화. 흐름: 입력→`matchSentence`(그리디)→`renderResults` |
 | `data/ksl-dict.json` | 이미지 사전(kcisa, 3,622·수형그림 O). `scripts/fetch-ksl.mjs`가 생성 |
 | `data/ksl-fulldict.json` | 전체 텍스트 사전(13,797·수형설명만, 그림 X). `scripts/fetch-fulldict.mjs`가 생성 |
+| `data/ksl-compounds.json` | **합성 수어 2,481**(헌금=바치다+돈). data.go.kr 15135637 CSV의 `결합정보` → `scripts/build-compounds.mjs` |
+| `data/ksl-verified.json` | **사람이 영상으로 확인한 것.** 자동 추출본을 이긴다. `scripts/verify.mjs`로 조회·기록 |
 | `scripts/fetch-ksl.mjs` | kcisa 이미지 사전 수집. `normalizeEntry`/`parseItems`가 API 교체 이음새 |
 | `scripts/fetch-fulldict.mjs` | data.go.kr odcloud 전체 사전 수집. `<일반인증키>` 필요 |
+| `scripts/_app.mjs` | 테스트가 `app.js` 를 통째로 평가할 때 쓰는 이음새. 브라우저 전역(localStorage·location) 스텁 |
+| `scripts/serve.py` | 개발용 no-store 정적 서버 |
+| `scripts/sim.py` | iOS 시뮬레이터 탭/스크린샷 (아래 「시뮬레이터로 확인하기」) |
+| `design/compare.html` | 시안(mockup-dict.html) ↔ 실제 앱 나란히 |
 | `assets/fingerspelling/*.jpg` | 지화(한글 지문자) 32장 (CC BY-SA 3.0) |
 | `service-worker.js` | network-first + 캐시 폴백 |
 | `docs/API_KEY_GUIDE.md` | 서비스키 발급 절차 |
@@ -48,6 +94,30 @@ node scripts/fetch-ksl.mjs --mock           # 매핑 로직 자가검증(키·�
   - 채택 시 파일 컬럼에 맞춰 `normalizeEntry`만 교체(이음새). 문장 번역이 아닌 단어 커버리지 확대용.
 
 ---
+
+## 시뮬레이터로 확인하기 (실제 앱처럼 도는지)
+
+크롬을 폰 크기로 줄이는 건 확인이 아니다. **Xcode 시뮬레이터가 진짜 WebKit**이고, 출시 대상도 거기다.
+
+```bash
+xcrun simctl boot "iPhone 17 Pro"; open -a Simulator   # 부팅 ~20초
+xcrun simctl launch booted com.apple.mobilesafari      # 안 띄우면 openurl 이 타임아웃
+xcrun simctl openurl booted "http://$(ipconfig getifaddr en0):8000/index.html#q=보고싶어"
+
+python3 scripts/sim.py shot /tmp/x.png   # 그냥 Read 로 보면 된다
+python3 scripts/sim.py tap 603 2112      # 좌표는 스크린샷 픽셀(1206x2622) 그대로
+```
+
+- **타이핑은 안 된다.** CGEvent 유니코드는 시뮬레이터 HID 로 안 들어간다. 그래서 화면은 **URL 로 만든다**:
+  `#q=<단어>` 단어 하나, `#w=<base64url>` 단어장. 링크는 `node -e '…Buffer.from(ws.join("\n")).toString("base64url")'`.
+- **Safari 캐시가 옛 JS 를 문다.** `scripts/serve.py`(no-store)로 띄우고, 그래도 옛것이 뜨면 **포트를 바꿔라**(8001).
+  URL 이 바뀌면 캐시 키가 달라져 확실히 새로 받는다. 시뮬레이터엔 하드리로드가 없다.
+- **해시만 바뀌면 리로드가 안 된다** — 앱을 열어둔 채 공유 링크를 누르면 아무 일도 안 일어났다.
+  `hashchange` 로 받도록 고쳤다(`openHash`). 같은 해시를 두 번 열면 이벤트가 안 나니 `?t=$(date +%s)` 를 붙여 확인할 것.
+- **결제는 어떤 시뮬레이터로도 확인 못 한다.** Play Billing 은 서명된 빌드를 내부 테스트 트랙에 올려야 열린다(5단계).
+  iOS Safari 에선 `getDigitalGoodsService` 가 없어 "결제는 앱(Play 스토어) 버전에서 열려요" 안내가 뜨는 게 정상.
+
+확인 완료(2026-08-05, iOS 26.4 / iPhone 17 Pro): 안내문 → 사전(보고싶어 = 보다+원하다 2카드) → 담기 → 우리 단어장 5개 벽 → ₩4,900 안내 → 연습 출제.
 
 ## ⚠️ 함정과 실수 (다음 세션은 반복하지 말 것)
 
@@ -76,6 +146,47 @@ node scripts/fetch-ksl.mjs --mock           # 매핑 로직 자가검증(키·�
 11. **`hidden` 속성 vs `display:flex`.** `.io { display:flex }`가 HTML `hidden` 속성(`[hidden]{display:none}`)을 덮어써서 안 숨겨짐. → 전역 `[hidden]{display:none !important}` 추가로 해결. display 규칙 있는 요소를 hidden으로 토글하면 항상 주의.
 
 12. **MediaPipe는 CDN 동적 import.** `import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs')` + WASM fileset + `hand_landmarker.task`(~7MB, googleapis). **오프라인/배포 시 로컬 vendoring 필요**(현재 CDN 의존, SW 미캐시). 카메라는 secure context(https/localhost) 필수. 모드 이탈 시 트랙 stop 필수(프라이버시).
+
+13. **`app.js` 최상위에서 브라우저 전역을 쓰면 테스트가 전부 죽는다.** 4단계에서 `localStorage`/`location`(`?pro=` 처리)을
+    최상위에 넣자 `app.js` 를 통째로 평가하는 테스트 4개가 한꺼번에 ReferenceError. 고친 자리만 보고 넘어가서 못 봤다.
+    → 스텁을 `scripts/_app.mjs` 한 곳에 모았다. 새 전역을 쓰면 **여기 스텁도 같이 늘린다**.
+
+---
+
+---
+
+## ⛔ 절대 규칙 — 실제 수어만 보여준다
+
+앱의 목적이 **수어를 알리는 것**이라 틀린 수어를 보여주면 목적을 정면으로 배신한다.
+
+1. **뜻을 지어내지 않는다.** 사용자가 단어에 임의의 뜻을 붙이는 기능은 만들지 않는다.
+2. **그림은 반드시 그 표제어의 것.** 아무 지화 사진이나 자리채움으로 쓰지 않는다(v1 목업에서 실제로 저지른 실수).
+3. **사전에 없다 ≠ 개념이 없다.** `보고싶다`는 표제어가 없지만 실제로는 **[보다]+[원하다]** 합성이다.
+   사전만 보고 "그리워하다와 같은 말"로 넘겨짚었다가 틀렸다. **그립다는 별개 단어다.**
+4. **손가락 번호는 상식과 반대**: `1지=검지 2지=중지 3지=약지 4지=새끼 5지=엄지`.
+   설명의 84%가 이 표기를 쓴다 → `namedFingers()`가 렌더 직전 이름으로 치환(+조사 보정). `scripts/test-fingers.mjs`가 회귀검증.
+
+### 새 단어를 넣기 전 절차
+```bash
+npm install                             # 최초 1회 — scripts/ 전용 devDependency(@anthropic-ai/sdk)
+node scripts/screen.mjs <단어>          # 유튜브 검색 → Haiku가 "볼 만한 영상" 순위만 매김(판정 아님)
+node scripts/screen.mjs <단어> --raw    # 키 없이 검색 결과만
+node scripts/verify.mjs <단어>          # 앱이 지금 뭐라 답하는지 + 확인할 유튜브 검색 링크
+# → 영상을 실제로 보고 확인한 뒤에만
+node scripts/verify.mjs --add "<단어>" "<부품1+부품2>" "<영상URL>" "<근거메모>"
+node scripts/verify.mjs --check         # 대장이 사전과 아직 맞는지
+node scripts/test-compounds.mjs         # 문장에서 실제로 잡히는지
+```
+- 출처는 **국립국어원이 아니어도 된다.** 통용되는지가 기준. 다만 대장에 URL과 근거(몇 초 자막 등)를 남긴다.
+- **Claude API를 검증자로 세우지 않는다.** 손 그림 판독은 이 프로젝트에서 두 번 틀렸다(지화 ㅗ 오판,
+  "보고싶다=그리워하다" 오판). API는 *후보를 좁히는 데만* 쓴다 — 유튜브 검색 결과 중 그 단어를 실제로
+  가르치는 영상 고르기, 사전 설명 두 개가 같은 동작인지 텍스트 비교, 확인 우선순위 매기기. 전부 텍스트
+  작업이고 틀려도 사람이 거른다. **최종 판정(`--add`)은 항상 사람.**
+  비용 참고(2026-08): 텍스트 대조는 Haiku 4.5로 단어당 ₩2.5, 전체 12,943단어 ₩33,000(Batch API 50% 할인 시 ₩16,000).
+  비전 대조는 Opus 5로 단어당 ₩77 — 전수(₩103만)는 낭비고 의심 케이스 100개(₩7,700)면 충분. 병목은 비용이 아니라 사람이 영상 보는 시간.
+- **유튜브 재생목록/영상은 WebFetch로 못 읽는다**(JS 렌더). Chrome으로 열고 `javascript_tool`로
+  `video.currentTime`을 옮겨가며 `zoom` 캡처하면 자막과 손모양을 읽을 수 있다.
+- ⚠️ 영상 내용을 프레임으로만 확인하는 것은 한계가 있다. 확신 없으면 대장에 넣지 말고 미검증으로 둔다.
 
 ---
 

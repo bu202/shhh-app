@@ -1,9 +1,8 @@
 // 문장 매칭 자체검증. `node scripts/test-match.mjs`
 // app.js 실제 buildIndex/matchSentence를 mock 사전으로 검증(로직 중복 없음).
-import { readFileSync } from "node:fs";
+import { loadApp } from "./_app.mjs";
 
-const src = readFileSync(new URL("../js/app.js", import.meta.url), "utf8").replace(/\nmain\(\);\s*$/, "\n");
-const M = new Function(src + "\n; return { buildIndex, matchSentence };")();
+const M = loadApp("buildIndex, matchSentence");
 
 const MOCK = [
   { word: "미안", aliases: [] },

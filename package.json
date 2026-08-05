@@ -1,0 +1,9 @@
+{
+  "name": "shh-ksl",
+  "private": true,
+  "type": "module",
+  "description": "쉿 — 개발용 스크립트 전용. 배포되는 앱(index.html/js/css)은 의존성 0.",
+  "devDependencies": {
+    "@anthropic-ai/sdk": "^0.115.0"
+  }
+}
