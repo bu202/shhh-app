@@ -246,15 +246,12 @@ function compoundGroup(word, combo, showHead = true) {
     head.append(b, `'${word}'는 하나의 손짓이 아니라 `, parts, "입니다. 한국어의 말끝은 수어에 없어서 떼고 찾았어요.");
     group.appendChild(head);
   }
-  const cards = document.createElement("div");
-  cards.className = "cards" + (combo.parts.length === 1 ? " one" : "");
-  group.appendChild(cards);
-  combo.parts.forEach((p, n) => {
-    const e = (INDEX.get(norm(p)) || [])[0];
-    if (!e) return;
-    const name = labels[n] === p ? p : labels[n] + " (" + p + ")";
-    cards.appendChild(card("①②③④⑤"[n] + " " + name, namedFingers(e.description), entryFrames(e), ""));
-  });
+  group.appendChild(cardRow(combo.parts.map((p, n) => {
+    const e = lookup(p); // @핀이 붙어 있으면 그 수형으로. 동음이의가 있는 표제어(보다) 때문에 필요.
+    if (!e) return null;
+    const name = labels[n] === bare(p) ? bare(p) : labels[n] + " (" + bare(p) + ")";
+    return card("①②③④⑤"[n] + " " + name, namedFingers(e.description), entryFrames(e), "");
+  }).filter(Boolean)));
   if (combo.verified && combo.source) {
     const src = document.createElement("p");
     src.className = "combo-src";
@@ -328,7 +325,7 @@ function renderResults(tokens) {
 
   // 담기 대상: 화면에 뜬 실제 표제어. 합성이면 부품을 각각 담는다(그래야 연습에 낼 수 있다).
   lastWords = [...new Set(tokens.flatMap((t) =>
-    t.type === "entry" ? [t.entries[0].word] : t.type === "compound" ? t.combo.parts : []))];
+    t.type === "entry" ? [pinned(t.entries[0])] : t.type === "compound" ? t.combo.parts : []))];
   refreshStash();
 }
 
@@ -357,6 +354,7 @@ async function main() {
 
   setupWordbook();
   const go = setupTabs();
+  go("home"); // 첫 화면. 링크(#q/#w)로 들어왔으면 바로 아래 openHash 가 옮긴다.
 
   // 링크로 들어온 것 처리. #w=단어장 / #q=단어 하나.
   // 앱을 열어둔 채 링크를 누르면 해시만 바뀌고 리로드가 안 된다 → hashchange 로도 받는다.
@@ -370,37 +368,14 @@ async function main() {
   addEventListener("hashchange", openHash);
   openHash();
 
-  // 카메라(손 읽기)는 6단계로 미뤄 화면에서 뺐다. 아래 코드는 그대로 살아 있으니
-  // #camera 마크업만 되살리고 setupModes()/setupSignInput() 호출을 켜면 다시 동작한다.
+  // 카메라(손 읽기)는 6단계로 미뤄 화면에서 뺐다. 검출·KNN 코드는 그대로 살아 있으니
+  // #camera 마크업 + data-go="camera" 탭을 붙이고 setupSignInput() 을 켜면 다시 동작한다.
+  // (모드 전환 전용 setupModes 는 지웠다 — 화면 전환은 setupTabs 하나로 한다.)
 }
 
 function debounce(fn, ms) {
   let t;
   return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
-}
-
-// --- 화면 전환 (사전 / 손 읽기) ---
-function setupModes() {
-  const t2s = document.getElementById("mode-t2s");
-  const s2t = document.getElementById("mode-s2t");
-  const textSections = [document.querySelector(".io"), document.getElementById("result")];
-  const cam = document.getElementById("camera");
-  const title = document.getElementById("screen-title");
-  const sub = document.getElementById("screen-sub");
-
-  const setMode = (isCamera) => {
-    t2s.classList.toggle("on", !isCamera);
-    s2t.classList.toggle("on", isCamera);
-    t2s.setAttribute("aria-selected", String(!isCamera));
-    s2t.setAttribute("aria-selected", String(isCamera));
-    textSections.forEach((el) => (el.hidden = isCamera));
-    cam.hidden = !isCamera;
-    title.firstChild.textContent = isCamera ? "손 읽기" : "사전";
-    sub.textContent = isCamera ? "지문자를 카메라로" : DICT_SUB;
-    if (isCamera) startHandTracking(); else stopHandTracking();
-  };
-  t2s.addEventListener("click", () => setMode(false));
-  s2t.addEventListener("click", () => setMode(true));
 }
 
 // ══ 우리 단어장 ══════════════════════════════════════════════════════
@@ -443,7 +418,23 @@ const saveBook = () => localStorage.setItem(BOOK_KEY, JSON.stringify(BOOK));
 const bookHas = (w) => BOOK.includes(w);
 
 // 표제어 -> 사전 항목. 없으면 null(사전이 바뀌어 사라진 단어).
-const lookup = (w) => (INDEX.get(norm(w)) || [])[0] || null;
+//
+// ⚠️ 같은 표제어가 여러 수형으로 있다. '보다'는 [시각]과 [비교]가 둘 다 표제어 "보다"라서
+//    첫 번째를 집으면 뜻이 다른 수어가 뜬다(⛔ 실제 수어만 보여준다 위반).
+//    그래서 "보다@IMG000227009" 처럼 @뒤에 그림 파일 이름을 적어 수형을 못박을 수 있게 했다.
+//    @가 없으면 종전대로 첫 후보. 못박은 그림이 사라졌으면 첫 후보로 떨어진다(빈 화면 대신).
+const bare = (w) => w.split("@")[0];
+// 단어장에 담을 때 쓰는 이름. 동음이의가 있는 표제어는 **화면에 뜬 그 수형**을 못박아 담는다 —
+// 안 그러면 단어장·연습에서 다른 뜻의 수어로 바뀐다.
+function pinned(e) {
+  const id = ((e.media?.src?.[0] || "").match(/IMG\d+/) || [])[0];
+  return id && (INDEX.get(norm(e.word)) || []).length > 1 ? e.word + "@" + id : e.word;
+}
+function lookup(w) {
+  const [word, pin] = String(w).split("@");
+  const c = INDEX.get(norm(word)) || [];
+  return (pin && c.find((e) => (e.media?.src?.[0] || "").includes(pin))) || c[0] || null;
+}
 
 // 링크 공유: 서버가 없으므로 단어 목록 자체를 URL 조각에 담는다.
 // UTF-8 → base64url. 12단어면 150자 안쪽이라 압축은 아직 필요 없다.
@@ -496,14 +487,14 @@ function renderWordbook() {
     item.appendChild(thumb);
 
     const txt = document.createElement("div");
-    const t = document.createElement("div"); t.className = "t"; t.textContent = w;
+    const t = document.createElement("div"); t.className = "t"; t.textContent = bare(w);
     const s = document.createElement("div"); s.className = "s";
     s.textContent = e ? (e.aliases?.length ? e.aliases.join(" · ") : "국립국어원 한국수어사전") : "사전에서 찾을 수 없어요";
     txt.append(t, s); item.appendChild(txt);
 
     const del = document.createElement("button");
     del.className = "chk"; del.type = "button";
-    del.setAttribute("aria-label", w + " 빼기"); del.textContent = "✕";
+    del.setAttribute("aria-label", bare(w) + " 빼기"); del.textContent = "✕";
     del.addEventListener("click", () => {
       BOOK = BOOK.filter((x) => x !== w); saveBook(); renderWordbook(); refreshStash();
     });
@@ -584,9 +575,9 @@ function startQuiz() {
   nextQuestion();
 }
 function nextQuestion() {
-  const answer = pick(quiz.pool, 1)[0];
-  const wrong = pick(quiz.pool.filter((w) => w !== answer), 2);
-  quiz.q = { answer, options: pick([answer, ...wrong], 3), done: false };
+  // 셋을 한 번에 뽑고 그중 하나를 정답으로 삼는다 — 정답 위치가 저절로 섞인다.
+  const options = pick(quiz.pool, 3);
+  quiz.q = { answer: options[Math.floor(Math.random() * options.length)], options, done: false };
   renderPractice();
 }
 function renderPractice() {
@@ -626,22 +617,24 @@ function renderPractice() {
   q.append(lab, img); box.appendChild(q);
   startPlayer(img, entryFrames(e));
 
+  const btns = new Map(); // 보기 -> 버튼. 글자로 되찾지 않는다 — @핀이 다른 동음이의는 글자가 같다.
   for (const opt of quiz.q.options) {
     const b = document.createElement("button");
-    b.className = "opt"; b.textContent = opt;
+    b.className = "opt"; b.textContent = bare(opt);
+    btns.set(opt, b);
     b.addEventListener("click", () => {
       if (quiz.q.done) return;
       quiz.q.done = true;
       const right = opt === quiz.q.answer;
       if (right) quiz.ok++;
       b.classList.add(right ? "right" : "wrong");
-      if (!right) [...box.querySelectorAll(".opt")].find((x) => x.textContent === quiz.q.answer)?.classList.add("right");
+      if (!right) btns.get(quiz.q.answer)?.classList.add("right");
 
       const fb = document.createElement("div");
       fb.className = "note" + (right ? "" : " bad");
       fb.innerHTML = right
         ? "<b>잘했어요!</b>" + namedFingers(e.description)
-        : `<b>아쉬워요 — 정답은 '${quiz.q.answer}'</b>` + namedFingers(e.description);
+        : `<b>아쉬워요 — 정답은 '${bare(quiz.q.answer)}'</b>` + namedFingers(e.description);
       box.appendChild(fb);
 
       const next = document.createElement("button");
@@ -654,8 +647,75 @@ function renderPractice() {
   }
 }
 
+// ══ 홈 ═══════════════════════════════════════════════════════════════
+// 오늘의 수어 + 우리 단어장 요약. 둘 다 이미 있는 자료만 쓴다 — 새로 저장하는 건 없다.
+// ponytail: "최근 찾은 단어"는 안 만든다. 저장소가 하나 더 늘고, 없어도 홈이 성립한다.
+
+// 하루의 기준. UTC 라 한국에선 오전 9시에 날이 바뀌지만, 안내문과 오늘의 수어가
+// 같은 함수를 써야 둘이 어긋나지 않는다. 바꾸려면 여기 한 곳만.
+const today = () => new Date().toISOString().slice(0, 10);
+
+// 날짜로 정해지는 단어. 무작위면 기기마다 달라지는데, 이 앱의 전제가 "둘이 같이 외운다"라
+// 같은 날엔 두 사람이 같은 단어를 봐야 한다. 그래서 날짜 문자열 해시를 씨앗으로 쓴다.
+// FNV-1a. 날짜 문자열은 서로 너무 닮아서(2026-08-05 / 2026-08-06) h*31 로는 값이 뭉친다 —
+// 실측으로 365일에 서로 다른 단어가 288개(FNV 는 355개). test-home.mjs 가 이 분산을 지킨다.
+function dailyIndex(dateStr, len) {
+  let h = 2166136261;
+  for (const ch of dateStr) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; }
+  return h % len;
+}
+// 후보: 그림이 있고 표제어가 짧고 깨끗한 것. 변이형(①②)·기호 붙은 표제어는 첫 화면감이 아니다.
+const dailyPool = (dict) => dict.filter((e) => e.media?.src?.length && e.word.length <= 4 && /^[가-힣]+$/.test(e.word));
+function todaysWord(dict, dateStr) {
+  const pool = dailyPool(dict);
+  return pool.length ? pool[dailyIndex(dateStr, pool.length)] : null;
+}
+
+function renderHome() {
+  const box = document.getElementById("home");
+  box.innerHTML = "";
+
+  const e = todaysWord(DICT, today());
+  if (e) {
+    const head = document.createElement("p");
+    head.className = "note";
+    const b = document.createElement("b");
+    b.textContent = "오늘의 수어";
+    head.append(b, "매일 하나씩 바뀌어요. 같은 날엔 둘 다 같은 단어를 봅니다.");
+    box.append(head, cardRow([card(e.word, namedFingers(e.description), entryFrames(e), "")]));
+
+    const open = document.createElement("button");
+    open.className = "btn-primary"; open.textContent = `'${e.word}' 사전에서 보기`;
+    open.addEventListener("click", () => showWord(e.word));
+    box.appendChild(open);
+  }
+
+  // 우리 단어장 요약. 연습은 3개부터 열린다(startQuiz 와 같은 기준).
+  const sum = document.createElement("div");
+  sum.className = "locked";
+  const t = document.createElement("div");
+  t.className = "t"; t.textContent = BOOK.length ? `우리 단어장 ${BOOK.length}개` : "우리 단어장이 비어 있어요";
+  const s = document.createElement("p");
+  s.className = "s"; s.textContent = BOOK.length >= 3 ? "연습 문제를 낼 수 있어요" : "3개부터 연습이 열려요";
+  const btn = document.createElement("button");
+  btn.className = "btn-primary sm";
+  btn.textContent = BOOK.length >= 3 ? "연습하러 가기" : "사전에서 단어 찾기";
+  btn.addEventListener("click", () => GO(BOOK.length >= 3 ? "quiz" : "dict"));
+  sum.append(t, s, btn);
+  box.appendChild(sum);
+}
+
+// 단어를 사전 화면에 띄운다. 홈에서 부른다.
+function showWord(w) {
+  document.getElementById("input").value = w;
+  renderResults(matchSentence(w));
+  GO("dict");
+}
+
 // ══ 화면 전환 ════════════════════════════════════════════════════════
+let GO = () => {}; // setupTabs 가 채운다. 홈 카드에서 화면을 옮길 때 쓴다.
 const SCREEN_TITLE = {
+  home: ["쉿", () => "소리 없이 말하는 법"],
   dict: ["사전", () => DICT_SUB],
   book: ["우리 단어장", () => (BOOK.length ? `둘이 같이 외우는 ${BOOK.length}개` : "아직 비어 있어요")],
   quiz: ["연습", () => "손모양 보고 뜻 맞히기"],
@@ -672,10 +732,14 @@ function setupTabs() {
     const [title, sub] = SCREEN_TITLE[name];
     document.getElementById("screen-title").firstChild.textContent = title;
     document.getElementById("screen-sub").textContent = sub();
+    if (name === "home") renderHome();
     if (name === "book") renderWordbook();
     if (name === "quiz") { startQuiz(); renderPractice(); }
+    // 담기 박스는 화면 전환만으로 켜지면 안 된다 — 결과가 없으면 빈 점선 상자가 남는다.
+    if (name === "dict") refreshStash();
   };
   tabs.forEach((t) => t.addEventListener("click", () => go(t.dataset.go)));
+  GO = go;
   return go;
 }
 
@@ -685,15 +749,14 @@ function setupTabs() {
 const INTRO_KEY = "shh-intro-muted";
 function setupIntro() {
   const box = document.getElementById("intro");
-  const today = new Date().toISOString().slice(0, 10);
-  if (localStorage.getItem(INTRO_KEY) === today) return;
+  if (localStorage.getItem(INTRO_KEY) === today()) return;
   box.hidden = false;
 
   const close = () => { box.hidden = true; };
   document.getElementById("intro-close").addEventListener("click", close);
   document.getElementById("intro-ok").addEventListener("click", close);
   document.getElementById("intro-mute").addEventListener("click", () => {
-    localStorage.setItem(INTRO_KEY, today);
+    localStorage.setItem(INTRO_KEY, today());
     close();
   });
 }

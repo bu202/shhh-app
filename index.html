@@ -10,20 +10,23 @@
   <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
+  <!-- 마스코트 원본. 쓰는 곳에선 <use href="#mascot"> 로 부른다(안내문·헤더 두 곳). -->
+  <svg hidden aria-hidden="true"><symbol id="mascot" viewBox="0 0 100 100">
+    <circle cx="50" cy="46" r="33" fill="#FFE3D5"/>
+    <circle cx="37" cy="40" r="4" fill="#241C1A"/><circle cx="63" cy="40" r="4" fill="#241C1A"/>
+    <ellipse cx="28" cy="52" rx="6.5" ry="4" fill="#FF6B5B" opacity=".4"/>
+    <ellipse cx="72" cy="52" rx="6.5" ry="4" fill="#FF6B5B" opacity=".4"/>
+    <g transform="rotate(-16 50 60)">
+      <rect x="45" y="44" width="11" height="27" rx="5.5" fill="#FFF7F0" stroke="#241C1A" stroke-width="3.2"/>
+      <rect x="29" y="64" width="33" height="22" rx="11" fill="#FFF7F0" stroke="#241C1A" stroke-width="3.2"/>
+    </g>
+  </symbol></svg>
+
   <!-- 첫 실행 안내문. 나가는 길 두 개: 우측 상단 ✕ · 하단 "오늘 그만 보기" -->
   <div id="intro" class="intro-backdrop" hidden>
     <section class="intro" role="dialog" aria-modal="true" aria-labelledby="intro-title">
       <div class="intro-top">
-        <svg class="mascot sm" viewBox="0 0 100 100" aria-hidden="true">
-          <circle cx="50" cy="46" r="33" fill="#FFE3D5"/>
-          <circle cx="37" cy="40" r="4" fill="#241C1A"/><circle cx="63" cy="40" r="4" fill="#241C1A"/>
-          <ellipse cx="28" cy="52" rx="6.5" ry="4" fill="#FF6B5B" opacity=".4"/>
-          <ellipse cx="72" cy="52" rx="6.5" ry="4" fill="#FF6B5B" opacity=".4"/>
-          <g transform="rotate(-16 50 60)">
-            <rect x="45" y="44" width="11" height="27" rx="5.5" fill="#FFF7F0" stroke="#241C1A" stroke-width="3.2"/>
-            <rect x="29" y="64" width="33" height="22" rx="11" fill="#FFF7F0" stroke="#241C1A" stroke-width="3.2"/>
-          </g>
-        </svg>
+        <svg class="mascot sm" viewBox="0 0 100 100" aria-hidden="true"><use href="#mascot"/></svg>
         <button id="intro-close" class="intro-x" aria-label="안내문 닫기">✕</button>
       </div>
       <div class="intro-h">
@@ -62,21 +65,15 @@
 
   <main class="app">
     <header class="topbar">
-      <svg class="mascot" viewBox="0 0 100 100" aria-hidden="true">
-        <circle cx="50" cy="46" r="33" fill="#FFE3D5"/>
-        <circle cx="37" cy="40" r="4" fill="#241C1A"/><circle cx="63" cy="40" r="4" fill="#241C1A"/>
-        <ellipse cx="28" cy="52" rx="6.5" ry="4" fill="#FF6B5B" opacity=".4"/>
-        <ellipse cx="72" cy="52" rx="6.5" ry="4" fill="#FF6B5B" opacity=".4"/>
-        <g transform="rotate(-16 50 60)">
-          <rect x="45" y="44" width="11" height="27" rx="5.5" fill="#FFF7F0" stroke="#241C1A" stroke-width="3.2"/>
-          <rect x="29" y="64" width="33" height="22" rx="11" fill="#FFF7F0" stroke="#241C1A" stroke-width="3.2"/>
-        </g>
-      </svg>
-      <h1 id="screen-title">사전<small id="screen-sub">단어를 손으로</small></h1>
+      <svg class="mascot" viewBox="0 0 100 100" aria-hidden="true"><use href="#mascot"/></svg>
+      <h1 id="screen-title">쉿<small id="screen-sub">소리 없이 말하는 법</small></h1>
     </header>
 
+    <!-- ── 홈 (첫 화면) ── -->
+    <section id="home" class="result" data-screen="home"></section>
+
     <!-- ── 사전 ── -->
-    <div class="io" data-screen="dict">
+    <div class="io" data-screen="dict" hidden>
       <label class="visually-hidden" for="input">찾을 말</label>
       <div class="search">
         <span aria-hidden="true">🔍</span>
@@ -84,7 +81,7 @@
       </div>
     </div>
 
-    <section id="result" class="result" data-screen="dict" aria-live="polite">
+    <section id="result" class="result" data-screen="dict" aria-live="polite" hidden>
       <p class="hint">찾을 말을 입력하면 바로 표시돼요.<br>예: 보고싶어 · 사랑 · 고맙습니다</p>
     </section>
 
@@ -110,8 +107,8 @@
     </footer>
 
     <nav class="tabs" aria-label="화면">
-      <button class="tab" disabled title="곧 나와요"><i>🏠</i>홈</button>
-      <button class="tab on" data-go="dict" aria-selected="true"><i>🔤</i>사전</button>
+      <button class="tab on" data-go="home" aria-selected="true"><i>🏠</i>홈</button>
+      <button class="tab" data-go="dict" aria-selected="false"><i>🔤</i>사전</button>
       <button class="tab" data-go="book" aria-selected="false"><i>💌</i>우리</button>
       <button class="tab" data-go="quiz" aria-selected="false"><i>🎯</i>연습</button>
     </nav>

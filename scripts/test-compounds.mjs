@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import assert from "node:assert";
 import { loadApp } from "./_app.mjs";
 
-const M = loadApp("buildIndex, matchSentence, conjugationNormalize, norm, COMPOUNDS");
+const M = loadApp("buildIndex, matchSentence, conjugationNormalize, norm, COMPOUNDS, lookup");
 
 const load = (p) => JSON.parse(readFileSync(new URL("../data/" + p, import.meta.url), "utf8"));
 const dict = load("ksl-dict.json");
@@ -25,6 +25,11 @@ for (const q of ["보고싶다", "보고싶어", "보고싶었어", "보고 싶�
   assert.equal(t.type, "compound", `${q}: 합성으로 안 잡힘 (type=${t.type})`);
   assert.deepEqual(t.combo.labels, ["보다", "원하다"], `${q}: 부품이 다름`);
   assert.ok(t.combo.verified, `${q}: 검증본이 아님`);
+  // ⛔ 실제 수어만 보여준다: '보다'는 사전에 수형이 둘(시각 / 조사 '~보다')이라
+  //    못박지 않으면 첫 후보인 조사 쪽이 뜬다. 그림 파일까지 확인한다.
+  const e = M.lookup(t.combo.parts[0]);
+  assert.match(e.media.src[0], /IMG000227009/, `${q}: '보다'가 [시각] 수형이 아님 — ${e.description}`);
+  assert.match(e.description, /두 눈에/, `${q}: '보다' 설명이 눈과 무관함`);
 }
 
 // 2. 사전에 그림이 있는 말은 단일 표제어가 이기고, 합성은 "어떻게 만들어졌나"로만 붙는다.
@@ -35,10 +40,11 @@ for (const [w, parts] of [["두통", ["머리", "아프다"]], ["헌금", ["바�
   assert.deepEqual(c.parts, parts, `${w}: 결합정보가 다름`);
 }
 
-// 3. 모든 합성 부품은 사전에 있어야 한다 — 없으면 화면에 빈 카드가 뜬다.
+// 3. 모든 합성 부품은 사전에서 찾혀야 한다 — 없으면 화면에 빈 카드가 뜬다.
+//    앱이 실제로 쓰는 lookup(@핀 포함)으로 확인한다.
 let broken = 0;
 for (const [key, v] of M.COMPOUNDS) {
-  for (const p of v.parts) if (!M.matchSentence(p).some((t) => t.type === "entry")) { broken++; break; }
+  for (const p of v.parts) if (!M.lookup(p)) { broken++; break; }
 }
 assert.equal(broken, 0, `부품이 사전에 없는 합성 ${broken}건`);
 
