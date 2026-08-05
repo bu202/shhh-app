@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """iOS 시뮬레이터 조작. 좌표는 `simctl io screenshot` 픽셀(1206x2622).
   python3 sim.py tap 603 2112
-  python3 sim.py type 보고싶어
   python3 sim.py shot out.png
+
+타이핑은 없다 — CGEvent 유니코드는 시뮬레이터 HID 로 안 들어간다.
+화면은 URL 로 만든다: #q=<단어> / #w=<base64url>. (CLAUDE.md 「시뮬레이터로 확인하기」)
 """
 import subprocess, sys, time
 import Quartz
@@ -30,18 +32,6 @@ def tap(dx, dy):
         time.sleep(0.05)
     print(f"tap({dx},{dy}) -> host({x:.0f},{y:.0f})")
 
-def type_text(s):
-    # 한글은 키코드로 못 친다 — 유니코드 문자열을 그대로 키이벤트에 실어 보낸다.
-    focus()
-    for ch in s:
-        for down in (True, False):
-            e = Quartz.CGEventCreateKeyboardEvent(None, 0, down)
-            Quartz.CGEventKeyboardSetUnicodeString(e, len(ch), ch)
-            Quartz.CGEventPost(Quartz.kCGHIDEventTap, e)
-            time.sleep(0.02)
-        time.sleep(0.06)
-    print(f"type({s})")
-
 def shot(path):
     subprocess.run(["xcrun", "simctl", "io", "booted", "screenshot", path],
                    capture_output=True)
@@ -50,5 +40,4 @@ def shot(path):
 if __name__ == "__main__":
     cmd, *a = sys.argv[1:]
     {"tap": lambda: tap(float(a[0]), float(a[1])),
-     "type": lambda: type_text(" ".join(a)),
      "shot": lambda: shot(a[0])}[cmd]()

@@ -62,7 +62,8 @@ function selftest() {
 function build(csvPath) {
   const rows = parseCsv(readFileSync(csvPath, "utf8").replace(/^﻿/, ""));
   const hdr = rows[0].map((h) => h.trim());
-  const [iWord, iCombo, iDesc] = ["한국어 대응표현", "결합정보", "수형설명"].map((k) => {
+  // 수형설명은 안 쓴다 — 앱은 부품 설명을 사전(INDEX)에서 다시 찾는다.
+  const [iWord, iCombo] = ["한국어 대응표현", "결합정보"].map((k) => {
     const i = hdr.indexOf(k);
     if (i < 0) throw new Error(`컬럼 없음: ${k} (있는 컬럼: ${hdr.join(", ")})`);
     return i;
@@ -85,7 +86,7 @@ function build(csvPath) {
     if (!parts.every((p) => known.has(p))) { missingPart++; continue; }
     // 한국어 대응표현은 "퇴학,퇴교" 처럼 동의어 묶음 — 전부 같은 합성으로 넣는다.
     for (const w of (r[iWord] || "").split(",").map((x) => x.trim()).filter(Boolean)) {
-      if (!out[w]) out[w] = { parts, desc: (r[iDesc] || "").trim() };
+      if (!out[w]) out[w] = { parts };
     }
   }
 

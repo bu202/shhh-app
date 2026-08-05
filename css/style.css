@@ -189,7 +189,6 @@ body {
 }
 .tab i { font-style: normal; font-size: 18px; filter: grayscale(1); opacity: .45; }
 .tab.on { color: var(--coral); } .tab.on i { filter: none; opacity: 1; }
-.tab:disabled { opacity: .45; cursor: default; }
 
 
 .credit { text-align: center; color: var(--muted); font-size: 10.5px; line-height: 1.7; padding: 4px 16px 12px; }
