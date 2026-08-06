@@ -134,6 +134,7 @@ node scripts/fetch-ksl.mjs --mock           # 매핑 로직 자가검증(키·�
 |---|---|
 | `index.html` | 진입점: 안내문 + 헤더 + 4화면(`data-screen`: home·dict·book·quiz) + 하단 탭 + 크레딧 |
 | `js/app.js` | 사전 인덱스·매칭·렌더·지화. 흐름: 입력→`matchSentence`(그리디)→`renderResults` |
+| `js/camera.js` | **6단계 카메라**(MediaPipe·KNN 지문자·한글 조합기). **`index.html` 이 로드하지 않는다** — 되살리는 법은 파일 맨 위 주석에. 자모 표는 app.js 와 한시적 중복이고 `test-assemble.mjs` 가 대조한다 |
 | `data/ksl-dict.json` | 이미지 사전(kcisa, 3,622·수형그림 O). `scripts/fetch-ksl.mjs`가 생성 |
 | `data/ksl-fulldict.json` | 전체 텍스트 사전(13,797·수형설명만, 그림 X). `scripts/fetch-fulldict.mjs`가 생성 |
 | `data/ksl-compounds.json` | **합성 수어 2,481**(헌금=바치다+돈). data.go.kr 15135637 CSV의 `결합정보` → `scripts/build-compounds.mjs` |
