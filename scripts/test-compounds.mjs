@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import assert from "node:assert";
 import { loadApp } from "./_app.mjs";
 
-const M = loadApp("buildIndex, matchSentence, conjugationNormalize, norm, COMPOUNDS, PREFERRED, lookup, unpinnedCandidates, preferPinned");
+const M = loadApp("buildIndex, matchSentence, conjugationNormalize, norm, COMPOUNDS, PREFERRED, lookup, unpinnedCandidates, preferPinned, quizPool");
 
 const load = (p) => JSON.parse(readFileSync(new URL("../data/" + p, import.meta.url), "utf8"));
 const dict = load("ksl-dict.json");
@@ -80,5 +80,17 @@ for (const q of ["보다", "보자"]) {
   assert.match(rep.media.src[0], /IMG000227009/, `${q}: 대표가 [시각] 수형이 아님 — ${rep.description}`);
 }
 
+// 6. 연습은 수형이 안 정해진 단어를 문제로 내면 안 된다.
+//    사전 화면은 "(확인 안 됨)" 이라 말해놓고 연습에서 임의의 첫 후보를 '정답'으로 채점하면
+//    앱이 틀린 수어를 정답으로 가르치게 된다(⛔ 위반). 단어장 표시도 같은 판정을 쓴다.
+const unsureWord = [...M.COMPOUNDS].filter(([, v]) => !v.verified)
+  .flatMap(([, v]) => v.parts).find((p) => M.unpinnedCandidates(p).length);
+assert.ok(unsureWord, "수형 미확정 부품을 하나도 못 찾음 — 표본이 없어 이 검사가 무의미하다");
+const settled = "사랑";
+assert.equal(M.unpinnedCandidates(settled).length, 0, `표본 오류: '${settled}' 은 수형이 정해진 단어여야 한다`);
+assert.deepEqual(M.quizPool([unsureWord, settled]), [settled],
+  `연습이 수형 미확정 단어 '${unsureWord}' 를 문제로 낸다 — 임의의 첫 후보를 정답이라고 채점하게 된다`);
+
 console.log(`ok — 합성 ${M.COMPOUNDS.size}개(검증 ${Object.keys(ver).length}개), 부품 전부 사전에 있음`);
+console.log(`   연습 출제 제외 확인: '${unsureWord}'(수형 미확정) 빠지고 '${settled}' 만 남음`);
 console.log(`   자동 추출 ${autos}건 중 ${flagged}건에 '확인 안 됨' 부품이 있어 화면에 표시됨`);

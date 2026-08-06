@@ -8,36 +8,17 @@
 //   node scripts/verify.mjs --add 그립다 그리워하다 <URL> "45초 자막"   # 대장에 기록
 //   node scripts/verify.mjs --check                      # 대장이 아직 사전과 맞는지(회귀검사)
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { loadAppState } from "./_app.mjs";
 
-const P = { dict: "data/ksl-dict.json", full: "data/ksl-fulldict.json", comp: "data/ksl-compounds.json", ver: "data/ksl-verified.json" };
+const P = { ver: "data/ksl-verified.json" };
 const load = (p) => (existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : null);
-const norm = (s) => s.trim().toLowerCase().replace(/\s+/g, "");
-
-const dict = load(P.dict) || [];
-const fullRaw = load(P.full);
-const full = Array.isArray(fullRaw) ? fullRaw : fullRaw ? Object.values(fullRaw)[0] : [];
-const comp = load(P.comp) || {};
 const ver = load(P.ver) || {};
 
-// 앱의 loadDictionary 와 같은 병합 — 이미지 사전에 있는 표제어는 텍스트 사전 쪽을 건너뛴다.
-// 이걸 안 맞추면 대장 검사가 앱과 다른 사전을 보게 되어 검사 자체가 거짓말이 된다.
-const merged = [...dict];
-const known = new Set(dict.map((e) => e.word));
-for (const r of full) if (!known.has(r.word)) { known.add(r.word); merged.push(r); }
-
-// 표제어/별칭 → 항목 목록. 앱의 buildIndex 와 같은 규칙(표제어 먼저, 별칭 뒤).
-// 동음이의를 버리지 않고 다 들고 있어야 "보다가 두 개"라는 걸 사람에게 보여줄 수 있다.
-const index = new Map();
-for (const pass of [0, 1]) {
-  for (const e of merged) {
-    for (const k of pass === 0 ? [e.word] : e.aliases || []) {
-      if (!k) continue;
-      if (!index.has(norm(k))) index.set(norm(k), []);
-      const arr = index.get(norm(k));
-      if (!arr.includes(e)) arr.push(e);
-    }
-  }
-}
+// 사전·합성·매칭은 전부 앱 것을 그대로 쓴다. 여기서 다시 만들면 두 번째 진실이 생기고,
+// 실제로 그랬다 — 사전을 따로 병합하느라 활용(고마워→고맙다)을 몰라서 "사전에 없음"이라 답했다.
+const APP = await loadAppState("COMPOUNDS, matchSentence, norm");
+const { norm } = APP;
+const index = APP.index();
 
 // 그림 파일 이름 = 수형의 신분증. 앱의 @핀도 이 값을 쓴다.
 const imgId = (e) => ((e.media?.src?.[0] || "").match(/IMG\d+/) || [""])[0];
@@ -76,11 +57,14 @@ function look(word) {
       console.log(`      ${e.description}`);
     });
     if (cands.length > 1) console.log(`   ⚠️ 부품으로 쓸 땐 "${word}@<ID>" 로 어느 수형인지 못박으세요.`);
-  } else if (comp[word]) {
-    console.log(`합성 규칙만 있음(자동 추출, 미검증): ${comp[word].parts.join(" + ")}`);
   } else {
-    console.log(`⚠️  사전에 없음 → 앱은 지금 이 단어를 지화(자모)로 떨어뜨립니다.`);
-    console.log(`   합성으로 표현되는 말일 수 있습니다. 영상 확인이 필요합니다.`);
+    // 표제어가 그대로 없어도 앱은 활용을 풀고(고마워→고맙다) 합성을 본다.
+    // 그러니 "없다"고 단정하지 말고 앱을 실제로 돌려 그 답을 보여준다.
+    for (const k of APP.matchSentence(word)) {
+      if (k.type === "compound") console.log(`합성으로 뜸${k.combo.verified ? "(검증됨)" : "(자동 추출, 미검증)"}: ${(k.combo.labels || k.combo.parts).join(" + ")}`);
+      else if (k.type === "entry") console.log(`활용을 풀어 표제어로 뜸: ${k.text} → ${k.entries.map((e) => e.word).join(" | ")}`);
+      else console.log(`⚠️  '${k.text}' 는 못 찾아 지화(자모)로 떨어집니다. 합성으로 표현되는 말일 수 있습니다.`);
+    }
   }
   console.log(`\n   확인할 곳: ${ytSearch(word)}`);
   console.log(`   확인했으면: node scripts/verify.mjs --add "${word}" "부품1+부품2" "<영상URL>" "근거메모"`);

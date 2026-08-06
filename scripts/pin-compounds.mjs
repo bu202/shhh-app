@@ -23,6 +23,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import assert from "node:assert";
 import { parseCsv } from "./build-compounds.mjs";
+import { loadAppState } from "./_app.mjs";
 
 const PINS = "data/ksl-pins.json";
 const loadPins = () => (existsSync(PINS) ? JSON.parse(readFileSync(PINS, "utf8")) : {});
@@ -65,32 +66,15 @@ function selftest() {
 }
 
 // 사전 색인 + CSV 수형설명 + 합성 목록. run/todo 가 같은 것을 봐야 목록과 결과가 어긋나지 않는다.
-function context(csvPath) {
+async function context(csvPath) {
   const J = (p) => JSON.parse(readFileSync(p, "utf8"));
-  const dict = J("data/ksl-dict.json");
-  const fr = J("data/ksl-fulldict.json");
-  const full = Array.isArray(fr) ? fr : Object.values(fr)[0];
 
-  // 앱의 loadDictionary/buildIndex 와 같은 병합·색인 규칙. 다르면 "앱이 보는 후보"와 어긋난다.
-  const known = new Set(dict.map((e) => e.word));
-  const merged = dict.map((e) => ({ ...e, media: e.media || { src: [] } }));
-  for (const r of full) {
-    if (known.has(r.word)) continue;
-    known.add(r.word);
-    merged.push({ word: r.word, aliases: r.aliases || [], description: r.description, media: { src: [] } });
-  }
-  const norm = (s) => s.trim().toLowerCase().replace(/\s+/g, "");
-  const index = new Map();
-  for (const pass of [0, 1]) {
-    for (const e of merged) {
-      for (const k of pass === 0 ? [e.word] : e.aliases || []) {
-        if (!k) continue;
-        if (!index.has(norm(k))) index.set(norm(k), []);
-        const arr = index.get(norm(k));
-        if (!arr.includes(e)) arr.push(e);
-      }
-    }
-  }
+  // 사전 병합·색인은 앱 것을 그대로 쓴다. 예전엔 여기 같은 코드를 베껴 뒀는데, 베낀 코드는
+  // 반드시 어긋난다 — verify.mjs 가 딱 그렇게 어긋나서 '고마워'를 "사전에 없음"이라 답했다.
+  // 사람이 여기서 고른 수형이 화면과 달라지면 100건짜리 노동이 통째로 헛것이 된다.
+  const APP = await loadAppState("norm");
+  const { norm } = APP;
+  const index = APP.index();
 
   const rows = parseCsv(readFileSync(csvPath, "utf8").replace(/^﻿/, ""));
   const hdr = rows[0].map((h) => h.trim());
@@ -117,8 +101,8 @@ function ambiguous(index, norm, part) {
   return c.length >= 2 && new Set(c.map((e) => e.description)).size >= 2 ? c : null;
 }
 
-function run(csvPath, dry) {
-  const { index, norm, shapeOf, comp } = context(csvPath);
+async function run(csvPath, dry) {
+  const { index, norm, shapeOf, comp } = await context(csvPath);
   const pins = loadPins();
   let slots = 0, byCsv = 0, byHuman = 0, already = 0;
   const words = new Set(), samples = [];
@@ -168,8 +152,8 @@ export function similarity(a, b) {
 // 그림 있는 후보가 하나뿐인 자리는 **기본으로 건너뛴다**. 나머지 후보는 조사·이형태라 화면에 뜨지도
 // 못하므로 고를 게 없는데, 섞어 보여주면 사람 시간이 거기 다 나간다(542/1284 가 그런 자리였다).
 // 그것까지 보려면 --all. 그림 있는 후보가 0개인 자리는 못박을 수 없어 언제나 뺀다.
-function todo(csvPath, n, all) {
-  const { index, norm, shapeOf, comp } = context(csvPath);
+async function todo(csvPath, n, all) {
+  const { index, norm, shapeOf, comp } = await context(csvPath);
   const pins = loadPins();
   const imgId = (e) => ((e.media?.src?.[0] || "").match(/IMG\d+/) || [""])[0];
   let real = 0, single = 0, shown = 0;

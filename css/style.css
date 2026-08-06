@@ -202,3 +202,6 @@ body {
 /* 벽에 닿았을 때는 담기 박스가 업그레이드 안내로 바뀐다 */
 .locked.upsell { border-style: solid; border-color: var(--coral); background: var(--peach); }
 .locked.upsell .t { color: var(--coral-d); }
+
+/* 수형이 안 정해진 단어. 사전 화면의 .card.unsure 와 같은 뜻을 단어장에서도 보이게. */
+.item .s.unsure { color: var(--coral-d); }

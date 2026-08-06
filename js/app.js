@@ -298,11 +298,18 @@ function compoundGroup(word, combo, showHead = true) {
     const head = document.createElement("p");
     head.className = "note";
     const b = document.createElement("b");
-    b.textContent = "두 수어를 이어서 표현해요";
     const parts = document.createElement("b");
     parts.className = "inline";
     parts.textContent = labels.join(" + ");
-    head.append(b, `'${word}'는 하나의 손짓이 아니라 `, parts, "입니다. 한국어의 말끝은 수어에 없어서 떼고 찾았어요.");
+    // 부품이 늘 2개인 게 아니다 — 3개 이상이 333건, 1개(말끝만 떼면 되는 말)도 있다.
+    // "두 수어"로 못박아 뒀더니 3부품 합성에서 화면이 틀린 말을 했다(⛔ 단정하지 않는다).
+    if (labels.length === 1) {
+      b.textContent = "말끝만 떼면 되는 말이에요";
+      head.append(b, `'${word}'는 `, parts, " 하나로 표현해요. 한국어의 말끝은 수어에 없어서 떼고 찾았어요.");
+    } else {
+      b.textContent = `${["", "", "두", "세", "네", "다섯"][labels.length] || labels.length} 수어를 이어서 표현해요`;
+      head.append(b, `'${word}'는 하나의 손짓이 아니라 `, parts, "입니다. 한국어의 말끝은 수어에 없어서 떼고 찾았어요.");
+    }
     group.appendChild(head);
   }
   // 사람이 영상으로 확인한 것과 사전에서 기계로 뽑은 것을 구분한다. 안 하면 둘이 똑같아 보인다.
@@ -321,7 +328,9 @@ function compoundGroup(word, combo, showHead = true) {
     const cands = unpinnedCandidates(p);
     if (cands.length) unsure.push({ label: bare(p), cands });
     const name = labels[n] === bare(p) ? bare(p) : labels[n] + " (" + bare(p) + ")";
-    return card("①②③④⑤"[n] + " " + name, namedFingers(e.description), entryFrames(e), cands.length ? "unsure" : "");
+    // 순번은 이어서 하는 동작이 둘 이상일 때만. 하나뿐인데 ① 을 붙이면 목록처럼 읽힌다.
+    const no = combo.parts.length > 1 ? "①②③④⑤"[n] + " " : "";
+    return card(no + name, namedFingers(e.description), entryFrames(e), cands.length ? "unsure" : "");
   }).filter(Boolean)));
   for (const u of unsure) {
     const det = document.createElement("details");
@@ -579,7 +588,14 @@ function renderWordbook() {
     const txt = document.createElement("div");
     const t = document.createElement("div"); t.className = "t"; t.textContent = bare(w);
     const s = document.createElement("div"); s.className = "s";
-    s.textContent = e ? (e.aliases?.length ? e.aliases.join(" · ") : "국립국어원 한국수어사전") : "사전에서 찾을 수 없어요";
+    // 사전 화면이 "(확인 안 됨)" 이라고 말한 부품이 여기서는 그냥 확정된 단어로 보였다.
+    // 담기는 순간 임의의 첫 후보로 굳는 자리가 1,277곳이라 ⛔ "틀릴 수 있는 걸 단정하지 않는다"에 걸린다.
+    // 판정은 사전 화면과 같은 함수(unpinnedCandidates)로 해야 두 화면의 말이 갈리지 않는다.
+    const unsure = unpinnedCandidates(w);
+    if (unsure.length) s.className = "s unsure";
+    s.textContent = !e ? "사전에서 찾을 수 없어요"
+      : unsure.length ? `수형이 ${unsure.length}개 — 아직 확인 안 됐어요`
+      : e.aliases?.length ? e.aliases.join(" · ") : "국립국어원 한국수어사전";
     txt.append(t, s); item.appendChild(txt);
 
     const del = document.createElement("button");
@@ -658,8 +674,15 @@ const QUIZ_LEN = 5;
 let quiz = null;
 const pick = (arr, n) => [...arr].sort(() => Math.random() - 0.5).slice(0, n);
 
+// 문제로 낼 수 있는 단어. **수형이 안 정해진 건 뺀다** — 임의로 고른 첫 후보를 '정답'이라고
+// 채점하면 앱이 틀린 수어를 정답으로 가르치는 셈이라, 안 배운 걸 묻는 것보다 더 나쁘다.
+// DOM 밖의 순수 함수로 둔 이유: 이 규칙이 살아 있는지를 test-compounds.mjs 가 직접 잰다.
+function quizPool(book) {
+  return book.filter((w) => lookup(w) && entryFrames(lookup(w)) && !unpinnedCandidates(w).length);
+}
+
 function startQuiz() {
-  const pool = BOOK.filter((w) => lookup(w) && entryFrames(lookup(w)));
+  const pool = quizPool(BOOK);
   if (pool.length < 3) { quiz = null; return; }
   quiz = { pool, n: 0, ok: 0, q: null };
   nextQuestion();
@@ -674,7 +697,12 @@ function renderPractice() {
   const box = document.getElementById("practice");
   box.innerHTML = "";
   if (!quiz) {
-    box.innerHTML = `<p class="hint">연습하려면 단어장에 <b>3개 이상</b> 담아주세요.<br>사전에서 찾아 담으면 여기서 문제로 나와요.</p>`;
+    // 담은 게 3개가 넘는데도 문제가 안 나오는 경우가 있다 — 수형이 안 정해진 단어를 뺐기 때문이다.
+    // 그때 "3개 이상 담아주세요"라고 하면 4개를 담아둔 사람에게 거짓말이 된다.
+    const ready = quizPool(BOOK).length;
+    box.innerHTML = BOOK.length >= 3
+      ? `<p class="hint">담은 ${BOOK.length}개 중 수형이 정해진 건 <b>${ready}개</b>예요.<br>'아직 확인 안 됐어요'로 표시된 단어는 정답을 단정할 수 없어 문제로 내지 않아요.</p>`
+      : `<p class="hint">연습하려면 단어장에 <b>3개 이상</b> 담아주세요.<br>사전에서 찾아 담으면 여기서 문제로 나와요.</p>`;
     return;
   }
   if (quiz.n >= QUIZ_LEN) {
