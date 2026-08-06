@@ -77,6 +77,11 @@ body {
 .card.unsupported .desc { color: #5C5270; }
 .card.text-sign { background: var(--cream); border: 1px dashed var(--line); }
 .card.text-sign .desc { color: var(--sub); }
+/* 수형이 못박히지 않은 부품 — 앱이 후보 중 첫 번째를 임의로 집은 카드다(⛔ 단정 금지). */
+.card.unsure { background: var(--cream); border: 1px dashed var(--coral-d); }
+.card.unsure .word::after {
+  content: " (확인 안 됨)"; color: var(--coral-d); font-weight: 600; font-size: .82em;
+}
 
 .alts summary {
   cursor: pointer; color: var(--lilac-d); font-size: 11.5px; font-weight: 700;

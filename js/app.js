@@ -257,6 +257,20 @@ function entryCard(e, key) {
   return card(name, desc, entryFrames(e), noImg ? "text-sign" : "");
 }
 
+// 부품에 @핀이 없고 후보 수형이 여럿이면 앱은 **첫 후보를 임의로** 집는다(함정 14).
+// 그걸 단정해서 보여주는 게 ⛔ 위반이었다. 어느 것인지 정해주지 못하더라도 정해지지 않았다는
+// 사실과 나머지 후보는 보여줄 수 있다 — 검증 진도와 무관하게 화면이 정직해진다.
+// 설명이 전부 같으면 어느 쪽을 집어도 같은 손모양이라 아무 문제가 없다(안전, 2026-08 기준 240건).
+// 받침 있으면 "은", 없으면 "는". 표제어를 문장에 끼워 넣는 곳이면 어디든 필요하다("'참다'은" 이 떴다).
+const eunNeun = (w) => (jamo(w.slice(-1))?.[2] ? "은" : "는");
+
+function unpinnedCandidates(spec) {
+  if (spec.includes("@")) return [];                       // 사람이 수형을 못박았다
+  const c = INDEX.get(norm(bare(spec))) || [];
+  if (c.length < 2) return [];
+  return new Set(c.map((e) => e.description)).size > 1 ? c : [];
+}
+
 // 합성 수어를 ① ② … 순서대로. 부품이 사전에 있는 것만 빌드에 들어오므로 여기선 못 찾을 일이 없다.
 function compoundGroup(word, combo, showHead = true) {
   const group = document.createElement("div");
@@ -273,12 +287,33 @@ function compoundGroup(word, combo, showHead = true) {
     head.append(b, `'${word}'는 하나의 손짓이 아니라 `, parts, "입니다. 한국어의 말끝은 수어에 없어서 떼고 찾았어요.");
     group.appendChild(head);
   }
+  // 사람이 영상으로 확인한 것과 사전에서 기계로 뽑은 것을 구분한다. 안 하면 둘이 똑같아 보인다.
+  if (!combo.verified) {
+    const warn = document.createElement("p");
+    warn.className = "note bad";
+    const b = document.createElement("b");
+    b.textContent = "아직 사람이 확인하지 않았어요";
+    warn.append(b, "국어원 사전의 결합 정보에서 기계로 뽑은 조합이에요. 실제로 쓰는 표현과 다를 수 있으니 영상으로 한 번 확인하고 쓰세요.");
+    group.appendChild(warn);
+  }
+  const unsure = [];
   group.appendChild(cardRow(combo.parts.map((p, n) => {
     const e = lookup(p); // @핀이 붙어 있으면 그 수형으로. 동음이의가 있는 표제어(보다) 때문에 필요.
     if (!e) return null;
+    const cands = unpinnedCandidates(p);
+    if (cands.length) unsure.push({ label: bare(p), cands });
     const name = labels[n] === bare(p) ? bare(p) : labels[n] + " (" + bare(p) + ")";
-    return card("①②③④⑤"[n] + " " + name, namedFingers(e.description), entryFrames(e), "");
+    return card("①②③④⑤"[n] + " " + name, namedFingers(e.description), entryFrames(e), cands.length ? "unsure" : "");
   }).filter(Boolean)));
+  for (const u of unsure) {
+    const det = document.createElement("details");
+    det.className = "alts";
+    const sum = document.createElement("summary");
+    sum.textContent = `'${u.label}'${eunNeun(u.label)} 수형이 ${u.cands.length}개예요 — 어느 것인지 확인 안 됐어요`;
+    det.appendChild(sum);
+    det.appendChild(cardRow(u.cands.map((e) => entryCard(e))));
+    group.appendChild(det);
+  }
   if (combo.verified && combo.source) {
     const src = document.createElement("p");
     src.className = "combo-src";

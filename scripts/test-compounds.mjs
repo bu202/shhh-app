@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import assert from "node:assert";
 import { loadApp } from "./_app.mjs";
 
-const M = loadApp("buildIndex, matchSentence, conjugationNormalize, norm, COMPOUNDS, lookup");
+const M = loadApp("buildIndex, matchSentence, conjugationNormalize, norm, COMPOUNDS, lookup, unpinnedCandidates");
 
 const load = (p) => JSON.parse(readFileSync(new URL("../data/" + p, import.meta.url), "utf8"));
 const dict = load("ksl-dict.json");
@@ -48,4 +48,23 @@ for (const [key, v] of M.COMPOUNDS) {
 }
 assert.equal(broken, 0, `부품이 사전에 없는 합성 ${broken}건`);
 
+// 4. ⛔ 단정 금지: 수형이 못박히지 않은 부품은 화면에서 "확인 안 됨"으로 드러나야 한다.
+//    검증 대장의 부품은 사람이 전부 못박았으므로 하나도 걸리면 안 된다.
+for (const [w] of Object.entries(ver)) {
+  const c = M.COMPOUNDS.get(M.conjugationNormalize(M.norm(w)));
+  for (const p of c.parts) {
+    assert.equal(M.unpinnedCandidates(p).length, 0, `${w}: 검증본인데 부품 '${p}' 의 수형이 안 정해짐`);
+  }
+}
+// 자동 추출본 중 수형이 실제로 갈리는 것은 반드시 걸려야 한다. 0이면 탐지가 죽은 것이고,
+// 화면은 다시 "첫 후보"를 단정하게 된다 — 이 테스트가 그 회귀를 잡는다.
+let flagged = 0, autos = 0;
+for (const [, v] of M.COMPOUNDS) {
+  if (v.verified) continue;
+  autos++;
+  if (v.parts.some((p) => M.unpinnedCandidates(p).length)) flagged++;
+}
+assert.ok(flagged > 0, "자동 추출본에서 미확정 부품이 하나도 안 잡힘 — 탐지가 죽었다");
+
 console.log(`ok — 합성 ${M.COMPOUNDS.size}개(검증 ${Object.keys(ver).length}개), 부품 전부 사전에 있음`);
+console.log(`   자동 추출 ${autos}건 중 ${flagged}건에 '확인 안 됨' 부품이 있어 화면에 표시됨`);
