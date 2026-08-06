@@ -56,6 +56,7 @@ async function loadDictionary() {
 // data.go.kr 15135637 '결합정보' 컬럼 → scripts/build-compounds.mjs 가 생성.
 let DICT_SUB = "단어를 손으로"; // 헤더 부제 — 사전 로드 후 개수로 채워진다
 let COMPOUNDS = new Map(); // 정규화 표제어 -> { parts:[표제어], labels?, source? }
+let PREFERRED = new Map(); // 정규화 표제어 -> IMG id. 사람이 영상으로 확인하며 고른 대표 수형.
 async function loadCompounds() {
   // 자동 추출본을 먼저 깔고, 사람이 영상으로 확인한 것(ksl-verified.json)으로 덮어쓴다.
   // 사람이 이긴다 — 자동 추출은 사전에 있는 말만 알고, 사전에 없는 말(보고싶다)은 못 본다.
@@ -67,6 +68,13 @@ async function loadCompounds() {
       // 그 위에서 찾으려면 키도 같은 처리를 거쳐야 한다. (보고싶다 → 보다싶다 ← 보고싶어)
       for (const [w, v] of Object.entries(await res.json())) {
         COMPOUNDS.set(conjugationNormalize(norm(w)), { ...v, verified, word: w });
+        // 사람이 영상을 보며 고른 수형은 **그 표제어의 대표**로도 쓴다. 안 하면 '보다'를 그냥
+        // 검색했을 때 사전 순서상 조사 '~보다'가 먼저라 조사 수형이 대표로 떴다(⛔ 위반).
+        // 자동 추출본의 핀은 쓰지 않는다 — 그건 그 합성어 안에서의 수형이지 표제어의 대표가 아니다.
+        if (verified) for (const p of v.parts) {
+          const [pw, pin] = String(p).split("@");
+          if (pin) PREFERRED.set(norm(pw), pin);
+        }
       }
     } catch { /* 파일 없으면 그 단계만 건너뜀 */ }
   }
@@ -94,6 +102,7 @@ const ENDINGS = [
   "에서", "에게서", "에게", "한테서", "한테", "으로", "부터", "까지", "처럼", "만큼", "밖에", "라도", "마다", "보다",
   "다", // ← 종결어미. 매칭 뒤에만 흡수하므로 "다리"(단어)는 안전. (없으면 간"다"→모두 오매칭)
   "요", // ← 존대 어미. 없으면 고마워"요"·잘자"요"의 끝 글자가 지화로 떨어진다.
+  "야", // ← 반말 종결. 없으면 최고"야"·어디"야"의 끝 글자가 지화로 떨어진다.
 ].sort((a, b) => b.length - a.length); // 최장 우선
 function stripEnding(s, i) {
   for (const end of ENDINGS) if (s.startsWith(end, i)) return end.length;
@@ -109,21 +118,28 @@ function conjugationNormalize(s) {
     .replace(/싶었어요|싶었습니다|싶었어|싶었다|싶어요|싶어/g, "싶다"); // 싶다 활용 정규화(과거형 포함)
 }
 
-// 어간이 변하는 활용형 → 표제어(다-형) 후보 하나. ENDINGS 는 어미를 떼기만 해서 이걸 못 푼다.
-// 고마워→고맙다(ㅂ불규칙), 기다려→기다리다, 배고파→배고프다(ㅡ탈락), 괜찮아→괜찮다.
+// 어간이 변하는 활용형 → 표제어(다-형) 후보들. ENDINGS 는 어미를 떼기만 해서 이걸 못 푼다.
+// 고마워→고맙다(ㅂ불규칙), 기다려→기다리다, 배고파→배고프다(ㅡ탈락), 괜찮아→괜찮다, 보고파→보다싶다.
 // 안 고치면 그리디가 표제어를 못 찾고 1글자로 떨어져 배고파=배(선박)+고+파(대파) 가 된다.
 // 과생성(만나→만느다)은 사전에 없어서 그냥 버려지므로 무해하다 — 조회가 곧 검증이다.
+//
+// 후보를 **여럿** 내는 이유: 'V고파'(보고파=보고 싶어)와 'ㅡ탈락'(배고파=배고프다)이 같은 글자에
+// 걸린다. 하나만 내면 배고파를 살리려다 보고파가 죽고, 그 반대도 마찬가지다. 앞에서부터 사전에
+// 있는 것을 쓴다 — conjugationNormalize 로는 못 한다(문장 전체를 미리 바꿔서 배고파가 먼저 망가진다).
 const syl = (c, v, t) => String.fromCharCode(0xac00 + (c * 21 + v) * 28 + t);
 const jamo = (ch) => { const n = ch.charCodeAt(0) - 0xac00; return n < 0 || n > 11171 ? null : [Math.floor(n / 588), Math.floor((n % 588) / 28), n % 28]; };
 function deconjugate(w) {
-  if (w.length < 2) return null;
+  if (w.length < 2) return [];
+  const out = [];
   const last = w.slice(-1), head = w.slice(0, -1);
-  if (last === "워") { const p = jamo(head.slice(-1)); if (p && !p[2]) return head.slice(0, -1) + syl(p[0], p[1], 17) + "다"; } // 고마워→고맙다
-  if (last === "려") return head + "리다";                                    // 기다려→기다리다
-  if (last === "아" || last === "어") return head + "다";                      // 괜찮아→괜찮다, 먹어→먹다
-  const p = jamo(last);                                                      // 고파→고프다, 예뻐→예쁘다
-  if (p && !p[2] && (p[1] === 0 || p[1] === 4)) return head + syl(p[0], 18, 0) + "다";
-  return null;
+  if (last === "워") { const p = jamo(head.slice(-1)); if (p && !p[2]) out.push(head.slice(0, -1) + syl(p[0], p[1], 17) + "다"); } // 고마워→고맙다
+  if (last === "려") out.push(head + "리다");                                  // 기다려→기다리다
+  if (last === "아" || last === "어") out.push(head + "다");                    // 괜찮아→괜찮다, 먹어→먹다
+  const p = jamo(last);                                                       // 고파→고프다, 예뻐→예쁘다
+  if (p && !p[2] && (p[1] === 0 || p[1] === 4)) out.push(head + syl(p[0], 18, 0) + "다");
+  if (last === "자") out.push(head + "다");                                    // 놀자→놀다, 가자→가다(청유)
+  if (w.endsWith("고파")) out.push(w.slice(0, -2) + "다싶다");                  // 보고파→보다싶다(=보고싶다 합성 키)
+  return out;
 }
 
 // 최장일치 그리디. 띄어쓰기 무관 스캔. 매칭 뒤 활용 어미는 흡수.
@@ -143,11 +159,11 @@ function matchSentence(text) {
       // 틀린 수어를 단정하느니 지화로 떨어지는 게 낫다(⛔ 실제 수어만 보여준다).
       if (L === 1 && s.length > 1) break;
       const key = s.slice(i, i + L);
-      const alt = deconjugate(key);
-      const e = INDEX.get(key) || (alt ? INDEX.get(alt) : null);
+      const keys = [key, ...deconjugate(key)];
+      const e = keys.reduce((h, k) => h || INDEX.get(k), null);
       if (e) { hit = { type: "entry", entries: e }; len = L; break; }
       // 같은 길이면 단일 표제어 우선. 사전에 없는 말만 합성으로 받는다.
-      const c = COMPOUNDS.get(key) || (alt ? COMPOUNDS.get(alt) : null);
+      const c = keys.reduce((h, k) => h || COMPOUNDS.get(k), null);
       if (c) { hit = { type: "compound", combo: c }; len = L; break; }
     }
     if (hit) {
@@ -328,11 +344,20 @@ function compoundGroup(word, combo, showHead = true) {
   return group;
 }
 
+// 사람이 고른 수형(PREFERRED)이 있으면 그것을 대표(첫 후보)로 끌어올린다. 나머지 순서는 건드리지 않는다.
+// 검색한 말이 별칭일 수 있어 키와 표제어 양쪽으로 찾는다.
+function preferPinned(key, entries) {
+  const id = PREFERRED.get(norm(key)) || entries.map((e) => PREFERRED.get(norm(e.word))).find(Boolean);
+  if (!id) return entries;
+  const i = entries.findIndex((e) => (e.media?.src?.[0] || "").includes(id));
+  return i > 0 ? [entries[i], ...entries.filter((_, n) => n !== i)] : entries;
+}
+
 // 토큰 -> DOM 노드. 동음이의는 첫 후보를 대표로, 나머지는 "다른 뜻 N개" 안에.
 function renderToken(token) {
   if (token.type === "compound") return compoundGroup(token.combo.word || token.text, token.combo);
   if (token.type === "entry") {
-    const [primary, ...alts] = token.entries;
+    const [primary, ...alts] = preferPinned(token.text, token.entries);
     const group = document.createElement("div");
     group.className = "token-group";
     group.appendChild(cardRow([entryCard(primary, token.text)]));

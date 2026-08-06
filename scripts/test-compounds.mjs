@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import assert from "node:assert";
 import { loadApp } from "./_app.mjs";
 
-const M = loadApp("buildIndex, matchSentence, conjugationNormalize, norm, COMPOUNDS, lookup, unpinnedCandidates");
+const M = loadApp("buildIndex, matchSentence, conjugationNormalize, norm, COMPOUNDS, PREFERRED, lookup, unpinnedCandidates, preferPinned");
 
 const load = (p) => JSON.parse(readFileSync(new URL("../data/" + p, import.meta.url), "utf8"));
 const dict = load("ksl-dict.json");
@@ -14,13 +14,18 @@ M.buildIndex(dict);
 const comp = load("ksl-compounds.json");
 const ver = load("ksl-verified.json");
 for (const [w, v] of Object.entries(comp)) M.COMPOUNDS.set(M.conjugationNormalize(M.norm(w)), { ...v, word: w });
-for (const [w, v] of Object.entries(ver)) M.COMPOUNDS.set(M.conjugationNormalize(M.norm(w)), { ...v, verified: true, word: w });
+for (const [w, v] of Object.entries(ver)) {
+  M.COMPOUNDS.set(M.conjugationNormalize(M.norm(w)), { ...v, verified: true, word: w });
+  for (const p of v.parts) { const [pw, pin] = String(p).split("@"); if (pin) M.PREFERRED.set(M.norm(pw), pin); }
+}
 
 const first = (t) => M.matchSentence(t)[0];
 
 // 1. 검증 대장이 자동 추출본을 이기고, 활용형에서도 잡힌다.
 //    '보고싶다'는 사전에 표제어가 없다 — 영상(유손생)으로 확인해 대장에 넣은 것.
-for (const q of ["보고싶다", "보고싶어", "보고싶었어", "보고 싶다"]) {
+//    '보고파' 는 '보고 싶어'의 준말인데, 안 풀면 보고(報告)+지화 '파' 로 떨어진다(⛔ 위반).
+//    같은 글자에 ㅡ탈락(배고파→배고프다)이 걸리므로 deconjugate 가 후보를 여럿 내야 둘 다 산다.
+for (const q of ["보고싶다", "보고싶어", "보고싶었어", "보고 싶다", "보고파"]) {
   const t = first(q);
   assert.equal(t.type, "compound", `${q}: 합성으로 안 잡힘 (type=${t.type})`);
   assert.deepEqual(t.combo.labels, ["보다", "원하다"], `${q}: 부품이 다름`);
@@ -65,6 +70,15 @@ for (const [, v] of M.COMPOUNDS) {
   if (v.parts.some((p) => M.unpinnedCandidates(p).length)) flagged++;
 }
 assert.ok(flagged > 0, "자동 추출본에서 미확정 부품이 하나도 안 잡힘 — 탐지가 죽었다");
+
+// 5. 사람이 고른 수형은 그 표제어를 **그냥 검색해도** 대표로 떠야 한다.
+//    안 그러면 '보고싶어'에선 [시각] 보다가, '보다'를 치면 조사 '~보다'가 떠서 앱이 자기모순이 된다.
+for (const q of ["보다", "보자"]) {
+  const t = first(q);
+  assert.equal(t.type, "entry", `${q}: 표제어로 안 잡힘`);
+  const [rep] = M.preferPinned(t.text, t.entries);
+  assert.match(rep.media.src[0], /IMG000227009/, `${q}: 대표가 [시각] 수형이 아님 — ${rep.description}`);
+}
 
 console.log(`ok — 합성 ${M.COMPOUNDS.size}개(검증 ${Object.keys(ver).length}개), 부품 전부 사전에 있음`);
 console.log(`   자동 추출 ${autos}건 중 ${flagged}건에 '확인 안 됨' 부품이 있어 화면에 표시됨`);
