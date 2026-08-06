@@ -144,27 +144,61 @@ function run(csvPath, dry) {
   if (samples.length) console.log("예:", samples.join(" · "));
 }
 
+// 합성 동작은 부품을 "… 다음," 으로 잇는다. 조각 수와 부품 수가 맞으면 그 자리 조각만 보면 된다 —
+// 긴 문장 전체를 후보 셋과 대조하는 것과, 한 조각을 대조하는 것은 걸리는 시간이 다르다.
+function segmentFor(shape, parts, n) {
+  const segs = (shape || "").split(/\s*다음,\s*/);
+  return segs.length === parts.length ? segs[n] : null;
+}
+
+// 글자 2-gram Dice 계수. 후보를 **줄 세우기만** 한다 — 어느 것으로 정할지는 사람이 본다.
+// 임계값을 두고 자동으로 못박지 않는 이유: 임계값은 판단이고, 판단은 사람 몫이다(⛔ 수칙).
+export function similarity(a, b) {
+  const g = (s) => { const m = new Map(); const t = (s || "").replace(/\s+/g, ""); for (let i = 0; i < t.length - 1; i++) m.set(t.slice(i, i + 2), (m.get(t.slice(i, i + 2)) || 0) + 1); return m; };
+  const A = g(a), B = g(b);
+  let hit = 0, na = 0, nb = 0;
+  for (const [k, v] of A) { na += v; hit += Math.min(v, B.get(k) || 0); }
+  for (const [, v] of B) nb += v;
+  return na + nb ? (2 * hit) / (na + nb) : 0;
+}
+
 // 오늘 사람이 골라야 할 목록. CSV 로도 안 풀리고 아직 안 고른 것만, 파일 순서대로.
 // 고를 때마다 앞에서부터 사라지므로 날짜 기록이 필요 없다 — 목록이 곧 진도다.
-function todo(csvPath, n) {
+//
+// 그림 있는 후보가 하나뿐인 자리는 **기본으로 건너뛴다**. 나머지 후보는 조사·이형태라 화면에 뜨지도
+// 못하므로 고를 게 없는데, 섞어 보여주면 사람 시간이 거기 다 나간다(542/1284 가 그런 자리였다).
+// 그것까지 보려면 --all. 그림 있는 후보가 0개인 자리는 못박을 수 없어 언제나 뺀다.
+function todo(csvPath, n, all) {
   const { index, norm, shapeOf, comp } = context(csvPath);
   const pins = loadPins();
   const imgId = (e) => ((e.media?.src?.[0] || "").match(/IMG\d+/) || [""])[0];
-  let left = 0, shown = 0;
+  let real = 0, single = 0, shown = 0;
   for (const [w, v] of Object.entries(comp)) {
-    for (const p of v.parts) {
+    v.parts.forEach((p, n0) => {
       const c = ambiguous(index, norm, p);
-      if (!c || pins[pinKey(w, p)] || pickPin(shapeOf.get(w), c)) continue;
-      left++;
-      if (shown >= n) continue;
+      if (!c || pins[pinKey(w, p)] || pickPin(shapeOf.get(w), c)) return;
+      const withImg = c.filter((e) => imgId(e));
+      const ids = new Set(withImg.map(imgId));
+      if (ids.size === 0) return;                 // 못박을 수 없다
+      if (ids.size === 1) { single++; if (!all) return; } else real++;
+      if (shown >= n) return;
       shown++;
+      const seg = segmentFor(shapeOf.get(w), v.parts, n0);
       console.log(`\n${shown}. ${w} = ${v.parts.map((x) => x.split("@")[0]).join(" + ")}   ← '${p}'${eulReul(p)} 고르세요`);
-      console.log(`   합성 전체 동작: ${shapeOf.get(w) || "(없음)"}`);
-      c.forEach((e) => console.log(`   · ${imgId(e) || "(그림없음 — 고를 수 없음)"}  ${e.word}  ${e.description}`));
-      console.log(`   → node scripts/pin-compounds.mjs --pin "${w}" "${p}" <IMG…>`);
-    }
+      console.log(`   이 자리 동작: ${seg || shapeOf.get(w) || "(없음)"}${seg ? "" : "   ※ 조각을 못 갈라 전체를 보여줍니다"}`);
+      // 닮은 순으로 줄 세운다. 1등이 정답이라는 뜻이 아니다 — 눈으로 확인할 순서일 뿐이다.
+      withImg
+        .map((e) => ({ e, s: similarity(seg || shapeOf.get(w), e.description) }))
+        .sort((x, y) => y.s - x.s)
+        .forEach(({ e, s }) => console.log(`   · ${imgId(e)}  닮음 ${s.toFixed(2)}  ${e.word}  ${e.description}`));
+      const hidden = c.length - withImg.length;
+      if (hidden) console.log(`   (그림 없는 후보 ${hidden}개는 화면에 못 떠서 뺐습니다)`);
+      console.log(`   영상 확인: https://www.youtube.com/results?search_query=${encodeURIComponent("수어 " + p)}`);
+      console.log(`   → node scripts/pin-compounds.mjs --pin "${w}" "${p}" <IMG…>   # 위에서 고른 ID 를 직접 적으세요`);
+    });
   }
-  console.log(`\n남은 자리 ${left}개 중 ${shown}개 표시. 고른 뒤 CSV 경로로 한 번 더 돌려 반영하세요.`);
+  console.log(`\n${shown}개 표시. 남은 자리 — 진짜 선택 ${real} · 그림 있는 후보 1개뿐 ${single}${all ? "" : " (--all 로 보임)"}`);
+  console.log("고른 뒤 CSV 경로로 한 번 더 돌려 반영하세요.");
 }
 
 function pin(word, part, id) {
@@ -181,6 +215,6 @@ function pin(word, part, id) {
 const [a, b, c, d] = process.argv.slice(2);
 if (a === "--selftest") selftest();
 else if (a === "--pin") pin(b, c, d);
-else if (a === "--todo") todo(process.env.KSL_CSV || b, Number(c) || Number(b) || 100);
+else if (a === "--todo") todo(process.env.KSL_CSV || b, Number(c) || Number(b) || 100, [b, c, d].includes("--all"));
 else if (a) run(a, b === "--dry");
 else console.error('사용법: node scripts/pin-compounds.mjs "<CSV 경로>" [--dry] | --todo <N> | --pin … | --selftest');
