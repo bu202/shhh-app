@@ -93,6 +93,7 @@ const ENDINGS = [
   // 조사(다음절 위주 — 단음절은 단어 첫음절과 충돌해 제외)
   "에서", "에게서", "에게", "한테서", "한테", "으로", "부터", "까지", "처럼", "만큼", "밖에", "라도", "마다", "보다",
   "다", // ← 종결어미. 매칭 뒤에만 흡수하므로 "다리"(단어)는 안전. (없으면 간"다"→모두 오매칭)
+  "요", // ← 존대 어미. 없으면 고마워"요"·잘자"요"의 끝 글자가 지화로 떨어진다.
 ].sort((a, b) => b.length - a.length); // 최장 우선
 function stripEnding(s, i) {
   for (const end of ENDINGS) if (s.startsWith(end, i)) return end.length;
@@ -108,6 +109,23 @@ function conjugationNormalize(s) {
     .replace(/싶었어요|싶었습니다|싶었어|싶었다|싶어요|싶어/g, "싶다"); // 싶다 활용 정규화(과거형 포함)
 }
 
+// 어간이 변하는 활용형 → 표제어(다-형) 후보 하나. ENDINGS 는 어미를 떼기만 해서 이걸 못 푼다.
+// 고마워→고맙다(ㅂ불규칙), 기다려→기다리다, 배고파→배고프다(ㅡ탈락), 괜찮아→괜찮다.
+// 안 고치면 그리디가 표제어를 못 찾고 1글자로 떨어져 배고파=배(선박)+고+파(대파) 가 된다.
+// 과생성(만나→만느다)은 사전에 없어서 그냥 버려지므로 무해하다 — 조회가 곧 검증이다.
+const syl = (c, v, t) => String.fromCharCode(0xac00 + (c * 21 + v) * 28 + t);
+const jamo = (ch) => { const n = ch.charCodeAt(0) - 0xac00; return n < 0 || n > 11171 ? null : [Math.floor(n / 588), Math.floor((n % 588) / 28), n % 28]; };
+function deconjugate(w) {
+  if (w.length < 2) return null;
+  const last = w.slice(-1), head = w.slice(0, -1);
+  if (last === "워") { const p = jamo(head.slice(-1)); if (p && !p[2]) return head.slice(0, -1) + syl(p[0], p[1], 17) + "다"; } // 고마워→고맙다
+  if (last === "려") return head + "리다";                                    // 기다려→기다리다
+  if (last === "아" || last === "어") return head + "다";                      // 괜찮아→괜찮다, 먹어→먹다
+  const p = jamo(last);                                                      // 고파→고프다, 예뻐→예쁘다
+  if (p && !p[2] && (p[1] === 0 || p[1] === 4)) return head + syl(p[0], 18, 0) + "다";
+  return null;
+}
+
 // 최장일치 그리디. 띄어쓰기 무관 스캔. 매칭 뒤 활용 어미는 흡수.
 // 반환: [{type:"entry", entries:[...], text} | {type:"unknown", text}] 순서대로.
 // ponytail: 매 위치 최대 MAX_KEY까지 substring 조회 → O(n·MAX_KEY). 커지면 트라이로 교체.
@@ -120,11 +138,16 @@ function matchSentence(text) {
   while (i < s.length) {
     let hit = null, len = 0;
     for (let L = Math.min(MAX_KEY, s.length - i); L >= 1; L--) {
+      // 문장 안에서 1글자 표제어는 잡지 않는다. 1글자 키가 394개인데 를·는·의·해 같은
+      // 조사·어미까지 섞여 있어 거의 언제나 오답이 된다(잘자=잘하다+사람, 힘내=기운+자신).
+      // 틀린 수어를 단정하느니 지화로 떨어지는 게 낫다(⛔ 실제 수어만 보여준다).
+      if (L === 1 && s.length > 1) break;
       const key = s.slice(i, i + L);
-      const e = INDEX.get(key);
+      const alt = deconjugate(key);
+      const e = INDEX.get(key) || (alt ? INDEX.get(alt) : null);
       if (e) { hit = { type: "entry", entries: e }; len = L; break; }
       // 같은 길이면 단일 표제어 우선. 사전에 없는 말만 합성으로 받는다.
-      const c = COMPOUNDS.get(key);
+      const c = COMPOUNDS.get(key) || (alt ? COMPOUNDS.get(alt) : null);
       if (c) { hit = { type: "compound", combo: c }; len = L; break; }
     }
     if (hit) {
@@ -223,11 +246,15 @@ function namedFingers(s) {
     .replace(/손가락([를는가])/g, (_, j) => "손가락" + JOSA[j]);
 }
 
-function entryCard(e) {
+// key = 화면에서 실제로 매칭된 말. 별칭으로 걸렸으면 둘 다 보여준다 —
+// '축하해'를 쳤는데 카드에 '식'만 뜨면 사용자는 자기가 친 말과 다른 걸 본다.
+// 합성 카드가 쓰는 "라벨 (표제어)" 형식과 같게 맞췄다.
+function entryCard(e, key) {
   const noImg = !(e.media.src && e.media.src.length);
   const raw = namedFingers(e.description);
   const desc = noImg ? "손모양 설명: " + raw + " · (그림 없어 지화로 표시)" : raw;
-  return card(e.word, desc, entryFrames(e), noImg ? "text-sign" : "");
+  const name = !key || key === e.word ? e.word : key + " (" + e.word + ")";
+  return card(name, desc, entryFrames(e), noImg ? "text-sign" : "");
 }
 
 // 합성 수어를 ① ② … 순서대로. 부품이 사전에 있는 것만 빌드에 들어오므로 여기선 못 찾을 일이 없다.
@@ -271,7 +298,7 @@ function renderToken(token) {
     const [primary, ...alts] = token.entries;
     const group = document.createElement("div");
     group.className = "token-group";
-    group.appendChild(cardRow([entryCard(primary)]));
+    group.appendChild(cardRow([entryCard(primary, token.text)]));
     // 사전에 그림이 있어도 합성으로 만들어진 말이면 어떻게 만들어졌는지 같이 보여준다(학습용).
     const combo = COMPOUNDS.get(norm(primary.word));
     if (combo) {
@@ -293,7 +320,7 @@ function renderToken(token) {
         ? "다른 수형 " + alts.length + "개"
         : "다른 뜻 " + alts.length + "개 (" + alts.map((a) => a.word).join(", ") + ")";
       det.appendChild(sum);
-      det.appendChild(cardRow(alts.map(entryCard)));
+      det.appendChild(cardRow(alts.map((a) => entryCard(a)))); // map 의 index 가 key 로 새면 "1 (해내다)" 가 된다
       group.appendChild(det);
     }
     return group;
