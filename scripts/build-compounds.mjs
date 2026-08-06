@@ -6,6 +6,7 @@
 // 실행: node scripts/build-compounds.mjs "<CSV 경로>"
 //       node scripts/build-compounds.mjs --selftest   (파서만 검증, 파일 불필요)
 import { readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import assert from "node:assert";
 
 // 따옴표 필드를 지원하는 최소 CSV 파서. 의존성 추가 대신 20줄.
@@ -96,7 +97,11 @@ function build(csvPath) {
   console.log("예시:", Object.entries(out).slice(0, 5).map(([w, v]) => `${w}=${v.parts.join("+")}`).join(" · "));
 }
 
-const arg = process.argv[2];
-if (arg === "--selftest") selftest();
-else if (arg) build(arg);
-else console.error("사용법: node scripts/build-compounds.mjs \"<CSV 경로>\" | --selftest");
+// 직접 실행할 때만. 이 가드가 없으면 parseCsv 를 import 하는 쪽에서 argv[2] 를 CSV 경로로 오해해
+// **파일을 다시 빌드해버린다**(pin-compounds.mjs 의 --dry 가 실제로 그랬다).
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const arg = process.argv[2];
+  if (arg === "--selftest") selftest();
+  else if (arg) build(arg);
+  else console.error("사용법: node scripts/build-compounds.mjs \"<CSV 경로>\" | --selftest");
+}

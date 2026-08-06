@@ -22,6 +22,30 @@
 **다음 할 일**: **5단계(출시 준비 — 아이콘·개인정보처리방침 → Bubblewrap → Play $25).**
 1단계는 단어를 넣을 때마다 계속 도는 상시 작업.
 
+## 📅 매일 100건 — 부품 수형 고르기 (진행 중)
+
+남은 애매한 부품 자리를 **하루 100건씩** 없앤다. 다 하면 화면에서 "(확인 안 됨)"이 사라진다.
+
+```bash
+export KSL_CSV="$HOME/Downloads/문화체육관광부 국립국어원_한국수어사전_한국어대응표현정보_20240909.csv"
+
+node scripts/pin-compounds.mjs --todo 100          # ① 오늘 볼 100건 (합성 전체 동작 + 후보 설명이 같이 나온다)
+node scripts/pin-compounds.mjs --pin "퇴학" "파면" IMG000200516   # ② 고른 것을 하나씩 기록
+node scripts/pin-compounds.mjs "$KSL_CSV"          # ③ 반영 (사람이 고른 것이 CSV 를 이긴다)
+node scripts/test-compounds.mjs                    # ④ 마지막 줄에 남은 건수
+```
+
+- **고르는 법**: `--todo` 가 찍어주는 「합성 전체 동작」 안에 **어느 후보의 설명이 통째로 들어있는지** 본다.
+  들어있는 쪽이 그 수형이다. 손 그림을 볼 필요가 없다 — 문자열 비교다.
+- `(그림없음 — 고를 수 없음)` 후보는 못 고른다. 핀은 그림 파일 이름이라서다. 둘 다 그림이 없으면 건너뛴다.
+- **사람이 고른 것은 `data/ksl-pins.json` 에 쌓인다.** `ksl-compounds.json` 은 다시 빌드되면 날아가는
+  파생물이라 거기 적지 않는다. `build-compounds.mjs` 를 돌린 뒤엔 ③을 한 번 더 돌려 복구할 것.
+- **진도 기록은 따로 안 만들었다.** 고른 자리는 `--todo` 목록에서 사라지므로 **목록이 곧 진도**다.
+
+| 날짜 | 남은 자리 | 비고 |
+|---|---|---|
+| 2026-08-06 | 1,817 → **1,284** | CSV `수형설명` 기계 대조로 533자리 자동 해결(합성어 365건 완전 해결) |
+
 ### 동음이의(1,435건)를 어떻게 정리했나 — 2026-08-06
 자동 추출 합성의 부품은 표제어 문자열만으로 수형이 안 정해진다(함정 14). **다 못박는 대신 정직해지는 쪽**을 택했다:
 화면이 이제 ① 사람이 확인한 합성과 자동 추출을 구분해 보여주고("아직 사람이 확인하지 않았어요")
@@ -85,6 +109,8 @@ node scripts/fetch-ksl.mjs --mock           # 매핑 로직 자가검증(키·�
 | `data/ksl-fulldict.json` | 전체 텍스트 사전(13,797·수형설명만, 그림 X). `scripts/fetch-fulldict.mjs`가 생성 |
 | `data/ksl-compounds.json` | **합성 수어 2,481**(헌금=바치다+돈). data.go.kr 15135637 CSV의 `결합정보` → `scripts/build-compounds.mjs` |
 | `data/ksl-verified.json` | **사람이 영상으로 확인한 것.** 자동 추출본을 이긴다. `scripts/verify.mjs`로 조회·기록 |
+| `data/ksl-pins.json` | **사람이 고른 부품 수형**(`"합성어\|부품" → IMG…`). 재빌드에도 안 날아간다. `scripts/pin-compounds.mjs --pin` |
+| `scripts/pin-compounds.mjs` | CSV `수형설명`으로 부품 수형 기계 못박기 + 매일 100건 목록(`--todo`)·기록(`--pin`) |
 | `scripts/fetch-ksl.mjs` | kcisa 이미지 사전 수집. `normalizeEntry`/`parseItems`가 API 교체 이음새 |
 | `scripts/fetch-fulldict.mjs` | data.go.kr odcloud 전체 사전 수집. `<일반인증키>` 필요 |
 | `scripts/_app.mjs` | 테스트가 `app.js` 를 통째로 평가할 때 쓰는 이음새. 브라우저 전역(localStorage·location) 스텁 |
@@ -201,6 +227,16 @@ python3 scripts/sim.py tap 603 2112      # 좌표는 스크린샷 픽셀(1206x26
 
 19. **표제어를 문장에 끼워 넣으면 조사를 받침으로 골라야 한다.** `'참다'은` 이 화면에 떴다.
     → `eunNeun()`(받침 있으면 은, 없으면 는). `namedFingers` 의 `JOSA` 보정과 같은 부류의 함정이다.
+    스크립트 출력도 마찬가지(`pin-compounds.mjs` 의 `eulReul`). 사람이 읽는 문장이면 어디든 필요하다.
+
+20. **스크립트 하단의 인자 처리는 `import.meta.url === pathToFileURL(process.argv[1]).href` 로 감쌀 것.**
+    `build-compounds.mjs` 에서 `parseCsv` 만 import 했는데 **하단이 그대로 실행돼 `argv[2]`(CSV 경로)를
+    빌드 명령으로 오해하고 `ksl-compounds.json` 을 다시 썼다** — `--dry` 라고 찍어놓고 파일을 건드렸다.
+    이번엔 결과가 같아서 무사했지만, 핀을 넣은 뒤였다면 그 자리에서 전부 날아갔다.
+
+21. **`combo.labels` 가 없을 때 `combo.parts` 를 그대로 쓰면 안 된다.** `labels` 는 화면에 쓰는 이름이라
+    `parts.map(bare)` 여야 한다. 안 그러면 @핀을 넣는 순간 카드에 `말@IMG000225447 (말)` 이 뜬다.
+    핀이 하나도 없을 땐 증상이 없어서 **핀을 넣기 전엔 안 보이는 잠복 버그**였다.
 
 ---
 

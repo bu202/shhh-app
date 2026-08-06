@@ -275,7 +275,9 @@ function unpinnedCandidates(spec) {
 function compoundGroup(word, combo, showHead = true) {
   const group = document.createElement("div");
   group.className = "token-group compound";
-  const labels = combo.labels || combo.parts; // 영상에서 부르는 이름이 사전 표제어와 다를 수 있음(원하다/내키다)
+  // 영상에서 부르는 이름이 사전 표제어와 다를 수 있음(원하다/내키다). 없으면 부품 이름 그대로 —
+  // parts 를 그대로 쓰면 @핀이 붙은 순간 "말@IMG000225447 (말)" 이 화면에 뜬다.
+  const labels = combo.labels || combo.parts.map(bare);
   if (showHead) {
     const head = document.createElement("p");
     head.className = "note";
@@ -340,7 +342,8 @@ function renderToken(token) {
       const det = document.createElement("details");
       det.className = "alts";
       const sum = document.createElement("summary");
-      sum.textContent = "어떻게 만들어졌나: " + combo.parts.join(" + ");
+      // bare 로 @핀을 뗀다 — 안 떼면 "말@IMG000225447 + 만들다" 가 화면에 그대로 뜬다.
+      sum.textContent = "어떻게 만들어졌나: " + (combo.labels || combo.parts.map(bare)).join(" + ");
       det.appendChild(sum);
       det.appendChild(compoundGroup(primary.word, combo, false));
       group.appendChild(det);
