@@ -1,6 +1,6 @@
 // network-first + 캐시 폴백. 온라인이면 항상 최신, 오프라인이면 캐시.
 // (작은 정적 앱이라 cache-first의 속도 이점보다 stale 방지가 중요)
-const CACHE = "sueo-v3";
+const CACHE = "sueo-v4";
 const ASSETS = [
   "./",
   "index.html",
@@ -8,6 +8,8 @@ const ASSETS = [
   "js/app.js",
   "data/ksl-dict.json",
   "icons/icon.svg",
+  "icons/icon-192.png",
+  "icons/icon-512.png",
   "manifest.webmanifest",
 ];
 

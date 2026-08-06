@@ -1,4 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="96" fill="#03c75a"/>
-  <text x="50%" y="54%" font-size="300" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="sans-serif">수</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- 전면 코랄 + 가운데 글자. maskable 안전영역(가운데 80%) 안에 글자가 들어가도록 크기를 잡았다. -->
+  <rect width="512" height="512" fill="#FF6B5B"/>
+  <text x="256" y="256" font-size="230" font-weight="800" text-anchor="middle" dominant-baseline="central"
+        fill="#FFF7F0" font-family="Apple SD Gothic Neo, Malgun Gothic, sans-serif">쉿</text>
 </svg>

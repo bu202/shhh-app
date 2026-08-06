@@ -1,12 +1,19 @@
 {
-  "name": "수어 번역기",
-  "short_name": "수어번역",
-  "description": "텍스트를 한국수어(KSL)로 표현해주는 PWA",
+  "name": "쉿 — 소리 없이 말하는 법",
+  "short_name": "쉿",
+  "description": "둘이서 한국수어를 배워 소리 없이 대화하는 앱. 단어를 실제 수어 그림으로 보여줍니다.",
+  "lang": "ko",
   "start_url": "./",
+  "scope": "./",
   "display": "standalone",
-  "background_color": "#f5f6f8",
-  "theme_color": "#03c75a",
+  "orientation": "portrait",
+  "background_color": "#FFF7F0",
+  "theme_color": "#FFF7F0",
+  "categories": ["education", "lifestyle"],
   "icons": [
-    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
   ]
 }
