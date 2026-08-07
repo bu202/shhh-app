@@ -218,6 +218,12 @@ body {
 /* 마이페이지 — 결과 화면과 같은 여백을 쓰되 버튼이 세로로 쌓인다. */
 #mypage { gap: 8px; }
 #mypage .hint { padding: 16px 8px 6px; }
+/* ⚠️ 16px 미만이면 iOS 가 포커스 순간 화면을 확대하고 안 돌려놓는다(함정 31). #input 과 같은 규칙. */
+.name-field input {
+  flex: 1; min-width: 0; border: none; outline: none; background: none;
+  font-family: inherit; font-size: 16px; font-weight: 700; color: var(--ink);
+}
+.name-field input::placeholder { color: var(--muted); font-weight: 500; }
 
 /* ── 로그인 ──
    카카오·네이버는 각 회사의 로그인 버튼 지침이 정한 색이다. 앱 토큰으로 바꾸면 안 된다. */

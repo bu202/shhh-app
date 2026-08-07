@@ -122,7 +122,7 @@ export default {
 
       if (req.method === "GET") {
         const raw = await env.KV.get("b:" + uid);
-        return json(env, req, raw ? JSON.parse(raw) : { words: [], updated: 0 });
+        return json(env, req, raw ? JSON.parse(raw) : { words: [], name: "", updated: 0 });
       }
       if (req.method === "PUT") {
         const body = await req.json().catch(() => null);
@@ -131,7 +131,10 @@ export default {
           ? body.words.filter((w) => typeof w === "string" && w.length <= 100).slice(0, 500)
           : null;
         if (!words) return json(env, req, { error: "형식이 올바르지 않아요" }, 400);
-        const rec = { words, updated: Date.now() };
+        // 별명은 **사용자가 지어 넣는 말**이지 제공자에게 받은 이름이 아니다. 그래서 아무 말이나 될 수
+        // 있고, 그만큼 길이만 막으면 된다. 빈 문자열은 "지웠다"는 뜻이라 그대로 저장한다.
+        const name = typeof (body && body.name) === "string" ? body.name.trim().slice(0, 20) : "";
+        const rec = { words, name, updated: Date.now() };
         await env.KV.put("b:" + uid, JSON.stringify(rec));
         return json(env, req, rec);
       }

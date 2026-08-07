@@ -33,6 +33,9 @@ async function apiCall(path, opts = {}) {
   }
 }
 
+// 별명은 단어장과 **같은 레코드**에 산다. 저장할 곳이 하나뿐이라 시각 비교(LWW)도 한 번에 끝나고,
+// 별명만 따로 최신인 상태가 생기지 않는다.
 const apiGetBook = () => apiCall("/book");
-const apiPutBook = (words) => apiCall("/book", { method: "PUT", body: JSON.stringify({ words }) });
+const apiPutBook = (words, name) =>
+  apiCall("/book", { method: "PUT", body: JSON.stringify({ words, name }) });
 const apiDeleteAccount = () => apiCall("/me", { method: "DELETE" });

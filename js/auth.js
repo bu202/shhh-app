@@ -6,6 +6,7 @@
 
 const AT_KEY = "shh-wordbook-at";   // 로컬 단어장이 마지막으로 바뀐 시각(ms)
 const PEEK_KEY = "shh-peek";        // "로그인 없이 둘러보기"를 고른 적이 있는가
+const NAME_KEY = "shh-name";        // 사용자가 지은 별명. 제공자에게 받은 이름이 아니다.
 const BACK_KEY = "shh-back";        // 로그인하러 떠나기 직전의 해시(링크로 받은 단어장)
 const NAMES = { kakao: "카카오", naver: "네이버", google: "구글" };
 
@@ -15,46 +16,55 @@ const NAMES = { kakao: "카카오", naver: "네이버", google: "구글" };
 //   이기고 다른 쪽 변경은 사라진다. 단어 단위 병합(CRDT)은 삭제를 기억할 저장소가 더 필요한데,
 //   연인 둘이 쓰는 단어장에서 그 동시 편집이 실제로 문제가 되면 그때 만든다.
 //   합집합으로 하지 않는 이유는 **뺀 단어가 다른 기기에서 되살아나기 때문**이다.
-function syncPlan(remote, local, localAt, firstLogin) {
+function syncPlan(remote, local, localAt, firstLogin, localName = "") {
   if (!remote) return { action: "none" };                     // 오프라인 — 로컬을 그대로 둔다
   // 로그인 첫 순간만 합집합. 로그인 전에 담아둔 단어를 잃으면 안 되고,
   // 다른 기기에 있던 것도 가져와야 한다. 이때는 아직 "뺐다"는 뜻이 없으니 합집합이 안전하다.
   if (firstLogin) {
     const merged = remote.words.concat(local.filter((w) => !remote.words.includes(w)));
-    return { action: "merge", words: merged };
+    // 별명도 같은 이유로 합친다: 이 기기에서 지은 별명이 있으면 그걸 쓰고, 없으면 계정에 있던 것.
+    return { action: "merge", words: merged, name: localName || remote.name || "" };
   }
-  if (remote.updated > localAt) return { action: "pull", words: remote.words };
-  return { action: "push", words: local };
+  // 별명은 단어장과 **같은 레코드**라 같은 시각을 공유한다. 따로 판정하면 "단어는 새것, 별명은 옛것"
+  // 같은 반쪽 상태가 생긴다.
+  if (remote.updated > localAt) return { action: "pull", words: remote.words, name: remote.name || "" };
+  return { action: "push", words: local, name: localName };
 }
 
 // ── 아래는 화면·부수효과 ────────────────────────────────────────────────
 if (typeof document !== "undefined") {
   let putTimer = null;
   const touch = () => localStorage.setItem(AT_KEY, Date.now());
+  const myName = () => localStorage.getItem(NAME_KEY) || "";
 
   // 단어를 담거나 뺄 때마다 불린다(app.js 의 saveBook). 서버 저장은 몰아서 한 번.
   onBookChanged((words) => {
     touch();
     if (!authToken()) return;
     clearTimeout(putTimer);
-    putTimer = setTimeout(() => apiPutBook(words), 800);
+    putTimer = setTimeout(() => apiPutBook(words, myName()), 800);
   });
 
   async function sync(firstLogin) {
-    const plan = syncPlan(await apiGetBook(), BOOK, +localStorage.getItem(AT_KEY) || 0, firstLogin);
+    const plan = syncPlan(await apiGetBook(), BOOK, +localStorage.getItem(AT_KEY) || 0, firstLogin, myName());
     if (plan.action === "none") return;
-    if (plan.action === "push") { if (BOOK.length) await apiPutBook(BOOK); return; }
+    if (plan.action === "push") { if (BOOK.length || myName()) await apiPutBook(BOOK, myName()); return; }
+    localStorage.setItem(NAME_KEY, plan.name);
     replaceBook(plan.words);
+    renderMyPage();   // 별명이 바뀌었을 수 있다
     // pull 은 서버 시각을 그대로 물려받는다. 여기서 Date.now() 를 쓰면 받아온 것이 늘 최신이 돼
     // 다음 기기의 변경을 계속 이긴다.
     if (plan.action === "pull") localStorage.setItem(AT_KEY, Date.now());
-    else { touch(); await apiPutBook(BOOK); }   // merge 는 합친 결과를 서버에도 올린다
+    else { touch(); await apiPutBook(BOOK, myName()); }   // merge 는 합친 결과를 서버에도 올린다
   }
 
   // ── 마이페이지 ──
   // 화면 전환마다 다시 그리지 않는다. 바뀌는 건 로그인 상태뿐이라 **상태가 바뀔 때만** 그린다 —
   // 그래서 app.js 의 화면 전환에 훅을 하나 더 뚫지 않아도 된다.
-  onMyPageSub(() => (authToken() ? (NAMES[authVia()] || "") + " 계정" : "로그인하면 단어장이 따라와요"));
+  onMyPageSub(() => {
+    if (!authToken()) return "로그인하면 단어장이 따라와요";
+    return myName() ? `${myName()}님 · ${NAMES[authVia()] || ""} 계정` : (NAMES[authVia()] || "") + " 계정";
+  });
 
   function renderMyPage() {
     const box = document.getElementById("mypage");
@@ -73,6 +83,7 @@ if (typeof document !== "undefined") {
     if (authToken()) {
       p(`<b>${NAMES[authVia()] || ""} 계정</b>으로 단어장이 저장되고 있어요.<br>`
         + `다른 기기에서 같은 계정으로 로그인하면 그대로 이어져요.`);
+      nameField(box);
       add("로그아웃", "btn-ghost", () => {
         // 로컬 단어장은 남긴다. 로그아웃은 "이 기기에서 그만 보기"지 "지우기"가 아니다.
         setAuth(null); renderMyPage(); toast("로그아웃했어요");
@@ -94,6 +105,42 @@ if (typeof document !== "undefined") {
       localStorage.removeItem("shh-intro-muted");
       location.reload();
     });
+  }
+
+  // 별명 한 칸. **제공자에게 이름을 받지 않고 사용자가 직접 짓는다** — 아무 말이나 쓸 수 있으니
+  // 신원 정보가 아니고, 그래서 카카오 비즈앱 전환도 구글 범위 확대도 필요 없다.
+  // 계정에 붙여 저장하므로 폰을 바꿔도 따라온다(그게 별명을 서버에 두는 유일한 이유다).
+  function nameField(box) {
+    const wrap = document.createElement("div");
+    wrap.className = "search name-field";
+    const input = document.createElement("input");
+    input.type = "text"; input.id = "nickname"; input.maxLength = 20;
+    input.placeholder = "별명 (선택)";
+    input.value = myName();
+    input.setAttribute("aria-label", "내 별명");
+    wrap.appendChild(input);
+    box.appendChild(wrap);
+
+    const save = () => {
+      const v = input.value.trim().slice(0, 20);
+      if (v === myName()) return;
+      localStorage.setItem(NAME_KEY, v);
+      // 별명은 단어장과 같은 레코드라 시각도 같이 올린다 — 안 올리면 다음 동기화에서
+      // 서버가 더 새것으로 판정돼 방금 지은 별명이 되돌아간다.
+      touch();
+      apiPutBook(BOOK, v);
+      onMyPageSubChanged();
+      toast(v ? `${v}님으로 부를게요` : "별명을 지웠어요");
+    };
+    // change 는 포커스가 빠질 때 한 번만 난다 — 글자마다 서버를 때리지 않는다.
+    input.addEventListener("change", save);
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
+  }
+
+  // 헤더 부제를 다시 그리게 한다. 마이 화면에 있을 때만 의미가 있다.
+  function onMyPageSubChanged() {
+    const t = document.querySelector('.tab[data-go="me"]');
+    if (t && t.getAttribute("aria-selected") === "true") t.click();
   }
 
   // 로그인 버튼 세 개. 마이페이지와 게이트가 **같은 함수**를 쓴다 — 둘이 갈라지면
