@@ -201,6 +201,8 @@ body {
   font-size: 12px; font-family: inherit; padding: 8px; cursor: pointer;
 }
 .btn-ghost.danger { color: var(--coral-d); }
+/* 단어장 비우기. 공유 버튼 바로 아래 한 줄로 선다. */
+#empty-btn { display: block; width: 100%; margin-top: 2px; }
 
 /* 게이트는 **화면 전체**를 쓴다. 뒤가 반쯤 비치면 읽히려다 마는 글자가 방해만 된다.
    안내문 위에 뜨는 이유는 순서가 로그인 → 안내문 → 앱 이어야 해서다. */

@@ -101,17 +101,22 @@
 
     <!-- ── 우리 단어장 ── -->
     <section id="wordbook" class="result" data-screen="book" hidden></section>
+    <!-- 단어장 비우기는 여기에 둔다. 지우는 일은 지울 것이 보이는 화면에서 해야 한다 —
+         설정 안에 숨겨 두면 무엇이 지워지는지 못 보고 누르게 된다. -->
     <div class="io" data-screen="book" hidden>
-      <button id="share-btn" class="btn-primary">🔗 링크로 함께 외우기</button>
+      <button id="share-btn" class="btn-primary">🔗 친구에게 공유해요!</button>
+      <button id="empty-btn" class="btn-ghost danger" hidden>단어장 비우기</button>
     </div>
 
     <!-- ── 연습 ── -->
     <section id="practice" class="result" data-screen="quiz" hidden></section>
 
-    <!-- ── 마이페이지 · 설정 ── 안쪽은 js/auth.js 가 그린다(로그인 상태에 따라 통째로 달라진다).
-         설정은 탭에 없는 화면이다 — 마이의 ⚙ 로만 들어가고 헤더의 ‹ 로 나온다. -->
+    <!-- ── 마이페이지 · 설정 · 계정 ── 안쪽은 js/auth.js 가 그린다(로그인 상태에 따라 통째로 달라진다).
+         설정·계정은 탭에 없는 화면이다 — 마이의 ⚙ 로 들어가고 헤더의 ‹ 로 한 칸씩 나온다.
+         계정 삭제는 계정 화면에만 있다(단어장 비우기는 우리 단어장 화면에). -->
     <section id="mypage" class="result" data-screen="me" hidden></section>
     <section id="settings" class="result" data-screen="settings" hidden></section>
+    <section id="account" class="result" data-screen="account" hidden></section>
 
     <p id="status" class="status"></p>
     <footer class="credit">

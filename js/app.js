@@ -305,10 +305,10 @@ function compoundGroup(word, combo, showHead = true) {
     // "두 수어"로 못박아 뒀더니 3부품 합성에서 화면이 틀린 말을 했다(⛔ 단정하지 않는다).
     if (labels.length === 1) {
       b.textContent = "말끝만 떼면 되는 말이에요";
-      head.append(b, `'${word}'는 `, parts, " 하나로 표현해요. 한국어의 말끝은 수어에 없어서 떼고 찾았어요.");
+      head.append(b, `'${word}'는 `, parts, " 하나로 표현해요.");
     } else {
       b.textContent = `${["", "", "두", "세", "네", "다섯"][labels.length] || labels.length} 수어를 이어서 표현해요`;
-      head.append(b, `'${word}'는 하나의 손짓이 아니라 `, parts, "입니다. 한국어의 말끝은 수어에 없어서 떼고 찾았어요.");
+      head.append(b, `'${word}'는 하나의 손짓이 아니라 `, parts, "입니다.");
     }
     group.appendChild(head);
   }
@@ -341,15 +341,8 @@ function compoundGroup(word, combo, showHead = true) {
     det.appendChild(cardRow(u.cands.map((e) => entryCard(e))));
     group.appendChild(det);
   }
-  if (combo.verified && combo.source) {
-    const src = document.createElement("p");
-    src.className = "combo-src";
-    const a = document.createElement("a");
-    a.href = combo.source; a.target = "_blank"; a.rel = "noopener";
-    a.textContent = combo.by || "영상 출처";
-    src.append("영상으로 확인함 · ", a);
-    group.appendChild(src);
-  }
+  // 출처(영상 URL·채널)는 화면에 안 띄운다 — 근거는 data/ksl-verified.json 에 그대로 남아 있고,
+  // verify.mjs --check 가 그걸 본다. 사용자 화면엔 "확인했다"는 사실만 있으면 된다.
   return group;
 }
 
@@ -635,6 +628,8 @@ function mergeFromHash() {
 function renderWordbook() {
   const box = document.getElementById("wordbook");
   box.innerHTML = "";
+  // 빌 게 없으면 비우기 버튼도 없다.
+  document.getElementById("empty-btn").hidden = !BOOK.length;
   if (!BOOK.length) {
     box.innerHTML = '<p class="hint">아직 담은 단어가 없어요.<br>사전에서 찾아 <b>단어장에 담기</b>를 눌러보세요.</p>';
     return;
@@ -667,7 +662,9 @@ function renderWordbook() {
       : it.parts.length > 1 ? `손짓 ${it.parts.length}개를 이어서 해요`
       // 부품 1개짜리 합성(심심해=심심하다)은 담은 이름과 손짓 이름이 다르다. 그걸 밝혀 준다.
       : it.combo ? `[${it.labels[0]}] 손짓 하나예요`
-      : first.aliases?.length ? first.aliases.join(" · ") : "국립국어원 한국수어사전";
+      // 별칭이 없으면 **비워 둔다.** 예전엔 출처 이름("국립국어원 한국수어사전")을 넣었는데,
+      // 뜻이 오는 자리에 기관명이 와서 그게 이 단어의 뜻인 것처럼 읽혔다.
+      : first.aliases?.length ? first.aliases.join(" · ") : "";
     txt.append(t, s); item.appendChild(txt);
 
     const del = document.createElement("button");
@@ -737,9 +734,9 @@ function refreshStash() {
   // 칸은 손짓 수로 센다 — 합성이 한 항목으로 보여도 외울 손짓은 그대로 여럿이다.
   const need = bookCost(fresh);
   const full = bookCost() + need > limit();
-  label.textContent = full
-    ? `손짓 ${Math.max(0, FREE_LIMIT - bookCost())}개 자리가 남았어요 (이 말은 손짓 ${need}개)`
-    : `찾은 단어 ${fresh.length}개를 우리 단어장에`;
+  // 벽에 닿았을 땐 라벨을 비운다. 남은 자리와 필요한 자리를 괄호로 같이 말하던 줄이 있었는데,
+  // 두 번 읽어야 뜻이 잡혀서 뺐다. 이유는 버튼(가격)이 대신 말한다.
+  label.textContent = full ? "" : `찾은 단어 ${fresh.length}개를 우리 단어장에`;
   btn.textContent = full ? PRO_PRICE + "로 무제한" : "단어장에 담기";
   btn.disabled = false;
   box.classList.toggle("upsell", full);
@@ -763,6 +760,15 @@ function setupWordbook() {
       else { await navigator.clipboard.writeText(url); toast("링크를 복사했어요"); }
     } catch { /* 사용자가 공유를 취소함 */ }
   });
+  // 단어장을 비운다. 계정은 그대로 둔다 — 계정을 지우는 건 마이 → 설정 → 계정에 있다.
+  document.getElementById("empty-btn").addEventListener("click", () => {
+    if (!BOOK.length) return;
+    if (!confirm(`담은 ${BOOK.length}개를 전부 뺍니다. 계정은 그대로예요. 계속할까요?`)) return;
+    BOOK = [];
+    saveBook();            // 로그인했으면 서버의 단어장도 비워진다(auth.js 가 밀어 올린다)
+    renderWordbook(); refreshStash();
+    toast("단어장을 비웠어요");
+  });
 }
 
 function toast(msg) {
@@ -774,7 +780,10 @@ function toast(msg) {
 
 // ══ 연습 (플래시카드) ═════════════════════════════════════════════════
 // 손모양을 보여주고 뜻을 맞힌다. 문제는 단어장에서만 낸다 — 안 배운 걸 묻지 않는다.
-const QUIZ_LEN = 5;
+// 한 판의 문제 수는 **담은 단어 수에 맞춘다**(최대 5). 늘 5문제를 내면 3개 담은 사람에게
+// 같은 단어가 두 번 나오는데 진행 점은 새 문제인 척해서, 화면이 실제보다 많이 배운 것처럼 보였다.
+const QUIZ_MAX = 5;
+const quizLen = (pool) => Math.min(QUIZ_MAX, pool.length);
 let quiz = null;
 const pick = (arr, n) => [...arr].sort(() => Math.random() - 0.5).slice(0, n);
 
@@ -792,7 +801,7 @@ function quizPool(book) {
 function startQuiz() {
   const pool = quizPool(BOOK);
   if (pool.length < 3) { quiz = null; return; }
-  quiz = { pool, n: 0, ok: 0, q: null };
+  quiz = { pool, len: quizLen(pool), n: 0, ok: 0, q: null };
   nextQuestion();
 }
 function nextQuestion() {
@@ -813,10 +822,10 @@ function renderPractice() {
       : `<p class="hint">연습하려면 단어장에 <b>3개 이상</b> 담아주세요.<br>사전에서 찾아 담으면 여기서 문제로 나와요.</p>`;
     return;
   }
-  if (quiz.n >= QUIZ_LEN) {
+  if (quiz.n >= quiz.len) {
     const done = document.createElement("div");
     done.className = "note";
-    done.innerHTML = `<b>${QUIZ_LEN}문제 끝!</b>${quiz.ok}개 맞혔어요.`;
+    done.innerHTML = `<b>${quiz.len}문제 끝!</b>${quiz.ok}개 맞혔어요.`;
     const again = document.createElement("button");
     again.className = "btn-primary"; again.textContent = "한 번 더";
     again.addEventListener("click", startQuiz);
@@ -826,7 +835,7 @@ function renderPractice() {
 
   const dots = document.createElement("div");
   dots.className = "dots";
-  for (let i = 0; i < QUIZ_LEN; i++) {
+  for (let i = 0; i < quiz.len; i++) {
     const d = document.createElement("i");
     if (i < quiz.n) d.className = "on";
     dots.appendChild(d);
@@ -882,8 +891,8 @@ function renderPractice() {
 
       const next = document.createElement("button");
       next.className = "btn-primary";
-      next.textContent = quiz.n + 1 >= QUIZ_LEN ? "결과 보기" : "다음";
-      next.addEventListener("click", () => { quiz.n++; quiz.n >= QUIZ_LEN ? renderPractice() : nextQuestion(); });
+      next.textContent = quiz.n + 1 >= quiz.len ? "결과 보기" : "다음";
+      next.addEventListener("click", () => { quiz.n++; quiz.n >= quiz.len ? renderPractice() : nextQuestion(); });
       box.appendChild(next);
     });
     box.appendChild(b);
@@ -924,7 +933,7 @@ function renderHome() {
     head.className = "note";
     const b = document.createElement("b");
     b.textContent = "오늘의 수어";
-    head.append(b, "매일 하나씩 바뀌어요. 같은 날엔 둘 다 같은 단어를 봅니다.");
+    head.append(b, "매일 하나씩 바뀌어요.");
     box.append(head, cardRow([card(e.word, namedFingers(e.description), entryFrames(e), "")]));
 
     const open = document.createElement("button");
@@ -932,20 +941,8 @@ function renderHome() {
     open.addEventListener("click", () => showWord(e.word));
     box.appendChild(open);
   }
-
-  // 우리 단어장 요약. 연습은 3개부터 열린다(startQuiz 와 같은 기준).
-  const sum = document.createElement("div");
-  sum.className = "locked";
-  const t = document.createElement("div");
-  t.className = "t"; t.textContent = BOOK.length ? `우리 단어장 ${BOOK.length}개` : "우리 단어장이 비어 있어요";
-  const s = document.createElement("p");
-  s.className = "s"; s.textContent = BOOK.length >= 3 ? "연습 문제를 낼 수 있어요" : "3개부터 연습이 열려요";
-  const btn = document.createElement("button");
-  btn.className = "btn-primary sm";
-  btn.textContent = BOOK.length >= 3 ? "연습하러 가기" : "사전에서 단어 찾기";
-  btn.addEventListener("click", () => GO(BOOK.length >= 3 ? "quiz" : "dict"));
-  sum.append(t, s, btn);
-  box.appendChild(sum);
+  // 단어장 요약 블록은 뺐다. 아래 탭이 이미 '우리'와 '연습'으로 가는 길이라,
+  // 홈에 한 번 더 두면 같은 곳으로 가는 문이 두 개가 된다.
 }
 
 // 단어를 사전 화면에 띄운다. 홈에서 부른다.
@@ -958,37 +955,43 @@ function showWord(w) {
 // ══ 화면 전환 ════════════════════════════════════════════════════════
 let GO = () => {}; // setupTabs 가 채운다. 홈 카드에서 화면을 옮길 때 쓴다.
 const SCREEN_TITLE = {
-  home: ["shhh!", () => "소리 없이 말하는 법"],
+  home: ["shhh!", () => "수어로 비밀 얘기하기"],
   dict: ["사전", () => DICT_SUB],
-  book: ["우리 단어장", () => (BOOK.length ? `둘이 같이 외우는 ${BOOK.length}개` : "아직 비어 있어요")],
+  book: ["우리 단어장", () => ""],
   quiz: ["연습", () => "손모양 보고 뜻 맞히기"],
-  // 부제는 js/auth.js 가 로그인 상태에 맞춰 갈아끼운다(로그인 안 했으면 "로그인하면 …").
+  // 부제는 js/auth.js 가 로그인 상태에 맞춰 갈아끼운다(로그인 안 했으면 빈 줄).
   me: ["마이", () => myPageSub()],
   settings: ["설정", () => myPageSub()],
+  account: ["계정", () => myPageSub()],
 };
+// 탭이 없는 화면들. 헤더의 ‹ 를 누르면 어디로 돌아가는지도 여기서 정한다 —
+// 화면이 늘 때마다 go() 안의 조건문이 늘지 않게.
+const BACK_TO = { settings: "me", account: "settings" };
 // auth.js 가 없으면(테스트·로그인 미사용) 이 문장이 그대로 뜬다.
 let myPageSub = () => "설정과 계정";
 function onMyPageSub(fn) { myPageSub = fn; }
 function setupTabs() {
   const tabs = [...document.querySelectorAll(".tab[data-go]")];
+  let here = "home";   // 지금 화면. 헤더의 ‹ 가 어디로 돌아갈지 정하는 데만 쓴다.
   const go = (name) => {
+    here = name;
     // 사전을 떠나면 키보드를 내린다. 안 내리면 폰에서 화면이 밀린 채로 다음 화면이 뜬다.
     if (name !== "dict") document.getElementById("input").blur();
     document.querySelectorAll("[data-screen]").forEach((el) => (el.hidden = el.dataset.screen !== name));
-    // 설정은 탭이 없다. 마이에서만 들어가므로 마이를 켜 둔 채로 둔다 —
+    // 설정·계정은 탭이 없다. 마이에서만 들어가므로 마이를 켜 둔 채로 둔다 —
     // 아무 탭도 안 켜지면 사용자가 어디에 있는지 놓친다.
-    const tabName = name === "settings" ? "me" : name;
+    const tabName = BACK_TO[name] ? "me" : name;
     tabs.forEach((t) => {
       const on = t.dataset.go === tabName;
       t.classList.toggle("on", on);
       t.setAttribute("aria-selected", String(on));
     });
     document.getElementById("gear").hidden = name !== "me";
-    document.getElementById("back").hidden = name !== "settings";
+    document.getElementById("back").hidden = !BACK_TO[name];
     // ⚠️ 마스코트는 <svg> 다. **SVGElement 엔 `el.hidden = true` 가 안 먹는다** — hidden 은
     //    HTMLElement 의 속성이라 IDL 반영이 안 되고, JS 프로퍼티만 생기고 화면은 그대로다.
     //    toggleAttribute 는 Element 의 것이라 태그를 안 가린다.
-    document.querySelector(".topbar .mascot").toggleAttribute("hidden", name === "settings");
+    document.querySelector(".topbar .mascot").toggleAttribute("hidden", !!BACK_TO[name]);
     const [title, sub] = SCREEN_TITLE[name];
     document.getElementById("screen-title").firstChild.textContent = title;
     document.getElementById("screen-sub").textContent = sub();
@@ -1000,7 +1003,7 @@ function setupTabs() {
   };
   tabs.forEach((t) => t.addEventListener("click", () => go(t.dataset.go)));
   document.getElementById("gear").addEventListener("click", () => go("settings"));
-  document.getElementById("back").addEventListener("click", () => go("me"));
+  document.getElementById("back").addEventListener("click", () => go(BACK_TO[here] || "me"));
   GO = go;
   return go;
 }

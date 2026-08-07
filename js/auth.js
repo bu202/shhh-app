@@ -62,7 +62,7 @@ if (typeof document !== "undefined") {
   // 화면 전환마다 다시 그리지 않는다. 바뀌는 건 로그인 상태뿐이라 **상태가 바뀔 때만** 그린다 —
   // 그래서 app.js 의 화면 전환에 훅을 하나 더 뚫지 않아도 된다.
   const subText = () => {
-    if (!authToken()) return "로그인하면 단어장이 따라와요";
+    if (!authToken()) return "";
     return myName() ? `${myName()}님 · ${NAMES[authVia()] || ""} 계정` : (NAMES[authVia()] || "") + " 계정";
   };
   onMyPageSub(subText);
@@ -85,11 +85,7 @@ if (typeof document !== "undefined") {
     box.innerHTML = "";
 
     if (!authToken()) {
-      const p = document.createElement("p");
-      p.className = "hint";
-      p.innerHTML = "로그인하면 단어장이 <b>폰을 바꿔도 따라와요</b>.<br>"
-        + "받는 건 계정의 고유 번호뿐이에요 — 이름도 이메일도 받지 않아요.";
-      box.appendChild(p);
+      // 안내 문단은 뺐다 — 게이트에서 이미 본 말을 여기서 또 읽게 된다. 버튼만 둔다.
       loginButtons(box, "btn-primary");
       return;
     }
@@ -145,7 +141,9 @@ if (typeof document !== "undefined") {
 
     const list = document.createElement("div");
     list.className = "list";
-    row(list, "계정", NAMES[authVia()] || "");
+    // 계정을 지우는 자리는 **계정 화면 안**이다. 설정 목록에 '계정과 단어장 삭제'를 나란히 두면
+    // 두 가지(계정 연결 · 담은 단어)를 한 번에 지우면서 어느 쪽을 지우는지 고를 수가 없었다.
+    row(list, "계정", NAMES[authVia()] || "", () => GO("account"));
     // 결제는 아직 없다. 자리를 만들어 두되 **되는 척하지 않는다** — 누르면 왜 아직인지 말한다.
     row(list, "결제 및 구독", "준비 중", () => requestPro());
     row(list, "수어 문법 안내문", "다시 보기", () => {
@@ -153,11 +151,6 @@ if (typeof document !== "undefined") {
       location.reload();
     });
     row(list, "개인정보처리방침", "", () => { location.href = "privacy.html"; });
-    row(list, "계정과 단어장 삭제", "", async () => {
-      if (!confirm("서버에 저장된 단어장을 지우고 계정 연결을 끊어요.\n이 기기의 단어장은 남습니다. 계속할까요?")) return;
-      await apiDeleteAccount();
-      setAuth(null); renderAll(); GO("me"); toast("서버에서 지웠어요");
-    }, "danger");
     box.appendChild(list);
 
     const out = document.createElement("button");
@@ -169,7 +162,36 @@ if (typeof document !== "undefined") {
     box.appendChild(out);
   }
 
-  const renderAll = () => { renderMyPage(); renderSettings(); };
+  // ── 계정 ── 설정 → 계정으로 들어온다. 여기서 하는 일은 하나: 계정을 지우는 것.
+  function renderAccount() {
+    const box = document.getElementById("account");
+    box.innerHTML = "";
+    // 로그아웃 상태면 비워만 둔다. **여기서 GO 를 부르면 안 된다** — renderAll 은 앱이 뜰 때도
+    // 도는데, 그때 화면을 옮기면 링크로 들어온 사람이 마이 탭으로 튕긴다.
+    if (!authToken()) return;
+
+    const list = document.createElement("div");
+    list.className = "list";
+    row(list, "로그인 방법", NAMES[authVia()] || "");
+    box.appendChild(list);
+
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.innerHTML = "계정을 지우면 <b>서버에 저장된 단어장도 함께</b> 지워지고 로그인이 풀려요.<br>"
+      + "이 폰에 담아둔 단어는 그대로 남습니다.";
+    box.appendChild(p);
+
+    const del = document.createElement("button");
+    del.className = "btn-ghost logout danger"; del.type = "button"; del.textContent = "계정 삭제";
+    del.addEventListener("click", async () => {
+      if (!confirm("계정 연결을 끊고 서버에 저장된 단어장을 지워요.\n이 폰의 단어장은 남습니다. 계속할까요?")) return;
+      await apiDeleteAccount();
+      setAuth(null); renderAll(); GO("me"); toast("계정을 지웠어요");
+    });
+    box.appendChild(del);
+  }
+
+  const renderAll = () => { renderMyPage(); renderSettings(); renderAccount(); };
 
   // 별명 한 칸. **제공자에게 이름을 받지 않고 사용자가 직접 짓는다** — 아무 말이나 쓸 수 있으니
   // 신원 정보가 아니고, 그래서 카카오 비즈앱 전환도 구글 범위 확대도 필요 없다.
@@ -235,9 +257,10 @@ if (typeof document !== "undefined") {
     card.className = "intro gate";
     card.setAttribute("role", "dialog");
     card.setAttribute("aria-modal", "true");
+    // 설명 두 줄(단어장이 따라온다 · 고유 번호만 받는다)은 뺐다. 첫 화면에서 읽을 것을 줄인다 —
+    // 무엇을 받는지는 푸터의 개인정보처리방침이 정식으로 말한다.
     card.innerHTML = `<svg class="mascot sm" viewBox="0 0 100 100" aria-hidden="true"><use href="#mascot"/></svg>
-      <div class="intro-h"><b>${reason || "둘이 같이 외우려면<br>먼저 로그인해요"}</b>
-      <span>단어장이 <b>폰을 바꿔도 따라와요</b><br>받는 건 계정의 고유 번호뿐 — 이름도 이메일도 받지 않아요.</span></div>`;
+      <div class="intro-h"><b>${reason || "쉿! 우리만 알 수 있는<br>언어로 얘기해요"}</b></div>`;
     const foot = document.createElement("div");
     foot.className = "intro-foot";
     loginButtons(foot, "btn-primary");
