@@ -1,6 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <!-- 전면 코랄 + 가운데 글자. maskable 안전영역(가운데 80%) 안에 글자가 들어가도록 크기를 잡았다. -->
+  <!-- 코랄 바탕 + 헤더의 마스코트(쉿 하는 얼굴). 도형은 index.html 의 <symbol id="mascot"> 과 같다 —
+       아이콘 SVG 는 홀로 서야 해서(매니페스트가 파일로 읽는다) 재사용이 안 되고 베낄 수밖에 없다.
+       ⚠️ 마스코트를 고치면 여기도 고치고 PNG 를 다시 렌더해야 한다.
+       scale(4) 인 이유: maskable 안전영역은 가운데 지름 410 원인데, 이 배율의 마스코트 모서리가
+       중심에서 최대 200 이라 그 안에 들어간다. 더 키우면 원 밖으로 나가 모서리가 깎인다. -->
   <rect width="512" height="512" fill="#FF6B5B"/>
-  <text x="256" y="256" font-size="230" font-weight="800" text-anchor="middle" dominant-baseline="central"
-        fill="#FFF7F0" font-family="Apple SD Gothic Neo, Malgun Gothic, sans-serif">쉿</text>
+  <g transform="translate(56 54) scale(4)">
+    <circle cx="50" cy="46" r="33" fill="#FFE3D5"/>
+    <circle cx="37" cy="40" r="4" fill="#241C1A"/><circle cx="63" cy="40" r="4" fill="#241C1A"/>
+    <ellipse cx="28" cy="52" rx="6.5" ry="4" fill="#FF6B5B" opacity=".4"/>
+    <ellipse cx="72" cy="52" rx="6.5" ry="4" fill="#FF6B5B" opacity=".4"/>
+    <g transform="rotate(-16 50 60)">
+      <rect x="45" y="44" width="11" height="27" rx="5.5" fill="#FFF7F0" stroke="#241C1A" stroke-width="3.2"/>
+      <rect x="29" y="64" width="33" height="22" rx="11" fill="#FFF7F0" stroke="#241C1A" stroke-width="3.2"/>
+    </g>
+  </g>
 </svg>

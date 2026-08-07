@@ -1,6 +1,6 @@
-# CLAUDE.md — 쉿 (수어 번역기 → 앱 출시)
+# CLAUDE.md — shhh! (수어 번역기 → 앱 출시)
 
-빌드 도구 없는 Vanilla PWA. **목표: 앱 출시.** 이름 `쉿`.
+빌드 도구 없는 Vanilla PWA. **목표: 앱 출시.** 이름 `shhh!` (2026-08-07 `쉿` 에서 변경).
 연인·친구가 **실제 한국수어를 배워서** 소리 없이 대화하게 만드는 앱. 수어를 알리는 게 목적.
 
 ---
@@ -32,7 +32,7 @@
 ### 5a — PWA 로 여는 데 필요한 것 (2026-08-07)
 | 항목 | 상태 |
 |---|---|
-| `manifest.webmanifest` (이름 `쉿`, 색을 디자인 토큰에 맞춤, PNG 192·512·maskable) | ✅ |
+| `manifest.webmanifest` (이름 `shhh!`, 색을 디자인 토큰에 맞춤, PNG 192·512·maskable) | ✅ |
 | `icons/icon-192.png`·`icon-512.png` — `icon.svg` 를 헤드리스 크롬으로 렌더 | ✅ |
 | `privacy.html` + 푸터 링크 (공개 URL 이어야 함) | ✅ |
 | https 서빙 · SW 등록 · `display:standalone` — 설치 조건 충족 | ✅ 크롬 실측 |
@@ -69,11 +69,19 @@
 아이콘 PNG 를 다시 만들 때:
 ```bash
 CH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-for s in 512 192; do "$CH" --headless --disable-gpu --hide-scrollbars \
-  --force-device-scale-factor=1 --window-size=$s,$s \
-  --screenshot="icons/icon-$s.png" "file://$PWD/icons/icon.svg"; done
+"$CH" --headless --disable-gpu --hide-scrollbars --force-device-scale-factor=1 \
+  --window-size=512,512 --screenshot="icons/icon-512.png" "file://$PWD/icons/icon.svg"
+sips -z 192 192 icons/icon-512.png --out icons/icon-192.png   # 크롬으로 두 번 찍지 말 것 ↓
 ```
-`rsvg-convert`·ImageMagick 은 이 맥에 없다. `sips` 는 SVG 를 못 읽는다. 크롬이 유일하게 되는 길이다.
+`rsvg-convert`·ImageMagick 은 이 맥에 없다. `sips` 는 SVG 를 **못 읽지만** PNG 축소는 된다.
+- ⚠️ **크롬 창 크기로 192 를 찍으면 축소가 아니라 잘라내기다.** `icon.svg` 에 `width="512"` 가
+  박혀 있어 192 창은 좌측 상단 192px 만 담는다 — 거긴 배경뿐이라 **빈 사각형이 나온다.**
+  옛 `for s in 512 192` 루프가 이걸 저질렀고, `icon-192.png` 는 만들어진 날부터 빈 코랄 사각형이었다.
+  `apple-touch-icon` 이 이 파일이라 **아이폰 홈 화면 아이콘이 통째로 비어 있었다.**
+  512 한 장만 찍고 `sips` 로 줄인다.
+- 아이콘 그림은 **헤더의 마스코트**(쉿 하는 얼굴)다. `index.html` 의 `<symbol id="mascot">` 과 같은
+  도형을 `icon.svg` 가 베껴 갖고 있다 — 아이콘은 홀로 서는 파일이라 `<use>` 로 못 부른다.
+  마스코트를 고치면 `icon.svg` 도 고치고 PNG 를 다시 렌더할 것.
 
 ## 📅 매일 100건 — 부품 수형 고르기 (진행 중)
 

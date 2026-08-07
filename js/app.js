@@ -694,7 +694,7 @@ function setupWordbook() {
     if (!BOOK.length) return toast("담은 단어가 없어요");
     const url = shareLink();
     try {
-      if (navigator.share) await navigator.share({ title: "쉿 — 우리 단어장", url });
+      if (navigator.share) await navigator.share({ title: "shhh! — 우리 단어장", url });
       else { await navigator.clipboard.writeText(url); toast("링크를 복사했어요"); }
     } catch { /* 사용자가 공유를 취소함 */ }
   });
@@ -872,7 +872,7 @@ function showWord(w) {
 // ══ 화면 전환 ════════════════════════════════════════════════════════
 let GO = () => {}; // setupTabs 가 채운다. 홈 카드에서 화면을 옮길 때 쓴다.
 const SCREEN_TITLE = {
-  home: ["쉿", () => "소리 없이 말하는 법"],
+  home: ["shhh!", () => "소리 없이 말하는 법"],
   dict: ["사전", () => DICT_SUB],
   book: ["우리 단어장", () => (BOOK.length ? `둘이 같이 외우는 ${BOOK.length}개` : "아직 비어 있어요")],
   quiz: ["연습", () => "손모양 보고 뜻 맞히기"],
