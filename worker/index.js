@@ -92,7 +92,10 @@ export default {
       if (!back) return new Response("로그인 요청이 만료됐어요. 다시 눌러 주세요.", { status: 400 });
       await env.KV.delete("x:" + state);           // state 는 1회용
       const code = url.searchParams.get("code");
-      if (!code) return Response.redirect(back + "#login=denied", 302);
+      if (!code) {
+        console.log("[cb] no code", m[1], url.searchParams.get("error"), url.searchParams.get("error_description"));
+        return Response.redirect(back + "#login=denied", 302);
+      }
 
       const { id, secret } = creds(env, m[1]);
       const form = new URLSearchParams({
@@ -104,11 +107,17 @@ export default {
         method: "POST", body: form,
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
       }).then((r) => r.json());
-      if (!tr.access_token) return Response.redirect(back + "#login=fail", 302);
+      if (!tr.access_token) {
+        console.log("[cb] token fail", m[1], JSON.stringify(tr).slice(0, 300));
+        return Response.redirect(back + "#login=fail", 302);
+      }
 
       const me = await fetch(p.me, { headers: { Authorization: "Bearer " + tr.access_token } }).then((r) => r.json());
       const who = p.uid(me);
-      if (!who) return Response.redirect(back + "#login=fail", 302);
+      if (!who) {
+        console.log("[cb] me fail", m[1], JSON.stringify(me).slice(0, 300));
+        return Response.redirect(back + "#login=fail", 302);
+      }
 
       const token = crypto.randomUUID();
       await env.KV.put("s:" + token, m[1] + ":" + who, { expirationTtl: 60 * 60 * 24 * 180 });

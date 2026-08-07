@@ -62,8 +62,18 @@ printf '<클라이언트 시크릿>' | npx wrangler secret put KAKAO_SECRET
 | 사용 API | **네이버 로그인** |
 | 제공 정보 선택 | **전부 체크 해제** (필수 항목이 강제되면 그것만) |
 | 환경 추가 | **PC웹** |
-| 서비스 URL | `https://bu202.github.io` |
+| 서비스 URL | `https://bu202.github.io` **그리고** `https://shhh-api.bu202.workers.dev` (둘 다) |
 | Callback URL | `https://shhh-api.bu202.workers.dev/cb/naver` |
+
+⚠️ **네이버만 「서비스 URL 도메인 = Callback URL 도메인」을 요구한다.** 카카오·구글은 콜백 도메인을
+따지지 않아서 그대로 통과하는데, 네이버는 서비스 URL 에 없는 도메인으로 콜백이 오면 거부한다:
+
+> shhh에 로그인할 수 없습니다.
+> 개발자센터에 등록되지 않은 사이트에서 로그인을 시도했습니다.
+
+우리 콜백은 Worker 도메인에 있고 앱은 Pages 도메인에 있어 **둘이 다르다.** 그래서 서비스 URL 을
+**두 개 다** 등록한다(네이버는 다중 등록을 지원한다). 앱 주소를 남겨 두는 이유는 검수 때 사람이
+그 주소로 서비스를 확인하기 때문이다.
 
 ```bash
 cd worker
