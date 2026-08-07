@@ -3,7 +3,10 @@
 // 캐시 이름은 `PREFIX + 버전`. 주소를 /sueo-translator/ → /shhh-app/ 로 옮겼을 때 옛 경로 항목이
 // 그대로 남았다(캐시는 경로가 아니라 origin 단위라 두 주소가 같은 캐시를 쓴다). 버전을 올려 통째로 비운다.
 const PREFIX = "shhh-";
-const CACHE = PREFIX + "v6";
+const CACHE = PREFIX + "v7";
+// 로그인 API 는 **절대 캐시하지 않는다.** 아래 fetch 핸들러는 모든 GET 을 캐시에 넣는데,
+// 그러면 한 기기를 두 사람이 쓸 때 앞사람의 단어장 응답이 캐시에 남아 뒷사람에게 보인다.
+const API_HOST = "shhh-api.bu202.workers.dev";
 // 앱이 첫 화면을 그리는 데 쓰는 것 전부. 데이터 파일을 빼면 **첫 방문 직후 오프라인**이 깨진다 —
 // 첫 로드엔 SW 가 아직 페이지를 제어하지 않아 아래 fetch 핸들러의 런타임 캐시가 안 돈다(재방문부터 돎).
 const ASSETS = [
@@ -12,6 +15,8 @@ const ASSETS = [
   "privacy.html",
   "css/style.css",
   "js/app.js",
+  "js/authApi.js",
+  "js/auth.js",
   "data/ksl-dict.json",
   "data/ksl-fulldict.json",
   "data/ksl-compounds.json",
@@ -41,6 +46,7 @@ self.addEventListener("activate", (e) => {
 
 self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET") return;
+  if (new URL(e.request.url).host === API_HOST) return;   // 로그인·단어장 응답은 캐시 밖에 둔다
   e.respondWith(
     fetch(e.request)
       .then((res) => {

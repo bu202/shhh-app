@@ -70,9 +70,12 @@
       <h1 id="screen-title">shhh!<small id="screen-sub">소리 없이 말하는 법</small></h1>
       <!-- 설치 유도. 기본은 숨김 — setupInstall() 이 설치 가능할 때만 켠다. -->
       <button id="install" class="install" hidden>＋ 설치</button>
+      <!-- 로그인. 글자는 js/auth.js 가 상태에 맞춰 바꾼다. -->
+      <button id="account" class="install">로그인</button>
     </header>
     <!-- iOS 사파리는 설치 대화상자를 못 여니 경로를 글로 알려준다. -->
     <p id="install-tip" class="install-tip" hidden></p>
+    <div id="account-panel" class="account-panel" hidden></div>
 
     <!-- ── 홈 (첫 화면) ── -->
     <section id="home" class="result" data-screen="home"></section>
@@ -119,6 +122,10 @@
       <button class="tab" data-go="quiz" aria-selected="false"><i>🎯</i>연습</button>
     </nav>
   </main>
+  <!-- 순서가 중요하다. auth.js 는 app.js 의 onAppReady/onBookChanged 에 붙고,
+       authApi.js 의 loginUrl·apiPutBook 을 부른다. -->
   <script src="js/app.js"></script>
+  <script src="js/authApi.js"></script>
+  <script src="js/auth.js"></script>
 </body>
 </html>

@@ -23,6 +23,7 @@
 | **3. 디자인 적용** | `design/mockup.html` → 실제 앱 | ✅ **완료** |
 | **4. 수익 구조** | 무료 5단어 벽 · 프로 상태 · 결제 이음새 | 🔶 **벽 완성, 결제는 5단계** |
 | **5a. PWA 출시** | 설치되는 PWA · 오프라인 · 개인정보처리방침 | 🔶 **← 지금 여기** |
+| **5a-2. 로그인** | 단어장이 폰을 바꿔도 따라오게 (카카오·네이버·구글) | 🔶 **구글 완료 · 카카오/네이버는 `worker/SETUP.md`** |
 | **5b. Play 출시** | Bubblewrap → assetlinks → Play($25) | ⬜ **예산 나온 뒤** |
 | **6. 카메라 채점** (후순위) | 지화 32자모 점수 + 교정 안내 | ⬜ 뒤로 미룸 |
 
@@ -169,7 +170,10 @@ node scripts/test-compounds.mjs                    # ④ 마지막 줄에 남은
   주소가 바뀌어도 손댈 게 없었다 — 절대경로로 적었으면 여기서 깨졌을 자리다.
 
 ## 제약 (바뀌지 않는 전제)
-- 예산 **$0**. 정적 호스팅(GitHub/Cloudflare Pages). 서버·백엔드 없음.
+- 예산 **$0**. 정적 호스팅(GitHub/Cloudflare Pages).
+- **서버는 로그인·단어장 동기화 하나뿐이다** (2026-08-07 에 「안 할 것: 서버」를 여기서만 깼다).
+  `worker/index.js` — Cloudflare Worker + KV, 무료 한도 안. **앱은 서버 없이도 온전히 돈다** —
+  로그인은 얹는 기능이지 단어장이 서 있는 조건이 아니다. 새 기능을 서버로 미루기 전에 이 문장을 다시 읽을 것.
 - Vanilla HTML/CSS/JS, **빌드 도구·프레임워크 없음**. 의존성 최소.
 - 결정은 항상 **장단점 + 비용**을 표로 제시하고 승인받은 뒤 진행. 단계마다 실제 브라우저로 검증.
 
@@ -179,7 +183,12 @@ node scripts/test-compounds.mjs                    # ④ 마지막 줄에 남은
 python3 scripts/serve.py 8000       # http://localhost:8000
 
 # 검증 (전부 통과해야 함)
-for t in book fingers compounds match assemble knn screen home; do node scripts/test-$t.mjs; done
+for t in auth book fingers compounds match assemble knn screen home; do node scripts/test-$t.mjs; done
+
+# 로그인 서버 (worker/)
+cd worker && npx wrangler deploy          # 배포. secret 은 즉시 반영이라 재배포 불필요
+npx wrangler secret list                  # 넣은 키 목록(값은 안 보인다)
+npx wrangler tail                         # 로그인이 실패할 때 서버 쪽 로그
 
 # 데이터 수집 (키는 로컬 전용, 결과 JSON엔 키 미포함)
 node scripts/fetch-ksl.mjs '<서비스키>'     # 전체 사전 수집(~3700+)
@@ -192,6 +201,9 @@ node scripts/fetch-ksl.mjs --mock           # 매핑 로직 자가검증(키·�
 |---|---|
 | `index.html` | 진입점: 안내문 + 헤더 + 4화면(`data-screen`: home·dict·book·quiz) + 하단 탭 + 크레딧 |
 | `js/app.js` | 사전 인덱스·매칭·렌더·지화. 흐름: 입력→`matchSentence`(그리디)→`renderResults` |
+| `js/authApi.js` | **fetch 는 여기에만.** 세션 토큰 보관 + `/book` 호출. 서버 주소가 바뀌면 `API` 한 줄 |
+| `js/auth.js` | 로그인 화면 + **어느 쪽 단어장이 새것인지 정하는 규칙**(`syncPlan`, 순수 함수). `scripts/test-auth.mjs` 가 잰다 |
+| `worker/index.js` | Cloudflare Worker. OAuth 3사 + KV 단어장. 등록 절차는 `worker/SETUP.md` |
 | `js/camera.js` | **6단계 카메라**(MediaPipe·KNN 지문자·한글 조합기). **`index.html` 이 로드하지 않는다** — 되살리는 법은 파일 맨 위 주석에. 자모 표는 app.js 와 한시적 중복이고 `test-assemble.mjs` 가 대조한다 |
 | `data/ksl-dict.json` | 이미지 사전(kcisa, 3,622·수형그림 O). `scripts/fetch-ksl.mjs`가 생성 |
 | `data/ksl-fulldict.json` | 전체 텍스트 사전(13,797·수형설명만, 그림 X). `scripts/fetch-fulldict.mjs`가 생성 |
@@ -406,6 +418,32 @@ python3 scripts/sim.py tap 603 2112      # 좌표는 스크린샷 픽셀(1206x26
 32. **아이콘·이미지 같은 산출물은 테스트가 안 본다 — 실제 크기로 열어봐야 한다.** `icon-192.png` 가
     만들어진 날부터 빈 코랄 사각형이었는데 아무도 몰랐다. 테스트는 PNG 를 안 보고 사람은 512 만 열어봤다.
     자세한 원인과 올바른 렌더 명령은 위 「아이콘 PNG 를 다시 만들 때」에 있다.
+
+33. **로그인만 붙이면 아무것도 안 달라진다 — "나만의 단어장"은 저장소 문제였다.**
+    카카오·네이버는 브라우저만으로도 로그인이 되지만, 그러면 단어장은 **여전히 localStorage 에만** 남아
+    폰을 바꾸면 그대로 사라진다. 사용자는 로그인 화면만 하나 더 보고 얻는 게 없다.
+    → 서버(Worker+KV)를 세운 이유가 로그인이 아니라 **DB** 라는 걸 잊지 말 것. 이 구분을 놓치면
+      "로그인 붙였는데 왜 안 따라오죠"라는 버그를 나중에 처음부터 다시 만들게 된다.
+
+34. **SW 의 런타임 캐시가 API 응답까지 먹는다.** `service-worker.js` 의 fetch 핸들러는 **모든 GET** 을
+    캐시에 넣는다. 그대로 두면 한 기기를 두 사람이 쓸 때 **앞사람의 단어장 응답이 뒷사람에게** 뜬다.
+    → `API_HOST` 면 핸들러가 아예 손을 떼게 했다. 새 외부 API 를 붙일 때마다 같은 자리를 볼 것.
+
+35. **합집합 병합은 삭제를 되살린다.** 단어장을 두 기기가 합집합으로 합치면 한쪽에서 뺀 단어가
+    다음 동기화에 부활한다 — 사용자 눈엔 "지운 게 다시 생김"이다.
+    → 합집합은 **로그인 첫 순간에만**(그때는 아직 "뺐다"는 뜻이 없다), 그 뒤엔 시각 비교(LWW).
+      `syncPlan()` 순수 함수 한 곳이 정하고 `test-auth.mjs` 가 6가지 경우를 직접 잰다.
+      같은 시각이면 **로컬이 이긴다** — pull 로 기울면 방금 뺀 단어가 눈앞에서 되살아난다.
+
+36. **app.js 에 새 기능을 넣지 말고 훅을 뚫는다(함정 13 의 연장).** 로그인은 `onBookChanged` ·
+    `onAppReady` 두 함수 선언으로만 app.js 에 닿는다. 최상위에서 `window` 를 만졌으면 app.js 를
+    통째로 평가하는 테스트 5개가 또 죽었을 것이다. **함수 선언은 Node 에서도 안전하다 — 안 부르면 그만.**
+    `onAppReady` 는 이미 준비가 끝났으면 그 자리에서 부른다. 스크립트 로드 순서에 기대면
+    사전이 캐시에서 즉시 올 때 조용히 안 불린다.
+
+37. **동기화는 사전이 선 뒤에 시작해야 한다.** `replaceBook` 이 `bookItem()` 으로 단어를 거르는데,
+    사전 로드 전에 서버 단어장을 받으면 **전부 "사전에 없음"으로 버려진다** — 다른 기기의 단어장이
+    통째로 사라지는 사고다. 그래서 `appReady?.()` 를 `main()` 의 사전 로드 **뒤**에 뒀다.
 
 ---
 

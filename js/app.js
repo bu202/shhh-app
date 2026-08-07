@@ -509,6 +509,11 @@ async function main() {
   addEventListener("hashchange", openHash);
   openHash();
 
+  // 로그인 동기화는 **여기서** 시작한다. 사전이 서기 전에 서버 단어장을 받으면
+  // replaceBook 의 bookItem 검사가 전부 실패해 담아둔 단어가 통째로 버려진다.
+  appReadyDone = true;
+  appReady?.();
+
   // 카메라(손 읽기)는 6단계로 미뤄 화면에서 뺐다. 검출·KNN 코드는 그대로 살아 있으니
   // #camera 마크업 + data-go="camera" 탭을 붙이고 setupSignInput() 을 켜면 다시 동작한다.
   // (모드 전환 전용 setupModes 는 지웠다 — 화면 전환은 setupTabs 하나로 한다.)
@@ -555,8 +560,30 @@ async function requestPro() {
   return false;
 }
 let BOOK = (() => { try { return JSON.parse(localStorage.getItem(BOOK_KEY)) || []; } catch { return []; } })();
-const saveBook = () => localStorage.setItem(BOOK_KEY, JSON.stringify(BOOK));
+
+// ── 로그인 동기화가 붙는 자리 (js/auth.js) ─────────────────────────────
+// auth.js 를 안 읽으면 null 로 남아 앱은 종전대로 기기 안에서만 돈다 — 로그인은 얹는 기능이지
+// 단어장이 서 있는 조건이 아니다. 테스트도 이 상태로 돈다(함정 13: 최상위에서 window 를 만지지 않는다).
+let bookChanged = null;
+let appReady = null, appReadyDone = false;
+function onBookChanged(fn) { bookChanged = fn; }
+// 이미 준비가 끝난 뒤에 붙으면 그 자리에서 바로 부른다 — 스크립트 로드 순서에 기대지 않으려고.
+function onAppReady(fn) { appReadyDone ? fn() : (appReady = fn); }
+
+// quiet 는 **서버에서 받은 걸 되쓸 때**만 참이다. 안 가르면 서버 → 로컬 저장 → 다시 서버로 PUT 이 돈다.
+const saveBook = (quiet) => {
+  localStorage.setItem(BOOK_KEY, JSON.stringify(BOOK));
+  if (!quiet) bookChanged?.(BOOK);
+};
 const bookHas = (w) => BOOK.includes(w);
+
+// 다른 기기의 단어장으로 갈아끼운다. 사전에서 사라진 단어는 버린다 —
+// 담을 때 bookItem 을 통과한 것만 들어오므로 꺼낼 때도 같은 문을 통과시킨다.
+function replaceBook(words) {
+  BOOK = words.filter((w) => bookItem(w));
+  saveBook(true);
+  renderWordbook(); refreshStash(); renderHome();
+}
 
 // 표제어 -> 사전 항목. 없으면 null(사전이 바뀌어 사라진 단어).
 //

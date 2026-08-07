@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "shhh-api",
+  "main": "index.js",
+  "compatibility_date": "2026-08-07",
+  "observability": { "enabled": true },
+  "vars": {
+    // 이 주소에서 온 요청만 받고, 이 주소로만 돌려보낸다. Pages 주소가 바뀌면 여기도 바꿀 것.
+    "APP_ORIGIN": "https://bu202.github.io"
+  },
+  "kv_namespaces": [{ "binding": "KV", "id": "f55a12622af84380a0865dd8ff4824ac" }]
+  // 비밀값은 여기 적지 않는다 — `wrangler secret put KAKAO_ID` 등으로 넣는다.
+  // KAKAO_ID · KAKAO_SECRET(선택) · NAVER_ID · NAVER_SECRET · GOOGLE_ID · GOOGLE_SECRET
+}
