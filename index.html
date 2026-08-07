@@ -68,7 +68,11 @@
     <header class="topbar">
       <svg class="mascot" viewBox="0 0 100 100" aria-hidden="true"><use href="#mascot"/></svg>
       <h1 id="screen-title">쉿<small id="screen-sub">소리 없이 말하는 법</small></h1>
+      <!-- 설치 유도. 기본은 숨김 — setupInstall() 이 설치 가능할 때만 켠다. -->
+      <button id="install" class="install" hidden>＋ 설치</button>
     </header>
+    <!-- iOS 사파리는 설치 대화상자를 못 여니 경로를 글로 알려준다. -->
+    <p id="install-tip" class="install-tip" hidden></p>
 
     <!-- ── 홈 (첫 화면) ── -->
     <section id="home" class="result" data-screen="home"></section>

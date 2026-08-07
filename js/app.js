@@ -428,7 +428,46 @@ function renderResults(tokens) {
   refreshStash();
 }
 
+// 설치 유도. 앱으로 쓰라고 권하는 자리가 없으면 대부분 그냥 웹사이트로 쓰고 만다.
+// 두 갈래인 이유: 크롬은 `beforeinstallprompt` 로 설치 대화상자를 열어주지만
+// iOS 사파리엔 그 이벤트가 아예 없어서 공유 시트 경로를 사람이 직접 밟아야 한다.
+// ⚠️ main() 첫 줄에서 부른다 — 이벤트가 스크립트 평가 직후 날아오므로 사전 로드를 기다리면 놓친다.
+function setupInstall() {
+  const btn = document.getElementById("install");
+  const tip = document.getElementById("install-tip");
+  // 이미 설치해서 앱으로 열었으면 권할 게 없다. navigator.standalone 은 iOS 전용.
+  if (matchMedia("(display-mode: standalone)").matches || navigator.standalone) return;
+
+  let prompt = null;
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault(); // 크롬 기본 배너를 막고 우리 버튼으로 옮긴다
+    prompt = e;
+    btn.hidden = false;
+  });
+
+  // iPadOS 13+ 는 UA 를 맥으로 보낸다 — 그래서 터치 개수도 같이 본다. 안 보면 아이패드를 전부 놓친다.
+  const ua = navigator.userAgent;
+  if (/iphone|ipad|ipod/i.test(ua) || (/macintosh/i.test(ua) && navigator.maxTouchPoints > 1)) {
+    btn.hidden = false;
+  }
+
+  btn.addEventListener("click", async () => {
+    if (prompt) {
+      prompt.prompt();
+      await prompt.userChoice;
+      prompt = null;   // 한 번 쓴 이벤트는 다시 못 쓴다
+      btn.hidden = true;
+      return;
+    }
+    tip.textContent = "아래 공유 버튼(⬆︎)을 누르고 '홈 화면에 추가'를 고르면 앱처럼 열려요.";
+    tip.hidden = !tip.hidden;
+  });
+
+  window.addEventListener("appinstalled", () => { btn.hidden = true; tip.hidden = true; });
+}
+
 async function main() {
+  setupInstall();
   const status = document.getElementById("status");
   try {
     DICT = await loadDictionary();
