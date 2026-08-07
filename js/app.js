@@ -964,6 +964,7 @@ const SCREEN_TITLE = {
   quiz: ["연습", () => "손모양 보고 뜻 맞히기"],
   // 부제는 js/auth.js 가 로그인 상태에 맞춰 갈아끼운다(로그인 안 했으면 "로그인하면 …").
   me: ["마이", () => myPageSub()],
+  settings: ["설정", () => myPageSub()],
 };
 // auth.js 가 없으면(테스트·로그인 미사용) 이 문장이 그대로 뜬다.
 let myPageSub = () => "설정과 계정";
@@ -974,11 +975,20 @@ function setupTabs() {
     // 사전을 떠나면 키보드를 내린다. 안 내리면 폰에서 화면이 밀린 채로 다음 화면이 뜬다.
     if (name !== "dict") document.getElementById("input").blur();
     document.querySelectorAll("[data-screen]").forEach((el) => (el.hidden = el.dataset.screen !== name));
+    // 설정은 탭이 없다. 마이에서만 들어가므로 마이를 켜 둔 채로 둔다 —
+    // 아무 탭도 안 켜지면 사용자가 어디에 있는지 놓친다.
+    const tabName = name === "settings" ? "me" : name;
     tabs.forEach((t) => {
-      const on = t.dataset.go === name;
+      const on = t.dataset.go === tabName;
       t.classList.toggle("on", on);
       t.setAttribute("aria-selected", String(on));
     });
+    document.getElementById("gear").hidden = name !== "me";
+    document.getElementById("back").hidden = name !== "settings";
+    // ⚠️ 마스코트는 <svg> 다. **SVGElement 엔 `el.hidden = true` 가 안 먹는다** — hidden 은
+    //    HTMLElement 의 속성이라 IDL 반영이 안 되고, JS 프로퍼티만 생기고 화면은 그대로다.
+    //    toggleAttribute 는 Element 의 것이라 태그를 안 가린다.
+    document.querySelector(".topbar .mascot").toggleAttribute("hidden", name === "settings");
     const [title, sub] = SCREEN_TITLE[name];
     document.getElementById("screen-title").firstChild.textContent = title;
     document.getElementById("screen-sub").textContent = sub();
@@ -989,6 +999,8 @@ function setupTabs() {
     if (name === "dict") refreshStash();
   };
   tabs.forEach((t) => t.addEventListener("click", () => go(t.dataset.go)));
+  document.getElementById("gear").addEventListener("click", () => go("settings"));
+  document.getElementById("back").addEventListener("click", () => go("me"));
   GO = go;
   return go;
 }

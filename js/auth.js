@@ -51,7 +51,7 @@ if (typeof document !== "undefined") {
     if (plan.action === "push") { if (BOOK.length || myName()) await apiPutBook(BOOK, myName()); return; }
     localStorage.setItem(NAME_KEY, plan.name);
     replaceBook(plan.words);
-    renderMyPage();   // 별명이 바뀌었을 수 있다
+    renderAll();   // 별명이 바뀌었을 수 있다
     // pull 은 서버 시각을 그대로 물려받는다. 여기서 Date.now() 를 쓰면 받아온 것이 늘 최신이 돼
     // 다음 기기의 변경을 계속 이긴다.
     if (plan.action === "pull") localStorage.setItem(AT_KEY, Date.now());
@@ -61,51 +61,115 @@ if (typeof document !== "undefined") {
   // ── 마이페이지 ──
   // 화면 전환마다 다시 그리지 않는다. 바뀌는 건 로그인 상태뿐이라 **상태가 바뀔 때만** 그린다 —
   // 그래서 app.js 의 화면 전환에 훅을 하나 더 뚫지 않아도 된다.
-  onMyPageSub(() => {
+  const subText = () => {
     if (!authToken()) return "로그인하면 단어장이 따라와요";
     return myName() ? `${myName()}님 · ${NAMES[authVia()] || ""} 계정` : (NAMES[authVia()] || "") + " 계정";
-  });
+  };
+  onMyPageSub(subText);
 
+  // 목록 한 줄. 왼쪽 이름, 오른쪽 값(또는 화살표). 설정 화면이 전부 이걸로 되어 있다.
+  function row(box, label, value, fn, cls = "") {
+    const el = document.createElement(fn ? "button" : "div");
+    el.className = "list-row " + cls;
+    if (fn) { el.type = "button"; el.addEventListener("click", fn); }
+    const l = document.createElement("span"); l.className = "l"; l.textContent = label;
+    const v = document.createElement("span"); v.className = "v"; v.textContent = value || "";
+    el.append(l, v);
+    box.appendChild(el);
+    return el;
+  }
+
+  // ── 마이 ── 맨 위가 지금 쓰는 플랜. 여기서 제일 궁금한 건 "내가 뭘 쓸 수 있나"라서.
   function renderMyPage() {
     const box = document.getElementById("mypage");
     box.innerHTML = "";
-    const p = (html, cls = "hint") => {
-      const el = document.createElement("p"); el.className = cls; el.innerHTML = html;
-      box.appendChild(el); return el;
-    };
-    const add = (label, cls, fn) => {
-      const b = document.createElement("button");
-      b.className = cls; b.type = "button"; b.textContent = label;
-      b.addEventListener("click", fn);
-      box.appendChild(b); return b;
-    };
 
-    if (authToken()) {
-      p(`<b>${NAMES[authVia()] || ""} 계정</b>으로 단어장이 저장되고 있어요.<br>`
-        + `다른 기기에서 같은 계정으로 로그인하면 그대로 이어져요.`);
-      nameField(box);
-      add("로그아웃", "btn-ghost", () => {
-        // 로컬 단어장은 남긴다. 로그아웃은 "이 기기에서 그만 보기"지 "지우기"가 아니다.
-        setAuth(null); renderMyPage(); toast("로그아웃했어요");
-      });
-      add("계정과 단어장 삭제", "btn-ghost danger", async () => {
-        if (!confirm("서버에 저장된 단어장을 지우고 계정 연결을 끊어요.\n이 기기의 단어장은 남습니다. 계속할까요?")) return;
-        await apiDeleteAccount();
-        setAuth(null); renderMyPage(); toast("서버에서 지웠어요");
-      });
-    } else {
-      p("로그인하면 단어장이 <b>폰을 바꿔도 따라와요</b>.<br>"
-        + "받는 건 계정의 고유 번호뿐이에요 — 이름도 이메일도 받지 않아요.");
+    if (!authToken()) {
+      const p = document.createElement("p");
+      p.className = "hint";
+      p.innerHTML = "로그인하면 단어장이 <b>폰을 바꿔도 따라와요</b>.<br>"
+        + "받는 건 계정의 고유 번호뿐이에요 — 이름도 이메일도 받지 않아요.";
+      box.appendChild(p);
       loginButtons(box, "btn-primary");
+      return;
     }
 
-    // 있지도 않은 설정 항목을 만들지 않는다. 실제로 되돌릴 수 있는 것만 둔다.
-    // 개인정보처리방침 링크도 안 넣는다 — 푸터가 모든 화면에 이미 달고 있어 같은 화면에 두 번 나온다.
-    add("수어 문법 안내문 다시 보기", "btn-ghost", () => {
+    const used = bookCost(), free = isPro ? "" : ` · 손짓 ${used}/${FREE_LIMIT}`;
+    const plan = document.createElement("div");
+    plan.className = "plan" + (isPro ? " pro" : "");
+    plan.innerHTML = `<div class="k">현재 플랜</div>`
+      + `<div class="n">${isPro ? "프로" : "무료"}${free}</div>`
+      + `<div class="d">${isPro ? "단어장을 무제한으로 담을 수 있어요" : `무료로 손짓 ${FREE_LIMIT}개까지 담을 수 있어요`}</div>`;
+    box.appendChild(plan);
+    if (!isPro) {
+      const up = document.createElement("button");
+      up.className = "btn-primary"; up.type = "button";
+      up.textContent = `프로 알아보기 (${PRO_PRICE})`;
+      up.addEventListener("click", () => GO("settings"));
+      box.appendChild(up);
+    }
+
+    const list = document.createElement("div");
+    list.className = "list";
+    row(list, "우리 단어장", `${BOOK.length}개`, () => GO("book"));
+    row(list, "계정", NAMES[authVia()] || "", () => GO("settings"));
+    box.appendChild(list);
+  }
+
+  // ── 설정 ── 위에 내 계정, 아래로 목록, 맨 끝에 로그아웃.
+  function renderSettings() {
+    const box = document.getElementById("settings");
+    box.innerHTML = "";
+    if (!authToken()) {
+      const p = document.createElement("p");
+      p.className = "hint";
+      p.textContent = "로그인하면 계정 설정이 열려요.";
+      box.appendChild(p);
+      loginButtons(box, "btn-primary");
+      return;
+    }
+
+    // 프로필. 별명은 여기서 바로 고친다 — "관리"를 한 번 더 누르게 할 만큼 깊은 설정이 아니다.
+    const prof = document.createElement("div");
+    prof.className = "profile";
+    prof.innerHTML = `<svg class="mascot" viewBox="0 0 100 100" aria-hidden="true"><use href="#mascot"/></svg>`;
+    const col = document.createElement("div");
+    col.className = "profile-col";
+    nameField(col);
+    const sub = document.createElement("div");
+    sub.className = "profile-sub";
+    sub.textContent = `${NAMES[authVia()] || ""} 계정으로 로그인됨`;
+    col.appendChild(sub);
+    prof.appendChild(col);
+    box.appendChild(prof);
+
+    const list = document.createElement("div");
+    list.className = "list";
+    row(list, "계정", NAMES[authVia()] || "");
+    // 결제는 아직 없다. 자리를 만들어 두되 **되는 척하지 않는다** — 누르면 왜 아직인지 말한다.
+    row(list, "결제 및 구독", "준비 중", () => requestPro());
+    row(list, "수어 문법 안내문", "다시 보기", () => {
       localStorage.removeItem("shh-intro-muted");
       location.reload();
     });
+    row(list, "개인정보처리방침", "", () => { location.href = "privacy.html"; });
+    row(list, "계정과 단어장 삭제", "", async () => {
+      if (!confirm("서버에 저장된 단어장을 지우고 계정 연결을 끊어요.\n이 기기의 단어장은 남습니다. 계속할까요?")) return;
+      await apiDeleteAccount();
+      setAuth(null); renderAll(); GO("me"); toast("서버에서 지웠어요");
+    }, "danger");
+    box.appendChild(list);
+
+    const out = document.createElement("button");
+    out.className = "btn-ghost logout"; out.type = "button"; out.textContent = "로그아웃";
+    out.addEventListener("click", () => {
+      // 로컬 단어장은 남긴다. 로그아웃은 "이 기기에서 그만 보기"지 "지우기"가 아니다.
+      setAuth(null); renderAll(); GO("me"); toast("로그아웃했어요");
+    });
+    box.appendChild(out);
   }
+
+  const renderAll = () => { renderMyPage(); renderSettings(); };
 
   // 별명 한 칸. **제공자에게 이름을 받지 않고 사용자가 직접 짓는다** — 아무 말이나 쓸 수 있으니
   // 신원 정보가 아니고, 그래서 카카오 비즈앱 전환도 구글 범위 확대도 필요 없다.
@@ -129,18 +193,15 @@ if (typeof document !== "undefined") {
       // 서버가 더 새것으로 판정돼 방금 지은 별명이 되돌아간다.
       touch();
       apiPutBook(BOOK, v);
-      onMyPageSubChanged();
+      // 화면을 다시 그리지 않는다. 지금 이 입력칸을 부수는 짓이고, 목록엔 별명이 안 쓰인다.
+      // 바뀌는 건 헤더 부제 한 줄뿐이라 그것만 갈아끼운다.
+      const el = document.getElementById("screen-sub");
+      if (el) el.textContent = subText();
       toast(v ? `${v}님으로 부를게요` : "별명을 지웠어요");
     };
     // change 는 포커스가 빠질 때 한 번만 난다 — 글자마다 서버를 때리지 않는다.
     input.addEventListener("change", save);
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
-  }
-
-  // 헤더 부제를 다시 그리게 한다. 마이 화면에 있을 때만 의미가 있다.
-  function onMyPageSubChanged() {
-    const t = document.querySelector('.tab[data-go="me"]');
-    if (t && t.getAttribute("aria-selected") === "true") t.click();
   }
 
   // 로그인 버튼 세 개. 마이페이지와 게이트가 **같은 함수**를 쓴다 — 둘이 갈라지면
@@ -232,7 +293,7 @@ if (typeof document !== "undefined") {
   // 사전보다 먼저 돌면 담아둔 단어가 통째로 "사전에 없음"으로 버려진다.
   onAppReady(async () => {
     const fresh = takeLoginHash() || (await takeCodeQuery());
-    renderMyPage();
+    renderAll();
     if (fresh) toast("로그인했어요");
     if (authToken()) {
       sync(fresh);

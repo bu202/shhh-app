@@ -70,8 +70,12 @@
 
   <main class="app">
     <header class="topbar">
+      <!-- 설정 화면에선 마스코트 자리에 뒤로가기가 선다. 탭이 없는 화면이라 나가는 길이 필요하다. -->
+      <button id="back" class="icon-btn" hidden aria-label="뒤로">‹</button>
       <svg class="mascot" viewBox="0 0 100 100" aria-hidden="true"><use href="#mascot"/></svg>
       <h1 id="screen-title">shhh!<small id="screen-sub">소리 없이 말하는 법</small></h1>
+      <!-- 마이 화면에서만 보인다. 화면마다 뜨면 어디서 눌러도 같은 데로 가는 줄 알게 된다. -->
+      <button id="gear" class="icon-btn right" hidden aria-label="설정">⚙</button>
     </header>
 
     <!-- ── 홈 (첫 화면) ── -->
@@ -104,8 +108,10 @@
     <!-- ── 연습 ── -->
     <section id="practice" class="result" data-screen="quiz" hidden></section>
 
-    <!-- ── 마이페이지 ── 안쪽은 js/auth.js 가 그린다(로그인 상태에 따라 통째로 달라진다). -->
+    <!-- ── 마이페이지 · 설정 ── 안쪽은 js/auth.js 가 그린다(로그인 상태에 따라 통째로 달라진다).
+         설정은 탭에 없는 화면이다 — 마이의 ⚙ 로만 들어가고 헤더의 ‹ 로 나온다. -->
     <section id="mypage" class="result" data-screen="me" hidden></section>
+    <section id="settings" class="result" data-screen="settings" hidden></section>
 
     <p id="status" class="status"></p>
     <footer class="credit">

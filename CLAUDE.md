@@ -457,6 +457,13 @@ python3 scripts/sim.py tap 603 2112      # 좌표는 스크린샷 픽셀(1206x26
     - 링크(`#w=`)로 들어온 사람이 로그인하러 떠나면 해시가 날아간다 → `shh-back` 에 맡겼다가
       돌아와서 되돌린다. 게이트가 막을 땐 `replaceState` 도 **안 한다**(안 그러면 링크가 조용히 사라진다).
 
+42. **`<svg>` 에는 `el.hidden = true` 가 안 먹는다.** `hidden` 은 **HTMLElement** 의 IDL 속성이라
+    SVGElement 에선 JS 프로퍼티만 생기고 HTML 속성으로 반영되지 않는다 — `el.hidden` 은 `true` 인데
+    `getAttribute("hidden")` 은 `null` 이고 화면은 그대로다(설정 화면에서 헤더 마스코트가 안 숨겨졌다).
+    → `el.toggleAttribute("hidden", 조건)`. `toggleAttribute` 는 **Element** 의 것이라 태그를 안 가린다.
+    ⚠️ HTML 에 `<svg hidden>` 이라 직접 쓴 건 파서가 속성으로 넣어 잘 동작한다 — **JS 로 켜고 끌 때만**
+      깨진다. 그래서 마스코트 심볼 정의(`<svg hidden>`)는 여태 멀쩡했다.
+
 41. **네이버만 「서비스 URL 도메인 = Callback URL 도메인」을 요구한다.** 카카오·구글은 콜백 도메인을
     안 따져서 `shhh-api…workers.dev/cb/…` 그대로 통과했는데, 네이버는 서비스 URL 에 없는 도메인으로
     콜백이 오면 **"개발자센터에 등록되지 않은 사이트"** 로 거부한다. 우리는 앱(Pages)과 콜백(Worker)이
