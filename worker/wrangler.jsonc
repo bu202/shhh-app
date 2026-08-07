@@ -6,7 +6,9 @@
   "observability": { "enabled": true },
   "vars": {
     // 이 주소에서 온 요청만 받고, 이 주소로만 돌려보낸다. Pages 주소가 바뀌면 여기도 바꿀 것.
-    "APP_ORIGIN": "https://bu202.github.io"
+    "APP_ORIGIN": "https://bu202.github.io",
+    // 루트(/)로 들어온 사람을 보낼 곳. 네이버 서비스 URL 이 이 Worker 도메인이라 필요하다.
+    "APP_URL": "https://bu202.github.io/shhh-app/"
   },
   "kv_namespaces": [{ "binding": "KV", "id": "f55a12622af84380a0865dd8ff4824ac" }]
   // 비밀값은 여기 적지 않는다 — `wrangler secret put KAKAO_ID` 등으로 넣는다.

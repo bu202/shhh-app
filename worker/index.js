@@ -29,6 +29,10 @@ const P = {
     me: "https://openapi.naver.com/v1/nid/me",
     scope: "",
     uid: (j) => j.response && j.response.id,
+    // 네이버만 콜백이 **앱 도메인**으로 간다. 네이버는 서비스 URL 을 하나만 받으면서 콜백이 그
+    // 도메인 안에 있기를 요구하는데(함정 41), 서비스 URL 은 사람이 보는 앱 주소여야 하기 때문이다.
+    // 그래서 앱이 code 를 받아 /exchange/naver 로 넘긴다. 카카오·구글은 종전대로 /cb 로 직접 받는다.
+    viaApp: true,
   },
   google: {
     auth: "https://accounts.google.com/o/oauth2/v2/auth",
@@ -58,6 +62,50 @@ const creds = (env, provider) => ({
   secret: env[provider.toUpperCase() + "_SECRET"],
 });
 
+// 제공자가 code 를 어디로 돌려보내는가. 여기서 만든 값과 **똑같은 문자열**을 토큰 교환에도 보내야
+// 한다 — 한 글자만 달라도 제공자가 거부한다. 그래서 두 곳이 이 함수 하나를 부른다.
+const redirectUri = (env, origin, name) =>
+  P[name].viaApp ? env.APP_URL : origin + "/cb/" + name;
+
+// code → 세션 토큰. /cb(카카오·구글)와 /exchange(네이버) 둘 다 이 함수를 쓴다 —
+// 흐름이 갈려도 **토큰 교환과 사용자 판별은 한 곳**이어야 한쪽만 고치는 실수가 안 난다.
+async function exchange(env, origin, name, code, state) {
+  const p = P[name];
+  const { id, secret } = creds(env, name);
+  const form = new URLSearchParams({
+    grant_type: "authorization_code", client_id: id, code, state,
+    redirect_uri: redirectUri(env, origin, name),
+  });
+  if (secret) form.set("client_secret", secret);   // 카카오는 보안 설정을 꺼두면 없어도 된다
+  const tr = await fetch(p.token, {
+    method: "POST", body: form,
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+  }).then((r) => r.json());
+  if (!tr.access_token) {
+    console.log("[exchange] token fail", name, JSON.stringify(tr).slice(0, 300));
+    return null;
+  }
+  const me = await fetch(p.me, { headers: { Authorization: "Bearer " + tr.access_token } }).then((r) => r.json());
+  const who = p.uid(me);
+  if (!who) {
+    console.log("[exchange] me fail", name, JSON.stringify(me).slice(0, 300));
+    return null;
+  }
+  const token = crypto.randomUUID();
+  await env.KV.put("s:" + token, name + ":" + who, { expirationTtl: 60 * 60 * 24 * 180 });
+  return token;
+}
+
+// state 는 1회용이다. 꺼내면서 지운다 — 남겨두면 같은 code 를 두 번 쓸 수 있다.
+async function takeState(env, state) {
+  if (!state) return null;
+  const v = await env.KV.get("x:" + state);
+  if (!v) return null;
+  await env.KV.delete("x:" + state);
+  const i = v.indexOf("|");
+  return { provider: v.slice(0, i), back: v.slice(i + 1) };
+}
+
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
@@ -75,52 +123,42 @@ export default {
       const back = url.searchParams.get("return") || env.APP_ORIGIN;
       if (!allowed(env, new URL(back).origin)) return new Response("허용되지 않은 주소예요", { status: 400 });
       const state = crypto.randomUUID();
-      await env.KV.put("x:" + state, back, { expirationTtl: 600 });
+      // 어느 제공자로 시작한 state 인지 같이 적는다 — 남의 제공자 자리에서 재사용하지 못하게.
+      await env.KV.put("x:" + state, m[1] + "|" + back, { expirationTtl: 600 });
       const q = new URLSearchParams({
-        response_type: "code", client_id: id, redirect_uri: url.origin + "/cb/" + m[1], state,
+        response_type: "code", client_id: id, redirect_uri: redirectUri(env, url.origin, m[1]), state,
       });
       if (p.scope) q.set("scope", p.scope);
       return Response.redirect(p.auth + "?" + q, 302);
     }
 
-    // ── 2. 제공자가 돌려보내는 자리 ── /cb/kakao?code&state
+    // ── 2a. 앱이 code 를 넘겨 주는 자리(네이버) ── /exchange/naver?code&state
+    // 네이버는 콜백이 앱 도메인으로 가므로 정적 페이지가 code 를 받는다. 비밀키가 필요한 교환만
+    // 여기서 한다 — code 는 이 한 번의 교환에만 쓰이고 세션 토큰으로 바뀐다.
+    m = path.match(/^\/exchange\/(\w+)$/);
+    if (m && P[m[1]]) {
+      const st = await takeState(env, url.searchParams.get("state"));
+      if (!st || st.provider !== m[1]) return json(env, req, { error: "로그인 요청이 만료됐어요" }, 400);
+      const code = url.searchParams.get("code");
+      if (!code) return json(env, req, { error: "취소됐어요" }, 400);
+      const token = await exchange(env, url.origin, m[1], code, url.searchParams.get("state"));
+      return token ? json(env, req, { token }) : json(env, req, { error: "로그인에 실패했어요" }, 502);
+    }
+
+    // ── 2b. 제공자가 우리에게 직접 돌려보내는 자리(카카오·구글) ── /cb/kakao?code&state
     m = path.match(/^\/cb\/(\w+)$/);
     if (m && P[m[1]]) {
-      const p = P[m[1]];
       const state = url.searchParams.get("state");
-      const back = state && (await env.KV.get("x:" + state));
-      if (!back) return new Response("로그인 요청이 만료됐어요. 다시 눌러 주세요.", { status: 400 });
-      await env.KV.delete("x:" + state);           // state 는 1회용
+      const st = await takeState(env, state);
+      if (!st || st.provider !== m[1]) return new Response("로그인 요청이 만료됐어요. 다시 눌러 주세요.", { status: 400 });
+      const back = st.back;
       const code = url.searchParams.get("code");
       if (!code) {
         console.log("[cb] no code", m[1], url.searchParams.get("error"), url.searchParams.get("error_description"));
         return Response.redirect(back + "#login=denied", 302);
       }
-
-      const { id, secret } = creds(env, m[1]);
-      const form = new URLSearchParams({
-        grant_type: "authorization_code", client_id: id, code, state,
-        redirect_uri: url.origin + "/cb/" + m[1],
-      });
-      if (secret) form.set("client_secret", secret);   // 카카오는 보안 설정을 꺼두면 없어도 된다
-      const tr = await fetch(p.token, {
-        method: "POST", body: form,
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      }).then((r) => r.json());
-      if (!tr.access_token) {
-        console.log("[cb] token fail", m[1], JSON.stringify(tr).slice(0, 300));
-        return Response.redirect(back + "#login=fail", 302);
-      }
-
-      const me = await fetch(p.me, { headers: { Authorization: "Bearer " + tr.access_token } }).then((r) => r.json());
-      const who = p.uid(me);
-      if (!who) {
-        console.log("[cb] me fail", m[1], JSON.stringify(me).slice(0, 300));
-        return Response.redirect(back + "#login=fail", 302);
-      }
-
-      const token = crypto.randomUUID();
-      await env.KV.put("s:" + token, m[1] + ":" + who, { expirationTtl: 60 * 60 * 24 * 180 });
+      const token = await exchange(env, url.origin, m[1], code, state);
+      if (!token) return Response.redirect(back + "#login=fail", 302);
       return Response.redirect(back + "#login=" + token + "&via=" + m[1], 302);
     }
 

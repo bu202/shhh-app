@@ -52,40 +52,41 @@ printf '<클라이언트 시크릿>' | npx wrangler secret put KAKAO_SECRET
 
 ---
 
-## ⬜ 네이버
+## ⬜ 네이버 — 콜백이 **앱 도메인**으로 간다 (다른 둘과 다르다)
 
-<https://developers.naver.com/apps/#/register> (Chrome 확장의 안전 설정에서 이 도메인 허용 필요)
+<https://developers.naver.com/apps/#/register>
 
 | 자리 | 넣을 값 |
 |---|---|
 | 애플리케이션 이름 | `shhh!` |
 | 사용 API | **네이버 로그인** |
-| 제공 정보 선택 | **전부 체크 해제** (필수 항목이 강제되면 그것만) |
+| 제공 정보 선택 | **전부 체크 해제** (필수가 강제되면 그것만) |
 | 환경 추가 | **PC웹** |
-| 서비스 URL | `https://bu202.github.io` **그리고** `https://shhh-api.bu202.workers.dev` (둘 다) |
-| Callback URL | `https://shhh-api.bu202.workers.dev/cb/naver` |
+| 서비스 URL | `https://bu202.github.io` |
+| **Callback URL** | `https://bu202.github.io/shhh-app/` ← **Worker 주소가 아니다** |
 
-⚠️ **네이버만 「서비스 URL 도메인 = Callback URL 도메인」을 요구한다.** 카카오·구글은 콜백 도메인을
-따지지 않아서 그대로 통과하는데, 네이버는 서비스 URL 에 없는 도메인으로 콜백이 오면 거부한다:
+⚠️ **왜 네이버만 다른가.** 네이버는 서비스 URL 을 **하나만** 받으면서 콜백이 그 도메인 안에 있기를
+요구한다. 아니면 이 화면이 뜬다:
 
 > shhh에 로그인할 수 없습니다.
 > 개발자센터에 등록되지 않은 사이트에서 로그인을 시도했습니다.
 
-우리 콜백은 Worker 도메인에 있고 앱은 Pages 도메인에 있어 **둘이 다르다.** 그래서 서비스 URL 을
-**두 개 다** 등록한다(네이버는 다중 등록을 지원한다). 앱 주소를 남겨 두는 이유는 검수 때 사람이
-그 주소로 서비스를 확인하기 때문이다.
+카카오·구글은 콜백 도메인을 안 따져서 Worker 주소를 그대로 쓴다. 네이버만 **앱이 code 를 받아**
+`/exchange/naver` 로 넘긴다(비밀키가 필요한 교환은 여전히 서버에서 한다).
+
+⚠️ **그래서 네이버는 localhost 에서 테스트가 안 된다.** 콜백이 라이브 주소로 고정돼 있다.
+카카오·구글은 종전대로 localhost 에서도 된다.
 
 ```bash
 cd worker
 printf '<Client ID>'     | npx wrangler secret put NAVER_ID
 printf '<Client Secret>' | npx wrangler secret put NAVER_SECRET
+npx wrangler deploy      # ⚠️ secret 을 넣은 뒤엔 재배포할 것 — 안 하면 인스턴스마다 503/302 가 섞인다
 ```
 
 ⚠️ **네이버는 검수를 통과하기 전까지 등록한 테스트 계정(본인)만 로그인된다.**
 전체 공개하려면 애플리케이션 > **검수 요청**. 서비스 URL 과 개인정보처리방침
 (`https://bu202.github.io/shhh-app/privacy.html`)이 살아 있어야 통과한다.
-
----
 
 ## 확인
 

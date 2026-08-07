@@ -39,3 +39,16 @@ const apiGetBook = () => apiCall("/book");
 const apiPutBook = (words, name) =>
   apiCall("/book", { method: "PUT", body: JSON.stringify({ words, name }) });
 const apiDeleteAccount = () => apiCall("/me", { method: "DELETE" });
+
+// 네이버 전용. 앱 주소로 돌아온 code 를 서버에 넘겨 세션 토큰으로 바꾼다 —
+// 비밀키가 필요한 교환이라 브라우저에서 직접 못 한다. apiCall 을 안 쓰는 이유는
+// **아직 토큰이 없는 상태**의 호출이기 때문(apiCall 은 토큰이 없으면 그냥 null 을 낸다).
+async function apiExchange(provider, code, state) {
+  const q = new URLSearchParams({ code, state });
+  try {
+    const res = await fetch(`${API}/exchange/${provider}?${q}`);
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}

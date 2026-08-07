@@ -214,10 +214,24 @@ if (typeof document !== "undefined") {
     return true;
   }
 
+  // 네이버는 **앱 주소로** 돌아온다(네이버가 서비스 URL 도메인 안의 콜백만 허용해서).
+  // 그래서 code 가 쿼리로 들어오고, 앱이 그걸 서버에 넘겨 세션 토큰으로 바꾼다.
+  async function takeCodeQuery() {
+    const q = new URLSearchParams(location.search);
+    const code = q.get("code"), state = q.get("state");
+    if (!code || !state) return false;
+    // code 가 주소창·방문기록에 남지 않게 즉시 지운다. 해시(#w= 같은)는 남긴다.
+    history.replaceState(null, "", location.pathname + location.hash);
+    const r = await apiExchange("naver", code, state);
+    if (!r || !r.token) { toast("로그인에 실패했어요. 다시 시도해 주세요."); return false; }
+    setAuth(r.token, "naver");
+    return true;
+  }
+
   // app.js 의 main() 이 사전을 다 읽은 뒤 부른다 — replaceBook 이 bookItem 을 쓰므로
   // 사전보다 먼저 돌면 담아둔 단어가 통째로 "사전에 없음"으로 버려진다.
-  onAppReady(() => {
-    const fresh = takeLoginHash();
+  onAppReady(async () => {
+    const fresh = takeLoginHash() || (await takeCodeQuery());
     renderMyPage();
     if (fresh) toast("로그인했어요");
     if (authToken()) {
