@@ -148,8 +148,12 @@ node scripts/test-compounds.mjs                    # ④ 마지막 줄에 남은
 ⚠️ 볼트 노트(`~/Desktop/claude_brain/01-projects/translator.md`)의 「안 할 것」에 **서버·백엔드**가 있음.
 4단계 계정/결제가 여기 걸림 — 그 단계 들어가기 전에 사용자와 다시 합의할 것.
 
-- **라이브**: https://bu202.github.io/sueo-translator/
-- **레포**: https://github.com/bu202/sueo-translator (main 브랜치 = Pages 소스)
+- **라이브**: https://bu202.github.io/shhh-app/
+- **레포**: https://github.com/bu202/shhh-app (main 브랜치 = Pages 소스)
+- ⚠️ 2026-08-07 에 `sueo-translator` 에서 이름을 바꿨다. **옛 주소 `/sueo-translator/` 는 404 다** —
+  GitHub 은 레포 웹주소는 리다이렉트해도 **Pages 주소는 안 해준다.** 레포 이름에 `!` 를 못 써서
+  앱 이름(`shhh!`)과 주소(`shhh-app`)가 다르다. 매니페스트의 `start_url`·`scope` 는 `./` 상대경로라
+  주소가 바뀌어도 손댈 게 없었다 — 절대경로로 적었으면 여기서 깨졌을 자리다.
 
 ## 제약 (바뀌지 않는 전제)
 - 예산 **$0**. 정적 호스팅(GitHub/Cloudflare Pages). 서버·백엔드 없음.
@@ -369,8 +373,8 @@ python3 scripts/sim.py tap 603 2112      # 좌표는 스크린샷 픽셀(1206x26
     `gh api repos/OWNER/REPO/pages/builds` 에 **`errored · 0ms · Page build failed`** 로 찍혀 있었다 —
     큐에 밀린 게 아니라 즉시 거부됐고, Actions 는 이미 죽은 배포를 기다리고 있었던 것이다.
     ```bash
-    gh api repos/bu202/sueo-translator/pages --jq '{status, build_type}'   # errored/built
-    gh api repos/bu202/sueo-translator/pages/builds --jq '.[0:3][] | "\(.status) \(.commit[0:7]) \(.duration)ms \(.error.message // "")"'
+    gh api repos/bu202/shhh-app/pages --jq '{status, build_type}'   # errored/built
+    gh api repos/bu202/shhh-app/pages/builds --jq '.[0:3][] | "\(.status) \(.commit[0:7]) \(.duration)ms \(.error.message // "")"'
     ```
     범인으로 의심한 `.nojekyll` 은 **무죄였다**(빼도 되고 넣어도 됐다 — 넣은 채 25초 만에 성공).
     실패는 08-06 13:10~13:21 **11분 창** 안에서만 났고 GitHub 상태페이지엔 안 올라왔다.
@@ -434,7 +438,7 @@ node scripts/test-compounds.mjs         # 문장에서 실제로 잡히는지
 - ✅ KNN 지문자 분류: 손 21점 정규화 벡터(손목원점+손크기스케일, 회전 보존)→최근접 다수결(k=3). localStorage 샘플, "자모 가르치기" UI로 사용자 학습. 샘플≥3이면 규칙 대신 KNN, 아니면 규칙 폴백. 방향 모음(ㅏ/ㅜ) 구분 검증 완료.
   - 튜닝값: `KNN_MAX=1.2`(거리임계), `SIGN_HOLD=6`. 미인식↑→임계 올림, 오인식↑→내림. 실손 튜닝 필요.
   - ⚠️ 여전히 정적 지문자만. 단어 수어(안녕/사랑 동작)는 시간축 ML 영역, $0 정적 규칙 밖.
-- ✅ 배포: GitHub Pages (main 브랜치) → https://bu202.github.io/sueo-translator/ · 라이브 검증 완료(텍스트→수어, 카메라 손검출 both)
+- ✅ 배포: GitHub Pages (main 브랜치) → https://bu202.github.io/shhh-app/ · 라이브 검증 완료(텍스트→수어, 카메라 손검출 both)
 - 🔶 KNN 실손 튜닝 (진행 중)
   - 32자모 × 8 = **256 샘플 수집 완료** (localStorage 키 `ksl-knn-samples`, 브라우저 전용·레포에 없음). 브라우저 데이터 지우면 소실 → 필요시 백업: 콘솔에서 `localStorage.getItem('ksl-knn-samples')`.
   - 백업 검증 완료: 32자모 = 자음 15(ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎ+ㅆ) + 모음 17. 빠진 ㄲㄸㅃㅉ/ㅘㅙㅝㅞ는 **조합으로 만드는 자모라 학습 불필요**.
