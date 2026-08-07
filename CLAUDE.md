@@ -321,6 +321,23 @@ python3 scripts/sim.py tap 603 2112      # 좌표는 스크린샷 픽셀(1206x26
       `BOOK.length >= 3` 이면 "담은 N개 중 수형이 정해진 건 M개"로 갈라 말한다.
       **한 곳을 고치면 그 값을 쓰는 옆 문구를 반드시 다시 본다.**
 
+
+30. **GitHub Pages 가 실패하면 `pages/builds` API 를 본다 — Actions 로그는 엉뚱한 곳을 가리킨다.**
+    배포가 두 번 죽었는데 Actions 로그엔 `Current status: deployment_queued` 가 10분간 반복되다
+    `Timeout reached, aborting!` 만 남아서 **큐 적체로 오진했다**. 실제로는
+    `gh api repos/OWNER/REPO/pages/builds` 에 **`errored · 0ms · Page build failed`** 로 찍혀 있었다 —
+    큐에 밀린 게 아니라 즉시 거부됐고, Actions 는 이미 죽은 배포를 기다리고 있었던 것이다.
+    ```bash
+    gh api repos/bu202/sueo-translator/pages --jq '{status, build_type}'   # errored/built
+    gh api repos/bu202/sueo-translator/pages/builds --jq '.[0:3][] | "\(.status) \(.commit[0:7]) \(.duration)ms \(.error.message // "")"'
+    ```
+    범인으로 의심한 `.nojekyll` 은 **무죄였다**(빼도 되고 넣어도 됐다 — 넣은 채 25초 만에 성공).
+    실패는 08-06 13:10~13:21 **11분 창** 안에서만 났고 GitHub 상태페이지엔 안 올라왔다.
+    ⚠️ **한 번 성공했다고 원인을 단정하지 말 것.** `.nojekyll` 을 뺀 뒤 성공했지만 그 사이 12시간이
+    지나 있었다 — 되돌려 다시 배포해서야 무죄가 확인됐다. 배포 실패는 재현 창이 시간에 묶여 있어
+    "고치고 났더니 됐다"가 거의 항상 거짓 인과다.
+    ✅ 실패해도 **직전 성공 빌드가 계속 서빙된다** — 라이브는 안 죽으니 A/B 로 원인을 갈라도 안전하다.
+
 ---
 
 ## ⛔ 절대 규칙 — 실제 수어만 보여준다
