@@ -215,6 +215,13 @@ body {
 }
 .btn-ghost.danger { color: var(--coral-d); }
 
+/* 게이트는 안내문 위에 뜬다 — 로그인 → 안내문 → 앱 순서. */
+.gate-backdrop { z-index: 60; }
+.gate { padding: 22px 18px 8px; text-align: center; }
+.gate .mascot { margin: 0 auto; }
+.gate .intro-h b { line-height: 1.45; }
+.gate .intro-foot { border-top: none; gap: 8px; padding-top: 8px; }
+
 /* ── 로그인 ──
    로그인돼 있을 땐 헤더 버튼을 눌러 놓은 모양으로 둔다 — 색만 다르면 상태가 안 읽힌다. */
 .install.on { background: var(--paper); color: var(--sub); box-shadow: inset 0 0 0 1.5px var(--line); }

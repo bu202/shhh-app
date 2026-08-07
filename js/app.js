@@ -566,7 +566,11 @@ let BOOK = (() => { try { return JSON.parse(localStorage.getItem(BOOK_KEY)) || [
 // 단어장이 서 있는 조건이 아니다. 테스트도 이 상태로 돈다(함정 13: 최상위에서 window 를 만지지 않는다).
 let bookChanged = null;
 let appReady = null, appReadyDone = false;
+let saveGuard = null;
 function onBookChanged(fn) { bookChanged = fn; }
+// 담기를 막을 수 있는 자리(로그인 게이트). 안 붙으면 종전대로 누구나 담는다.
+function onSaveGuard(fn) { saveGuard = fn; }
+const mayAddToBook = () => !saveGuard || saveGuard();
 // 이미 준비가 끝난 뒤에 붙으면 그 자리에서 바로 부른다 — 스크립트 로드 순서에 기대지 않으려고.
 function onAppReady(fn) { appReadyDone ? fn() : (appReady = fn); }
 
@@ -651,6 +655,9 @@ function shareLink() {
 function mergeFromHash() {
   const m = location.hash.match(/[#&]w=([^&]+)/);
   if (!m) return 0;
+  // 게이트가 막으면 **해시를 그대로 둔다** — 지워버리면 로그인하고 돌아왔을 때
+  // 링크로 받은 단어가 조용히 사라진다(예전에 실제로 그랬다).
+  if (!mayAddToBook()) return 0;
   history.replaceState(null, "", location.pathname); // 새로고침해도 다시 합쳐지지 않게
   let added = 0;
   try {
@@ -778,6 +785,7 @@ function refreshStash() {
   btn.onclick = full
     ? async () => { if (await requestPro()) refreshStash(); }
     : () => {
+        if (!mayAddToBook()) return;   // 로그인 게이트가 열린다
         for (const w of lastWords) if (!bookHas(w)) BOOK.push(w);
         saveBook(); refreshStash(); renderWordbook();
         // 담고 나면 키보드를 내린다. 안 내리면 폰에서 화면이 확대·밀린 채로 남는다.

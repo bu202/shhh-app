@@ -23,6 +23,10 @@
     </g>
   </symbol></svg>
 
+  <!-- 로그인 게이트. 안쪽은 js/auth.js 가 그린다 — 로그인 버튼을 두 곳에 베끼지 않으려고.
+       안내문(#intro)보다 위에 뜬다: 로그인 → 안내문 → 앱 순서가 되도록. -->
+  <div id="gate" class="intro-backdrop gate-backdrop" hidden></div>
+
   <!-- 첫 실행 안내문. 나가는 길 두 개: 우측 상단 ✕ · 하단 "오늘 그만 보기" -->
   <div id="intro" class="intro-backdrop" hidden>
     <section class="intro" role="dialog" aria-modal="true" aria-labelledby="intro-title">

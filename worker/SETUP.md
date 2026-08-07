@@ -22,38 +22,32 @@ JavaScript 원본은 비워 뒀다 — 브라우저가 구글 API 를 직접 부
 
 ---
 
-## ⬜ 카카오
+## ✅ 카카오 (완료, 2026-08-07 · 앱 ID 1536945)
 
-<https://developers.kakao.com/console/app> → **애플리케이션 추가하기**
+<https://developers.kakao.com/console/app> → **앱 생성**. 이름·회사명 `shhh!`, 카테고리 교육,
+대표 도메인 `https://bu202.github.io`.
 
-| 자리 | 넣을 값 |
-|---|---|
-| 앱 이름 | `shhh!` |
-| 회사명 | 개인이면 본인 이름 |
-| 카테고리 | 교육 |
+⚠️ **저장이 계속 실패하면 모달을 끝까지 스크롤할 것.** 맨 아래 「운영정책을 위반하지 않는 앱입니다」
+체크박스가 필수인데, 오류 메시지는 "필수 항목을 입력하지 않았거나 값이 올바르지 않습니다"뿐이라
+위쪽 입력칸을 의심하게 만든다(앱 이름의 `!` 를 범인으로 의심했지만 **`!` 는 허용된다**).
 
-만든 뒤 순서대로:
-
-1. **앱 설정 > 플랫폼 > Web > 사이트 도메인 등록**
-   ```
-   https://shhh-api.bu202.workers.dev
-   ```
-   ⚠️ 이걸 먼저 등록해야 Redirect URI 칸이 열린다.
-2. **제품 설정 > 카카오 로그인 > 활성화 상태 `ON`**
-3. **제품 설정 > 카카오 로그인 > Redirect URI**
+1. **제품 설정 > 카카오 로그인 > 사용 설정 `ON`**
+   활성화 대화상자가 *"회원식별 값 이외의 추가 정보가 필요한 경우 동의항목을 설정"* 이라고 말한다 —
+   우리는 회원식별 값만 쓰므로 **동의항목은 하나도 켜지 않는다.**
+2. **Redirect URI 는 「카카오 로그인」 메뉴에 없다.**
+   앱 설정 > **플랫폼 키 > REST API 키 카드의 ⋮ > 수정** > 「카카오 로그인 리다이렉트 URI」:
    ```
    https://shhh-api.bu202.workers.dev/cb/kakao
    ```
-4. **동의항목 — 아무것도 켜지 않는다.** 회원번호만 받으므로 필요 없고,
-   이메일을 켜면 비즈앱 전환 심사가 붙는다.
-5. **보안 > Client Secret — 사용 안 함**(기본값)으로 둔다. 켰다면 코드를 복사해 아래 2번 명령에 쓴다.
-6. **앱 키 > REST API 키**를 복사한다. ← 이게 `KAKAO_ID` 다 (JavaScript 키가 아니다)
+   입력 후 **＋** 로 목록에 넣고, 페이지 오른쪽 끝의 **저장**을 누른다(창이 좁으면 버튼이 화면 밖이다).
+3. **같은 페이지에 「클라이언트 시크릿」이 있고 기본이 `ON` 이다.**
+   콘솔 안내: *"보안 강화를 위해 REST API 키 발급 시 기본 활성화"*. 그래서 `KAKAO_SECRET` 이 **필요하다**.
+4. `KAKAO_ID` 는 **REST API 키**다 (JavaScript 키·네이티브 앱 키가 아니다).
 
 ```bash
 cd worker
-printf '<REST API 키>' | npx wrangler secret put KAKAO_ID
-# Client Secret 을 켰을 때만:
-printf '<Client Secret>' | npx wrangler secret put KAKAO_SECRET
+printf '<REST API 키>'      | npx wrangler secret put KAKAO_ID
+printf '<클라이언트 시크릿>' | npx wrangler secret put KAKAO_SECRET
 ```
 
 ---

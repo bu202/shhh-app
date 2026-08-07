@@ -5,6 +5,8 @@
 // scripts/test-auth.mjs 가 직접 잰다(화면 없이 돌아야 규칙이 회귀검증된다).
 
 const AT_KEY = "shh-wordbook-at";   // 로컬 단어장이 마지막으로 바뀐 시각(ms)
+const PEEK_KEY = "shh-peek";        // "로그인 없이 둘러보기"를 고른 적이 있는가
+const BACK_KEY = "shh-back";        // 로그인하러 떠나기 직전의 해시(링크로 받은 단어장)
 const NAMES = { kakao: "카카오", naver: "네이버", google: "구글" };
 
 // 어느 쪽을 남길지 정한다. 순수 함수 — localStorage 도 DOM 도 안 본다.
@@ -87,11 +89,61 @@ if (typeof document !== "undefined") {
       p.innerHTML = "로그인하면 단어장이 <b>폰을 바꿔도 따라와요</b>.<br>"
         + "받는 건 계정의 고유 번호뿐이에요 — 이름도 이메일도 받지 않아요.";
       box.appendChild(p);
-      for (const k of ["kakao", "naver", "google"]) {
-        add(NAMES[k] + "로 로그인", "btn-primary sm login-" + k, () => { location.href = loginUrl(k); });
-      }
+      loginButtons(box, "btn-primary sm");
     }
   }
+
+  // 로그인 버튼 세 개. 헤더 패널과 게이트가 **같은 함수**를 쓴다 — 둘이 갈라지면
+  // 한쪽에만 제공자를 추가하는 실수가 난다.
+  function loginButtons(box, cls) {
+    for (const k of ["kakao", "naver", "google"]) {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = cls + " login-" + k;
+      b.textContent = NAMES[k] + "로 로그인";
+      b.addEventListener("click", () => {
+        // 링크(#w=)로 들어온 사람이 로그인하러 가면 해시가 날아간다. 맡아 뒀다 돌아와서 되돌린다.
+        if (location.hash) localStorage.setItem(BACK_KEY, location.hash);
+        location.href = loginUrl(k);
+      });
+      box.appendChild(b);
+    }
+  }
+
+  // ── 로그인 게이트 ──
+  // 로그인이 기본이되 **둘러보기는 막지 않는다**: 수어를 알리는 게 앱의 목적이라
+  // 문 앞에서 돌려보내면 목적을 스스로 깎는다. 대신 단어장에 담는 순간 로그인을 요구한다.
+  function openGate(reason) {
+    const box = document.getElementById("gate");
+    box.innerHTML = "";
+    const card = document.createElement("section");
+    card.className = "intro gate";
+    card.setAttribute("role", "dialog");
+    card.setAttribute("aria-modal", "true");
+    card.innerHTML = `<svg class="mascot sm" viewBox="0 0 100 100" aria-hidden="true"><use href="#mascot"/></svg>
+      <div class="intro-h"><b>${reason || "둘이 같이 외우려면<br>먼저 로그인해요"}</b>
+      <span>단어장이 <b>폰을 바꿔도 따라와요</b>.<br>받는 건 계정의 고유 번호뿐 — 이름도 이메일도 받지 않아요.</span></div>`;
+    const foot = document.createElement("div");
+    foot.className = "intro-foot";
+    loginButtons(foot, "btn-primary");
+    const peek = document.createElement("button");
+    peek.type = "button"; peek.className = "btn-ghost";
+    peek.textContent = localStorage.getItem(PEEK_KEY) ? "닫기" : "로그인 없이 둘러보기";
+    peek.addEventListener("click", () => {
+      localStorage.setItem(PEEK_KEY, "1");
+      box.hidden = true;
+    });
+    foot.appendChild(peek);
+    card.appendChild(foot);
+    box.appendChild(card);
+    box.hidden = false;
+  }
+
+  // 담기를 막는 자리. 둘러보기 중이어도 사전·연습은 그대로 쓸 수 있다.
+  onSaveGuard(() => {
+    if (authToken()) return true;
+    openGate("담은 단어를 지키려면<br>로그인이 필요해요");
+    return false;
+  });
 
   // 로그인하고 돌아온 자리. 서버가 #login=<토큰>&via=<제공자> 로 되돌려보낸다.
   function takeLoginHash() {
@@ -115,6 +167,15 @@ if (typeof document !== "undefined") {
     const box = document.getElementById("account-panel");
     btn.addEventListener("click", () => { panel(); box.hidden = !box.hidden; });
     if (fresh) { toast("로그인했어요"); box.hidden = true; }
-    if (authToken()) sync(fresh);
+    if (authToken()) {
+      sync(fresh);
+      // 로그인하러 떠나기 전에 맡아 둔 해시(#w=…)를 되돌린다. hashchange 가 나면서
+      // app.js 의 openHash 가 링크로 받은 단어장을 그때 합친다.
+      const back = localStorage.getItem(BACK_KEY);
+      localStorage.removeItem(BACK_KEY);
+      if (fresh && back) location.hash = back;
+    } else if (!localStorage.getItem(PEEK_KEY)) {
+      openGate();   // 첫 화면은 로그인. 둘러보기를 한 번 고르면 다시 막지 않는다.
+    }
   });
 }
