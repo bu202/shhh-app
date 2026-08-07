@@ -72,14 +72,7 @@
     <header class="topbar">
       <svg class="mascot" viewBox="0 0 100 100" aria-hidden="true"><use href="#mascot"/></svg>
       <h1 id="screen-title">shhh!<small id="screen-sub">소리 없이 말하는 법</small></h1>
-      <!-- 설치 유도. 기본은 숨김 — setupInstall() 이 설치 가능할 때만 켠다. -->
-      <button id="install" class="install" hidden>＋ 설치</button>
-      <!-- 로그인. 글자는 js/auth.js 가 상태에 맞춰 바꾼다. -->
-      <button id="account" class="install">로그인</button>
     </header>
-    <!-- iOS 사파리는 설치 대화상자를 못 여니 경로를 글로 알려준다. -->
-    <p id="install-tip" class="install-tip" hidden></p>
-    <div id="account-panel" class="account-panel" hidden></div>
 
     <!-- ── 홈 (첫 화면) ── -->
     <section id="home" class="result" data-screen="home"></section>
@@ -111,6 +104,9 @@
     <!-- ── 연습 ── -->
     <section id="practice" class="result" data-screen="quiz" hidden></section>
 
+    <!-- ── 마이페이지 ── 안쪽은 js/auth.js 가 그린다(로그인 상태에 따라 통째로 달라진다). -->
+    <section id="mypage" class="result" data-screen="me" hidden></section>
+
     <p id="status" class="status"></p>
     <footer class="credit">
       한국수어 · <a href="https://sldict.korean.go.kr" target="_blank" rel="noopener">국립국어원 한국수어사전</a><br>
@@ -124,6 +120,7 @@
       <button class="tab" data-go="dict" aria-selected="false"><i>🔤</i>사전</button>
       <button class="tab" data-go="book" aria-selected="false"><i>💌</i>우리</button>
       <button class="tab" data-go="quiz" aria-selected="false"><i>🎯</i>연습</button>
+      <button class="tab" data-go="me" aria-selected="false"><i>🙂</i>마이</button>
     </nav>
   </main>
   <!-- 순서가 중요하다. auth.js 는 app.js 의 onAppReady/onBookChanged 에 붙고,

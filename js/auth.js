@@ -51,49 +51,52 @@ if (typeof document !== "undefined") {
     else { touch(); await apiPutBook(BOOK); }   // merge 는 합친 결과를 서버에도 올린다
   }
 
-  function render() {
-    const btn = document.getElementById("account");
-    const via = authVia();
-    btn.textContent = authToken() ? (NAMES[via] || "로그인") + " ✓" : "로그인";
-    btn.classList.toggle("on", !!authToken());
-  }
+  // ── 마이페이지 ──
+  // 화면 전환마다 다시 그리지 않는다. 바뀌는 건 로그인 상태뿐이라 **상태가 바뀔 때만** 그린다 —
+  // 그래서 app.js 의 화면 전환에 훅을 하나 더 뚫지 않아도 된다.
+  onMyPageSub(() => (authToken() ? (NAMES[authVia()] || "") + " 계정" : "로그인하면 단어장이 따라와요"));
 
-  function panel() {
-    const box = document.getElementById("account-panel");
+  function renderMyPage() {
+    const box = document.getElementById("mypage");
     box.innerHTML = "";
+    const p = (html, cls = "hint") => {
+      const el = document.createElement("p"); el.className = cls; el.innerHTML = html;
+      box.appendChild(el); return el;
+    };
     const add = (label, cls, fn) => {
       const b = document.createElement("button");
       b.className = cls; b.type = "button"; b.textContent = label;
       b.addEventListener("click", fn);
-      box.appendChild(b);
-      return b;
+      box.appendChild(b); return b;
     };
+
     if (authToken()) {
-      const p = document.createElement("p");
-      p.className = "hint";
-      p.innerHTML = `<b>${NAMES[authVia()] || ""} 계정</b>으로 단어장이 저장되고 있어요.<br>`
-        + `다른 기기에서 같은 계정으로 로그인하면 그대로 이어져요.`;
-      box.appendChild(p);
+      p(`<b>${NAMES[authVia()] || ""} 계정</b>으로 단어장이 저장되고 있어요.<br>`
+        + `다른 기기에서 같은 계정으로 로그인하면 그대로 이어져요.`);
       add("로그아웃", "btn-ghost", () => {
         // 로컬 단어장은 남긴다. 로그아웃은 "이 기기에서 그만 보기"지 "지우기"가 아니다.
-        setAuth(null); render(); box.hidden = true; toast("로그아웃했어요");
+        setAuth(null); renderMyPage(); toast("로그아웃했어요");
       });
       add("계정과 단어장 삭제", "btn-ghost danger", async () => {
         if (!confirm("서버에 저장된 단어장을 지우고 계정 연결을 끊어요.\n이 기기의 단어장은 남습니다. 계속할까요?")) return;
         await apiDeleteAccount();
-        setAuth(null); render(); box.hidden = true; toast("서버에서 지웠어요");
+        setAuth(null); renderMyPage(); toast("서버에서 지웠어요");
       });
     } else {
-      const p = document.createElement("p");
-      p.className = "hint";
-      p.innerHTML = "로그인하면 단어장이 <b>폰을 바꿔도 따라와요</b>.<br>"
-        + "받는 건 계정의 고유 번호뿐이에요 — 이름도 이메일도 받지 않아요.";
-      box.appendChild(p);
-      loginButtons(box, "btn-primary sm");
+      p("로그인하면 단어장이 <b>폰을 바꿔도 따라와요</b>.<br>"
+        + "받는 건 계정의 고유 번호뿐이에요 — 이름도 이메일도 받지 않아요.");
+      loginButtons(box, "btn-primary");
     }
+
+    // 있지도 않은 설정 항목을 만들지 않는다. 실제로 되돌릴 수 있는 것만 둔다.
+    // 개인정보처리방침 링크도 안 넣는다 — 푸터가 모든 화면에 이미 달고 있어 같은 화면에 두 번 나온다.
+    add("수어 문법 안내문 다시 보기", "btn-ghost", () => {
+      localStorage.removeItem("shh-intro-muted");
+      location.reload();
+    });
   }
 
-  // 로그인 버튼 세 개. 헤더 패널과 게이트가 **같은 함수**를 쓴다 — 둘이 갈라지면
+  // 로그인 버튼 세 개. 마이페이지와 게이트가 **같은 함수**를 쓴다 — 둘이 갈라지면
   // 한쪽에만 제공자를 추가하는 실수가 난다.
   function loginButtons(box, cls) {
     for (const k of ["kakao", "naver", "google"]) {
@@ -114,6 +117,11 @@ if (typeof document !== "undefined") {
   // 문 앞에서 돌려보내면 목적을 스스로 깎는다. 대신 단어장에 담는 순간 로그인을 요구한다.
   function openGate(reason) {
     const box = document.getElementById("gate");
+    // 안내문을 **완전히 덮는다.** 반투명 위에 반쯤 걸치면 뒤 글자가 읽히려다 말아 방해만 된다.
+    // 안내문은 게이트를 닫은 뒤 다시 띄운다 — 순서가 로그인 → 안내문 → 앱이어야 한다.
+    const intro = document.getElementById("intro");
+    const introWasOpen = intro && !intro.hidden;
+    if (intro) intro.hidden = true;
     box.innerHTML = "";
     const card = document.createElement("section");
     card.className = "intro gate";
@@ -121,7 +129,7 @@ if (typeof document !== "undefined") {
     card.setAttribute("aria-modal", "true");
     card.innerHTML = `<svg class="mascot sm" viewBox="0 0 100 100" aria-hidden="true"><use href="#mascot"/></svg>
       <div class="intro-h"><b>${reason || "둘이 같이 외우려면<br>먼저 로그인해요"}</b>
-      <span>단어장이 <b>폰을 바꿔도 따라와요</b>.<br>받는 건 계정의 고유 번호뿐 — 이름도 이메일도 받지 않아요.</span></div>`;
+      <span>단어장이 <b>폰을 바꿔도 따라와요</b><br>받는 건 계정의 고유 번호뿐 — 이름도 이메일도 받지 않아요.</span></div>`;
     const foot = document.createElement("div");
     foot.className = "intro-foot";
     loginButtons(foot, "btn-primary");
@@ -131,6 +139,7 @@ if (typeof document !== "undefined") {
     peek.addEventListener("click", () => {
       localStorage.setItem(PEEK_KEY, "1");
       box.hidden = true;
+      if (introWasOpen) intro.hidden = false;
     });
     foot.appendChild(peek);
     card.appendChild(foot);
@@ -162,11 +171,8 @@ if (typeof document !== "undefined") {
   // 사전보다 먼저 돌면 담아둔 단어가 통째로 "사전에 없음"으로 버려진다.
   onAppReady(() => {
     const fresh = takeLoginHash();
-    render();
-    const btn = document.getElementById("account");
-    const box = document.getElementById("account-panel");
-    btn.addEventListener("click", () => { panel(); box.hidden = !box.hidden; });
-    if (fresh) { toast("로그인했어요"); box.hidden = true; }
+    renderMyPage();
+    if (fresh) toast("로그인했어요");
     if (authToken()) {
       sync(fresh);
       // 로그인하러 떠나기 전에 맡아 둔 해시(#w=…)를 되돌린다. hashchange 가 나면서
