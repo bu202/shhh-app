@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import assert from "node:assert";
 import { loadApp } from "./_app.mjs";
 
-const M = loadApp("buildIndex, matchSentence, conjugationNormalize, norm, COMPOUNDS, PREFERRED, lookup, unpinnedCandidates, preferPinned, quizPool");
+const M = loadApp("buildIndex, matchSentence, conjugationNormalize, norm, COMPOUNDS, PREFERRED, lookup, unpinnedCandidates, preferPinned, quizPool, bookItem, cost");
 
 const load = (p) => JSON.parse(readFileSync(new URL("../data/" + p, import.meta.url), "utf8"));
 const dict = load("ksl-dict.json");
@@ -91,6 +91,25 @@ assert.equal(M.unpinnedCandidates(settled).length, 0, `표본 오류: '${settled
 assert.deepEqual(M.quizPool([unsureWord, settled]), [settled],
   `연습이 수형 미확정 단어 '${unsureWord}' 를 문제로 낸다 — 임의의 첫 후보를 정답이라고 채점하게 된다`);
 
+// 7. 합성은 단어장에 **한 항목**으로 담기고, 부품은 그 안에서 펼쳐진다.
+//    예전엔 '보고싶다'를 담으면 보다·내키다 두 항목으로 쪼개져 사용자가 찾은 말이 사라졌다.
+const compoundToken = first("보고싶어");
+assert.equal(compoundToken.type, "compound", "'보고싶어' 가 합성으로 안 잡힘 — 표본이 깨졌다");
+const key = compoundToken.combo.word;
+const it = M.bookItem(key);
+assert.ok(it, `단어장이 '${key}' 를 못 푼다 — 담아도 "사전에서 찾을 수 없어요" 가 뜬다`);
+assert.equal(it.parts.length, 2, `'${key}' 부품이 2개여야 하는데 ${it.parts.length}개`);
+assert.deepEqual(it.labels, ["보다", "원하다"], "부품 이름이 화면에 쓰는 것과 다름");
+assert.equal(M.cost(key), 2, "합성은 무료 칸을 손짓 수만큼 차지해야 한다(한 항목으로 보여도 값은 그대로)");
+assert.deepEqual(M.quizPool([key]), [key], `연습이 합성 '${key}' 를 통째로 못 낸다`);
+
+// 표제어이면서 합성이기도 한 말('헌금')은 **표제어 쪽**으로 풀려야 한다 —
+// 사전 화면이 표제어 카드를 보여주므로 단어장이 다른 걸 보여주면 두 화면이 어긋난다.
+assert.equal(first("헌금").type, "entry", "'헌금' 표본이 깨졌다");
+assert.equal(M.bookItem("헌금").parts.length, 1,
+  "'헌금' 이 단어장에서 합성으로 풀린다 — 사전은 표제어 카드 하나를 보여주는데 단어장은 부품 2개를 편다");
+
 console.log(`ok — 합성 ${M.COMPOUNDS.size}개(검증 ${Object.keys(ver).length}개), 부품 전부 사전에 있음`);
+console.log(`   단어장: '${key}' 한 항목 = ${it.labels.join(" + ")} (${M.cost(key)}칸), 연습 출제 가능`);
 console.log(`   연습 출제 제외 확인: '${unsureWord}'(수형 미확정) 빠지고 '${settled}' 만 남음`);
 console.log(`   자동 추출 ${autos}건 중 ${flagged}건에 '확인 안 됨' 부품이 있어 화면에 표시됨`);

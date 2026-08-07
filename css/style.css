@@ -49,7 +49,9 @@ body {
 }
 #input {
   flex: 1; min-width: 0; border: none; outline: none; background: none;
-  font-family: inherit; font-size: 15px; font-weight: 600; color: var(--ink);
+  /* ⚠️ 16px 미만이면 iOS 사파리가 포커스 순간 화면을 **확대**하고 다시 안 줄여준다.
+     JS 로 되돌릴 방법이 없으므로 애초에 확대가 안 일어나게 16px 를 지킨다(15px 였다). */
+  font-family: inherit; font-size: 16px; font-weight: 600; color: var(--ink);
 }
 #input::placeholder { color: var(--muted); font-weight: 500; }
 #input::-webkit-search-cancel-button { -webkit-appearance: none; }
@@ -143,6 +145,23 @@ body {
 .chk {
   margin-left: auto; background: none; border: none; color: var(--muted);
   font-size: 15px; cursor: pointer; padding: 6px 4px; font-family: inherit;
+}
+/* 합성 항목: 제목 줄(.item) 아래에 부품을 펼친다. 부품은 따로 담기지 않으므로 여기서만 보인다. */
+.book-entry { display: flex; flex-direction: column; gap: 5px; }
+.book-parts { display: flex; flex-wrap: wrap; gap: 6px; padding-left: 12px; }
+.book-part {
+  display: flex; align-items: center; gap: 6px; background: var(--paper);
+  border-radius: 12px; padding: 4px 9px 4px 4px; box-shadow: 0 2px 7px rgba(120,80,64,.05);
+  font-size: 11px; font-weight: 700; color: var(--muted);
+}
+.book-part.unsure { color: var(--coral-d); }
+.thumb.sm { width: 26px; height: 26px; border-radius: 8px; }
+
+/* 연습에서 합성은 손짓을 나란히 보여준다. 하나뿐이면 종전처럼 한 장을 꽉 채운다. */
+.quiz-frames { display: flex; gap: 8px; }
+.quiz-frames > div { flex: 1; min-width: 0; position: relative; }
+.quiz-frames > div > span {
+  position: absolute; left: 6px; top: 4px; font-size: 12px; font-weight: 800; color: var(--muted);
 }
 
 /* ── 연습 ── */

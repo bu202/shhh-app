@@ -422,9 +422,12 @@ function renderResults(tokens) {
   }
   for (const t of tokens) box.appendChild(renderToken(t));
 
-  // 담기 대상: 화면에 뜬 실제 표제어. 합성이면 부품을 각각 담는다(그래야 연습에 낼 수 있다).
+  // 담기 대상: 화면에 뜬 그대로. 합성은 **부품으로 쪼개지 않고 한 덩어리로** 담는다 —
+  // 쪼개면 '보고싶다'를 찾아 담았는데 단어장엔 보다·내키다만 남아 찾은 말이 사라진다.
+  // 부품은 bookItem() 이 단어장·연습에서 다시 펼친다.
   lastWords = [...new Set(tokens.flatMap((t) =>
-    t.type === "entry" ? [pinned(t.entries[0])] : t.type === "compound" ? t.combo.parts : []))];
+    t.type === "entry" ? [pinned(preferPinned(t.text, t.entries)[0])]
+    : t.type === "compound" ? [t.combo.word || t.text] : []))];
   refreshStash();
 }
 
@@ -574,6 +577,32 @@ function lookup(w) {
   return (pin && c.find((e) => (e.media?.src?.[0] || "").includes(pin))) || c[0] || null;
 }
 
+// 단어장 항목 하나가 가리키는 것. 합성이면 **한 항목 안에** 부품을 함께 들고 있는다.
+// 예전엔 '보고싶다'를 담으면 보다·내키다 **두 항목**으로 쪼개져서, 사용자가 찾은 말이
+// 단어장에서 사라졌다. 사용자가 친 말이 곧 단어장의 이름이어야 한다.
+//
+// ⚠️ 표제어를 **먼저** 본다. '헌금'은 표제어이면서 합성이기도 한데(결합정보가 표제어에 붙은
+//    컬럼이라 이런 게 대부분이다), 사전 화면은 표제어 카드를 보여준다(matchSentence 가 같은
+//    길이면 표제어를 집는다). 순서를 뒤집으면 사전과 단어장이 서로 다른 걸 보여준다.
+function bookItem(w) {
+  const e = lookup(w);
+  if (e) return { label: bare(w), parts: [String(w)], labels: [bare(w)], entries: [e] };
+  const combo = COMPOUNDS.get(conjugationNormalize(norm(bare(w))));
+  if (!combo) return null;
+  return {
+    label: combo.word || bare(w), combo, parts: combo.parts,
+    labels: combo.labels || combo.parts.map(bare),
+    entries: combo.parts.map((p) => lookup(p)),
+  };
+}
+// 무료 칸 계산. 합성은 손짓 수만큼 차지한다 — 한 항목으로 보이게 바꿨다고 값이 싸지지는 않는다
+// (외울 손짓 수는 그대로다). 표시 단위와 과금 단위가 다르므로 문구도 '개'와 '칸'을 갈라 쓴다.
+const cost = (w) => bookItem(w)?.parts.length || 1;
+const bookCost = (list = BOOK) => list.reduce((n, w) => n + cost(w), 0);
+// 부품 중 하나라도 수형이 안 정해졌으면 그 부품들. 사전 화면과 **같은 함수**로 판정해야
+// 두 화면의 말이 갈리지 않는다(⛔ 틀릴 수 있는 걸 단정하지 않는다).
+const unsureParts = (it) => (it ? it.parts.filter((p) => unpinnedCandidates(p).length) : []);
+
 // 링크 공유: 서버가 없으므로 단어 목록 자체를 URL 조각에 담는다.
 // UTF-8 → base64url. 12단어면 150자 안쪽이라 압축은 아직 필요 없다.
 function encodeBook(words) {
@@ -599,7 +628,9 @@ function mergeFromHash() {
   let added = 0;
   try {
     for (const w of decodeBook(m[1])) {
-      if (!bookHas(w) && lookup(w)) { BOOK.push(w); added++; }
+      // bookItem 으로 받는다 — lookup 만 보면 합성('보고 싶다')이 표제어가 아니라서
+      // 링크로 보낸 단어가 조용히 사라진다.
+      if (!bookHas(w) && bookItem(w)) { BOOK.push(w); added++; }
     }
   } catch { return 0; }
   if (added) saveBook();
@@ -614,39 +645,68 @@ function renderWordbook() {
     return;
   }
   for (const w of BOOK) {
-    const e = lookup(w);
+    const it = bookItem(w);
+    const first = it && it.entries[0];
+    const wrap = document.createElement("div");
+    wrap.className = "book-entry";
+
     const item = document.createElement("div");
     item.className = "item";
 
     const thumb = document.createElement("div");
     thumb.className = "thumb";
-    const frames = e && entryFrames(e);
+    const frames = first && entryFrames(first);
     if (frames) { const img = document.createElement("img"); img.alt = ""; startPlayer(img, frames); thumb.appendChild(img); }
     item.appendChild(thumb);
 
     const txt = document.createElement("div");
-    const t = document.createElement("div"); t.className = "t"; t.textContent = bare(w);
+    const t = document.createElement("div"); t.className = "t";
+    t.textContent = it ? it.label : bare(w);
     const s = document.createElement("div"); s.className = "s";
     // 사전 화면이 "(확인 안 됨)" 이라고 말한 부품이 여기서는 그냥 확정된 단어로 보였다.
     // 담기는 순간 임의의 첫 후보로 굳는 자리가 1,277곳이라 ⛔ "틀릴 수 있는 걸 단정하지 않는다"에 걸린다.
-    // 판정은 사전 화면과 같은 함수(unpinnedCandidates)로 해야 두 화면의 말이 갈리지 않는다.
-    const unsure = unpinnedCandidates(w);
+    const unsure = unsureParts(it);
     if (unsure.length) s.className = "s unsure";
-    s.textContent = !e ? "사전에서 찾을 수 없어요"
-      : unsure.length ? `수형이 ${unsure.length}개 — 아직 확인 안 됐어요`
-      : e.aliases?.length ? e.aliases.join(" · ") : "국립국어원 한국수어사전";
+    s.textContent = !it ? "사전에서 찾을 수 없어요"
+      : unsure.length ? `${unsure.map(bare).join(" · ")} — 수형이 아직 확인 안 됐어요`
+      : it.parts.length > 1 ? `손짓 ${it.parts.length}개를 이어서 해요`
+      // 부품 1개짜리 합성(심심해=심심하다)은 담은 이름과 손짓 이름이 다르다. 그걸 밝혀 준다.
+      : it.combo ? `[${it.labels[0]}] 손짓 하나예요`
+      : first.aliases?.length ? first.aliases.join(" · ") : "국립국어원 한국수어사전";
     txt.append(t, s); item.appendChild(txt);
 
     const del = document.createElement("button");
     del.className = "chk"; del.type = "button";
-    del.setAttribute("aria-label", bare(w) + " 빼기"); del.textContent = "✕";
+    del.setAttribute("aria-label", (it ? it.label : bare(w)) + " 빼기"); del.textContent = "✕";
     del.addEventListener("click", () => {
       BOOK = BOOK.filter((x) => x !== w); saveBook(); renderWordbook(); refreshStash();
     });
     item.appendChild(del);
-    box.appendChild(item);
+    wrap.appendChild(item);
+
+    // 합성이면 부품을 이 항목 **안에** 펼친다. 따로 담기지 않으니 여기서 안 보여주면
+    // 사용자는 무슨 손짓을 하는지 알 길이 없다.
+    if (it && it.parts.length > 1) {
+      const row = document.createElement("div");
+      row.className = "book-parts";
+      it.parts.forEach((p, n) => {
+        const e = it.entries[n];
+        const part = document.createElement("div");
+        part.className = "book-part" + (unpinnedCandidates(p).length ? " unsure" : "");
+        const th = document.createElement("div");
+        th.className = "thumb sm";
+        const f = e && entryFrames(e);
+        if (f) { const img = document.createElement("img"); img.alt = ""; startPlayer(img, f); th.appendChild(img); }
+        const nm = document.createElement("span");
+        nm.textContent = "①②③④⑤"[n] + " " + it.labels[n];
+        part.append(th, nm);
+        row.appendChild(part);
+      });
+      wrap.appendChild(row);
+    }
+    box.appendChild(wrap);
   }
-  if (!isPro && BOOK.length >= FREE_LIMIT) box.appendChild(upsell());
+  if (!isPro && bookCost() >= FREE_LIMIT) box.appendChild(upsell());
 }
 
 // 벽에 닿았을 때의 안내. 한 곳에서만 만든다 — 문구가 갈리지 않게.
@@ -654,7 +714,9 @@ function upsell() {
   const lock = document.createElement("div");
   lock.className = "locked";
   const t = document.createElement("div");
-  t.className = "t"; t.textContent = `무료 단어장은 ${FREE_LIMIT}개까지예요`;
+  // 단위를 '단어'라고 쓰면 안 된다 — 세는 건 손짓이라, 합성 3단어를 담은 사람에게 "5개까지"가
+  // 거짓말이 된다(단어 3개인데 이미 막힘). 담기 문구도 같은 단위를 쓴다.
+  t.className = "t"; t.textContent = `무료로는 손짓 ${FREE_LIMIT}개까지 담을 수 있어요`;
   const s = document.createElement("p");
   s.className = "s"; s.textContent = "둘 중 한 명만 프로면 둘 다 무제한이에요";
   const b = document.createElement("button");
@@ -677,16 +739,23 @@ function refreshStash() {
     btn.disabled = true; btn.textContent = "담김 ✓";
     return;
   }
-  const full = BOOK.length + fresh.length > limit();
+  // 칸은 손짓 수로 센다 — 합성이 한 항목으로 보여도 외울 손짓은 그대로 여럿이다.
+  const need = bookCost(fresh);
+  const full = bookCost() + need > limit();
   label.textContent = full
-    ? `자리가 ${Math.max(0, FREE_LIMIT - BOOK.length)}칸 남았어요 (이 단어는 ${fresh.length}칸)`
+    ? `손짓 ${Math.max(0, FREE_LIMIT - bookCost())}개 자리가 남았어요 (이 말은 손짓 ${need}개)`
     : `찾은 단어 ${fresh.length}개를 우리 단어장에`;
   btn.textContent = full ? PRO_PRICE + "로 무제한" : "단어장에 담기";
   btn.disabled = false;
   box.classList.toggle("upsell", full);
   btn.onclick = full
     ? async () => { if (await requestPro()) refreshStash(); }
-    : () => { for (const w of lastWords) if (!bookHas(w)) BOOK.push(w); saveBook(); refreshStash(); renderWordbook(); };
+    : () => {
+        for (const w of lastWords) if (!bookHas(w)) BOOK.push(w);
+        saveBook(); refreshStash(); renderWordbook();
+        // 담고 나면 키보드를 내린다. 안 내리면 폰에서 화면이 확대·밀린 채로 남는다.
+        document.getElementById("input").blur();
+      };
 }
 function setupWordbook() {
   // 담기/업그레이드 동작은 refreshStash 가 상황에 따라 btn.onclick 으로 갈아끼운다.
@@ -717,7 +786,11 @@ const pick = (arr, n) => [...arr].sort(() => Math.random() - 0.5).slice(0, n);
 // 채점하면 앱이 틀린 수어를 정답으로 가르치는 셈이라, 안 배운 걸 묻는 것보다 더 나쁘다.
 // DOM 밖의 순수 함수로 둔 이유: 이 규칙이 살아 있는지를 test-compounds.mjs 가 직접 잰다.
 function quizPool(book) {
-  return book.filter((w) => lookup(w) && entryFrames(lookup(w)) && !unpinnedCandidates(w).length);
+  return book.filter((w) => {
+    const it = bookItem(w);
+    // 합성이면 부품이 **전부** 그림이 있고 전부 수형이 정해져야 문제로 낼 수 있다.
+    return it && it.entries.every((e) => e && entryFrames(e)) && !unsureParts(it).length;
+  });
 }
 
 function startQuiz() {
@@ -764,15 +837,32 @@ function renderPractice() {
   }
   box.appendChild(dots);
 
-  const e = lookup(quiz.q.answer);
+  // 합성은 손짓이 여럿이다. 첫 부품만 보여주면 '보고싶다'를 묻는데 [보다] 그림만 떠서
+  // 문제 자체가 거짓말이 된다 — 부품을 전부 나란히 보여준다.
+  const it = bookItem(quiz.q.answer);
+  const multi = it.parts.length > 1;
   const q = document.createElement("div");
   q.className = "card quiz";
   const lab = document.createElement("p");
-  lab.className = "quiz-lab"; lab.textContent = "이 손, 무슨 뜻일까요?";
-  const img = document.createElement("img");
-  img.className = "frame"; img.alt = "수형";
-  q.append(lab, img); box.appendChild(q);
-  startPlayer(img, entryFrames(e));
+  lab.className = "quiz-lab";
+  lab.textContent = multi ? `이 손짓 ${it.parts.length}개, 무슨 뜻일까요?` : "이 손, 무슨 뜻일까요?";
+  q.appendChild(lab);
+  const strip = document.createElement("div");
+  strip.className = "quiz-frames";
+  it.entries.forEach((e, n) => {
+    const cell = document.createElement("div");
+    const img = document.createElement("img");
+    img.className = "frame"; img.alt = "수형";
+    cell.appendChild(img);
+    if (multi) { const no = document.createElement("span"); no.textContent = "①②③④⑤"[n]; cell.appendChild(no); }
+    strip.appendChild(cell);
+    startPlayer(img, entryFrames(e));
+  });
+  q.appendChild(strip); box.appendChild(q);
+  // 해설은 부품마다. 하나뿐이면 종전과 같은 한 줄이다.
+  const desc = it.entries
+    .map((e, n) => (multi ? `<b class="inline">${it.labels[n]}</b> ` : "") + namedFingers(e.description))
+    .join("<br>");
 
   const btns = new Map(); // 보기 -> 버튼. 글자로 되찾지 않는다 — @핀이 다른 동음이의는 글자가 같다.
   for (const opt of quiz.q.options) {
@@ -790,8 +880,8 @@ function renderPractice() {
       const fb = document.createElement("div");
       fb.className = "note" + (right ? "" : " bad");
       fb.innerHTML = right
-        ? "<b>잘했어요!</b>" + namedFingers(e.description)
-        : `<b>아쉬워요 — 정답은 '${bare(quiz.q.answer)}'</b>` + namedFingers(e.description);
+        ? "<b>잘했어요!</b>" + desc
+        : `<b>아쉬워요 — 정답은 '${bare(quiz.q.answer)}'</b>` + desc;
       box.appendChild(fb);
 
       const next = document.createElement("button");
@@ -880,6 +970,8 @@ const SCREEN_TITLE = {
 function setupTabs() {
   const tabs = [...document.querySelectorAll(".tab[data-go]")];
   const go = (name) => {
+    // 사전을 떠나면 키보드를 내린다. 안 내리면 폰에서 화면이 밀린 채로 다음 화면이 뜬다.
+    if (name !== "dict") document.getElementById("input").blur();
     document.querySelectorAll("[data-screen]").forEach((el) => (el.hidden = el.dataset.screen !== name));
     tabs.forEach((t) => {
       const on = t.dataset.go === name;
