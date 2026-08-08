@@ -90,22 +90,28 @@ async function loadDaily() {
   } catch { /* 파일이 없으면 종전대로 사전 전체에서 고른다 */ }
 }
 
-// 낱말의 국어사전 뜻(표준국어대사전). scripts/fetch-meanings.mjs 가 만든다.
-// 없으면 빈 Map 이고 화면에 뜻 줄이 안 뜬다 — 인증키가 사람 몫이라 파일 없이도 앱이 온전해야 한다.
+// 화면에 쓸 뜻 = **이 손짓 하나가 나타내는 한국어 말들**(국어원 사전의 「한국어 대응표현」).
+// 사전 문장이 아니라 낱말 몇 개다: 내키다 → "싶다 · 바라다 · 소원 · 바람 · 욕구". 뜻을 확인하는
+// 데는 이게 문장보다 빠르고, 이미 사전 데이터에 들어 있어 새로 받아올 것이 없다.
 //
-// ⚠️ 이건 **한국어 낱말의 뜻**이지 그 수형의 뜻이 아니다. '보다'처럼 수형이 여럿인 낱말에서
-//    어느 뜻이 어느 수형인지는 이 데이터가 모른다. 그래서 화면이 출처를 밝혀 말한다
-//    ("국어사전에서 이 말은"). 수형의 뜻이라고 단정하면 ⛔ "틀릴 수 있는 걸 단정하지 않는다" 위반이다.
-let MEANINGS = new Map();
-async function loadMeanings() {
-  try {
-    const res = await fetch("data/ksl-meanings.json");
-    if (res.ok) MEANINGS = new Map(Object.entries(await res.json()));
-  } catch { /* 아직 안 만든 파일. 뜻 줄만 안 뜨고 나머지는 그대로 돈다 */ }
+// ⚠️ 지어낸 뜻이 아니다(⛔ 1번) — 국어원이 이 수형에 붙여 놓은 말 그대로다. 없으면 빈 문자열이고
+//    뜻 줄이 아예 안 뜬다. 없는 걸 채우지 않는다.
+// ⚠️ **커버리지는 낮다**: 전체 12,943 중 2,326(18%)에만 대응표현이 있다. 그림 있는 표제어로
+//    좁히면 3,622 중 1,654(46%). 소령·커피·보다·모르다처럼 뜻 줄이 안 뜨는 말이 흔하다.
+//    나머지를 채우려면 다른 출처(표준국어대사전 등)가 필요하고, 그건 아직 안 붙였다.
+// 카드 이름에 이미 뜬 말(사용자가 친 말·표제어)은 뺀다. '원하다 (내키다)' 밑에 또 '내키다'가
+// 오면 같은 말을 두 줄에서 읽게 된다.
+function meaningOf(entry, key) {
+  if (!entry) return "";
+  const shown = new Set([bare(key || ""), entry.word]);
+  // 붙임표가 붙은 것(-애, -러)은 낱말이 아니라 조어 요소라 뜻 자리에서 안 읽힌다 —
+  // '사랑' 의 대응표현이 '-애' 하나뿐이라 카드에 "사랑 / -애" 가 떴다. 전체 4,401개 중 35개다.
+  // 단 **표제어 자신이 어미면 그대로 둔다**(-습니다 → -ㅂ니다). 거기선 그게 맞는 답이다.
+  const boundHead = entry.word.startsWith("-");
+  return (entry.aliases || [])
+    .filter((a) => !shown.has(a) && (boundHead || !/^-|-$/.test(a)))
+    .join(" · ");
 }
-// 화면에 쓸 뜻. 별칭으로 찾은 말이면 사용자가 친 말을 먼저 본다 — '축하'를 쳤는데
-// 표제어 '식'의 뜻이 뜨면 자기가 안 친 말의 뜻을 읽게 된다.
-const meaningOf = (...words) => words.map((w) => w && MEANINGS.get(bare(w))).find(Boolean) || "";
 
 // 표제어 매칭 뒤에 붙는 한글 활용 어미/일부 조사. 별도 수어로 내지 않고 흡수(미안"해"→년 오매칭 방지).
 // ponytail: 형태소 분석기($0 vanilla 불가)의 대용 휴리스틱. 하다-활용 + 안전한 다음절 조사만.
@@ -271,8 +277,14 @@ let playTimers = [];
 function stopPlayers() { playTimers.forEach(clearInterval); playTimers = []; }
 
 // 카드 DOM 생성(textContent로 XSS 안전, 플레이어 인라인 연결).
-// mean 은 국어사전 뜻(선택). 단어와 손모양 설명 **사이**에 둔다 — 사용자가 확인하고 싶은 건
-// "내가 친 말이 그 말이 맞나"라서, 손을 어떻게 움직이는지보다 먼저 읽혀야 한다.
+// mean 은 이 손짓이 나타내는 말들(선택). 단어와 손모양 설명 **사이**에 둔다 — 사용자가 확인하고
+// 싶은 건 "내가 친 말이 그 말이 맞나"라서, 손을 어떻게 움직이는지보다 먼저 읽혀야 한다.
+//
+// 손모양 설명은 **접어서** 낸다. 줄여 쓰는 길은 재보고 버렸다(2026-08-08): 어느 손가락·어느 방향·
+// 몇 번인지가 다 필요한 정보라 한 조각만 빼도 **다른 손짓**이 된다(⛔ 2번). 실제로 규칙 셋을
+// 30건에 돌려 봤더니 — 첫 절만 남기면 동작 절반이 사라지고('소주'가 코 잡는 데서 끝난다),
+// 방향 수식절을 지우면 손가락 목록까지 잘려 "두 주먹의 1·하복부에 댄다" 같은 틀린 손모양이 나오고,
+// 글자 수로 자르면 말 중간에서 끊긴다. 접기는 **아무것도 안 버리면서** 카드를 짧게 만든다.
 function card(word, desc, frames, cls, mean) {
   // 시안 순서: 그림 → 단어 → 뜻 → 설명. 손모양이 먼저 눈에 들어와야 한다.
   const el = document.createElement("div");
@@ -288,8 +300,22 @@ function card(word, desc, frames, cls, mean) {
     const m = document.createElement("p");
     m.className = "mean"; m.textContent = mean; el.appendChild(m);
   }
-  const d = document.createElement("p");
-  d.className = "desc"; d.textContent = desc; el.appendChild(d);
+  if (desc && cls !== "unsupported") {
+    const d = document.createElement("details");
+    d.className = "desc";
+    const s = document.createElement("summary");
+    // 그림이 없는 표제어에는 지화(글자를 손으로 쓴 것)를 보여준다. 그게 이 말의 손짓이라고
+    // 읽히면 ⛔ 위반이라, 설명을 접어도 **그 사실만은 접히지 않게** 여는 줄에 적는다.
+    s.textContent = cls === "text-sign" ? "손모양 설명 — 그림이 없어 지화로 보여줘요" : "손모양 설명";
+    const p = document.createElement("p");
+    p.textContent = desc;
+    d.append(s, p); el.appendChild(d);
+  } else if (desc) {
+    // '미지원' 카드의 글은 손모양 설명이 아니라 왜 못 보여주는지에 대한 답이다. 접으면 카드가
+    // 이유 없이 비어 보인다.
+    const p = document.createElement("p");
+    p.className = "desc"; p.textContent = desc; el.appendChild(p);
+  }
   return el;
 }
 
@@ -331,12 +357,11 @@ function namedFingers(s) {
 // 합성 카드가 쓰는 "라벨 (표제어)" 형식과 같게 맞췄다.
 function entryCard(e, key) {
   const noImg = !(e.media.src && e.media.src.length);
-  const raw = namedFingers(e.description);
-  const desc = noImg ? "손모양 설명: " + raw + " · (그림 없어 지화로 표시)" : raw;
   const name = !key || key === e.word ? e.word : key + " (" + e.word + ")";
   // 뜻을 같이 보여주는 이유: 손모양만 보면 자기가 친 말이 그 말이 맞는지 확인할 길이 없다.
   // 동음이의 후보를 펼쳤을 때 어느 것을 고를지도 여기서 갈린다('참다'의 수형 3개).
-  return card(name, desc, entryFrames(e), noImg ? "text-sign" : "", meaningOf(key, e.word));
+  // 그림이 없다는 사실은 card() 가 접힘 줄에 적는다 — 접혀 있어도 보여야 하는 말이라서다.
+  return card(name, namedFingers(e.description), entryFrames(e), noImg ? "text-sign" : "", meaningOf(e, key));
 }
 
 // 부품에 @핀이 없고 후보 수형이 여럿이면 앱은 **첫 후보를 임의로** 집는다(함정 14).
@@ -396,7 +421,7 @@ function compoundGroup(word, combo, showHead = true) {
     const name = labels[n] === bare(p) ? bare(p) : labels[n] + " (" + bare(p) + ")";
     // 순번은 이어서 하는 동작이 둘 이상일 때만. 하나뿐인데 ① 을 붙이면 목록처럼 읽힌다.
     const no = combo.parts.length > 1 ? "①②③④⑤"[n] + " " : "";
-    return card(no + name, namedFingers(e.description), entryFrames(e), cands.length ? "unsure" : "");
+    return card(no + name, namedFingers(e.description), entryFrames(e), cands.length ? "unsure" : "", meaningOf(e, labels[n]));
   }).filter(Boolean)));
   for (const u of unsure) {
     const det = document.createElement("details");
@@ -495,7 +520,7 @@ async function main() {
   try {
     DICT = await loadDictionary();
     buildIndex(DICT);
-    await Promise.all([loadCompounds(), loadDaily(), loadMeanings()]);
+    await Promise.all([loadCompounds(), loadDaily()]);
     DICT_SUB = DICT.length.toLocaleString() + "개 단어를 손으로";
     document.getElementById("screen-sub").textContent = DICT_SUB;
     status.textContent = "";
@@ -567,6 +592,18 @@ const limit = () => (isPro ? Infinity : FREE_LIMIT);
   const v = new URLSearchParams(location.search).get("pro");
   if (v === "1" || v === "0") { isPro = v === "1"; localStorage.setItem(PRO_KEY, v); }
 })();
+
+// 서버가 정하는 프로 상태. 만든 사람의 마스터 계정이 여기로 켜진다.
+// **로컬에도 적어 둔다** — 다음에 열 때 서버 응답을 기다리는 동안, 그리고 오프라인일 때도
+// 벽이 다시 서 있으면 안 되기 때문이다. 서버가 아니라고 하면 그때 꺼진다(서버가 최종 권한).
+// 함정 36: 함수 선언이라 Node 에서 평가돼도 안전하다 — 안 부르면 그만이다.
+function setPro(v) {
+  if (isPro === !!v) return false;
+  isPro = !!v;
+  localStorage.setItem(PRO_KEY, isPro ? "1" : "0");
+  renderWordbook(); refreshStash();
+  return true;
+}
 
 async function requestPro() {
   // ponytail: 5단계에서 여기에 Play Billing 을 넣는다. 그때까지는 정직하게 안내만 한다.
@@ -1029,7 +1066,7 @@ function renderHome() {
     const b = document.createElement("b");
     b.textContent = "오늘의 수어";
     head.append(b, "매일 하나씩 바뀌어요.");
-    box.append(head, cardRow([card(e.word, namedFingers(e.description), entryFrames(e), "", meaningOf(e.word))]));
+    box.append(head, cardRow([card(e.word, namedFingers(e.description), entryFrames(e), "", meaningOf(e, e.word))]));
 
     const open = document.createElement("button");
     open.className = "btn-primary"; open.textContent = `'${e.word}' 사전에서 보기`;

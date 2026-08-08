@@ -71,7 +71,17 @@ body {
   width: 100%; height: 74px; object-fit: contain; display: block;
   mix-blend-mode: multiply; filter: contrast(1.06);
 }
-.card .desc { color: #8A6A5C; font-size: 9px; line-height: 1.5; margin: 1px 0 0; }
+/* 손모양 설명. 이제 <details> 라 기본은 접혀 있다 — 줄여 쓰면 다른 손짓이 되므로(⛔ 2번)
+   글을 자르는 대신 감춘다. <p class="desc"> 인 '미지원' 카드도 같은 색·크기를 쓴다. */
+.card .desc { color: #8A6A5C; font-size: 9px; line-height: 1.5; margin: 1px 0 0; text-align: center; }
+.card details.desc > summary {
+  cursor: pointer; list-style: none; font-weight: 700; color: var(--muted);
+  padding: 3px 0; user-select: none;
+}
+.card details.desc > summary::-webkit-details-marker { display: none; }
+.card details.desc > summary::after { content: " ⌄"; }
+.card details.desc[open] > summary::after { content: " ⌃"; }
+.card details.desc > p { margin: 2px 0 0; }
 /* 국어사전 뜻. 단어 바로 아래 — 사용자가 확인하려는 건 "내가 친 말이 그 말이 맞나"라서
    손모양 설명보다 먼저 읽혀야 한다. 손모양 설명(.desc)보다 진하게 둬서 순서를 눈에 세운다. */
 .card .mean { color: var(--sub); font-size: 9.5px; line-height: 1.45; margin: 2px 0 0; }

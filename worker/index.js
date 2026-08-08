@@ -124,6 +124,16 @@ async function myCode(env, uid) {
   return code;
 }
 
+// ── 마스터 계정 ──────────────────────────────────────────────────────────
+// 만든 사람의 계정은 무료 벽에 걸리지 않는다. **어느 기기에서 로그인해도** 그래야 하므로
+// 브라우저(localStorage)가 아니라 서버가 정한다 — 폰을 바꾸면 로컬 표시는 그냥 사라진다.
+//
+// 목록은 `wrangler secret put MASTER_UIDS` 로 넣는다(쉼표 구분). **wrangler.jsonc 에 적지 않는다** —
+// 그 파일은 공개 레포에 올라가고, 값이 제공자 계정 식별자라 밖에 나가면 안 된다.
+// 비어 있으면 아무도 마스터가 아니다(기본값이 안전한 쪽).
+const isMaster = (env, uid) =>
+  String(env.MASTER_UIDS || "").split(",").map((s) => s.trim()).filter(Boolean).includes(uid);
+
 // 화면에 뿌릴 최소 정보. **단어 목록은 여기서 안 준다** — 목록 화면엔 안 쓰는데 친구 수만큼
 // 레코드를 읽게 되고, 아직 수락 안 한 사람의 단어까지 실려 나간다.
 //
@@ -208,9 +218,13 @@ export default {
     if (path === "/book" || path === "/me") {
       if (!uid) return json(env, req, { error: "로그인이 필요해요" }, 401);
 
+      // pro 는 **응답에만 얹고 레코드에는 안 넣는다.** 넣으면 KV 에 굳어서, 나중에 목록에서 빼도
+      // 옛 레코드가 계속 프로라고 말한다. 판단은 언제나 지금의 MASTER_UIDS 가 한다.
+      const pro = isMaster(env, uid);
+
       if (req.method === "GET") {
         const raw = await env.KV.get("b:" + uid);
-        return json(env, req, raw ? JSON.parse(raw) : { words: [], name: "", updated: 0 });
+        return json(env, req, { ...(raw ? JSON.parse(raw) : { words: [], name: "", updated: 0 }), pro });
       }
       if (req.method === "PUT") {
         const body = await req.json().catch(() => null);
@@ -224,7 +238,7 @@ export default {
         const name = typeof (body && body.name) === "string" ? body.name.trim().slice(0, 20) : "";
         const rec = { words, name, updated: Date.now() };
         await env.KV.put("b:" + uid, JSON.stringify(rec));
-        return json(env, req, rec);
+        return json(env, req, { ...rec, pro });
       }
       // 탈퇴: 단어장과 지금 세션을 지운다.
       // ponytail: 다른 기기의 세션 토큰은 남는다(uid→토큰 역인덱스가 없어서). 개인정보인 단어장은

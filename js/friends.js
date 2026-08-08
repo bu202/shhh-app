@@ -224,7 +224,7 @@ if (typeof document !== "undefined") {
       if (!it) continue;
       const cards = it.entries.map((x, n) => x && card(
         (it.parts.length > 1 ? "①②③④⑤"[n] + " " : "") + it.labels[n],
-        namedFingers(x.description), entryFrames(x), "", meaningOf(it.parts[n], x.word))).filter(Boolean);
+        namedFingers(x.description), entryFrames(x), "", meaningOf(x, it.labels[n]))).filter(Boolean);
       if (!cards.length) continue;
       // 합성은 부품 카드가 여러 장이라, 이름을 안 붙이면 **친구가 담은 말이 화면에서 사라진다**
       // (내 단어장은 항목 이름을 보여주는데 여기만 안 보여주면 두 화면이 어긋난다).

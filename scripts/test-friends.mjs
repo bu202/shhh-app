@@ -102,4 +102,31 @@ await call("tokA", "/me", "DELETE");
 assert.deepEqual((await call("tokB", "/friends")).body.friends, [], "탈퇴한 사람이 친구 목록에 남았다");
 assert.equal(env._kv.get("c:" + a1.body.code), undefined, "탈퇴했는데 초대 코드가 살아있다");
 
-console.log("test-friends: 15개 통과 — 수락 전 단어장 비공개 · 양방향 정리 확인");
+// ── 마스터 계정 ──
+// 만든 사람 계정은 무료 벽에 안 걸린다. 판단은 **서버가** 한다 — 로컬에만 두면 폰을 바꾸는 순간
+// 사라져서 새 기기에서 벽에 걸린다.
+{
+  const e2 = makeEnv();
+  e2._kv.set("s:m", "kakao:BOSS");
+  e2._kv.set("s:n", "kakao:NOBODY");
+  const get = async (t) => (await (await worker.fetch(new Request("https://api.test/book", {
+    headers: { Authorization: "Bearer " + t, Origin: ORIGIN } }), e2)).json());
+
+  // 13. 목록이 비어 있으면 아무도 마스터가 아니다(기본값이 안전한 쪽).
+  assert.equal((await get("m")).pro, false, "MASTER_UIDS 가 비었는데 프로가 켜졌다");
+
+  e2.MASTER_UIDS = " kakao:BOSS , kakao:OTHER ";
+  // 14. 목록에 있으면 프로. 공백이 섞여 있어도 읽어야 한다(secret 은 사람이 손으로 넣는다).
+  assert.equal((await get("m")).pro, true, "마스터인데 프로가 안 켜졌다");
+  assert.equal((await get("n")).pro, false, "마스터가 아닌데 프로가 켜졌다");
+
+  // 15. pro 는 **저장되지 않는다.** 레코드에 굳으면 목록에서 빼도 옛 레코드가 계속 프로라고 말한다.
+  await worker.fetch(new Request("https://api.test/book", {
+    method: "PUT", headers: { Authorization: "Bearer m", Origin: ORIGIN, "Content-Type": "application/json" },
+    body: JSON.stringify({ words: ["사랑"], name: "" }) }), e2);
+  assert.ok(!("pro" in JSON.parse(e2._kv.get("b:kakao:BOSS"))), "pro 가 KV 레코드에 저장됐다");
+  delete e2.MASTER_UIDS;
+  assert.equal((await get("m")).pro, false, "목록에서 뺐는데 옛 레코드가 프로라고 말한다");
+}
+
+console.log("test-friends: 19개 통과 — 수락 전 단어장 비공개 · 양방향 정리 · 마스터 계정");

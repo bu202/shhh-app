@@ -46,7 +46,12 @@ if (typeof document !== "undefined") {
   });
 
   async function sync(firstLogin) {
-    const plan = syncPlan(await apiGetBook(), BOOK, +localStorage.getItem(AT_KEY) || 0, firstLogin, myName());
+    const remote = await apiGetBook();
+    // 프로 여부는 **서버가 정한다.** 로컬에만 두면 폰을 바꾸는 순간 사라져서, 마스터 계정도
+    // 새 기기에서는 무료 벽에 걸린다. 오프라인(remote === null)이면 손대지 않는다 —
+    // 연결이 안 된다고 프로를 끄면 지하철에서 벽이 다시 선다.
+    if (remote && setPro(remote.pro)) renderAll();
+    const plan = syncPlan(remote, BOOK, +localStorage.getItem(AT_KEY) || 0, firstLogin, myName());
     if (plan.action === "none") return;
     if (plan.action === "push") { if (BOOK.length || myName()) await apiPutBook(BOOK, myName()); return; }
     localStorage.setItem(NAME_KEY, plan.name);
