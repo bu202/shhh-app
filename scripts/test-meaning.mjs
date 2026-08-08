@@ -31,4 +31,18 @@ assert.equal(M.meaningOf({ word: "감사", aliases: ["고맙다", "-사"] }, "�
 assert.equal(M.meaningOf({ word: "-습니다", aliases: ["-ㅂ니다"] }, "-습니다"), "-ㅂ니다",
   "어미 표제어의 뜻까지 지우면 안 된다");
 
-console.log("ok — 뜻은 대응표현 · 이름에 뜬 말 제외 · @핀 통과 · 붙임표 제외");
+// 5. 대응표현이 **없을 때만** 표준국어대사전 뜻풀이로 채운다(`data/ksl-meanings.json`).
+//    대응표현이 있으면 그게 이긴다 — 국어원이 이 수형에 붙여 놓은 말이라 더 정확하다.
+const F = loadApp("meaningOf, loadMeanings");
+await F.loadMeanings();
+assert.equal(F.meaningOf({ word: "커피", aliases: [] }, "커피"), "커피나무의 열매를 볶아서 간 가루.",
+  "대응표현이 없는데 뜻풀이도 안 뜬다");
+assert.equal(F.meaningOf({ word: "감사", aliases: ["고맙다"] }, "감사"), "고맙다",
+  "대응표현이 있는데 뜻풀이가 이겼다");
+
+// 6. **동형어가 여럿이면 수집기가 비워 둔다**(함정 47). 사전의 첫 뜻은 흔한 뜻이 아니라서
+//    (`가구①`=佳句, `소령`=여러 뜻) 그냥 쓰면 틀린 뜻을 단정하게 된다. 뜻 줄이 안 뜨는 게 낫다.
+assert.equal(F.meaningOf({ word: "소령", aliases: [] }, "소령"), "", "동형어인데 한 뜻으로 단정했다");
+assert.equal(F.meaningOf({ word: "보다", aliases: [] }, "보다"), "", "동형어인데 한 뜻으로 단정했다");
+
+console.log("ok — 뜻은 대응표현 우선 · 없으면 뜻풀이 · 동형어는 비움 · @핀 통과 · 붙임표 제외");

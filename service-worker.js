@@ -3,7 +3,7 @@
 // 캐시 이름은 `PREFIX + 버전`. 주소를 /sueo-translator/ → /shhh-app/ 로 옮겼을 때 옛 경로 항목이
 // 그대로 남았다(캐시는 경로가 아니라 origin 단위라 두 주소가 같은 캐시를 쓴다). 버전을 올려 통째로 비운다.
 const PREFIX = "shhh-";
-const CACHE = PREFIX + "v8";
+const CACHE = PREFIX + "v9";
 // 로그인 API 는 **절대 캐시하지 않는다.** 아래 fetch 핸들러는 모든 GET 을 캐시에 넣는데,
 // 그러면 한 기기를 두 사람이 쓸 때 앞사람의 단어장 응답이 캐시에 남아 뒷사람에게 보인다.
 const API_HOST = "shhh-api.bu202.workers.dev";
@@ -22,6 +22,7 @@ const ASSETS = [
   "data/ksl-fulldict.json",
   "data/ksl-compounds.json",
   "data/ksl-verified.json",
+  "data/ksl-meanings.json",
   "data/ksl-daily.json",
   "icons/icon.svg",
   "icons/icon-192.png",

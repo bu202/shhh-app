@@ -96,11 +96,21 @@ async function loadDaily() {
 //
 // ⚠️ 지어낸 뜻이 아니다(⛔ 1번) — 국어원이 이 수형에 붙여 놓은 말 그대로다. 없으면 빈 문자열이고
 //    뜻 줄이 아예 안 뜬다. 없는 걸 채우지 않는다.
-// ⚠️ **커버리지는 낮다**: 전체 12,943 중 2,326(18%)에만 대응표현이 있다. 그림 있는 표제어로
-//    좁히면 3,622 중 1,654(46%). 소령·커피·보다·모르다처럼 뜻 줄이 안 뜨는 말이 흔하다.
-//    나머지를 채우려면 다른 출처(표준국어대사전 등)가 필요하고, 그건 아직 안 붙였다.
+// 대응표현이 **없을 때만** 표준국어대사전 뜻풀이로 채운다(`data/ksl-meanings.json`).
+// 대응표현이 있으면 그게 이긴다 — 국어원이 이 수형에 붙여 놓은 말이라 더 정확하다.
+// 커버리지: 대응표현만이면 12,799 중 2,217(17%), 뜻풀이를 얹으면 3,717(29%).
+// 그림 있는 표제어로 좁히면 3,478 중 1,556 → **2,081(60%)**.
+// ⚠️ 뜻풀이는 **낱말의 뜻이지 그 수형의 뜻이 아니다**(함정 47). 한 낱말에 수형이 여럿인 자리에서
+//    어느 뜻이 어느 수형인지 국어사전은 모른다. 그래서 동형어가 여럿이면 수집기가 **비워 둔다**.
 // 카드 이름에 이미 뜬 말(사용자가 친 말·표제어)은 뺀다. '원하다 (내키다)' 밑에 또 '내키다'가
 // 오면 같은 말을 두 줄에서 읽게 된다.
+let MEANINGS = null;
+async function loadMeanings() {
+  try {
+    const res = await fetch("data/ksl-meanings.json");
+    if (res.ok) MEANINGS = await res.json();
+  } catch { /* 없으면 대응표현만 쓴다 — 뜻 줄이 덜 뜰 뿐 앱은 온전히 돈다 */ }
+}
 function meaningOf(entry, key) {
   if (!entry) return "";
   const shown = new Set([bare(key || ""), entry.word]);
@@ -108,9 +118,10 @@ function meaningOf(entry, key) {
   // '사랑' 의 대응표현이 '-애' 하나뿐이라 카드에 "사랑 / -애" 가 떴다. 전체 4,401개 중 35개다.
   // 단 **표제어 자신이 어미면 그대로 둔다**(-습니다 → -ㅂ니다). 거기선 그게 맞는 답이다.
   const boundHead = entry.word.startsWith("-");
-  return (entry.aliases || [])
+  const alias = (entry.aliases || [])
     .filter((a) => !shown.has(a) && (boundHead || !/^-|-$/.test(a)))
     .join(" · ");
+  return alias || (MEANINGS?.[entry.word] ?? "");
 }
 
 // 표제어 매칭 뒤에 붙는 한글 활용 어미/일부 조사. 별도 수어로 내지 않고 흡수(미안"해"→년 오매칭 방지).
@@ -520,7 +531,7 @@ async function main() {
   try {
     DICT = await loadDictionary();
     buildIndex(DICT);
-    await Promise.all([loadCompounds(), loadDaily()]);
+    await Promise.all([loadCompounds(), loadDaily(), loadMeanings()]);
     DICT_SUB = DICT.length.toLocaleString() + "개 단어를 손으로";
     document.getElementById("screen-sub").textContent = DICT_SUB;
     status.textContent = "";
