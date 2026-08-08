@@ -100,10 +100,12 @@ if (typeof document !== "undefined") {
     plan.className = "plan" + (isPro ? " pro" : "");
     // 마스터와 프로를 갈라 말한다 — 만든 사람이 화면만 보고 "지금 무엇으로 열려 있나"를 알아야
     // 벽 문구를 고칠 때 자기 기기에서 확인이 되는지 안 되는지 헷갈리지 않는다.
+    // 마스터에는 설명 줄을 안 붙인다 — 이름만으로 충분하고, 왜 열려 있는지는 화면이 말할 일이 아니다.
+    const desc = isMaster ? "" : isPro ? "단어장을 무제한으로 담을 수 있어요"
+      : `무료로 손짓 ${FREE_LIMIT}개까지 담을 수 있어요`;
     plan.innerHTML = `<div class="k">현재 플랜</div>`
       + `<div class="n">${isMaster ? "마스터" : isPro ? "프로" : "무료"}${free}</div>`
-      + `<div class="d">${isMaster ? "만든 사람 계정이라 제한이 없어요"
-          : isPro ? "단어장을 무제한으로 담을 수 있어요" : `무료로 손짓 ${FREE_LIMIT}개까지 담을 수 있어요`}</div>`;
+      + (desc ? `<div class="d">${desc}</div>` : "");
     box.appendChild(plan);
     if (!isPro) {
       const up = document.createElement("button");

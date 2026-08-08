@@ -29,6 +29,15 @@ function buildIndex(dict) {
   };
   for (const e of dict) add(e.word, e);                       // 표제어 먼저(후보 배열 앞자리)
   for (const e of dict) for (const a of e.aliases || []) add(a, e); // 별칭 뒤
+  // 괄호는 뜻이 아니라 **동음이의 구분표**다: `(신체의)눈`·`(마시는)차`·`(시설물)다리`.
+  // 그대로만 색인하면 사용자가 치는 `눈`·`차`·`모자`가 사전에 없는 말이 되어 지화로 떨어졌다.
+  // 표제어는 안 바꾼다 — 카드에 `(신체의)눈` 이라고 뜨는 게 어느 수형인지 말해주기 때문이다.
+  //
+  // ⚠️ **별칭보다 뒤에 둔다.** 앞에 두면 이미 답이 있던 12개의 답이 바뀐다 — 재보니 좋아지는 것
+  //    (`다리` [남대문]→[(시설물)다리])과 나빠지는 것(`닫다` [폐쇄]→[(입을)닫다], `맞추다`
+  //    [일치]→[(음식에 간을)맞추다], `지르다` [고함]→[(불을)지르다])이 섞여 있었다. 어느 쪽이
+  //    맞는지는 **판단**이고 판단은 사람 몫이라, 지금은 **아무도 답하지 않던 자리만** 채운다.
+  for (const e of dict) if (/[()]/.test(e.word)) add(e.word.replace(/\([^)]*\)/g, ""), e);
   INDEX = idx;
   MAX_KEY = max;
 }
@@ -132,6 +141,9 @@ const ENDINGS = [
   "했습니다", "하겠습니다", "하였다", "합니다", "했어요", "하세요", "해요", "했어", "했다",
   "하니까", "하는데", "하지만", "하면서", "하려고", "하겠다", "하겠어요",
   "해서", "하고", "하는", "하지", "하게", "해도", "하면", "한다", "하다", "해",
+  // 청유 '하자'. 없으면 결혼"하자" 의 뒤가 표제어 **하자(瑕疵, 흠)** 에 걸려 카드가 두 장 뜬다 — ⛔ 위반.
+  // 매칭 뒤에만 흡수하므로 '하자' 를 홀로 치면 그대로 표제어가 나온다.
+  "하자",
   // 격식/서술
   "습니다", "입니다", "이에요", "예요", "이다", "였다",
   // 과거·존대
@@ -193,12 +205,19 @@ function deconjugate(w) {
   // ②를 아무 데나 쓰면 **지냈어가 '지다'(패배)로 떨어진다** — 사전에 있는 말이라 조회로 안 걸러지고,
   // 지화로 떨어지던 말이 틀린 수어로 단정된다(⛔). 그래서 ②는 그 글자가 **정확히 았/었/였**일 때만.
   // (았/었/였 = 초성 ㅇ + 중성 ㅏ/ㅓ/ㅕ + 종성 ㅆ. 났·냈처럼 초성이 있으면 그 자음이 어간의 것이다.)
-  if ((last === "아" || last === "어") && prev && prev[2] === 20) {
-    out.push(head.slice(0, -1) + syl(prev[0], prev[1], 0) + "다");             // 화났어→화나다, 지냈어→지내다
-    if (prev[0] === 11 && (prev[1] === 0 || prev[1] === 4 || prev[1] === 6)) {
-      out.push(head.slice(0, -1) + "다");                                      // 알았어→알다, 늦었어→늦다
-    }
-  }
+  // ③ 그 자리 모음이 ㅕ 면 어간이 'ㅣ' 였던 것이 어미 '어' 와 붙어 줄어든 것이다 — 미쳤어→미치다.
+  //    (기다려→기다리다 규칙이 ㄹ 에만 하던 일을 자음 전체로 넓힌 것이다.)
+  //    이게 없으면 사전에 미치다가 **있는데도** '미쳤어'가 통째로 지화로 떨어진다.
+  const pastStem = (h, p) => {
+    const o = [h.slice(0, -1) + syl(p[0], p[1], 0) + "다"];                    // ① 화났어→화나다, 지냈어→지내다
+    if (p[0] === 11 && (p[1] === 0 || p[1] === 4 || p[1] === 6)) o.push(h.slice(0, -1) + "다"); // ② 알았어→알다
+    if (p[1] === 6) o.push(h.slice(0, -1) + syl(p[0], 20, 0) + "다");          // ③ 미쳤어→미치다
+    return o;
+  };
+  if ((last === "아" || last === "어") && prev && prev[2] === 20) out.push(...pastStem(head, prev));
+  // 과거 + 종결 '다' 도 같은 자리다: 미쳤다·화났다. 어미 목록의 '었다/았다' 는 앞 글자가 정확히
+  // 었/았일 때만 걸려서 '쳤다·났다' 를 못 뗀다.
+  if (last === "다" && prev && prev[2] === 20) out.push(...pastStem(head, prev));
   if (last === "아" || last === "어") out.push(head + "다");                    // 괜찮아→괜찮다, 먹어→먹다
   const p = jamo(last);                                                       // 고파→고프다, 예뻐→예쁘다
   if (p && !p[2] && (p[1] === 0 || p[1] === 4)) out.push(head + syl(p[0], 18, 0) + "다");
@@ -217,6 +236,17 @@ function deconjugate(w) {
   return out.filter((k) => k.length > 1);
 }
 
+// 두 조각이 화면에 **같은 그림**을 그리는가. 타입만으로는 못 가린다 — 대장 항목 `밥`(합성 1부품)과
+// 표제어 `먹다` 는 종류가 다른데 같은 수형이다. 그려질 사전 항목까지 풀어서 견준다.
+const signEntries = (p) =>
+  p.type === "entry" ? [p.entries[0]]
+  : p.type === "compound" ? p.combo.parts.map((x) => lookup(x))
+  : null;
+function sameSign(a, b) {
+  const x = signEntries(a), y = signEntries(b);
+  return !!x && !!y && x.length === y.length && x.every((e, i) => e && e === y[i]);
+}
+
 // 최장일치 그리디. 띄어쓰기 무관 스캔. 매칭 뒤 활용 어미는 흡수.
 // 반환: [{type:"entry", entries:[...], text} | {type:"unknown", text}] 순서대로.
 // ponytail: 매 위치 최대 MAX_KEY까지 substring 조회 → O(n·MAX_KEY). 커지면 트라이로 교체.
@@ -229,20 +259,33 @@ function matchSentence(text) {
   while (i < s.length) {
     let hit = null, len = 0;
     for (let L = Math.min(MAX_KEY, s.length - i); L >= 1; L--) {
+      const key = s.slice(i, i + L);
+      const keys = [key, ...deconjugate(key)];
       // 문장 안에서 1글자 표제어는 잡지 않는다. 1글자 키가 394개인데 를·는·의·해 같은
       // 조사·어미까지 섞여 있어 거의 언제나 오답이 된다(잘자=잘하다+사람, 힘내=기운+자신).
       // 틀린 수어를 단정하느니 지화로 떨어지는 게 낫다(⛔ 실제 수어만 보여준다).
-      if (L === 1 && s.length > 1) break;
-      const key = s.slice(i, i + L);
-      const keys = [key, ...deconjugate(key)];
-      const e = keys.reduce((h, k) => h || INDEX.get(k), null);
+      const solo = L === 1 && s.length > 1;
+      const e = solo ? null : keys.reduce((h, k) => h || INDEX.get(k), null);
       if (e) { hit = { type: "entry", entries: e }; len = L; break; }
       // 같은 길이면 단일 표제어 우선. 사전에 없는 말만 합성으로 받는다.
       const c = keys.reduce((h, k) => h || COMPOUNDS.get(k), null);
-      if (c) { hit = { type: "compound", combo: c }; len = L; break; }
+      // 1글자 가드는 **색인의 잡동사니**를 막으려던 것이지 사람의 판정을 막으려던 게 아니다.
+      // 사람이 영상으로 확인해 대장에 적은 말(`verified`)은 1글자여도 잡는다 — 안 그러면
+      // '밥'을 확인해 넣어도 '밥먹었어'에서는 여전히 지화로 떨어져 대장이 반만 듣는다.
+      // 자동 추출 합성은 여기서 제외한다. 그건 사람이 확인한 것이 아니라 같은 위험을 그대로 진다.
+      if (c && (!solo || c.verified)) { hit = { type: "compound", combo: c }; len = L; break; }
     }
     if (hit) {
       flush();
+      // 잇달아 같은 손짓이 나오면 한 장으로 합친다. '밥 먹었어' 는 대장이 밥=[먹다] 라고 적어 둔
+      // 뒤로 [먹다] 카드가 두 장 떴는데, 같은 손짓을 두 번 하라는 건 **다른 말**이다(⛔).
+      // 앞의 것이 붙들고 있던 글자는 살려서 화면 이름이 사용자가 친 말 그대로이게 한다.
+      const prevHit = out[out.length - 1];
+      if (prevHit && sameSign(prevHit, hit)) {
+        prevHit.text += s.slice(i, i + len);
+        i += len + stripEnding(s, i + len);
+        continue;
+      }
       out.push({ ...hit, text: s.slice(i, i + len) });
       i += len + stripEnding(s, i + len); // 표제어 뒤 활용 어미 흡수
     } else { unknown += s[i]; i += 1; }
