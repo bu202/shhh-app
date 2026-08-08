@@ -54,6 +54,12 @@ assert.deepEqual((await call("tokB", "/friends")).body.friends, [], "보낸 쪽�
 assert.equal((await call("tokA", "/friends")).body.in.length, 1, "받은 요청이 안 보인다");
 assert.equal((await call("tokA", "/friends")).body.in[0].name, "나", "요청자 별명이 안 온다");
 
+// 4b. 수락 전에는 **단어 개수도** 안 준다. 아직 서로 남이고, 개인정보처리방침은
+//     "친구에게 보이는 것"으로만 적혀 있다 — 문서에 없는 걸 서버가 보내면 문서가 거짓말이 된다.
+assert.ok(!("count" in (await call("tokA", "/friends")).body.in[0]), "받은 요청에 단어 개수가 실려 있다");
+assert.ok(!("count" in (await call("tokB", "/friends")).body.out[0]), "보낸 요청에 단어 개수가 실려 있다");
+assert.ok(!("count" in sent.body.friend), "요청을 보낸 응답에 단어 개수가 실려 있다");
+
 // 5. 수락 전에는 단어장이 안 보인다. 이게 뚫리면 링크를 주운 사람이 남의 단어장을 본다.
 assert.equal((await call("tokB", "/friends/kakao:A/book")).status, 403, "수락 전인데 단어장이 보인다");
 
@@ -96,4 +102,4 @@ await call("tokA", "/me", "DELETE");
 assert.deepEqual((await call("tokB", "/friends")).body.friends, [], "탈퇴한 사람이 친구 목록에 남았다");
 assert.equal(env._kv.get("c:" + a1.body.code), undefined, "탈퇴했는데 초대 코드가 살아있다");
 
-console.log("test-friends: 12개 통과 — 수락 전 단어장 비공개 · 양방향 정리 확인");
+console.log("test-friends: 15개 통과 — 수락 전 단어장 비공개 · 양방향 정리 확인");

@@ -126,9 +126,15 @@ async function myCode(env, uid) {
 
 // 화면에 뿌릴 최소 정보. **단어 목록은 여기서 안 준다** — 목록 화면엔 안 쓰는데 친구 수만큼
 // 레코드를 읽게 되고, 아직 수락 안 한 사람의 단어까지 실려 나간다.
-async function brief(env, uid) {
+//
+// 개수(count)는 **수락된 친구에게만** 준다. 아직 요청 단계인 사이는 서로 남이라,
+// 별명 말고는 알려 줄 게 없다. 개인정보처리방침도 "친구에게 보이는 것"으로만 적혀 있다 —
+// 문서에 없는 것을 서버가 보내면 문서가 거짓말이 된다.
+async function brief(env, uid, withCount) {
   const rec = JSON.parse((await env.KV.get("b:" + uid)) || "{}");
-  return { uid, name: rec.name || "", count: (rec.words || []).length };
+  const out = { uid, name: rec.name || "" };
+  if (withCount) out.count = (rec.words || []).length;
+  return out;
 }
 
 // state 는 1회용이다. 꺼내면서 지운다 — 남겨두면 같은 code 를 두 번 쓸 수 있다.
@@ -247,7 +253,7 @@ export default {
       // 목록 + 내 초대 코드
       if (path === "/friends" && req.method === "GET") {
         const [ok, incoming, outgoing] = await Promise.all(
-          [f.ok, f.in, f.out].map((l) => Promise.all(l.map((u) => brief(env, u)))));
+          [[f.ok, true], [f.in, false], [f.out, false]].map(([l, c]) => Promise.all(l.map((u) => brief(env, u, c)))));
         return json(env, req, { code: await myCode(env, uid), friends: ok, in: incoming, out: outgoing });
       }
 
@@ -259,18 +265,18 @@ export default {
         const other = code && (await env.KV.get("c:" + code));
         if (!other) return json(env, req, { error: "초대 링크가 만료됐거나 잘못됐어요" }, 404);
         if (other === uid) return json(env, req, { error: "자기 자신은 추가할 수 없어요" }, 400);
-        if (f.ok.includes(other)) return json(env, req, { state: "ok", friend: await brief(env, other) });
+        if (f.ok.includes(other)) return json(env, req, { state: "ok", friend: await brief(env, other, true) });
 
         const g = await getFr(env, other);
         if (f.in.includes(other)) {   // 상대가 먼저 보냈다 → 바로 친구
           await putFr(env, uid, { ...drop(f, other), ok: [...f.ok, other] });
           await putFr(env, other, { ...drop(g, uid), ok: [...g.ok, uid] });
-          return json(env, req, { state: "ok", friend: await brief(env, other) });
+          return json(env, req, { state: "ok", friend: await brief(env, other, true) });
         }
-        if (f.out.includes(other)) return json(env, req, { state: "sent", friend: await brief(env, other) });
+        if (f.out.includes(other)) return json(env, req, { state: "sent", friend: await brief(env, other, false) });
         await putFr(env, uid, { ...f, out: [...f.out, other] });
         await putFr(env, other, { ...g, in: [...g.in.filter((x) => x !== uid), uid] });
-        return json(env, req, { state: "sent", friend: await brief(env, other) });
+        return json(env, req, { state: "sent", friend: await brief(env, other, false) });
       }
 
       const m2 = path.match(/^\/friends\/([^/]+)(\/book)?$/);
@@ -290,7 +296,7 @@ export default {
           const g = await getFr(env, other);
           await putFr(env, uid, { ...drop(f, other), ok: [...f.ok, other] });
           await putFr(env, other, { ...drop(g, uid), ok: [...g.ok.filter((x) => x !== uid), uid] });
-          return json(env, req, { state: "ok", friend: await brief(env, other) });
+          return json(env, req, { state: "ok", friend: await brief(env, other, true) });
         }
         // 거절 · 요청 취소 · 친구 끊기 — 전부 "이 연결을 지운다" 하나다. 양쪽에서 지운다.
         if (req.method === "DELETE") {

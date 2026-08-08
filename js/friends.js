@@ -88,6 +88,14 @@ if (typeof document !== "undefined") {
     if (r.error) return toast(r.error);
     const who = r.friend?.name ? `${r.friend.name}님` : "상대방";
     toast(r.state === "ok" ? `${who}과 친구가 됐어요!` : `${who}에게 친구 요청을 보냈어요`);
+    // 방금 만든 상태를 목록에 직접 반영한다. 다시 GET 하면 KV 가 옛 값을 줄 수 있어서
+    // "요청을 보냈다"고 말해놓고 목록은 비어 있는 화면이 나온다.
+    if (DATA && r.friend) {
+      const where = r.state === "ok" ? "friends" : "out";
+      if (!DATA[where].some((x) => x.uid === r.friend.uid)) DATA = { ...DATA, [where]: [...DATA[where], r.friend] };
+    } else {
+      DATA = null;   // 아직 목록을 받은 적이 없으면 renderFriends 가 받아온다
+    }
     VIEW = "friends";
     GO("book");
   }
@@ -159,18 +167,34 @@ if (typeof document !== "undefined") {
       b.addEventListener("click", (e) => { e.stopPropagation(); fn(); });
       act.appendChild(b);
     };
-    const reload = async () => { DATA = await apiFriends(); renderFriends(); refreshBadge(); };
+    // 서버를 다시 부르지 않고 **손에 든 목록을 그 자리에서 고친다.**
+    // Cloudflare KV 는 쓰고 바로 읽으면 옛 값이 올 수 있어서(최대 60초), 수락 직후 GET 하면
+    // "수락했는데 목록이 그대로"인 화면이 나온다. 무엇이 바뀌었는지는 우리가 이미 아는 값이다.
+    const move = (to) => {
+      DATA = { ...DATA, friends: DATA.friends.filter((x) => x.uid !== f.uid),
+               in: DATA.in.filter((x) => x.uid !== f.uid), out: DATA.out.filter((x) => x.uid !== f.uid) };
+      if (to) DATA[to] = [...DATA[to], f];
+      el("fr-badge").hidden = !DATA.in.length;
+      renderFriends();
+    };
 
     if (kind === "in") {
-      btn("수락", "ok", async () => { await apiAcceptFriend(f.uid); toast(`${f.name || "친구"}님과 친구가 됐어요!`); reload(); });
-      btn("거절", "no", async () => { await apiRemoveFriend(f.uid); reload(); });
+      btn("수락", "ok", async () => {
+        const r = await apiAcceptFriend(f.uid);
+        if (!r || r.error) return toast(r?.error || "수락하지 못했어요");
+        // 개수는 서버가 방금 준 값으로 채운다 — 요청 단계에선 안 받아 온 값이라 0 으로 남는다.
+        f.count = r.friend?.count ?? 0;
+        toast(`${f.name || "친구"}님과 친구가 됐어요!`);
+        move("friends");
+      });
+      btn("거절", "no", async () => { await apiRemoveFriend(f.uid); move(null); });
     } else if (kind === "out") {
-      btn("취소", "no", async () => { await apiRemoveFriend(f.uid); reload(); });
+      btn("취소", "no", async () => { await apiRemoveFriend(f.uid); move(null); });
     } else {
       btn("단어장 보기", "ok", () => openFriendBook(f));
       btn("끊기", "no", async () => {
         if (!confirm(`${f.name || "이 친구"}와 친구를 끊어요.\n서로의 단어장이 안 보이게 됩니다. 계속할까요?`)) return;
-        await apiRemoveFriend(f.uid); reload();
+        await apiRemoveFriend(f.uid); move(null);
       });
     }
     row.appendChild(act);
