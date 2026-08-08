@@ -213,6 +213,19 @@ export default {
       return Response.redirect(back + "#login=" + token + "&via=" + m[1], 302);
     }
 
+    // ── 2c. 마스터 코드 ── /master?code=…
+    // MASTER_UIDS 는 **로그인한 계정**을 마스터로 만든다. 그런데 이 앱은 로그인 없이도 쓸 수 있어서
+    // (「로그인 없이 둘러보기」) 그 상태에서는 만든 사람도 무료 벽에 걸린다. 코드는 그 구멍을 메운다 —
+    // 로그인과 무관하게 **이 브라우저**를 마스터로 만든다.
+    // 그래서 로그인 검사보다 **위에** 있다. 아래로 내려가면 토큰이 없어서 401 로 막힌다.
+    //
+    // ponytail: 문자열 비교라 이론상 타이밍 차가 새지만, 네트워크 지터가 그보다 몇 자릿수 크고
+    //   뒤에 있는 게 무료 벽 하나뿐이라 상수시간 비교를 넣지 않았다. 코드는 UUID(122비트)라 못 찍는다.
+    if (path === "/master") {
+      const code = url.searchParams.get("code") || "";
+      return json(env, req, { ok: !!env.MASTER_CODE && code === env.MASTER_CODE });
+    }
+
     // ── 3. 단어장 ──
     const uid = await env.KV.get("s:" + (req.headers.get("Authorization") || "").replace(/^Bearer /, ""));
     if (path === "/book" || path === "/me") {

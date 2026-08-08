@@ -129,4 +129,26 @@ assert.equal(env._kv.get("c:" + a1.body.code), undefined, "탈퇴했는데 초�
   assert.equal((await get("m")).pro, false, "목록에서 뺐는데 옛 레코드가 프로라고 말한다");
 }
 
-console.log("test-friends: 19개 통과 — 수락 전 단어장 비공개 · 양방향 정리 · 마스터 계정");
+// ── 마스터 코드 ──
+// 계정 쪽 마스터는 로그인해야 돈다. 이 앱은 로그인 없이도 쓸 수 있어서 그 상태에선 만든 사람도
+// 벽에 걸렸다. 코드는 **로그인 없이** 확인돼야 한다 — 그게 존재 이유다.
+{
+  const e3 = makeEnv();
+  const ask = async (code) => {
+    const res = await worker.fetch(new Request("https://api.test/master?code=" + encodeURIComponent(code),
+      { headers: { Origin: ORIGIN } }), e3);   // Authorization 헤더 **없음**
+    return (await res.json()).ok;
+  };
+  // 16. 코드가 설정 안 됐으면 무엇으로도 못 연다(기본값이 안전한 쪽).
+  assert.equal(await ask("아무거나"), false, "MASTER_CODE 가 없는데 열렸다");
+  assert.equal(await ask(""), false, "빈 코드로 열렸다");
+
+  e3.MASTER_CODE = "s3cr3t-code";
+  // 17. 맞는 코드는 **로그인 없이** 통과해야 한다.
+  assert.equal(await ask("s3cr3t-code"), true, "맞는 코드인데 로그인 없이 안 열린다");
+  // 18. 틀린 코드·빈 코드는 막는다.
+  assert.equal(await ask("s3cr3t-cod"), false, "틀린 코드가 열렸다");
+  assert.equal(await ask(""), false, "빈 코드가 열렸다");
+}
+
+console.log("test-friends: 23개 통과 — 수락 전 단어장 비공개 · 양방향 정리 · 마스터 계정/코드");

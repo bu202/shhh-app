@@ -91,6 +91,15 @@ if (typeof document !== "undefined") {
 
     if (!authToken()) {
       // 안내 문단은 뺐다 — 게이트에서 이미 본 말을 여기서 또 읽게 된다. 버튼만 둔다.
+      // 다만 **마스터는 알려 준다** — 로그인 없이 켠 상태라 화면 어디에도 표시가 없으면
+      // 만든 사람이 "지금 마스터가 맞나"를 확인할 길이 없다(벽이 안 보이는 게 유일한 단서였다).
+      if (isMaster) {
+        const p = document.createElement("div");
+        p.className = "plan pro";
+        p.innerHTML = `<div class="k">현재 플랜</div><div class="n">마스터</div>`
+          + `<div class="d">이 기기는 제한 없이 열려 있어요. 로그인하면 단어장이 따라와요.</div>`;
+        box.appendChild(p);
+      }
       loginButtons(box, "btn-primary");
       return;
     }
@@ -98,9 +107,12 @@ if (typeof document !== "undefined") {
     const used = bookCost(), free = isPro ? "" : ` · 손짓 ${used}/${FREE_LIMIT}`;
     const plan = document.createElement("div");
     plan.className = "plan" + (isPro ? " pro" : "");
+    // 마스터와 프로를 갈라 말한다 — 만든 사람이 화면만 보고 "지금 무엇으로 열려 있나"를 알아야
+    // 벽 문구를 고칠 때 자기 기기에서 확인이 되는지 안 되는지 헷갈리지 않는다.
     plan.innerHTML = `<div class="k">현재 플랜</div>`
-      + `<div class="n">${isPro ? "프로" : "무료"}${free}</div>`
-      + `<div class="d">${isPro ? "단어장을 무제한으로 담을 수 있어요" : `무료로 손짓 ${FREE_LIMIT}개까지 담을 수 있어요`}</div>`;
+      + `<div class="n">${isMaster ? "마스터" : isPro ? "프로" : "무료"}${free}</div>`
+      + `<div class="d">${isMaster ? "이 기기는 제한 없이 열려 있어요"
+          : isPro ? "단어장을 무제한으로 담을 수 있어요" : `무료로 손짓 ${FREE_LIMIT}개까지 담을 수 있어요`}</div>`;
     box.appendChild(plan);
     if (!isPro) {
       const up = document.createElement("button");
@@ -317,9 +329,25 @@ if (typeof document !== "undefined") {
     return true;
   }
 
+  // 마스터 코드로 들어온 자리. `#master=<코드>` 를 한 번 열면 **이 브라우저**가 마스터가 된다.
+  // 로그인과 무관하다 — 계정 쪽 마스터(서버 MASTER_UIDS)는 로그인해야 도는데, 이 앱은 로그인 없이도
+  // 쓸 수 있어서 「로그인 없이 둘러보기」 상태에서는 만든 사람도 무료 벽에 걸렸다.
+  async function takeMasterHash() {
+    const m = location.hash.match(/[#&]master=([^&]+)/);
+    if (!m) return;
+    // 코드가 주소창·방문기록에 남지 않게 즉시 지운다(로그인 토큰과 같은 이유).
+    history.replaceState(null, "", location.pathname + location.search);
+    if (isMaster) return toast("이미 마스터예요");
+    if (!(await apiCheckMaster(decodeURIComponent(m[1])))) return toast("마스터 코드가 맞지 않아요");
+    setMaster();
+    renderAll();
+    toast("마스터로 열었어요 — 이 기기에서는 제한이 없어요");
+  }
+
   // app.js 의 main() 이 사전을 다 읽은 뒤 부른다 — replaceBook 이 bookItem 을 쓰므로
   // 사전보다 먼저 돌면 담아둔 단어가 통째로 "사전에 없음"으로 버려진다.
   onAppReady(async () => {
+    await takeMasterHash();
     const fresh = takeLoginHash() || (await takeCodeQuery());
     renderAll();
     if (fresh) toast("로그인했어요");
@@ -334,4 +362,6 @@ if (typeof document !== "undefined") {
       openGate();   // 첫 화면은 로그인. 둘러보기를 한 번 고르면 다시 막지 않는다.
     }
   });
+  // 앱을 열어둔 채 마스터 링크를 누르면 해시만 바뀌고 리로드가 안 된다(#w=·#f= 와 같은 함정).
+  addEventListener("hashchange", takeMasterHash);
 }

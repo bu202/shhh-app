@@ -584,7 +584,12 @@ const FREE_LIMIT = 5; // 무료 단어장 상한. 프로면 무제한.
 // 5단계에서 여기만 Play Billing(getDigitalGoodsService + PaymentRequest)으로 바꾸면 된다.
 const PRO_KEY = "shh-pro";
 const PRO_PRICE = "₩4,900 / 월";
-let isPro = localStorage.getItem(PRO_KEY) === "1";
+// 마스터: **이 브라우저**가 만든 사람 것이라는 표시. 로그인과 무관하고 한 번 켜면 안 꺼진다.
+// 계정 쪽 마스터(서버의 MASTER_UIDS)는 로그인해야 도는데, 이 앱은 로그인 없이도 쓸 수 있어서
+// 「로그인 없이 둘러보기」 상태에서는 만든 사람도 무료 벽에 걸렸다. 그 구멍을 메우는 자리다.
+const MASTER_KEY = "shh-master";
+let isMaster = localStorage.getItem(MASTER_KEY) === "1";
+let isPro = isMaster || localStorage.getItem(PRO_KEY) === "1";
 const limit = () => (isPro ? Infinity : FREE_LIMIT);
 
 // 개발용: ?pro=1 로 벽 너머 화면을 지금 확인할 수 있게. ?pro=0 이면 해제.
@@ -593,15 +598,28 @@ const limit = () => (isPro ? Infinity : FREE_LIMIT);
   if (v === "1" || v === "0") { isPro = v === "1"; localStorage.setItem(PRO_KEY, v); }
 })();
 
-// 서버가 정하는 프로 상태. 만든 사람의 마스터 계정이 여기로 켜진다.
+// 서버가 정하는 프로 상태(로그인한 계정이 MASTER_UIDS 에 있으면 참).
 // **로컬에도 적어 둔다** — 다음에 열 때 서버 응답을 기다리는 동안, 그리고 오프라인일 때도
-// 벽이 다시 서 있으면 안 되기 때문이다. 서버가 아니라고 하면 그때 꺼진다(서버가 최종 권한).
+// 벽이 다시 서 있으면 안 되기 때문이다. 서버가 아니라고 하면 그때 꺼진다.
+// ⚠️ 단 **마스터 브라우저는 안 꺼진다.** 안 그러면 마스터 코드를 넣어 두고 남의 계정으로
+//    로그인하거나 로그아웃하는 순간 벽이 다시 선다 — "항상 마스터"가 아니게 된다.
 // 함정 36: 함수 선언이라 Node 에서 평가돼도 안전하다 — 안 부르면 그만이다.
 function setPro(v) {
-  if (isPro === !!v) return false;
-  isPro = !!v;
+  const next = isMaster || !!v;
+  if (isPro === next) return false;
+  isPro = next;
   localStorage.setItem(PRO_KEY, isPro ? "1" : "0");
   renderWordbook(); refreshStash();
+  return true;
+}
+
+// 마스터 코드가 맞았을 때. 되돌리는 길은 두지 않는다 — 만든 사람이 자기 브라우저에서 켜는 것이라
+// 실수로 켤 일이 없고, 끄고 싶으면 브라우저 저장소를 비우면 된다.
+function setMaster() {
+  if (isMaster) return false;
+  isMaster = true;
+  localStorage.setItem(MASTER_KEY, "1");
+  setPro(true);
   return true;
 }
 
@@ -778,9 +796,11 @@ function renderWordbook() {
       : it.parts.length > 1 ? `손짓 ${it.parts.length}개를 이어서 해요`
       // 부품 1개짜리 합성(심심해=심심하다)은 담은 이름과 손짓 이름이 다르다. 그걸 밝혀 준다.
       : it.combo ? `[${it.labels[0]}] 손짓 하나예요`
-      // 별칭이 없으면 **비워 둔다.** 예전엔 출처 이름("국립국어원 한국수어사전")을 넣었는데,
-      // 뜻이 오는 자리에 기관명이 와서 그게 이 단어의 뜻인 것처럼 읽혔다.
-      : first.aliases?.length ? first.aliases.join(" · ") : "";
+      // 뜻은 사전 카드와 **같은 함수**로 만든다. 예전엔 여기서 aliases 를 직접 이어 붙였는데,
+      // 사전 카드가 붙임표를 걸러내기 시작하자 두 화면이 갈렸다 — 단어장에만 '사랑 / -애' 가 남았다.
+      // (없으면 비워 둔다. 예전엔 출처 이름("국립국어원 한국수어사전")을 넣었는데, 뜻이 오는 자리에
+      //  기관명이 와서 그게 이 단어의 뜻인 것처럼 읽혔다.)
+      : meaningOf(first, it.label);
     txt.append(t, s); item.appendChild(txt);
 
     const del = document.createElement("button");
