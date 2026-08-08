@@ -584,9 +584,10 @@ const FREE_LIMIT = 5; // 무료 단어장 상한. 프로면 무제한.
 // 5단계에서 여기만 Play Billing(getDigitalGoodsService + PaymentRequest)으로 바꾸면 된다.
 const PRO_KEY = "shh-pro";
 const PRO_PRICE = "₩4,900 / 월";
-// 마스터: **이 브라우저**가 만든 사람 것이라는 표시. 로그인과 무관하고 한 번 켜면 안 꺼진다.
-// 계정 쪽 마스터(서버의 MASTER_UIDS)는 로그인해야 도는데, 이 앱은 로그인 없이도 쓸 수 있어서
-// 「로그인 없이 둘러보기」 상태에서는 만든 사람도 무료 벽에 걸렸다. 그 구멍을 메우는 자리다.
+// 마스터: **만든 사람의 계정**이라는 표시. 서버가 정하고(MASTER_UIDS), 로그인해야 켜진다 —
+// 마스터는 계정 하나여야 하므로 브라우저에 심는 길은 두지 않는다(2026-08-08 에 코드 방식을 지웠다).
+// 로컬에도 적어 둔다: 다음에 열 때 서버 응답을 기다리는 동안과 오프라인에서 이름이 '무료'로
+// 깜빡이지 않게. 서버가 아니라고 하면 그때 꺼진다.
 const MASTER_KEY = "shh-master";
 let isMaster = localStorage.getItem(MASTER_KEY) === "1";
 let isPro = isMaster || localStorage.getItem(PRO_KEY) === "1";
@@ -598,28 +599,20 @@ const limit = () => (isPro ? Infinity : FREE_LIMIT);
   if (v === "1" || v === "0") { isPro = v === "1"; localStorage.setItem(PRO_KEY, v); }
 })();
 
-// 서버가 정하는 프로 상태(로그인한 계정이 MASTER_UIDS 에 있으면 참).
+// 서버가 정하는 상태. 로그인한 계정이 MASTER_UIDS 에 있으면 master, 그러면 pro 도 참이다.
 // **로컬에도 적어 둔다** — 다음에 열 때 서버 응답을 기다리는 동안, 그리고 오프라인일 때도
-// 벽이 다시 서 있으면 안 되기 때문이다. 서버가 아니라고 하면 그때 꺼진다.
-// ⚠️ 단 **마스터 브라우저는 안 꺼진다.** 안 그러면 마스터 코드를 넣어 두고 남의 계정으로
-//    로그인하거나 로그아웃하는 순간 벽이 다시 선다 — "항상 마스터"가 아니게 된다.
+// 벽이 다시 서면 안 되기 때문이다. 서버가 아니라고 하면 그때 꺼진다(서버가 최종 권한).
+//
+// pro 와 master 를 가른 이유: 지금은 마스터만 pro 지만, 결제가 붙으면 **산 사람도 pro** 가 된다.
+// 그때 이름이 갈려야 화면이 "마스터"와 "프로"를 구분해 말할 수 있다.
 // 함정 36: 함수 선언이라 Node 에서 평가돼도 안전하다 — 안 부르면 그만이다.
-function setPro(v) {
-  const next = isMaster || !!v;
-  if (isPro === next) return false;
-  isPro = next;
+function setEntitlement(pro, master) {
+  const nextMaster = !!master, nextPro = nextMaster || !!pro;
+  if (isMaster === nextMaster && isPro === nextPro) return false;
+  isMaster = nextMaster; isPro = nextPro;
+  localStorage.setItem(MASTER_KEY, isMaster ? "1" : "0");
   localStorage.setItem(PRO_KEY, isPro ? "1" : "0");
   renderWordbook(); refreshStash();
-  return true;
-}
-
-// 마스터 코드가 맞았을 때. 되돌리는 길은 두지 않는다 — 만든 사람이 자기 브라우저에서 켜는 것이라
-// 실수로 켤 일이 없고, 끄고 싶으면 브라우저 저장소를 비우면 된다.
-function setMaster() {
-  if (isMaster) return false;
-  isMaster = true;
-  localStorage.setItem(MASTER_KEY, "1");
-  setPro(true);
   return true;
 }
 

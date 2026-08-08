@@ -213,31 +213,26 @@ export default {
       return Response.redirect(back + "#login=" + token + "&via=" + m[1], 302);
     }
 
-    // ── 2c. 마스터 코드 ── /master?code=…
-    // MASTER_UIDS 는 **로그인한 계정**을 마스터로 만든다. 그런데 이 앱은 로그인 없이도 쓸 수 있어서
-    // (「로그인 없이 둘러보기」) 그 상태에서는 만든 사람도 무료 벽에 걸린다. 코드는 그 구멍을 메운다 —
-    // 로그인과 무관하게 **이 브라우저**를 마스터로 만든다.
-    // 그래서 로그인 검사보다 **위에** 있다. 아래로 내려가면 토큰이 없어서 401 로 막힌다.
-    //
-    // ponytail: 문자열 비교라 이론상 타이밍 차가 새지만, 네트워크 지터가 그보다 몇 자릿수 크고
-    //   뒤에 있는 게 무료 벽 하나뿐이라 상수시간 비교를 넣지 않았다. 코드는 UUID(122비트)라 못 찍는다.
-    if (path === "/master") {
-      const code = url.searchParams.get("code") || "";
-      return json(env, req, { ok: !!env.MASTER_CODE && code === env.MASTER_CODE });
-    }
+    // ⚠️ `/master?code=…` 는 **지웠다**(2026-08-08). 로그인 없이 브라우저를 마스터로 만드는
+    //    코드였는데, 링크가 새면 받은 사람도 마스터가 된다 — 마스터는 **만든 사람 계정 하나**여야 한다.
+    //    로그인 안 한 상태에서 벽에 걸리는 건 감수한다(앱 출시 기준에선 로그인이 기본이다).
+    //    되살릴 일이 생기면 커밋 1b68a90 에 있다. 시크릿 MASTER_CODE 도 같이 지웠다.
 
     // ── 3. 단어장 ──
     const uid = await env.KV.get("s:" + (req.headers.get("Authorization") || "").replace(/^Bearer /, ""));
     if (path === "/book" || path === "/me") {
       if (!uid) return json(env, req, { error: "로그인이 필요해요" }, 401);
 
-      // pro 는 **응답에만 얹고 레코드에는 안 넣는다.** 넣으면 KV 에 굳어서, 나중에 목록에서 빼도
-      // 옛 레코드가 계속 프로라고 말한다. 판단은 언제나 지금의 MASTER_UIDS 가 한다.
-      const pro = isMaster(env, uid);
+      // 응답에만 얹고 레코드에는 안 넣는다. 넣으면 KV 에 굳어서, 나중에 목록에서 빼도
+      // 옛 레코드가 계속 마스터라고 말한다. 판단은 언제나 지금의 MASTER_UIDS 가 한다.
+      //
+      // master 와 pro 를 갈라 보낸다. 지금은 마스터만 pro 지만 결제가 붙으면 **산 사람도 pro** 가
+      // 된다 — 그때 화면이 "마스터"와 "프로"를 구분해 말하려면 이름이 둘이어야 한다.
+      const master = isMaster(env, uid), pro = master;
 
       if (req.method === "GET") {
         const raw = await env.KV.get("b:" + uid);
-        return json(env, req, { ...(raw ? JSON.parse(raw) : { words: [], name: "", updated: 0 }), pro });
+        return json(env, req, { ...(raw ? JSON.parse(raw) : { words: [], name: "", updated: 0 }), pro, master });
       }
       if (req.method === "PUT") {
         const body = await req.json().catch(() => null);
@@ -251,7 +246,7 @@ export default {
         const name = typeof (body && body.name) === "string" ? body.name.trim().slice(0, 20) : "";
         const rec = { words, name, updated: Date.now() };
         await env.KV.put("b:" + uid, JSON.stringify(rec));
-        return json(env, req, { ...rec, pro });
+        return json(env, req, { ...rec, pro, master });
       }
       // 탈퇴: 단어장과 지금 세션을 지운다.
       // ponytail: 다른 기기의 세션 토큰은 남는다(uid→토큰 역인덱스가 없어서). 개인정보인 단어장은

@@ -49,11 +49,10 @@ node scripts/fetch-meanings.mjs <인증키> 200    # 앞에서 200개만 (맛보
 node scripts/fetch-meanings.mjs --mock          # 키 없이 매핑 로직만 자가검증
 ```
 
-> ⚠️ `scripts/fetch-meanings.mjs` 는 **2026-08-08 커밋 `7e1ed61` 에서 지웠습니다**(대응표현으로
-> 갈아타면서 죽은 코드가 됐기 때문). 다시 쓰려면 되살립니다:
-> ```bash
-> git show 6461aa2:scripts/fetch-meanings.mjs > scripts/fetch-meanings.mjs
-> ```
+> ⚠️ **이 API 는 결과가 없으면 JSON 이 아니라 200 + 빈 본문을 줍니다**(`가로되`·`가르멜회` 등).
+> 그걸 실패로 세면 3,900개쯤에서 통째로 멈추고 "네트워크 오류"처럼 보입니다 — 실제로 두 번 멈췄고
+> 두 번 다 오진했습니다. 지금은 빈 본문을 "그런 낱말 없음"으로 기록하고 넘어갑니다.
+> 실패했을 때는 1초·2초·3초… 쉬었다 **같은 낱말을 다시** 시도합니다.
 
 - **키는 로컬에서만 쓰입니다.** 결과 `data/ksl-meanings.json` 에는 키가 안 들어가고, 배포되는
   정적 사이트에도 안 올라갑니다(`fetch-ksl.mjs` 와 같은 방식).

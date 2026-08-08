@@ -50,17 +50,6 @@ const apiAcceptFriend = (uid) => apiCall("/friends/" + encodeURIComponent(uid), 
 const apiRemoveFriend = (uid) => apiCall("/friends/" + encodeURIComponent(uid), { method: "DELETE" });
 const apiFriendBook = (uid) => apiCall("/friends/" + encodeURIComponent(uid) + "/book");
 
-// 마스터 코드 확인. **로그인 전에도 부른다** — 코드의 존재 이유가 "로그인 없이도 마스터"라서
-// apiCall(토큰 없으면 null) 을 못 쓴다.
-async function apiCheckMaster(code) {
-  try {
-    const res = await fetch(`${API}/master?code=${encodeURIComponent(code)}`);
-    return res.ok ? (await res.json()).ok === true : false;
-  } catch {
-    return false;   // 오프라인 — 나중에 다시 열면 된다
-  }
-}
-
 // 네이버 전용. 앱 주소로 돌아온 code 를 서버에 넘겨 세션 토큰으로 바꾼다 —
 // 비밀키가 필요한 교환이라 브라우저에서 직접 못 한다. apiCall 을 안 쓰는 이유는
 // **아직 토큰이 없는 상태**의 호출이기 때문(apiCall 은 토큰이 없으면 그냥 null 을 낸다).
