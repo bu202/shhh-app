@@ -1,0 +1,99 @@
+// 친구(요청 → 수락) 규칙 검증. `node scripts/test-friends.mjs`
+// worker/index.js 를 **그대로 불러** 가짜 KV 위에서 돌린다 — 규칙을 테스트에 베끼지 않는다.
+// 여기가 틀리면 증상이 "남의 단어장이 보인다"라서 사람 눈으로는 늦게 잡힌다.
+import assert from "node:assert";
+import worker from "../worker/index.js";
+
+const ORIGIN = "https://app.test";
+function makeEnv() {
+  const kv = new Map();
+  return {
+    APP_ORIGIN: ORIGIN,
+    KV: {
+      get: async (k) => (kv.has(k) ? kv.get(k) : null),
+      put: async (k, v) => void kv.set(k, v),
+      delete: async (k) => void kv.delete(k),
+    },
+    _kv: kv,
+  };
+}
+
+const env = makeEnv();
+// 세션 두 개를 손으로 심는다. OAuth 왕복은 이 테스트의 관심사가 아니다.
+for (const [t, u] of [["tokA", "kakao:A"], ["tokB", "kakao:B"], ["tokC", "kakao:C"]]) env._kv.set("s:" + t, u);
+
+const call = async (token, path, method = "GET", body) => {
+  const res = await worker.fetch(new Request("https://api.test" + path, {
+    method, headers: { Authorization: "Bearer " + token, Origin: ORIGIN, "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }), env);
+  return { status: res.status, body: await res.json().catch(() => null) };
+};
+
+// 단어장을 심어 둔다 — 친구 화면이 보여줄 것이 있어야 한다.
+await call("tokA", "/book", "PUT", { words: ["사랑", "보고싶다"], name: "가" });
+await call("tokB", "/book", "PUT", { words: ["고맙다"], name: "나" });
+
+// 1. 로그인 없이는 아무것도 안 된다.
+assert.equal((await worker.fetch(new Request("https://api.test/friends", { headers: { Origin: ORIGIN } }), env)).status, 401);
+
+// 2. 내 초대 코드는 늘 같다. 바뀌면 예전에 보낸 링크가 죽는다.
+const a1 = await call("tokA", "/friends");
+const a2 = await call("tokA", "/friends");
+assert.ok(a1.body.code && a1.body.code === a2.body.code, "초대 코드가 호출마다 바뀐다");
+assert.deepEqual([a1.body.friends, a1.body.in, a1.body.out], [[], [], []]);
+
+// 3. 자기 자신·엉뚱한 코드는 막는다.
+assert.equal((await call("tokA", "/friends", "POST", { code: a1.body.code })).status, 400, "자기 자신");
+assert.equal((await call("tokA", "/friends", "POST", { code: "없는코드" })).status, 404, "없는 코드");
+
+// 4. B 가 A 의 링크를 연다 → **요청**이지 친구가 아니다. 여기가 이 기능의 핵심이다.
+const sent = await call("tokB", "/friends", "POST", { code: a1.body.code });
+assert.equal(sent.body.state, "sent", "링크를 열자마자 친구가 되면 안 된다");
+assert.deepEqual((await call("tokB", "/friends")).body.friends, [], "보낸 쪽에 친구가 생겼다");
+assert.equal((await call("tokA", "/friends")).body.in.length, 1, "받은 요청이 안 보인다");
+assert.equal((await call("tokA", "/friends")).body.in[0].name, "나", "요청자 별명이 안 온다");
+
+// 5. 수락 전에는 단어장이 안 보인다. 이게 뚫리면 링크를 주운 사람이 남의 단어장을 본다.
+assert.equal((await call("tokB", "/friends/kakao:A/book")).status, 403, "수락 전인데 단어장이 보인다");
+
+// 6. 받지도 않은 요청을 수락할 수 없다 — C 가 임의로 A 를 친구로 만들면
+//    A 는 보낸 적 없는 사람에게 단어장이 보이게 된다.
+assert.equal((await call("tokC", "/friends/kakao:A", "PUT")).status, 400, "받은 적 없는 요청이 수락됐다");
+
+// 7. A 가 수락 → 양쪽 다 친구. 한쪽만 되면 상대 화면에서 조용히 안 보인다.
+await call("tokA", "/friends/kakao:B", "PUT");
+assert.deepEqual((await call("tokA", "/friends")).body.friends.map((f) => f.uid), ["kakao:B"]);
+assert.deepEqual((await call("tokB", "/friends")).body.friends.map((f) => f.uid), ["kakao:A"]);
+assert.deepEqual((await call("tokA", "/friends")).body.in, [], "수락했는데 요청이 남았다");
+assert.deepEqual((await call("tokB", "/friends")).body.out, [], "수락됐는데 보낸 요청이 남았다");
+
+// 8. 이제 서로의 단어장이 보인다.
+const seen = await call("tokB", "/friends/kakao:A/book");
+assert.deepEqual(seen.body.words, ["사랑", "보고싶다"]);
+assert.equal(seen.body.name, "가");
+
+// 9. 친구 목록엔 단어 **개수만** 온다. 목록 화면에 안 쓰는 단어까지 실어 보내지 않는다.
+assert.equal((await call("tokB", "/friends")).body.friends[0].count, 2);
+assert.ok(!("words" in (await call("tokB", "/friends")).body.friends[0]), "목록에 단어가 실려 나온다");
+
+// 10. 끊으면 양쪽에서 사라지고 단어장도 다시 막힌다.
+await call("tokA", "/friends/kakao:B", "DELETE");
+assert.deepEqual((await call("tokA", "/friends")).body.friends, []);
+assert.deepEqual((await call("tokB", "/friends")).body.friends, [], "끊었는데 상대 목록에 남았다");
+assert.equal((await call("tokB", "/friends/kakao:A/book")).status, 403, "끊었는데 단어장이 보인다");
+
+// 11. 서로 링크를 주고받으면 수락을 기다리지 않고 맺어진다.
+//     (둘 다 "수락 대기"로 멈춰 있으면 사용자는 뭘 눌러야 할지 모른다)
+const bCode = (await call("tokB", "/friends")).body.code;
+await call("tokA", "/friends", "POST", { code: bCode });
+const mutual = await call("tokB", "/friends", "POST", { code: a1.body.code });
+assert.equal(mutual.body.state, "ok", "서로 보냈는데 친구가 안 됐다");
+assert.deepEqual((await call("tokA", "/friends")).body.friends.map((f) => f.uid), ["kakao:B"]);
+
+// 12. 계정을 지우면 친구 쪽 목록에서도 사라진다. 안 그러면 이름 없는 친구가 남는다.
+await call("tokA", "/me", "DELETE");
+assert.deepEqual((await call("tokB", "/friends")).body.friends, [], "탈퇴한 사람이 친구 목록에 남았다");
+assert.equal(env._kv.get("c:" + a1.body.code), undefined, "탈퇴했는데 초대 코드가 살아있다");
+
+console.log("test-friends: 12개 통과 — 수락 전 단어장 비공개 · 양방향 정리 확인");

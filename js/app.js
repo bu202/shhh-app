@@ -80,6 +80,33 @@ async function loadCompounds() {
   }
 }
 
+// 홈의 '오늘의 수어' 후보 목록(표제어 문자열). null 이면 아직 안 읽은 것 —
+// 그땐 사전 전체에서 고른다. 홈이 통째로 비는 것보다 낫다고 보고 폴백을 남겼다.
+let DAILY = null;
+async function loadDaily() {
+  try {
+    const res = await fetch("data/ksl-daily.json");
+    if (res.ok) DAILY = new Set(await res.json());
+  } catch { /* 파일이 없으면 종전대로 사전 전체에서 고른다 */ }
+}
+
+// 낱말의 국어사전 뜻(표준국어대사전). scripts/fetch-meanings.mjs 가 만든다.
+// 없으면 빈 Map 이고 화면에 뜻 줄이 안 뜬다 — 인증키가 사람 몫이라 파일 없이도 앱이 온전해야 한다.
+//
+// ⚠️ 이건 **한국어 낱말의 뜻**이지 그 수형의 뜻이 아니다. '보다'처럼 수형이 여럿인 낱말에서
+//    어느 뜻이 어느 수형인지는 이 데이터가 모른다. 그래서 화면이 출처를 밝혀 말한다
+//    ("국어사전에서 이 말은"). 수형의 뜻이라고 단정하면 ⛔ "틀릴 수 있는 걸 단정하지 않는다" 위반이다.
+let MEANINGS = new Map();
+async function loadMeanings() {
+  try {
+    const res = await fetch("data/ksl-meanings.json");
+    if (res.ok) MEANINGS = new Map(Object.entries(await res.json()));
+  } catch { /* 아직 안 만든 파일. 뜻 줄만 안 뜨고 나머지는 그대로 돈다 */ }
+}
+// 화면에 쓸 뜻. 별칭으로 찾은 말이면 사용자가 친 말을 먼저 본다 — '축하'를 쳤는데
+// 표제어 '식'의 뜻이 뜨면 자기가 안 친 말의 뜻을 읽게 된다.
+const meaningOf = (...words) => words.map((w) => w && MEANINGS.get(bare(w))).find(Boolean) || "";
+
 // 표제어 매칭 뒤에 붙는 한글 활용 어미/일부 조사. 별도 수어로 내지 않고 흡수(미안"해"→년 오매칭 방지).
 // ponytail: 형태소 분석기($0 vanilla 불가)의 대용 휴리스틱. 하다-활용 + 안전한 다음절 조사만.
 //           단음절 조사(은/는/이/가…)는 단어 첫음절과 흔히 충돌해 일부러 제외. 오작동 시 이 목록만 손봄.
@@ -213,8 +240,10 @@ let playTimers = [];
 function stopPlayers() { playTimers.forEach(clearInterval); playTimers = []; }
 
 // 카드 DOM 생성(textContent로 XSS 안전, 플레이어 인라인 연결).
-function card(word, desc, frames, cls) {
-  // 시안 순서: 그림 → 단어 → 설명. 손모양이 먼저 눈에 들어와야 한다.
+// mean 은 국어사전 뜻(선택). 단어와 손모양 설명 **사이**에 둔다 — 사용자가 확인하고 싶은 건
+// "내가 친 말이 그 말이 맞나"라서, 손을 어떻게 움직이는지보다 먼저 읽혀야 한다.
+function card(word, desc, frames, cls, mean) {
+  // 시안 순서: 그림 → 단어 → 뜻 → 설명. 손모양이 먼저 눈에 들어와야 한다.
   const el = document.createElement("div");
   el.className = "card" + (cls ? " " + cls : "");
   if (frames) {
@@ -224,6 +253,10 @@ function card(word, desc, frames, cls) {
   }
   const w = document.createElement("p");
   w.className = "word"; w.textContent = word; el.appendChild(w);
+  if (mean) {
+    const m = document.createElement("p");
+    m.className = "mean"; m.textContent = mean; el.appendChild(m);
+  }
   const d = document.createElement("p");
   d.className = "desc"; d.textContent = desc; el.appendChild(d);
   return el;
@@ -270,7 +303,9 @@ function entryCard(e, key) {
   const raw = namedFingers(e.description);
   const desc = noImg ? "손모양 설명: " + raw + " · (그림 없어 지화로 표시)" : raw;
   const name = !key || key === e.word ? e.word : key + " (" + e.word + ")";
-  return card(name, desc, entryFrames(e), noImg ? "text-sign" : "");
+  // 뜻을 같이 보여주는 이유: 손모양만 보면 자기가 친 말이 그 말이 맞는지 확인할 길이 없다.
+  // 동음이의 후보를 펼쳤을 때 어느 것을 고를지도 여기서 갈린다('참다'의 수형 3개).
+  return card(name, desc, entryFrames(e), noImg ? "text-sign" : "", meaningOf(key, e.word));
 }
 
 // 부품에 @핀이 없고 후보 수형이 여럿이면 앱은 **첫 후보를 임의로** 집는다(함정 14).
@@ -429,7 +464,7 @@ async function main() {
   try {
     DICT = await loadDictionary();
     buildIndex(DICT);
-    await loadCompounds();
+    await Promise.all([loadCompounds(), loadDaily(), loadMeanings()]);
     DICT_SUB = DICT.length.toLocaleString() + "개 단어를 손으로";
     document.getElementById("screen-sub").textContent = DICT_SUB;
     status.textContent = "";
@@ -465,8 +500,10 @@ async function main() {
 
   // 로그인 동기화는 **여기서** 시작한다. 사전이 서기 전에 서버 단어장을 받으면
   // replaceBook 의 bookItem 검사가 전부 실패해 담아둔 단어가 통째로 버려진다.
+  // **등록 순서대로, 하나씩 기다려서** 부른다. friends.js 의 초대 링크 처리는 auth.js 가
+  // 로그인 토큰을 세운 뒤라야 뜻이 있는데, 안 기다리면 아직 로그아웃 상태로 보고 되돌아간다.
   appReadyDone = true;
-  appReady?.();
+  for (const fn of appReadyFns) await fn();
 
   // 카메라(손 읽기)는 6단계로 미뤄 화면에서 뺐다. 검출·KNN 코드는 그대로 살아 있으니
   // #camera 마크업 + data-go="camera" 탭을 붙이고 setupSignInput() 을 켜면 다시 동작한다.
@@ -519,14 +556,25 @@ let BOOK = (() => { try { return JSON.parse(localStorage.getItem(BOOK_KEY)) || [
 // auth.js 를 안 읽으면 null 로 남아 앱은 종전대로 기기 안에서만 돈다 — 로그인은 얹는 기능이지
 // 단어장이 서 있는 조건이 아니다. 테스트도 이 상태로 돈다(함정 13: 최상위에서 window 를 만지지 않는다).
 let bookChanged = null;
-let appReady = null, appReadyDone = false;
+// ⚠️ **배열이어야 한다.** 예전엔 함수 하나만 들고 있었는데(`appReady = fn`), friends.js 가
+//    붙는 순간 auth.js 가 등록해 둔 콜백을 덮어써서 **로그인이 통째로 안 돌았다**.
+//    붙는 파일이 하나뿐일 땐 증상이 없는 종류의 버그다.
+let appReadyFns = [], appReadyDone = false;
 let saveGuard = null;
+// 공유 버튼이 무엇을 보내는가. js/friends.js 가 붙으면 **친구 초대 링크**를 만든다.
+// 안 붙으면(테스트·로그인 미사용) 종전의 단어장 링크(#w=)가 그대로 나간다.
+let inviteLink = null;
+// 화면이 바뀔 때마다 불린다. friends.js 가 단어장 화면의 갈래(내 것/친구)를 되살리는 데 쓴다.
+// 이 훅이 없으면 friends.js 가 탭 버튼을 직접 뒤져야 하고, 탭을 하나 늘릴 때마다 두 파일을 고치게 된다.
+let screenShown = null;
 function onBookChanged(fn) { bookChanged = fn; }
+function onInviteLink(fn) { inviteLink = fn; }
+function onScreenShown(fn) { screenShown = fn; }
 // 담기를 막을 수 있는 자리(로그인 게이트). 안 붙으면 종전대로 누구나 담는다.
 function onSaveGuard(fn) { saveGuard = fn; }
 const mayAddToBook = () => !saveGuard || saveGuard();
 // 이미 준비가 끝난 뒤에 붙으면 그 자리에서 바로 부른다 — 스크립트 로드 순서에 기대지 않으려고.
-function onAppReady(fn) { appReadyDone ? fn() : (appReady = fn); }
+function onAppReady(fn) { appReadyDone ? fn() : appReadyFns.push(fn); }
 
 // quiet 는 **서버에서 받은 걸 되쓸 때**만 참이다. 안 가르면 서버 → 로컬 저장 → 다시 서버로 PUT 이 돈다.
 const saveBook = (quiet) => {
@@ -750,15 +798,26 @@ function refreshStash() {
         document.getElementById("input").blur();
       };
 }
+// 링크 보내기. 폰에선 공유 시트, 데스크톱에선 클립보드.
+async function sendLink(url, title) {
+  try {
+    if (navigator.share) await navigator.share({ title, url });
+    else { await navigator.clipboard.writeText(url); toast("링크를 복사했어요"); }
+  } catch { /* 사용자가 공유를 취소함 */ }
+}
+
 function setupWordbook() {
   // 담기/업그레이드 동작은 refreshStash 가 상황에 따라 btn.onclick 으로 갈아끼운다.
   document.getElementById("share-btn").addEventListener("click", async () => {
+    // 친구 초대 링크로 바뀌었다. 단어 목록을 통째로 링크에 담아 보내던 예전 방식은 **한 번 보낸
+    // 순간의 복사본**이라, 그 뒤에 담은 단어가 상대에게 안 갔다. 친구로 이어 두면 계속 보인다.
+    if (inviteLink) {
+      const url = await inviteLink();
+      if (!url) return;  // 로그인이 필요하거나 오프라인 — friends.js 가 이미 안내했다
+      return sendLink(url, "shhh! — 친구 초대");
+    }
     if (!BOOK.length) return toast("담은 단어가 없어요");
-    const url = shareLink();
-    try {
-      if (navigator.share) await navigator.share({ title: "shhh! — 우리 단어장", url });
-      else { await navigator.clipboard.writeText(url); toast("링크를 복사했어요"); }
-    } catch { /* 사용자가 공유를 취소함 */ }
+    await sendLink(shareLink(), "shhh! — 우리 단어장");
   });
   // 단어장을 비운다. 계정은 그대로 둔다 — 계정을 지우는 건 마이 → 설정 → 계정에 있다.
   document.getElementById("empty-btn").addEventListener("click", () => {
@@ -917,7 +976,12 @@ function dailyIndex(dateStr, len) {
   return h % len;
 }
 // 후보: 그림이 있고 표제어가 짧고 깨끗한 것. 변이형(①②)·기호 붙은 표제어는 첫 화면감이 아니다.
-const dailyPool = (dict) => dict.filter((e) => e.media?.src?.length && e.word.length <= 4 && /^[가-힣]+$/.test(e.word));
+// **그 조건만으로는 부족했다** — 3,308개가 전부 후보라 '소령'·'대령' 같은 군 계급이 오늘의 수어로 떴다.
+// 국립국어원이 표제어마다 붙여 둔 분류 중 '일상생활 수어 > (이름 붙은 소분류)'만 남긴 목록이
+// data/ksl-daily.json 이다(scripts/build-daily.mjs). 소령·대령은 '일상생활 > 기타'라 여기서 빠진다.
+// 손으로 고른 목록이 아니라 **사전이 이미 갖고 있던 판단**이라 데이터가 늘어도 다시 빌드하면 된다.
+const presentable = (e) => !!e.media?.src?.length && e.word.length <= 4 && /^[가-힣]+$/.test(e.word);
+const dailyPool = (dict) => dict.filter((e) => presentable(e) && (!DAILY || DAILY.has(e.word)));
 function todaysWord(dict, dateStr) {
   const pool = dailyPool(dict);
   return pool.length ? pool[dailyIndex(dateStr, pool.length)] : null;
@@ -934,7 +998,7 @@ function renderHome() {
     const b = document.createElement("b");
     b.textContent = "오늘의 수어";
     head.append(b, "매일 하나씩 바뀌어요.");
-    box.append(head, cardRow([card(e.word, namedFingers(e.description), entryFrames(e), "")]));
+    box.append(head, cardRow([card(e.word, namedFingers(e.description), entryFrames(e), "", meaningOf(e.word))]));
 
     const open = document.createElement("button");
     open.className = "btn-primary"; open.textContent = `'${e.word}' 사전에서 보기`;
@@ -1000,6 +1064,7 @@ function setupTabs() {
     if (name === "quiz") { startQuiz(); renderPractice(); }
     // 담기 박스는 화면 전환만으로 켜지면 안 된다 — 결과가 없으면 빈 점선 상자가 남는다.
     if (name === "dict") refreshStash();
+    screenShown?.(name);
   };
   tabs.forEach((t) => t.addEventListener("click", () => go(t.dataset.go)));
   document.getElementById("gear").addEventListener("click", () => go("settings"));

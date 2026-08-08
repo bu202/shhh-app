@@ -99,14 +99,29 @@
       <button id="stash-btn" class="btn-primary sm">단어장에 담기</button>
     </div>
 
-    <!-- ── 우리 단어장 ── -->
+    <!-- ── 우리 단어장 ── 내 것과 친구 것을 가른다. 섞어 두면 어느 게 내가 담은 건지 모른다. -->
+    <div class="segbar" data-screen="book" hidden role="tablist" aria-label="단어장">
+      <button class="seg on" data-book="mine" role="tab" aria-selected="true">내 단어장</button>
+      <button class="seg" data-book="friends" role="tab" aria-selected="false">친구<i id="fr-badge" class="badge" hidden></i></button>
+    </div>
     <section id="wordbook" class="result" data-screen="book" hidden></section>
     <!-- 단어장 비우기는 여기에 둔다. 지우는 일은 지울 것이 보이는 화면에서 해야 한다 —
          설정 안에 숨겨 두면 무엇이 지워지는지 못 보고 누르게 된다. -->
-    <div class="io" data-screen="book" hidden>
-      <button id="share-btn" class="btn-primary">🔗 친구에게 공유해요!</button>
+    <div class="io" id="book-actions" data-screen="book" hidden>
+      <button id="share-btn" class="btn-primary">🔗 친구 초대 링크 보내기</button>
       <button id="empty-btn" class="btn-ghost danger" hidden>단어장 비우기</button>
     </div>
+    <!-- 친구 목록. 위 토글이 켜면 보인다(화면 전환이 아니라 같은 화면 안의 갈래다). -->
+    <section id="friends" class="result" data-screen="book" hidden></section>
+
+    <!-- 친구 단어장 팝업. <dialog> 는 브라우저가 주는 것 — 포커스 가두기·Esc 닫기가 공짜다. -->
+    <dialog id="fr-book" class="sheet" aria-labelledby="fr-book-title">
+      <div class="sheet-top">
+        <b id="fr-book-title"></b>
+        <button id="fr-book-close" class="intro-x" aria-label="닫기">✕</button>
+      </div>
+      <div id="fr-book-body" class="sheet-body"></div>
+    </dialog>
 
     <!-- ── 연습 ── -->
     <section id="practice" class="result" data-screen="quiz" hidden></section>
@@ -135,9 +150,10 @@
     </nav>
   </main>
   <!-- 순서가 중요하다. auth.js 는 app.js 의 onAppReady/onBookChanged 에 붙고,
-       authApi.js 의 loginUrl·apiPutBook 을 부른다. -->
+       authApi.js 의 loginUrl·apiPutBook 을 부른다. friends.js 는 둘 다 쓴다. -->
   <script src="js/app.js"></script>
   <script src="js/authApi.js"></script>
   <script src="js/auth.js"></script>
+  <script src="js/friends.js"></script>
 </body>
 </html>
