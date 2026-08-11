@@ -207,14 +207,19 @@ if (typeof document !== "undefined") {
 
     const p = document.createElement("p");
     p.className = "hint";
-    p.innerHTML = "계정을 지우면 <b>서버에 저장된 단어장도 함께</b> 지워지고 로그인이 풀려요.<br>"
-      + "이 폰에 담아둔 단어는 그대로 남습니다.";
+    // 두 가지를 모두 말해야 한다. ① 이제 **모든 기기에서** 풀린다(세션이 계정 단위라).
+    // ② 이 기기 단어장은 남지만 **다른 계정으로 로그인하면 그 계정 것으로 바뀐다** —
+    //    계정이 바뀌면 병합하지 않기로 했으므로(syncPlan 의 accountChanged) "그대로 남는다"는
+    //    이제 조건부다. 조건을 안 적으면 화면이 거짓말한다.
+    p.innerHTML = "계정을 지우면 <b>서버에 저장된 단어장도 함께</b> 지워지고 <b>모든 기기에서</b> 로그인이 풀려요.<br>"
+      + "이 폰에 담아둔 단어는 남지만, 다른 계정으로 로그인하면 그 계정 단어장으로 바뀝니다.";
     box.appendChild(p);
 
     const del = document.createElement("button");
     del.className = "btn-ghost logout danger"; del.type = "button"; del.textContent = "계정 삭제";
     del.addEventListener("click", async () => {
-      if (!confirm("계정 연결을 끊고 서버에 저장된 단어장을 지워요.\n이 폰의 단어장은 남습니다. 계속할까요?")) return;
+      if (!confirm("계정 연결을 끊고 서버에 저장된 단어장을 지워요. 모든 기기에서 로그인이 풀립니다.\n"
+        + "이 폰의 단어장은 남지만, 다른 계정으로 로그인하면 바뀝니다.\n계속할까요?")) return;
       await apiDeleteAccount();
       setAuth(null); renderAll(); GO("me"); toast("계정을 지웠어요");
     });
