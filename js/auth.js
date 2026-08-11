@@ -8,6 +8,7 @@ const AT_KEY = "shh-wordbook-at";   // 로컬 단어장이 마지막으로 바�
 const PEEK_KEY = "shh-peek";        // "로그인 없이 둘러보기"를 고른 적이 있는가
 const NAME_KEY = "shh-name";        // 사용자가 지은 별명. 제공자에게 받은 이름이 아니다.
 const BACK_KEY = "shh-back";        // 로그인하러 떠나기 직전의 해시(링크로 받은 단어장)
+const UID_KEY = "shh-uid";          // 마지막으로 맞춰 둔 계정. 계정이 바뀌면 로컬을 물려주지 않는다
 const NAMES = { kakao: "카카오", naver: "네이버", google: "구글" };
 
 // 어느 쪽을 남길지 정한다. 순수 함수 — localStorage 도 DOM 도 안 본다.
@@ -16,8 +17,13 @@ const NAMES = { kakao: "카카오", naver: "네이버", google: "구글" };
 //   이기고 다른 쪽 변경은 사라진다. 단어 단위 병합(CRDT)은 삭제를 기억할 저장소가 더 필요한데,
 //   연인 둘이 쓰는 단어장에서 그 동시 편집이 실제로 문제가 되면 그때 만든다.
 //   합집합으로 하지 않는 이유는 **뺀 단어가 다른 기기에서 되살아나기 때문**이다.
-function syncPlan(remote, local, localAt, firstLogin, localName = "") {
+function syncPlan(remote, local, localAt, firstLogin, localName = "", accountChanged = false) {
   if (!remote) return { action: "none" };                     // 오프라인 — 로컬을 그대로 둔다
+  // 계정이 바뀌었으면 이 기기의 단어장은 **앞 계정 것**이다. 새 계정에 물려주지 않는다 —
+  // 안 그러면 한 기기를 두 사람이 쓸 때 앞사람 단어장이 뒷사람 계정으로 올라간다.
+  // 버려도 잃는 게 없다: 앞 계정 것은 그쪽 서버에 있고, 담기는 로그인을 요구하므로
+  // (mayAddToBook) 로그인 없이 생긴 로컬 단어장이란 것이 없다.
+  if (accountChanged) return { action: "pull", words: remote.words, name: remote.name || "" };
   // 로그인 첫 순간만 합집합. 로그인 전에 담아둔 단어를 잃으면 안 되고,
   // 다른 기기에 있던 것도 가져와야 한다. 이때는 아직 "뺐다"는 뜻이 없으니 합집합이 안전하다.
   if (firstLogin) {
@@ -46,12 +52,19 @@ if (typeof document !== "undefined") {
   });
 
   async function sync(firstLogin) {
+    // 앞서 맞춰 둔 계정과 지금 계정이 다른가. 처음이면(빈 값) 다르다고 보지 않는다 —
+    // 로그인 기능이 붙기 전에 담아둔 단어장을 첫 로그인에서 살려야 하기 때문이다.
+    const was = localStorage.getItem(UID_KEY) || "";
+    const accountChanged = !!was && was !== authUid();
     const remote = await apiGetBook();
     // 프로 여부는 **서버가 정한다.** 로컬에만 두면 폰을 바꾸는 순간 사라져서, 마스터 계정도
     // 새 기기에서는 무료 벽에 걸린다. 오프라인(remote === null)이면 손대지 않는다 —
     // 연결이 안 된다고 프로를 끄면 지하철에서 벽이 다시 선다.
     if (remote && setEntitlement(remote.pro, remote.master)) renderAll();
-    const plan = syncPlan(remote, BOOK, +localStorage.getItem(AT_KEY) || 0, firstLogin, myName());
+    const plan = syncPlan(remote, BOOK, +localStorage.getItem(AT_KEY) || 0, firstLogin, myName(), accountChanged);
+    // 서버가 대답한 뒤에만 적는다. 오프라인(none)에서 적어 두면 다음에 온라인으로 들어올 때
+    // 계정이 안 바뀐 것으로 보여 앞 계정 단어장이 그대로 올라간다.
+    if (plan.action !== "none") localStorage.setItem(UID_KEY, authUid());
     if (plan.action === "none") return;
     if (plan.action === "push") { if (BOOK.length || myName()) await apiPutBook(BOOK, myName()); return; }
     localStorage.setItem(NAME_KEY, plan.name);
@@ -209,6 +222,17 @@ if (typeof document !== "undefined") {
   }
 
   const renderAll = () => { renderMyPage(); renderSettings(); renderAccount(); };
+
+  // 세션이 죽은 걸 알게 된 순간(401) 화면을 되돌린다. 전에는 토큰만 지워서, 다른 기기에서
+  // 로그아웃해도 이 기기는 계속 로그인한 것처럼 보였다 — 담기를 눌러야 안 되는 걸 알았다.
+  //
+  // ponytail: **즉시는 아니다.** 서버와 한 번 이야기해야 알 수 있으므로 앱을 다시 열거나
+  //   단어를 담을 때 반영된다. 즉시 하려면 푸시가 필요한데 PWA 에는 아직 안 붙였다(5b 자리).
+  onAuthLost(() => {
+    setEntitlement(false, false);   // 마스터·프로는 계정에 달린 값이라 계정을 놓으면 같이 놓는다
+    renderAll();
+    toast("로그아웃됐어요. 다시 로그인해 주세요.");
+  });
 
   // 별명 한 칸. **제공자에게 이름을 받지 않고 사용자가 직접 짓는다** — 아무 말이나 쓸 수 있으니
   // 신원 정보가 아니고, 그래서 카카오 비즈앱 전환도 구글 범위 확대도 필요 없다.

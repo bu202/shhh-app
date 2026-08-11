@@ -53,4 +53,18 @@ assert.equal(syncPlan(N([], 500, "달"), [], 100, true, "").name, "달");
 assert.equal(syncPlan(N([], 0), [], 0, true, "").name, "");
 assert.equal(syncPlan(N([], 900), [], 0, false, "").name, "");
 
-console.log("test-auth: 11개 통과");
+// 12. 계정이 바뀌면 이 기기의 단어장을 **새 계정에 물려주지 않는다.**
+//     한 기기로 계정을 갈아 로그인하면 앞 계정 단어가 뒷 계정 서버로 올라가던 자리다.
+//     merge 도 push 도 아닌 pull 이어야 한다 — push 면 로컬이 새것일 때 그대로 올라간다.
+const swapped = syncPlan(R(["가"], 500), ["앞계정단어"], 900, true, "", true);
+assert.equal(swapped.action, "pull", "계정을 바꿔 로그인했는데 로컬 단어장이 새 계정으로 갔다");
+assert.deepEqual(swapped.words, ["가"], "새 계정 단어장이 아니라 앞 계정 것이 남았다");
+// 로컬이 더 새것이어도(localAt 900 > updated 500) 마찬가지다.
+assert.equal(syncPlan(R([], 100), ["앞계정단어"], 900, false, "", true).action, "pull",
+  "계정이 바뀌었는데 로컬이 새것이라고 push 했다");
+
+// 13. 계정이 그대로면 종전 규칙이 그대로 돈다(이 변경이 평소 동작을 바꾸면 안 된다).
+assert.equal(syncPlan(R(["가"], 500), ["나"], 900, true, "", false).action, "merge");
+assert.equal(syncPlan(R(["가"], 500), ["나"], 900, false, "", false).action, "push");
+
+console.log("test-auth: 16개 통과");

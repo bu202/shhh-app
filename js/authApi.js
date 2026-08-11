@@ -6,6 +6,21 @@ const VIA_KEY = "shh-via";       // 어느 걸로 로그인했는지(화면 표�
 
 const authToken = () => localStorage.getItem(TOKEN_KEY);
 const authVia = () => localStorage.getItem(VIA_KEY);
+// 토큰은 `<base64url(uid)>.<무작위>` 다(worker 의 mkToken). 어느 계정인지 알아야
+// **계정이 바뀐 것**을 알아채고 앞 계정 단어장을 새 계정에 물려주지 않을 수 있다.
+// 서버에 묻지 않는 이유: 이미 손에 든 문자열로 알 수 있고, 판정에 쓰지 않는다(표시·비교용).
+const authUid = () => {
+  const t = authToken() || "";
+  const i = t.indexOf(".");
+  if (i < 1) return "";
+  try { return atob(t.slice(0, i).replace(/-/g, "+").replace(/_/g, "/")); } catch { return ""; }
+};
+
+// 세션이 죽었을 때(로그아웃·만료) 화면을 다시 그리게 하는 훅. 여기는 데이터 계층이라
+// 화면을 직접 못 만진다 — 알리기만 하고 무엇을 그릴지는 js/auth.js 가 정한다.
+// ⚠️ 함정 44: 지금은 주인이 하나라 단일 함수다. 두 번째 파일이 붙는 순간 배열로 바꿀 것.
+let authLost = null;
+function onAuthLost(fn) { authLost = fn; }
 const setAuth = (token, via) => {
   if (token) { localStorage.setItem(TOKEN_KEY, token); localStorage.setItem(VIA_KEY, via || ""); }
   else { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(VIA_KEY); }
@@ -25,7 +40,9 @@ async function apiCall(path, opts = {}) {
       ...opts,
       headers: { Authorization: "Bearer " + t, "Content-Type": "application/json" },
     });
-    if (res.status === 401) { setAuth(null); return null; }   // 세션 만료(180일)
+    // 세션이 죽었다 — 만료(180일)거나, 다른 기기에서 로그아웃·탈퇴했거나.
+    // 토큰만 지우면 화면은 로그인 상태로 남아, 담기를 눌러도 왜 안 되는지 말해주지 않는다.
+    if (res.status === 401) { setAuth(null); authLost?.(); return null; }
     if (!res.ok) return null;
     return await res.json();
   } catch {
