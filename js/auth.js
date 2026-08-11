@@ -165,7 +165,11 @@ if (typeof document !== "undefined") {
 
     const out = document.createElement("button");
     out.className = "btn-ghost logout"; out.type = "button"; out.textContent = "로그아웃";
-    out.addEventListener("click", () => {
+    out.addEventListener("click", async () => {
+      // 서버에 **먼저** 알린다. 토큰을 지운 뒤에 부르면 apiCall 이 토큰이 없다고 그냥 돌아가서
+      // KV 의 세션이 180일을 더 산다. 오프라인이면 실패하지만 그때도 로컬은 정리한다 —
+      // 사용자가 로그아웃을 눌렀는데 화면이 로그인 상태로 남으면 그게 더 나쁘다.
+      await apiLogout();
       // 로컬 단어장은 남긴다. 로그아웃은 "이 기기에서 그만 보기"지 "지우기"가 아니다.
       // 다만 **마스터·프로는 끈다** — 계정에 달린 값이라 계정을 놓으면 같이 놓아야 한다.
       // 안 끄면 로그아웃한 기기가 계속 마스터로 보이고, 다음 사람이 그대로 물려받는다.

@@ -39,6 +39,9 @@ const apiGetBook = () => apiCall("/book");
 const apiPutBook = (words, name) =>
   apiCall("/book", { method: "PUT", body: JSON.stringify({ words, name }) });
 const apiDeleteAccount = () => apiCall("/me", { method: "DELETE" });
+// 로그아웃은 **서버에도** 알린다. 브라우저에서 토큰만 지우면 KV 의 세션은 180일을 더 살아서,
+// 한 번 샌 토큰이 로그아웃 뒤에도 그대로 쓰인다. 이 계정에 로그인한 기기가 전부 함께 끊긴다.
+const apiLogout = () => apiCall("/session", { method: "DELETE" });
 
 // ── 친구 ──
 // 목록은 {code, friends:[{uid,name,count}], in:[…], out:[…]}. 단어는 안 온다 — 목록엔 안 쓴다.

@@ -11,12 +11,16 @@
 // 그래서 카카오 비즈앱 전환도, 구글 민감 범위 심사도 필요 없다. privacy.html 이 이 사실에 맞춰져 있으니
 // scope 를 늘릴 거면 그 문서를 **먼저** 고칠 것.
 //
-// 키:  s:<token> → uid (세션, 180일)
+// 키:  s:<uid>:<token> → "1" (세션, 180일. **uid 로 묶는다** — 로그아웃·탈퇴가 이 계정의 모든
+//                            기기에 들으려면 uid 하나로 훑어 지울 수 있어야 한다)
 //      b:<uid>   → {words, name, updated} (단어장)
-//      x:<state> → 돌아갈 주소 (CSRF, 10분)
 //      c:<code>  → uid (초대 코드 → 사람)
 //      u:<uid>   → code (사람 → 초대 코드. 같은 사람은 늘 같은 링크를 준다)
 //      f:<uid>   → {ok:[uid], in:[uid], out:[uid]} (수락된 친구 · 받은 요청 · 보낸 요청)
+//
+// x:<state> 는 **없앴다.** /login 은 인증이 없는 자리라 거기서 KV 를 쓰면 `curl` 반복만으로
+// 무료 플랜의 하루치 쓰기(1,000회)를 태울 수 있었다 — 그러면 그날 남은 시간 동안 아무도
+// 단어장을 저장하지 못한다. 지금은 state 를 서명해서 들려 보낸다(makeState).
 
 const P = {
   kakao: {
@@ -72,6 +76,86 @@ const creds = (env, provider) => ({
   secret: env[provider.toUpperCase() + "_SECRET"],
 });
 
+// ── 서명·토큰·본문 ───────────────────────────────────────────────────────
+const ENC = new TextEncoder();
+const b64u = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const unb64u = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+
+async function sign(env, msg) {
+  const k = await crypto.subtle.importKey("raw", ENC.encode(env.STATE_KEY), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return b64u(await crypto.subtle.sign("HMAC", k, ENC.encode(msg)));
+}
+
+// state 는 KV 가 아니라 **서명한 문자열**이다. 담는 건 종전과 같다(어느 제공자로 시작했나 ·
+// 돌아갈 주소 · 언제까지). 우리 키로 서명하므로 남이 만들 수 없다.
+//
+// ponytail: KV 를 안 쓰니 **1회용 보장이 사라진다** — 같은 state 를 두 번 낼 수 있다.
+//   그래도 손해가 없는 이유는 code 쪽이 1회용이기 때문이다: 두 번째 교환은 제공자가 거부해
+//   "로그인에 실패했어요"로 끝난다. 재사용 자체를 막아야 할 일이 생기면 그때 KV 로 되돌린다.
+const makeState = async (env, provider, back) => {
+  const body = b64u(ENC.encode(JSON.stringify([provider, back, Date.now() + 600e3])));
+  return body + "." + (await sign(env, body));
+};
+
+async function takeState(env, state) {
+  if (!state) return null;
+  const i = state.lastIndexOf(".");
+  if (i < 0) return null;
+  const body = state.slice(0, i);
+  if ((await sign(env, body)) !== state.slice(i + 1)) return null;
+  let p;
+  try { p = JSON.parse(new TextDecoder().decode(unb64u(body))); } catch { return null; }
+  const [provider, back, exp] = p;
+  if (!(Date.now() < exp)) return null;
+  return { provider, back };
+}
+
+// 세션 토큰은 `<uid>.<무작위>` 다. uid 를 담는 이유는 하나뿐 — 로그아웃·탈퇴가 **이 계정의 모든
+// 기기**를 끊으려면 키를 uid 로 묶어 한 번에 훑어야 하는데, 토큰만으로는 어느 계정인지 모른다.
+// 담긴 uid 는 **주장일 뿐**이다: `s:<uid>:<token>` 이 KV 에 실제로 있어야 로그인으로 친다.
+const mkToken = (uid) => b64u(ENC.encode(uid)) + "." + crypto.randomUUID().replace(/-/g, "");
+const uidOf = (token) => {
+  const i = token.indexOf(".");
+  if (i < 1) return null;
+  try { return new TextDecoder().decode(unb64u(token.slice(0, i))); } catch { return null; }
+};
+
+// 이 계정의 세션을 전부 지운다. 로그아웃과 탈퇴가 같은 자리를 쓴다 —
+// "이 계정의 로그인을 끊는다" 하나라서 경로를 둘로 만들지 않았다.
+//
+// ponytail: KV list 는 최종 일관성이라 **방금 만든 세션이 목록에 없을 수 있다**(최대 60초).
+//   그 창에 로그인한 기기는 안 끊긴다. 종전(아무것도 안 지움)보다는 훨씬 낫고, 정확히 하려면
+//   레코드에 버전을 두고 매 요청 대조해야 하는데 그건 요청마다 KV 읽기가 하나 는다.
+async function killSessions(env, uid) {
+  const { keys } = await env.KV.list({ prefix: "s:" + uid + ":" });
+  await Promise.all(keys.map((k) => env.KV.delete(k.name)));
+  return keys.length;
+}
+
+// 신뢰 경계. 무료 플랜 Worker 는 메모리가 128MB 인데 요청 본문 한도는 100MB 라,
+// 안 막으면 한 번의 요청으로 밀어붙일 수 있다.
+//
+// **Content-Length 만 보면 방어가 안 된다** — 공격자는 그 헤더 없이(chunked) 보내면 그만이다.
+// 그래서 스트림을 읽으면서 한도를 넘는 순간 끊는다. 헤더가 있으면 읽기도 전에 자르는 지름길로만 쓴다.
+const MAX_BODY = 8192;
+async function readBody(req) {
+  if (!(req.headers.get("Content-Type") || "").includes("application/json")) return null;
+  const len = Number(req.headers.get("Content-Length"));
+  if (Number.isFinite(len) && len > MAX_BODY) return null;
+  const reader = req.body && req.body.getReader();
+  if (!reader) return null;
+  const buf = new Uint8Array(MAX_BODY);
+  let n = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (n + value.length > MAX_BODY) { await reader.cancel(); return null; }
+    buf.set(value, n);
+    n += value.length;
+  }
+  try { return JSON.parse(new TextDecoder().decode(buf.subarray(0, n))); } catch { return null; }
+}
+
 // 제공자가 code 를 어디로 돌려보내는가. 여기서 만든 값과 **똑같은 문자열**을 토큰 교환에도 보내야
 // 한다 — 한 글자만 달라도 제공자가 거부한다. 그래서 두 곳이 이 함수 하나를 부른다.
 const redirectUri = (env, origin, name) =>
@@ -101,8 +185,9 @@ async function exchange(env, origin, name, code, state) {
     console.log("[exchange] me fail", name, JSON.stringify(me).slice(0, 300));
     return null;
   }
-  const token = crypto.randomUUID();
-  await env.KV.put("s:" + token, name + ":" + who, { expirationTtl: 60 * 60 * 24 * 180 });
+  const uid = name + ":" + who;
+  const token = mkToken(uid);
+  await env.KV.put("s:" + uid + ":" + token, "1", { expirationTtl: 60 * 60 * 24 * 180 });
   return token;
 }
 
@@ -154,16 +239,6 @@ async function brief(env, uid, withCount) {
   return out;
 }
 
-// state 는 1회용이다. 꺼내면서 지운다 — 남겨두면 같은 code 를 두 번 쓸 수 있다.
-async function takeState(env, state) {
-  if (!state) return null;
-  const v = await env.KV.get("x:" + state);
-  if (!v) return null;
-  await env.KV.delete("x:" + state);
-  const i = v.indexOf("|");
-  return { provider: v.slice(0, i), back: v.slice(i + 1) };
-}
-
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
@@ -176,17 +251,16 @@ export default {
       const p = P[m[1]];
       const { id } = creds(env, m[1]);
       if (!id) return new Response(m[1] + " 로그인이 아직 설정되지 않았어요", { status: 503 });
-      // state 는 CSRF 방어다. 돌아갈 주소를 URL 이 아니라 KV 에 담는 이유도 같다 —
-      // 쿼리로 실어 보내면 남이 우리 도메인을 거쳐 아무 데로나 리다이렉트시킬 수 있다.
+      // state 는 CSRF 방어다. 돌아갈 주소를 **서명 안에** 넣는 이유도 같다 — 서명 없이 쿼리로
+      // 실어 보내면 남이 우리 도메인을 거쳐 아무 데로나 리다이렉트시킬 수 있다.
       const back = url.searchParams.get("return") || env.APP_ORIGIN;
       // 아무 문자열이나 올 수 있는 자리다. new URL 이 던지면 그대로 500 이 나가므로 여기서 받는다.
       // 파싱이 안 되는 것도 "허용되지 않은 주소"다 — allowed(null) 은 어차피 거짓이다.
       let backOrigin = null;
       try { backOrigin = new URL(back).origin; } catch { /* 주소가 아니면 아래에서 400 */ }
       if (!allowed(env, backOrigin)) return new Response("허용되지 않은 주소예요", { status: 400 });
-      const state = crypto.randomUUID();
-      // 어느 제공자로 시작한 state 인지 같이 적는다 — 남의 제공자 자리에서 재사용하지 못하게.
-      await env.KV.put("x:" + state, m[1] + "|" + back, { expirationTtl: 600 });
+      // 어느 제공자로 시작한 state 인지 같이 서명한다 — 남의 제공자 자리에서 재사용하지 못하게.
+      const state = await makeState(env, m[1], back);
       const q = new URLSearchParams({
         response_type: "code", client_id: id, redirect_uri: redirectUri(env, url.origin, m[1]), state,
       });
@@ -213,6 +287,12 @@ export default {
       const state = url.searchParams.get("state");
       const st = await takeState(env, state);
       if (!st || st.provider !== m[1]) return new Response("로그인 요청이 만료됐어요. 다시 눌러 주세요.", { status: 400 });
+      // 심층 방어: state 는 우리가 서명했지만 back 은 **리다이렉트 목적지**라 한 번 더 본다.
+      // allowed 가 좁아진 직후 옛 state 가 돌아오는 경우가 여기서 걸린다 — 서명이 유효해도
+      // 지금 규칙에서 허용되지 않으면 토큰을 실어 보내지 않는다.
+      let backOrigin = null;
+      try { backOrigin = new URL(st.back).origin; } catch { /* 아래에서 400 */ }
+      if (!allowed(env, backOrigin)) return new Response("허용되지 않은 주소예요", { status: 400 });
       const back = st.back;
       const code = url.searchParams.get("code");
       if (!code) {
@@ -230,7 +310,19 @@ export default {
     //    되살릴 일이 생기면 커밋 1b68a90 에 있다. 시크릿 MASTER_CODE 도 같이 지웠다.
 
     // ── 3. 단어장 ──
-    const uid = await env.KV.get("s:" + (req.headers.get("Authorization") || "").replace(/^Bearer /, ""));
+    // 토큰에 담긴 uid 는 **주장**이다. `s:<uid>:<token>` 이 KV 에 실제로 있어야 로그인으로 친다 —
+    // 없는 키를 지어내도 조회가 비므로 남의 계정을 주장할 수 없다.
+    const token = (req.headers.get("Authorization") || "").replace(/^Bearer /, "");
+    const claimed = token && uidOf(token);
+    const uid = claimed && (await env.KV.get("s:" + claimed + ":" + token)) ? claimed : null;
+
+    // 로그아웃 — 이 계정의 세션을 **전부** 끊는다. 브라우저에서 토큰만 지우면 KV 의 세션은
+    // 180일을 더 살아서, 한 번 샌 토큰이 로그아웃 뒤에도 그대로 쓰인다.
+    if (path === "/session" && req.method === "DELETE") {
+      if (!uid) return json(env, req, { error: "로그인이 필요해요" }, 401);
+      return json(env, req, { ok: true, killed: await killSessions(env, uid) });
+    }
+
     if (path === "/book" || path === "/me") {
       if (!uid) return json(env, req, { error: "로그인이 필요해요" }, 401);
 
@@ -246,7 +338,7 @@ export default {
         return json(env, req, { ...(raw ? JSON.parse(raw) : { words: [], name: "", updated: 0 }), pro, master });
       }
       if (req.method === "PUT") {
-        const body = await req.json().catch(() => null);
+        const body = await readBody(req);
         // 신뢰 경계다. 배열인지, 문자열인지, 터무니없이 크지 않은지 여기서 막는다.
         const words = Array.isArray(body && body.words)
           ? body.words.filter((w) => typeof w === "string" && w.length <= 100).slice(0, 500)
@@ -259,10 +351,9 @@ export default {
         await env.KV.put("b:" + uid, JSON.stringify(rec));
         return json(env, req, { ...rec, pro, master });
       }
-      // 탈퇴: 단어장과 지금 세션을 지운다.
-      // ponytail: 다른 기기의 세션 토큰은 남는다(uid→토큰 역인덱스가 없어서). 개인정보인 단어장은
-      //   지워지고 그 세션으로는 빈 단어장만 보이므로 지금은 이걸로 충분하다. 기기 목록을 보여줄
-      //   일이 생기면 그때 `s:<uid>:<token>` 로 키를 바꾼다.
+      // 탈퇴: 단어장·친구·초대코드와 **이 계정의 모든 세션**을 지운다.
+      // 지금 기기 세션만 지우면 다른 기기가 살아남아 `myCode()` 로 초대 코드를,
+      // `PUT /book` 으로 단어장을 **되살린다** — privacy.html 의 "그 자리에서 지워집니다"가 거짓이 된다.
       if (req.method === "DELETE") {
         // 친구 쪽 목록에서도 나를 뺀다. 안 빼면 상대 화면에 이름 없는 친구가 남고,
         // 그 사람의 단어장을 열면 빈 화면이 뜬다.
@@ -273,7 +364,7 @@ export default {
         await env.KV.delete("u:" + uid);
         await env.KV.delete("f:" + uid);
         await env.KV.delete("b:" + uid);
-        await env.KV.delete("s:" + (req.headers.get("Authorization") || "").replace(/^Bearer /, ""));
+        await killSessions(env, uid);
         return json(env, req, { ok: true });
       }
     }
@@ -293,7 +384,7 @@ export default {
       // 요청 보내기 — 초대 코드로. 상대가 이미 나에게 보냈으면 그 자리에서 맺어진다
       // (서로 링크를 주고받았는데 둘 다 수락 버튼을 기다리는 상태가 안 생기게).
       if (path === "/friends" && req.method === "POST") {
-        const body = await req.json().catch(() => null);
+        const body = await readBody(req);
         const code = typeof (body && body.code) === "string" ? body.code.trim().slice(0, 64) : "";
         const other = code && (await env.KV.get("c:" + code));
         if (!other) return json(env, req, { error: "초대 링크가 만료됐거나 잘못됐어요" }, 404);
