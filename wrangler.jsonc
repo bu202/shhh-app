@@ -6,9 +6,22 @@
   "name": "shhh-app",
   "compatibility_date": "2026-08-07",
   "observability": { "enabled": true },
-  // 빌드 도구가 없어 레포 루트가 곧 배포 디렉터리다. 무엇을 뺄지는 `.assetsignore` 에 있다.
-  "pages_build_output_dir": ".",
-  // **기존 네임스페이스를 그대로 붙인다** — 단어장·친구·초대코드가 여기 들어 있다.
+  // ⚠️ **레포 루트를 배포하지 않는다.** 전에는 `"."` 이라 CLAUDE.md · worker/index.js ·
+  // scripts/*.mjs · wrangler.jsonc · package.json 이 전부 공개됐다(라이브에서 200 확인).
+  // `npm run build` 가 브라우저가 실제로 부르는 것만 dist/ 로 옮긴다 —
+  // **allowlist 라서 새 파일의 기본값이 "안 나감"** 이다. 검사는 scripts/test-dist.mjs.
+  //
+  // `functions/` 는 dist 안에 넣지 않는다. Pages 는 **프로젝트 루트의 functions/** 를 따로 읽어
+  // 번들하고, worker/index.js 는 그 번들에 들어간다(정적으로 나갈 이유가 없다).
+  "pages_build_output_dir": "dist",
+  // 계정·세션·단어장·친구·초대코드가 전부 여기 있다. 스키마는 worker/schema.sql.
+  // 옮긴 이유는 worker/index.js 맨 위 주석과 docs/D1_MIGRATION.md 에 있다 —
+  // 요약하면 **친구 관계가 두 사람에 걸친 데이터라 트랜잭션이 필요했다.**
+  // `database_id` 는 비밀값이 아니다(KV 네임스페이스 ID 와 같은 성격).
+  "d1_databases": [{ "binding": "DB", "database_name": "shhh-db", "database_id": "c279078b-cb82-4926-a593-461993cd1f77" }],
+  // ⚠️ **KV 는 새 코드가 쓰지 않는다.** 바인딩만 남겨 둔 이유는 롤백 때문이다 —
+  //    옛 배포로 되돌리면 그 코드가 KV 를 읽어야 서비스가 선다. D1 이 자리를 잡으면
+  //    바인딩과 네임스페이스를 함께 지운다(docs/D1_MIGRATION.md 5번).
   "kv_namespaces": [{ "binding": "KV", "id": "f55a12622af84380a0865dd8ff4824ac" }],
   "vars": {
     // 검증 단계에선 pages.dev. 도메인이 붙으면 **여기와 OAuth 콘솔 3사를 같이** 바꾼다.

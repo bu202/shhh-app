@@ -135,3 +135,43 @@ assert.deepEqual(cards("다리"), ["남대문"], "다리 → 남대문. 괄호 �
 assert.deepEqual(cards("밥"), ["먹다"], "밥 → 먹다. 사람이 영상으로 확인한 대장 항목");
 // 3. 잇달아 같은 손짓이 나오면 한 장으로 합친다 — 같은 손짓을 두 번 하라는 건 **다른 말**이다.
 assert.deepEqual(cards("밥먹었어"), ["먹다"], "밥먹었어 → [먹다] 한 장이어야 한다");
+
+// ── 미검증 수어를 네 화면이 **같은 기준으로** 다루는가 ────────────────────
+// 2026-08-06 결정: 정확도를 못 올릴 땐 정직도를 올린다. 그때 판정을 unpinnedCandidates() 한 곳으로
+// 모았는데, **그 한 곳을 쓰는지**를 재는 검사는 없었다. 화면 하나가 슬쩍 자기 판정을 갖는 순간
+// (예전에 실제로 그랬다 — 사전은 "확인 안 됨", 단어장·연습은 단정) ⛔ 위반이 조용히 돌아온다.
+//
+// ⚠️ 데이터에 `verificationStatus` 필드를 따로 두지 않는 이유: 그 값의 출처가 결국
+//    `ksl-pins.json`(사람이 고른 수형)이라, 필드로 복사해 두면 **진실이 둘**이 되어 갈라진다.
+//    상태는 저장하는 것이 아니라 그 한 함수가 **계산하는 것**으로 남긴다.
+{
+  const judge = (w) => M.unpinnedCandidates(w).length > 0;   // 유일한 판정자
+  const sample = [unsureWord, settled];
+
+  // 표본이 실제로 갈리는지 먼저 확인한다 — 둘 다 같은 쪽이면 아래가 아무것도 안 잰다.
+  assert.equal(judge(unsureWord), true, "표본 오류: 미확정 단어가 확정으로 판정된다");
+  assert.equal(judge(settled), false, "표본 오류: 확정 단어가 미확정으로 판정된다");
+
+  // ① 연습: 미확정은 출제하지 않는다(임의의 첫 후보를 '정답'으로 채점하게 된다).
+  for (const w of sample)
+    assert.equal(M.quizPool([w]).includes(w), !judge(w),
+      `연습의 판정이 unpinnedCandidates 와 다르다: '${w}'`);
+
+  // ② **출제된 것에는 미확정 부품이 하나도 없어야 한다.** 이게 ⛔ 쪽으로 치명적인 방향이다 —
+  //    반대(미확정인데 제외됨)는 기껏해야 문제가 줄지만, 이쪽은 틀린 수형을 '정답'으로 채점한다.
+  //    표본 둘이 아니라 **실제 데이터 전체**에 대고 잰다. 항진명제가 되지 않게.
+  const bookable = [...M.COMPOUNDS.keys()].slice(0, 400);
+  const passed = M.quizPool(bookable);
+  assert.ok(passed.length > 0, "표본 400개에서 출제 가능한 것이 하나도 없다 — 검사가 무의미하다");
+  for (const w of passed) {
+    const it = M.bookItem(w);
+    const bad = (it ? it.parts : [w]).filter((p) => M.unpinnedCandidates(p).length > 0);
+    assert.equal(bad.length, 0,
+      `연습이 '${w}' 를 출제하는데 부품 ${JSON.stringify(bad)} 의 수형이 안 정해졌다 — 틀린 수형을 정답으로 채점한다`);
+  }
+
+  // ③ 확정된 말은 후보를 펼쳐 보일 것이 없다. 있으면 화면이 "확인 안 됨"을 잘못 붙인다.
+  assert.deepEqual(M.unpinnedCandidates(settled), [], `'${settled}' 에 미확정 후보가 붙었다`);
+}
+
+console.log("test-compounds: 미검증 판정이 사전·단어장·연습에서 한 함수로 일치");

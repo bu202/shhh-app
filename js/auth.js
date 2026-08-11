@@ -43,12 +43,33 @@ if (typeof document !== "undefined") {
   const touch = () => localStorage.setItem(AT_KEY, Date.now());
   const myName = () => localStorage.getItem(NAME_KEY) || "";
 
+  // 서버에 올린다. 충돌(409)이면 **어느 쪽도 버리지 않고 합친 뒤 다시 올린다.**
+  //
+  // 왜 합집합인가: 충돌은 "두 기기가 둘 다 고쳤다"는 뜻이다. 한쪽을 고르면 반드시 한쪽이
+  // 사라지는데, **담은 단어를 잃는 것이 지운 단어가 되살아나는 것보다 나쁘다** — 되살아난 건
+  // 다시 지우면 되지만, 사라진 건 무엇이 사라졌는지조차 모른다.
+  // (평상시 동기화는 그대로 LWW 다 — 합집합은 실제로 부딪힌 이 순간에만 쓴다.)
+  async function pushBook(words, name) {
+    const r = await apiPutBook(words, name);
+    if (!r || !r.conflict) return r;
+    const mine = BOOK.slice();
+    const merged = (r.words || []).concat(mine.filter((w) => !(r.words || []).includes(w)));
+    replaceBook(merged);
+    touch();
+    localStorage.setItem(NAME_KEY, name || r.name || "");
+    renderAll();
+    // 버전은 apiCall 이 409 본문에서 이미 받아 뒀다(apiPutBook) — 그래서 이번 저장은 통과한다.
+    const again = await apiPutBook(merged, name || r.name || "");
+    toast("다른 기기에서 담은 단어와 합쳤어요");
+    return again;
+  }
+
   // 단어를 담거나 뺄 때마다 불린다(app.js 의 saveBook). 서버 저장은 몰아서 한 번.
   onBookChanged((words) => {
     touch();
     if (!authToken()) return;
     clearTimeout(putTimer);
-    putTimer = setTimeout(() => apiPutBook(words, myName()), 800);
+    putTimer = setTimeout(() => pushBook(words, myName()), 800);
   });
 
   async function sync(firstLogin) {
@@ -66,14 +87,14 @@ if (typeof document !== "undefined") {
     // 계정이 안 바뀐 것으로 보여 앞 계정 단어장이 그대로 올라간다.
     if (plan.action !== "none") localStorage.setItem(UID_KEY, authUid());
     if (plan.action === "none") return;
-    if (plan.action === "push") { if (BOOK.length || myName()) await apiPutBook(BOOK, myName()); return; }
+    if (plan.action === "push") { if (BOOK.length || myName()) await pushBook(BOOK, myName()); return; }
     localStorage.setItem(NAME_KEY, plan.name);
     replaceBook(plan.words);
     renderAll();   // 별명이 바뀌었을 수 있다
     // pull 은 서버 시각을 그대로 물려받는다. 여기서 Date.now() 를 쓰면 받아온 것이 늘 최신이 돼
     // 다음 기기의 변경을 계속 이긴다.
     if (plan.action === "pull") localStorage.setItem(AT_KEY, Date.now());
-    else { touch(); await apiPutBook(BOOK, myName()); }   // merge 는 합친 결과를 서버에도 올린다
+    else { touch(); await pushBook(BOOK, myName()); }   // merge 는 합친 결과를 서버에도 올린다
   }
 
   // ── 마이페이지 ──
@@ -108,24 +129,33 @@ if (typeof document !== "undefined") {
       return;
     }
 
-    const used = bookCost(), free = isPro ? "" : ` · 손짓 ${used}/${FREE_LIMIT}`;
+    // ⚠️ 베타에는 무료 벽이 없다(app.js 의 BETA_NO_WALL). 그래서 이 블록도 **자리 수를 세지 않고**
+    //    「프로 알아보기 (₩4,900/월)」 버튼을 그리지 않는다 — 팔 물건이 없는데 값을 부르면
+    //    누른 사람이 "결제는 앱 버전에서 열려요"라는 막다른 길에 닿는다.
+    //    벽을 되살리는 날 BETA_NO_WALL 을 끄면 아래 갈래가 그대로 돌아온다.
     const plan = document.createElement("div");
     plan.className = "plan" + (isPro ? " pro" : "");
-    // 마스터와 프로를 갈라 말한다 — 만든 사람이 화면만 보고 "지금 무엇으로 열려 있나"를 알아야
-    // 벽 문구를 고칠 때 자기 기기에서 확인이 되는지 안 되는지 헷갈리지 않는다.
-    // 마스터에는 설명 줄을 안 붙인다 — 이름만으로 충분하고, 왜 열려 있는지는 화면이 말할 일이 아니다.
-    const desc = isMaster ? "" : isPro ? "단어장을 무제한으로 담을 수 있어요"
-      : `무료로 손짓 ${FREE_LIMIT}개까지 담을 수 있어요`;
-    plan.innerHTML = `<div class="k">현재 플랜</div>`
-      + `<div class="n">${isMaster ? "마스터" : isPro ? "프로" : "무료"}${free}</div>`
-      + (desc ? `<div class="d">${desc}</div>` : "");
-    box.appendChild(plan);
-    if (!isPro) {
-      const up = document.createElement("button");
-      up.className = "btn-primary"; up.type = "button";
-      up.textContent = `프로 알아보기 (${PRO_PRICE})`;
-      up.addEventListener("click", () => GO("settings"));
-      box.appendChild(up);
+    if (BETA_NO_WALL) {
+      plan.innerHTML = `<div class="k">현재 플랜</div><div class="n">베타</div>`
+        + `<div class="d">지금은 단어를 제한 없이 담을 수 있어요</div>`;
+      box.appendChild(plan);
+    } else {
+      const used = bookCost(), free = isPro ? "" : ` · 손짓 ${used}/${FREE_LIMIT}`;
+      // 마스터와 프로를 갈라 말한다 — 만든 사람이 화면만 보고 "지금 무엇으로 열려 있나"를 알아야
+      // 벽 문구를 고칠 때 자기 기기에서 확인이 되는지 안 되는지 헷갈리지 않는다.
+      const desc = isMaster ? "" : isPro ? "단어장을 무제한으로 담을 수 있어요"
+        : `무료로 손짓 ${FREE_LIMIT}개까지 담을 수 있어요`;
+      plan.innerHTML = `<div class="k">현재 플랜</div>`
+        + `<div class="n">${isMaster ? "마스터" : isPro ? "프로" : "무료"}${free}</div>`
+        + (desc ? `<div class="d">${desc}</div>` : "");
+      box.appendChild(plan);
+      if (!isPro && PRO_PRICE) {
+        const up = document.createElement("button");
+        up.className = "btn-primary"; up.type = "button";
+        up.textContent = `프로 알아보기 (${PRO_PRICE})`;
+        up.addEventListener("click", () => GO("settings"));
+        box.appendChild(up);
+      }
     }
 
     const list = document.createElement("div");
@@ -268,7 +298,7 @@ if (typeof document !== "undefined") {
       // 별명은 단어장과 같은 레코드라 시각도 같이 올린다 — 안 올리면 다음 동기화에서
       // 서버가 더 새것으로 판정돼 방금 지은 별명이 되돌아간다.
       touch();
-      apiPutBook(BOOK, v);
+      pushBook(BOOK, v);
       // 화면을 다시 그리지 않는다. 지금 이 입력칸을 부수는 짓이고, 목록엔 별명이 안 쓰인다.
       // 바뀌는 건 헤더 부제 한 줄뿐이라 그것만 갈아끼운다.
       const el = document.getElementById("screen-sub");
@@ -280,10 +310,25 @@ if (typeof document !== "undefined") {
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
   }
 
-  // 로그인 버튼 세 개. 마이페이지와 게이트가 **같은 함수**를 쓴다 — 둘이 갈라지면
+  // 서버가 실제로 로그인시킬 수 있는 제공자. null = 아직 안 물어봤거나 오프라인 —
+  // 그때는 **아무것도 숨기지 않는다**(연결이 안 된다고 버튼을 지우면 그게 더 나쁘다).
+  let PROVIDERS = null;
+
+  // 로그인 버튼. 마이페이지와 게이트가 **같은 함수**를 쓴다 — 둘이 갈라지면
   // 한쪽에만 제공자를 추가하는 실수가 난다.
+  //
+  // ⚠️ **비밀값이 안 들어간 제공자는 그리지 않는다.** 예전엔 셋을 늘 그렸고, 서버에 키가 없으면
+  //    누른 뒤에야 503 을 봤다 — 화면이 "된다"고 말하고 서버가 "안 된다"고 하는 상태다.
   function loginButtons(box, cls) {
-    for (const k of ["kakao", "naver", "google"]) {
+    const list = PROVIDERS ? ["kakao", "naver", "google"].filter((k) => PROVIDERS.includes(k)) : ["kakao", "naver", "google"];
+    if (!list.length) {
+      const p = document.createElement("p");
+      p.className = "hint";
+      p.textContent = "지금은 로그인을 준비 중이에요. 로그인 없이도 사전과 연습은 그대로 쓸 수 있어요.";
+      box.appendChild(p);
+      return;
+    }
+    for (const k of list) {
       const b = document.createElement("button");
       b.type = "button"; b.className = cls + " login-" + k;
       b.textContent = NAMES[k] + "로 로그인";
@@ -339,22 +384,25 @@ if (typeof document !== "undefined") {
     return false;
   });
 
-  // 로그인하고 돌아온 자리. 서버가 #login=<토큰>&via=<제공자> 로 되돌려보낸다.
+  // 로그인하고 돌아온 자리. 서버가 `#login=ok&via=<제공자>&n=<nonce>` 로 되돌려보낸다.
+  //
+  // ⚠️ **토큰은 해시에 없다.** 서버가 HttpOnly 쿠키로 심었다 — 앱이 손에 쥐지 않으므로
+  //    "남에게 보낼 수 있는 로그인 링크" 라는 것 자체가 만들어지지 않는다(세션 고정이 원천 봉쇄).
+  //    n 대조는 그대로 둔다: 이 갈래는 이제 안전하지만 아래 takeCodeQuery 는 여전히 필요하고,
+  //    두 갈래가 같은 규칙을 쓰는 편이 한쪽만 빠뜨리는 실수를 막는다.
   function takeLoginHash() {
     const m = location.hash.match(/[#&]login=([^&]+)/);
     if (!m) return false;
     const via = (location.hash.match(/[#&]via=(\w+)/) || [])[1];
-    const n = decodeURIComponent((location.hash.match(/[#&]n=([^&]*)/) || [])[1] || "");
-    // 토큰이 주소창·방문기록에 남지 않게 즉시 지운다.
+    // safeDecode(app.js) — 반쪽 인코딩(`#login=ok&n=%E0%A4%A`)이면 decodeURIComponent 가 던진다.
+    // 여기서 던지면 onAppReady 전체가 멈춰 로그인·친구가 통째로 안 붙는다.
+    const n = safeDecode((location.hash.match(/[#&]n=([^&]*)/) || [])[1] || "");
     history.replaceState(null, "", location.pathname + location.search);
     if (m[1] === "denied") { takeNonce(); toast("로그인을 취소했어요"); return false; }
-    if (m[1] === "fail") { takeNonce(); toast("로그인에 실패했어요. 다시 시도해 주세요."); return false; }
-    // **이 브라우저가 시작한 로그인인가.** 이 해시는 링크로 만들어 남에게 보낼 수 있어서,
-    // 그냥 받으면 받은 사람이 링크 주인의 계정으로 로그인된다(session fixation) — 그 뒤 담는
-    // 단어와 별명이 남의 계정에 쌓인다. 시작할 때 적어 둔 값과 같을 때만 받는다.
+    if (m[1] !== "ok") { takeNonce(); toast("로그인에 실패했어요. 다시 시도해 주세요."); return false; }
     const mine = takeNonce();
     if (!mine || n !== mine) { toast("로그인 정보가 맞지 않아요. 앱에서 다시 로그인해 주세요."); return false; }
-    setAuth(m[1], via);
+    setAuth(via);
     return true;
   }
 
@@ -367,12 +415,19 @@ if (typeof document !== "undefined") {
     // code 가 주소창·방문기록에 남지 않게 즉시 지운다. 해시(#w= 같은)는 남긴다.
     history.replaceState(null, "", location.pathname + location.hash);
     const r = await apiExchange("naver", code, state);
-    if (!r || !r.token) { takeNonce(); toast("로그인에 실패했어요. 다시 시도해 주세요."); return false; }
-    // 여기도 같은 검사가 필요하다. `?code=…&state=…` 역시 링크로 보낼 수 있고, 그러면 받은 사람의
-    // 앱이 **남의 code** 를 교환해 남의 계정으로 로그인한다(takeLoginHash 와 같은 공격).
+    if (!r || !r.ok) { takeNonce(); toast("로그인에 실패했어요. 다시 시도해 주세요."); return false; }
+    // ⚠️ **이 갈래에는 n 대조가 여전히 필수다.** `?code=…&state=…` 는 링크로 보낼 수 있고,
+    //    받은 사람의 앱이 **남의 code** 를 교환하면 서버가 그 브라우저에 **남의 계정 쿠키**를 심는다.
+    //    쿠키로 옮겨도 이 갈래만은 세션 고정이 그대로 성립한다 — code 를 우리 앱이 대신 내밀기 때문이다.
     const mine = takeNonce();
-    if (!mine || r.n !== mine) { toast("로그인 정보가 맞지 않아요. 앱에서 다시 로그인해 주세요."); return false; }
-    setAuth(r.token, "naver");
+    if (!mine || r.n !== mine) {
+      // 이미 쿠키가 심어졌다. 표시만 안 세우면 화면은 로그아웃인데 서버는 로그인 상태로 남으므로
+      // **서버에 알려 그 세션을 끊는다.** 그래야 다음 요청이 남의 계정으로 나가지 않는다.
+      await apiLogoutRaw();
+      toast("로그인 정보가 맞지 않아요. 앱에서 다시 로그인해 주세요.");
+      return false;
+    }
+    setAuth("naver");
     return true;
   }
 
@@ -380,6 +435,9 @@ if (typeof document !== "undefined") {
   // 사전보다 먼저 돌면 담아둔 단어가 통째로 "사전에 없음"으로 버려진다.
   onAppReady(async () => {
     const fresh = takeLoginHash() || (await takeCodeQuery());
+    // 어느 제공자가 실제로 설정돼 있나. **renderAll 보다 먼저** 물어야 버튼이 한 번에 맞게 그려진다.
+    const h = await apiHealth();
+    if (h && Array.isArray(h.providers)) PROVIDERS = h.providers;
     renderAll();
     if (fresh) toast("로그인했어요");
     if (authToken()) {

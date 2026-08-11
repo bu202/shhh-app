@@ -395,6 +395,21 @@ function jamoFrames(jamo) {
   return jamo.map((j) => "assets/fingerspelling/" + JAMO_IMG[j] + ".jpg");
 }
 
+// 주소에서 온 문자열을 푼다. **decodeURIComponent 는 던진다** — `#q=%E0%A4%A` 같은 반쪽 인코딩이면
+// URIError 가 나는데, 그게 main() 안에서 나면 그 뒤가 통째로 안 돈다: 로그인·친구 초기화가
+// appReadyFns 로 뒤에 붙어 있어서 **링크 하나로 앱을 반쯤 죽일 수 있었다.**
+// 길이도 여기서 막는다 — 해시는 아무나 만들어 보내는 값이라 메가바이트짜리도 온다.
+// ⚠️ 주소에서 온 값을 innerHTML 에 넣지 않는다. 쓰는 곳은 input.value 와 사전 조회뿐이다.
+//
+// ⚠️ **아래 손가락 표기 블록 앞에 둔다.** scripts/test-fingers.mjs 는 그 선언부터 첫 `}` 까지를
+//    정규식으로 떼어 쓴다. 사이에 함수를 끼우면 블록이 거기서 잘려 namedFingers 가 통째로
+//    안 잡히고, 선언 이름을 주석에 그대로 적어도 정규식이 **주석을 먼저 잡는다**(둘 다 겪었다).
+const MAX_HASH = 4096;
+function safeDecode(s) {
+  if (typeof s !== "string" || s.length > MAX_HASH) return "";
+  try { return decodeURIComponent(s); } catch { return ""; }
+}
+
 // 한국수어 수형 표기의 손가락 번호는 상식과 반대다: 1지=검지 … 5지=엄지.
 // 그대로 보여주면 "4지"를 약지로 읽는다(실제로는 새끼). 사전 설명의 84%가 이 표기를 쓴다.
 const FINGERS = ["검지", "중지", "약지", "새끼", "엄지"];
@@ -602,11 +617,17 @@ async function main() {
 
   // 링크로 들어온 것 처리. #w=단어장 / #q=단어 하나.
   // 앱을 열어둔 채 링크를 누르면 해시만 바뀌고 리로드가 안 된다 → hashchange 로도 받는다.
+  // 조작된 해시로 앱 초기화가 멈추면 안 된다. 이 함수는 main() 안에서 불리고, 로그인·친구
+  // 초기화(appReadyFns)가 **그 뒤에** 붙어 있어서 여기서 던지면 링크 하나로 앱이 반쯤 죽는다.
   const openHash = () => {
-    const q = decodeURIComponent((location.hash.match(/[#&]q=([^&]*)/) || [])[1] || "");
-    if (q) { input.value = q; run(); go("dict"); }
-    const added = mergeFromHash(); // 사전 로드 뒤라야 lookup 이 된다
-    if (added) { go("book"); toast(`링크에서 ${added}개를 단어장에 담았어요`); }
+    try {
+      const q = safeDecode((location.hash.match(/[#&]q=([^&]*)/) || [])[1] || "");
+      if (q) { input.value = q; run(); go("dict"); }
+      const added = mergeFromHash(); // 사전 로드 뒤라야 lookup 이 된다
+      if (added) { go("book"); toast(`링크에서 ${added}개를 단어장에 담았어요`); }
+    } catch (e) {
+      console.warn("[hash]", e && e.message);   // 링크 하나가 앱 전체를 멈추게 두지 않는다
+    }
     refreshStash();
   };
   addEventListener("hashchange", openHash);
@@ -617,7 +638,12 @@ async function main() {
   // **등록 순서대로, 하나씩 기다려서** 부른다. friends.js 의 초대 링크 처리는 auth.js 가
   // 로그인 토큰을 세운 뒤라야 뜻이 있는데, 안 기다리면 아직 로그아웃 상태로 보고 되돌아간다.
   appReadyDone = true;
-  for (const fn of appReadyFns) await fn();
+  // **하나가 죽어도 나머지는 돈다.** 예전엔 그냥 await 라, auth.js 가 조작된 해시에서 던지면
+  // 뒤에 등록된 friends.js 가 통째로 안 붙었다 — 링크 하나로 앱을 반쯤 죽이는 자리였다.
+  // 순서는 그대로 지킨다(friends 는 auth 가 토큰을 세운 뒤라야 뜻이 있다).
+  for (const fn of appReadyFns) {
+    try { await fn(); } catch (e) { console.warn("[appReady]", e && e.message); }
+  }
 
   // 카메라(손 읽기)는 6단계로 미뤄 화면에서 뺐다. 검출·KNN 코드는 그대로 살아 있으니
   // #camera 마크업 + data-go="camera" 탭을 붙이고 setupSignInput() 을 켜면 다시 동작한다.
@@ -641,7 +667,18 @@ const FREE_LIMIT = 5; // 무료 단어장 상한. 프로면 무제한.
 // 그래서 지금은 상태와 벽만 만들고, 결제 호출은 requestPro() 한 곳으로 격리해 둔다.
 // 5단계에서 여기만 Play Billing(getDigitalGoodsService + PaymentRequest)으로 바꾸면 된다.
 const PRO_KEY = "shh-pro";
-const PRO_PRICE = "₩4,900 / 월";
+// ⚠️ **가격을 화면에 쓰지 않는다.** 예전엔 `₩4,900 / 월` 이 벽·담기 버튼·마이 화면 세 곳에 떴는데,
+//    누르면 "결제는 앱(Play 스토어) 버전에서 열려요"로 끝났다 — 파는 물건이 없는데 값을 부르고,
+//    사용자는 **넘어갈 방법이 없는 벽** 앞에 선다. 결제가 붙는 날 여기에 가격을 되살린다.
+const PRO_PRICE = "";
+
+// 베타 동안 무료 벽을 세우지 않는다. 이유는 하나 — **살 수 있는 것이 없기 때문**이다.
+// 벽을 세워 두면 담기를 누른 사람이 결제도 못 하고 담지도 못하는 막다른 길에 갇힌다.
+// 결제(5b Play Billing)가 붙는 날 이 한 줄을 `false` 로 되돌리면 벽이 그대로 돌아온다 —
+// FREE_LIMIT·bookCost·upsell 은 손대지 않았다.
+// ⚠️ 벽을 되살릴 때는 **서버가 판정하게** 같이 옮긴다. 지금 isPro 는 localStorage 라
+//    콘솔 한 줄로 켤 수 있는데, 팔기 시작하는 순간 그게 그대로 구멍이 된다.
+const BETA_NO_WALL = true;
 // 마스터: **만든 사람의 계정**이라는 표시. 서버가 정하고(MASTER_UIDS), 로그인해야 켜진다 —
 // 마스터는 계정 하나여야 하므로 브라우저에 심는 길은 두지 않는다(2026-08-08 에 코드 방식을 지웠다).
 // 로컬에도 적어 둔다: 다음에 열 때 서버 응답을 기다리는 동안과 오프라인에서 이름이 '무료'로
@@ -649,7 +686,7 @@ const PRO_PRICE = "₩4,900 / 월";
 const MASTER_KEY = "shh-master";
 let isMaster = localStorage.getItem(MASTER_KEY) === "1";
 let isPro = isMaster || localStorage.getItem(PRO_KEY) === "1";
-const limit = () => (isPro ? Infinity : FREE_LIMIT);
+const limit = () => (BETA_NO_WALL || isPro ? Infinity : FREE_LIMIT);
 
 // ⚠️ `?pro=1` 로 벽을 넘던 개발 코드는 **지웠다**(2026-08-11). 주소 하나로 유료 상태를 켤 수 있는데
 //    화면은 가격을 말하고 있어서, 결제를 붙이는 순간 그대로 구멍이 된다. 개발 중에 벽 너머를 보려면
@@ -792,7 +829,7 @@ function shareLink() {
 // 링크로 들어온 단어를 합친다. 겹치는 건 건너뛴다.
 function mergeFromHash() {
   const m = location.hash.match(/[#&]w=([^&]+)/);
-  if (!m) return 0;
+  if (!m || m[1].length > MAX_HASH) return 0;   // 해시는 아무나 만들어 보내는 값이다
   // 게이트가 막으면 **해시를 그대로 둔다** — 지워버리면 로그인하고 돌아왔을 때
   // 링크로 받은 단어가 조용히 사라진다(예전에 실제로 그랬다).
   if (!mayAddToBook()) return 0;
@@ -884,7 +921,7 @@ function renderWordbook() {
     }
     box.appendChild(wrap);
   }
-  if (!isPro && bookCost() >= FREE_LIMIT) box.appendChild(upsell());
+  if (!BETA_NO_WALL && !isPro && bookCost() >= FREE_LIMIT) box.appendChild(upsell());
 }
 
 // 벽에 닿았을 때의 안내. 한 곳에서만 만든다 — 문구가 갈리지 않게.
@@ -898,7 +935,8 @@ function upsell() {
   const s = document.createElement("p");
   s.className = "s"; s.textContent = "둘 중 한 명만 프로면 둘 다 무제한이에요";
   const b = document.createElement("button");
-  b.className = "btn-primary sm"; b.textContent = PRO_PRICE;
+  // 가격이 없으면 값을 부르지 않는다 — 결제가 붙기 전까지 PRO_PRICE 는 빈 문자열이다.
+  b.className = "btn-primary sm"; b.textContent = PRO_PRICE || "더 담을 수 있게 알림 받기";
   b.addEventListener("click", async () => { if (await requestPro()) { renderWordbook(); refreshStash(); } });
   lock.append(t, s, b);
   return lock;
@@ -923,7 +961,7 @@ function refreshStash() {
   // 벽에 닿았을 땐 라벨을 비운다. 남은 자리와 필요한 자리를 괄호로 같이 말하던 줄이 있었는데,
   // 두 번 읽어야 뜻이 잡혀서 뺐다. 이유는 버튼(가격)이 대신 말한다.
   label.textContent = full ? "" : `찾은 단어 ${fresh.length}개를 우리 단어장에`;
-  btn.textContent = full ? PRO_PRICE + "로 무제한" : "단어장에 담기";
+  btn.textContent = full ? (PRO_PRICE ? PRO_PRICE + "로 무제한" : "지금은 더 담을 수 없어요") : "단어장에 담기";
   btn.disabled = false;
   box.classList.toggle("upsell", full);
   btn.onclick = full

@@ -4,7 +4,8 @@
   "type": "module",
   "description": "shhh! — 개발용 스크립트 전용. 배포되는 앱(index.html/js/css)은 의존성 0.",
   "scripts": {
-    "test": "for t in auth book fingers compounds match assemble knn screen home meaning friends; do node scripts/test-$t.mjs || exit 1; done"
+    "build": "node scripts/build.mjs",
+    "test": "for t in auth book fingers compounds match assemble knn screen home meaning friends hash sw dist; do node scripts/test-$t.mjs || exit 1; done"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.115.0"

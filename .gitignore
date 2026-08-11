@@ -12,3 +12,7 @@ todo-100.txt
 
 # wrangler 의 로컬 KV 시뮬레이션. `kv key list` 를 --remote 없이 돌리면 생긴다
 worker/.wrangler/
+.wrangler/
+
+# 배포 산출물. `npm run build` 가 만든다 — 레포에 두면 두 벌이 어긋난다
+dist/

@@ -1,26 +1,29 @@
-// shhh! 로그인 + 단어장 동기화 (Cloudflare Worker + KV)
+// shhh! 로그인 + 단어장 동기화 (Cloudflare Pages Functions + D1)
 //
 // 왜 서버가 생겼나: 「안 할 것: 서버」를 깬 건 로그인 때문이 아니라 **저장소** 때문이다.
 // 로그인만으로는 단어장이 여전히 기기 안에만 남아 폰을 바꾸면 사라진다 — 그러면 로그인 화면만
 // 하나 늘고 사용자에겐 아무것도 안 달라진다. "나만의 단어장"은 DB 문제였다.
 //
-// 왜 D1 이 아니라 KV 인가: 저장하는 게 `사용자 → 단어 문자열 배열` 하나뿐이라 쿼리도 조인도
-// 없다. SQL 을 쓰면 스키마 파일과 마이그레이션이 생기는데 그걸로 사는 게 없다.
+// **왜 KV 에서 D1 으로 옮겼나** (2026-08-11). 처음엔 "사용자 → 단어 배열 하나뿐이라 쿼리도 조인도
+// 없다"고 판단해 KV 를 골랐다. 그 판단은 **친구 기능이 생기면서 틀린 것이 됐다** —
+// 친구 관계는 두 사람에 걸친 데이터라 KV 로는 두 곳에 적어야 하고, 트랜잭션이 없어서
+//   ① 첫 쓰기만 성공하면 반쪽이 남고(그 상태에서 남의 단어장이 열리지 않게 막는 코드가 따로 필요했다)
+//   ② 로그아웃이 `list()` 에 기대는데 최종 일관성이라 60초 창이 닫히지 않았고
+//   ③ 계정 삭제가 6번의 개별 삭제라 중간에 죽으면 반쯤 지워진 계정이 남았다.
+// D1 에서는 관계가 **행 하나**, 로그아웃이 **세대 +1**, 삭제가 **CASCADE 한 문장**이라
+// 그 세 가지가 증상이 아니라 원인 자체로 사라진다. 스키마는 worker/schema.sql.
 //
 // 받는 개인정보: **제공자가 주는 고유 번호뿐**. 이름·이메일·프로필 사진 어느 것도 요청하지 않는다.
 // 그래서 카카오 비즈앱 전환도, 구글 민감 범위 심사도 필요 없다. privacy.html 이 이 사실에 맞춰져 있으니
 // scope 를 늘릴 거면 그 문서를 **먼저** 고칠 것.
+// 그 번호는 `users` 행 안에서만 살고 **밖으로 나가는 건 우리가 만든 무작위 id** 다.
 //
-// 키:  s:<uid>:<token> → "1" (세션, 180일. **uid 로 묶는다** — 로그아웃·탈퇴가 이 계정의 모든
-//                            기기에 들으려면 uid 하나로 훑어 지울 수 있어야 한다)
-//      b:<uid>   → {words, name, updated} (단어장)
-//      c:<code>  → uid (초대 코드 → 사람)
-//      u:<uid>   → code (사람 → 초대 코드. 같은 사람은 늘 같은 링크를 준다)
-//      f:<uid>   → {ok:[uid], in:[uid], out:[uid]} (수락된 친구 · 받은 요청 · 보낸 요청)
+// ⚠️ KV 바인딩은 아직 wrangler.jsonc 에 남아 있지만 **이 파일은 KV 를 쓰지 않는다.**
+//    롤백(옛 배포로 되돌리기)이 성립하려면 그때 코드가 읽을 KV 가 있어야 해서 남겨 둔 것이다.
+//    D1 이 안정되면 바인딩과 네임스페이스를 지운다(docs/D1_MIGRATION.md 의 5번).
 //
-// x:<state> 는 **없앴다.** /login 은 인증이 없는 자리라 거기서 KV 를 쓰면 `curl` 반복만으로
-// 무료 플랜의 하루치 쓰기(1,000회)를 태울 수 있었다 — 그러면 그날 남은 시간 동안 아무도
-// 단어장을 저장하지 못한다. 지금은 state 를 서명해서 들려 보낸다(makeState).
+// state 는 어디에도 저장하지 않는다. `/login` 은 인증이 없는 자리라 거기서 저장소를 쓰면
+// `curl` 반복만으로 무료 한도를 태울 수 있다 — 서명해서 들려 보낸다(makeState).
 
 const P = {
   kakao: {
@@ -92,10 +95,26 @@ const ENC = new TextEncoder();
 const b64u = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const unb64u = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
 
+// ⚠️ **STATE_KEY 가 없으면 던진다.** 없을 때 그냥 진행하면 `ENC.encode(undefined)` 가
+// 문자열 `"undefined"` 를 서명 키로 쓴다 — 그 키는 누구나 아는 값이라 **아무나 유효한 state 를
+// 만들 수 있고**, state 안에는 로그인 뒤 토큰을 실어 보낼 주소가 들어 있다. 조용히 도는 쪽이
+// 안 도는 쪽보다 나쁜 자리라 실패-닫힘으로 둔다(라우트에서 503 으로 잡는다).
 async function sign(env, msg) {
+  if (!env.STATE_KEY) throw new Error("STATE_KEY not configured");
   const k = await crypto.subtle.importKey("raw", ENC.encode(env.STATE_KEY), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   return b64u(await crypto.subtle.sign("HMAC", k, ENC.encode(msg)));
 }
+
+// ── 설정 점검 ────────────────────────────────────────────────────────────
+// **값은 절대 내보내지 않는다.** 있나 없나만 본다. 이름도 그대로 쓰지 않는다 —
+// 화면에 필요한 건 "어느 제공자로 로그인할 수 있나" 하나뿐이다.
+const readyProviders = (env) => Object.keys(P).filter((n) => creds(env, n).id);
+const health = (env) => {
+  const providers = readyProviders(env);
+  // DB 바인딩이 없으면 로그인도 단어장도 못 한다 — ready 가 아니다.
+  // ⚠️ KV 는 더 이상 안 본다. 바인딩은 **롤백용으로 남겨 두지만** 새 코드는 쓰지 않는다.
+  return { ok: true, ready: !!(env.STATE_KEY && env.APP_ORIGIN && env.DB && providers.length), providers };
+};
 
 // state 는 KV 가 아니라 **서명한 문자열**이다. 담는 건 종전과 같다(어느 제공자로 시작했나 ·
 // 돌아갈 주소 · 언제까지). 우리 키로 서명하므로 남이 만들 수 없다.
@@ -112,7 +131,7 @@ const makeState = async (env, provider, back, nonce) => {
 };
 
 async function takeState(env, state) {
-  if (!state) return null;
+  if (!state || !env.STATE_KEY) return null;   // 키가 없으면 **아무 state 도 유효하지 않다**
   const i = state.lastIndexOf(".");
   if (i < 0) return null;
   const body = state.slice(0, i);
@@ -124,34 +143,94 @@ async function takeState(env, state) {
   return { provider, back, nonce: nonce || "" };
 }
 
-// 세션 토큰은 `<uid>.<무작위>` 다. uid 를 담는 이유는 하나뿐 — 로그아웃·탈퇴가 **이 계정의 모든
-// 기기**를 끊으려면 키를 uid 로 묶어 한 번에 훑어야 하는데, 토큰만으로는 어느 계정인지 모른다.
-// 담긴 uid 는 **주장일 뿐**이다: `s:<uid>:<token>` 이 KV 에 실제로 있어야 로그인으로 친다.
-const mkToken = (uid) => b64u(ENC.encode(uid)) + "." + crypto.randomUUID().replace(/-/g, "");
-const uidOf = (token) => {
-  const i = token.indexOf(".");
-  if (i < 1) return null;
-  try { return new TextDecoder().decode(unb64u(token.slice(0, i))); } catch { return null; }
+// ── 세션 ─────────────────────────────────────────────────────────────────
+// 토큰은 **완전한 무작위 32바이트**다. 예전엔 `<b64u(uid)>.<무작위>` 라 앞부분이 계정을 알려줬는데,
+// 그건 KV 에서 "이 계정의 세션"을 훑으려고 붙인 것이었다. D1 에는 `sessions.user_id` 가 있으니
+// 토큰이 계정을 말할 이유가 사라졌다.
+//
+// **원본을 저장하지 않는다.** DB 가 새도 남의 세션을 쓸 수 없어야 한다 — 저장하는 건 SHA-256 뿐이고
+// 원본은 브라우저의 쿠키에만 있다.
+const SESSION_DAYS = 180;
+const sha256 = async (s) => b64u(await crypto.subtle.digest("SHA-256", ENC.encode(s)));
+const mkToken = () => b64u(crypto.getRandomValues(new Uint8Array(32)));
+
+// 쿠키. **HttpOnly** 라 자바스크립트가 못 읽는다 — XSS 가 나도 세션을 통째로 훔쳐 가지 못한다.
+//   Path=/api  : 정적 자산 요청에는 안 실린다(붙일 이유가 없다)
+//   SameSite=Lax: 남의 사이트에서 우리에게 보내는 POST 에는 안 실린다(CSRF 의 절반)
+//   Secure     : https 에서만. 로컬(http)에서 로그인이 안 되는 건 이미 그렇다(함정 57)
+const COOKIE = "shh_s";
+const setCookie = (token) =>
+  `${COOKIE}=${token}; HttpOnly; Secure; SameSite=Lax; Path=/api; Max-Age=${SESSION_DAYS * 86400}`;
+const clearCookie = () => `${COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/api; Max-Age=0`;
+const readCookie = (req) => {
+  const raw = req.headers.get("Cookie") || "";
+  const m = raw.match(new RegExp("(?:^|;\\s*)" + COOKIE + "=([^;]*)"));
+  return m ? m[1] : "";
 };
 
-// 이 계정의 세션을 전부 지운다. 로그아웃과 탈퇴가 같은 자리를 쓴다 —
-// "이 계정의 로그인을 끊는다" 하나라서 경로를 둘로 만들지 않았다.
-//
-// **지금 요청한 토큰은 목록과 별개로 지운다.** KV list 는 최종 일관성이라 방금 만든 세션이
-// 목록에 없을 수 있는데(최대 60초), 그러면 로그인하자마자 로그아웃한 사람의 **바로 그 기기**가
-// 안 끊긴다 — 사용자가 화면에서 확인할 수 있는 유일한 세션이 하필 그것이다. 키를 손에 들고 있으니
-// 목록을 기다릴 이유가 없다.
-//
-// ponytail: 남는 한도는 **다른 기기가 60초 안에 만든 세션**이다. 그건 목록에 아직 없어서 못 지운다.
-//   없애려면 계정마다 폐기 시각을 두고 매 요청 대조해야 하는데, 그 읽기 역시 KV 라 같은 최종
-//   일관성을 진다 — 요청마다 KV 읽기를 하나 늘리고도 창이 안 닫힌다. 정말 닫으려면 Durable Object 다.
-async function killSessions(env, uid, token) {
-  const { keys } = await env.KV.list({ prefix: "s:" + uid + ":" });
-  const names = new Set(keys.map((k) => k.name));
-  if (token) names.add("s:" + uid + ":" + token);
-  await Promise.all([...names].map((n) => env.KV.delete(n)));
-  return names.size;
+// 새 세션 한 줄. 발급 시점의 session_version 을 같이 박아 둔다 — 그 값이 users 와 달라지는 순간
+// 이 세션은 죽는다(아래 killSessions).
+// export 하는 이유: scripts/test-friends.mjs 가 로그인 왕복을 흉내내지 않고 **진짜 경로로**
+// 세션을 만들기 위해서다. 토큰 해시를 테스트가 직접 계산하게 두면 그 순간 로직이 두 벌이 된다.
+export async function newSession(env, userId) {
+  const token = mkToken();
+  const u = await env.DB.prepare("SELECT session_version FROM users WHERE id = ?").bind(userId).first();
+  await env.DB.prepare(
+    "INSERT INTO sessions (token_hash, user_id, session_version, expires_at) VALUES (?, ?, ?, ?)")
+    .bind(await sha256(token), userId, u ? u.session_version : 0, Date.now() + SESSION_DAYS * 86400e3).run();
+  return token;
 }
+
+// 이 토큰이 누구인가. 한 번의 조인으로 **살아 있는 세션인지까지** 판정한다:
+// 폐기 안 됐고, 안 만료됐고, 발급 당시 세대가 지금 세대와 같아야 한다.
+async function whoAmI(env, token) {
+  if (!token) return null;
+  const row = await env.DB.prepare(
+    `SELECT s.user_id AS uid FROM sessions s JOIN users u ON u.id = s.user_id
+      WHERE s.token_hash = ? AND s.revoked_at IS NULL AND s.expires_at > ?
+        AND s.session_version = u.session_version`)
+    .bind(await sha256(token), Date.now()).first();
+  return row ? row.uid : null;
+}
+
+// 이 계정의 로그인을 **전부** 끊는다. 로그아웃과 탈퇴가 같은 자리를 쓴다.
+//
+// KV 시절엔 `list()` 로 세션 키를 훑어 지웠는데, KV 목록은 최종 일관성이라 **다른 기기가 60초 안에
+// 만든 세션은 목록에 없어서 못 지웠다.** 세대(session_version)를 올리면 훑을 필요가 없다 —
+// 아직 목록에 안 뜬 세션도, 방금 만든 세션도, 다음 요청에서 세대가 안 맞아 그 자리에서 죽는다.
+// 행 삭제는 청소일 뿐이고 **판정은 세대가 한다**(그래서 삭제가 실패해도 안전하다).
+async function killSessions(env, uid) {
+  await env.DB.batch([
+    env.DB.prepare("UPDATE users SET session_version = session_version + 1 WHERE id = ?").bind(uid),
+    env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(uid),
+  ]);
+}
+
+// ── 레이트리밋 ───────────────────────────────────────────────────────────
+// ⚠️ **Cloudflare 의 Rate Limiting 바인딩은 Pages Functions 에서 못 쓴다**(2026-08 문서 확인:
+//    지원 바인딩 목록에 ratelimits 가 없다. Workers 전용). 그래서 지금 이 함수는 **아무것도 막지
+//    않는다** — `env.RL` 이 없으면 늘 통과다. 되는 척하지 않으려고 그렇게 뒀다.
+//
+// KV 카운터로 만들지 않는 이유: 그 쓰기가 바로 2026-08-11 오전에 없앤 것이다. 무료 플랜 KV 는
+//   하루 1,000 writes 라 **레이트리밋 자체가 서비스 거부 수단**이 된다. 고치는 게 아니라 옮기는 짓이다.
+//
+// 실제로 제한을 걸 수 있는 길은 둘뿐이고 **둘 다 코드가 아니다**(docs/SECURITY_RELEASE_CHECKLIST.md):
+//   ① 커스텀 도메인을 붙이고 WAF 레이트리밋 규칙 — `*.pages.dev` 는 Cloudflare 소유 존이라
+//      대시보드에서 규칙을 못 건다. 도메인이 붙는 순간 열린다. (캐시 퍼지도 같은 조건이다)
+//   ② API 를 Pages Functions 에서 Worker 로 되돌리고 `ratelimits` 바인딩 — 그러면 앱과 API 의
+//      origin 이 다시 갈라져 쿠키·CSP·네이버 조건을 전부 되돌려야 한다. 값보다 대가가 크다.
+//
+// 그래서 여기 있는 건 **이음새**다: 바인딩이 생기는 날 이 함수 하나만 살아나면 된다.
+// ⚠️ 키에는 uid·토큰·IP 원문을 **로그로 남기지 않는다**(아래 어디에서도 console.log 하지 않는다).
+async function limited(env, req, uid, bucket) {
+  if (!env.RL) return false;
+  const who = uid || req.headers.get("CF-Connecting-IP") || "anon";
+  const { success } = await env.RL.limit({ key: bucket + "|" + who });
+  return !success;
+}
+const tooMany = (env, req) =>
+  new Response(JSON.stringify({ error: "잠시 뒤에 다시 시도해 주세요" }),
+    { status: 429, headers: { "Content-Type": "application/json", "Retry-After": "60", ...cors(env, req) } });
 
 // 신뢰 경계. 무료 플랜 Worker 는 메모리가 128MB 인데 요청 본문 한도는 100MB 라,
 // 안 막으면 한 번의 요청으로 밀어붙일 수 있다.
@@ -220,39 +299,113 @@ async function exchange(env, origin, name, code, state) {
     console.log("[exchange] me fail", name, (me && (me.error || me.message)) || "no-json");
     return null;
   }
-  const uid = name + ":" + who;
-  const token = mkToken(uid);
-  await env.KV.put("s:" + uid + ":" + token, "1", { expirationTtl: 60 * 60 * 24 * 180 });
-  return token;
+  const uid = await internalUid(env, name, who);
+  return await newSession(env, uid);
+}
+
+// ── 우리 안에서 쓰는 계정 번호 ───────────────────────────────────────────
+// 전에는 uid 가 **`kakao:1234567`** 그대로였다. 그러면 제공자가 준 회원번호가
+//   ① 친구 목록 응답에 실려 나가고 ② `/friends/kakao:1234567` 처럼 주소에 박히고
+//   ③ 세션 토큰 앞부분에도 들어가 localStorage 에 남았다.
+// 친구 요청을 한 번 주고받은 사람은 상대의 카카오 회원번호를 그대로 알게 된다.
+// (그 번호는 앱마다 다른 값이라 다른 서비스에서 그 사람을 찾는 데는 못 쓴다 — 그래서 치명적이진
+//  않지만, 남에게 줄 이유가 없는 값을 주고 있었다. 개인정보처리방침도 그런 말을 한 적이 없다.)
+//
+// 이제 제공자 번호는 **`users` 행 안에서만** 산다. 밖으로 나가는 건 우리가 만든 무작위 번호다.
+// (KV 시절엔 `p:`/`i:` 매핑 두 개가 이 일을 했다. 행 하나가 그 둘을 대신하고, 탈퇴는
+//  `DELETE FROM users` 한 문장이면 CASCADE 로 전부 사라진다 — 지울 것을 빠뜨릴 수가 없다.)
+//
+// export 하는 이유는 하나 — scripts/test-friends.mjs 가 **이 함수를 직접 불러** 잰다.
+// exchange() 를 통째로 부르려면 제공자 서버 호출을 흉내내야 하는데, 그러면 테스트가 재는 것이
+// 계정 생성이 아니라 내 가짜 제공자가 된다.
+export async function internalUid(env, provider, subject) {
+  const had = await env.DB.prepare("SELECT id FROM users WHERE provider = ? AND provider_subject = ?")
+    .bind(provider, subject).first();
+  if (had) return had.id;
+  const id = crypto.randomUUID().replace(/-/g, "");
+  // ⚠️ `ON CONFLICT DO NOTHING` + 다시 조회. 같은 사람이 두 기기에서 **동시에** 첫 로그인을 하면
+  //    둘 다 "없다"를 보고 각자 INSERT 한다 — 유니크 인덱스가 막지만, 막힌 쪽이 예외로 죽으면
+  //    한 기기의 로그인이 이유 없이 실패한다. 진 쪽은 이긴 쪽의 id 를 그대로 쓴다.
+  await env.DB.prepare(
+    `INSERT INTO users (id, provider, provider_subject, session_version, created_at)
+     VALUES (?, ?, ?, 0, ?) ON CONFLICT (provider, provider_subject) DO NOTHING`)
+    .bind(id, provider, subject, Date.now()).run();
+  const row = await env.DB.prepare("SELECT id FROM users WHERE provider = ? AND provider_subject = ?")
+    .bind(provider, subject).first();
+  return row.id;
+}
+
+// ── 단어장 ───────────────────────────────────────────────────────────────
+// 단어를 행으로 쪼개지 않는다. 통째로 읽고 통째로 쓰는 게 전부라 조인할 일이 없어서,
+// JSON 한 칸이 맞다(쪼개면 저장할 때마다 지우고 다시 넣는 짓을 하게 된다).
+async function getBook(env, uid) {
+  const r = await env.DB.prepare("SELECT words, nickname, version, updated_at FROM books WHERE user_id = ?")
+    .bind(uid).first();
+  if (!r) return { words: [], name: "", updated: 0, version: 0 };
+  let words = [];
+  try { words = JSON.parse(r.words) || []; } catch { /* 깨진 행은 빈 단어장으로 본다 */ }
+  return { words, name: r.nickname || "", updated: r.updated_at, version: r.version };
 }
 
 // ── 친구 ────────────────────────────────────────────────────────────────
 // 게임의 친구 추가와 같다: 링크를 받은 사람이 요청을 보내고, **받은 사람이 수락해야** 이어진다.
 // 링크만으로 바로 이어지게 하면 링크가 어디로 퍼졌는지 모르는 채 내 단어장이 남에게 보인다.
 //
-// ponytail: KV 에는 트랜잭션이 없다. 두 사람의 f: 레코드를 잇달아 쓰므로, 둘이 **같은 순간**
-//   서로에게 요청하면 한쪽 목록만 갱신되는 창이 있다. 실제 사용(둘이서 쓰는 앱)에서 그 창은
-//   사실상 안 열리고, 증상도 "다시 눌러보세요"로 끝난다. 문제가 되면 Durable Object 로 옮긴다.
+// **관계 하나 = 행 하나.** 이게 D1 으로 옮긴 이유의 전부다.
+// KV 시절엔 두 사람의 `f:` 레코드에 각각 적었고, 첫 쓰기만 성공하면 반쪽이 남았다 —
+// 그 반쪽에서 남의 단어장이 열리지 않게 막는 코드(양쪽 확인)가 따로 필요했다.
+// 행이 하나면 **반쪽이라는 상태가 존재하지 않아서** 그 방어가 필요 없어진다.
 //
-// 목록 하나가 **친구 수만큼 KV 읽기**다(brief 를 사람마다 부른다). 상한이 없으면 초대 코드가
-// 퍼졌을 때 목록이 계속 자라 조회가 느려지고 무료 한도를 먹는다. 연인·친구 몇 명짜리 앱이라
-// 50 이면 실사용에서 안 닿는다 — 닿으면 그건 코드가 샌 것이라 회전이 답이다.
+// 상한은 그대로 50. 이유는 바뀌었다 — 이제 목록이 쿼리 하나라 느려지지 않지만,
+// 초대 코드가 샜을 때 목록이 무한히 자라는 것 자체가 증상이라 상한은 남긴다.
 const MAX_FRIENDS = 50;
-const FR = { ok: [], in: [], out: [] };
-const getFr = async (env, uid) => ({ ...FR, ...JSON.parse((await env.KV.get("f:" + uid)) || "{}") });
-const putFr = (env, uid, v) => env.KV.put("f:" + uid, JSON.stringify(v));
-// 세 목록 어디에서든 그 사람을 뺀다. 거절·취소·끊기가 전부 "이 연결을 지운다" 하나라서
-// 각각 다른 경로를 만들지 않았다 — 지우는 자리가 하나면 반쪽만 지워지는 상태가 안 생긴다.
-const drop = (f, uid) => ({ ok: f.ok.filter((x) => x !== uid), in: f.in.filter((x) => x !== uid), out: f.out.filter((x) => x !== uid) });
+
+// 내 목록. **쿼리 하나**로 세 갈래(수락됨·받은 요청·보낸 요청)를 다 만든다.
+// 예전엔 친구 수만큼 KV 를 읽었다(brief 를 사람마다 불렀다).
+// 상대 별명·단어는 books 를 LEFT JOIN 해서 같이 가져온다 — 없는 사람도 목록에 나와야 하므로 LEFT.
+async function friendRows(env, uid) {
+  const { results } = await env.DB.prepare(
+    `SELECT f.requester_id AS req, f.addressee_id AS adr, f.status AS status,
+            b.nickname AS name, b.words AS words
+       FROM friendships f
+       LEFT JOIN books b
+         ON b.user_id = CASE WHEN f.requester_id = ?1 THEN f.addressee_id ELSE f.requester_id END
+      WHERE f.requester_id = ?1 OR f.addressee_id = ?1`).bind(uid).all();
+  return results || [];
+}
+
+// 목록 한 줄로 바꾼다. **단어 목록은 안 준다** — 목록 화면엔 안 쓰는데 통째로 실려 나간다.
+// 개수(count)는 **수락된 친구에게만**. 아직 요청 단계인 사이는 서로 남이라 별명 말고 알려 줄 게 없다
+// (개인정보처리방침이 "친구에게 보이는 것"으로만 적혀 있다 — 문서에 없는 걸 보내면 문서가 거짓말이 된다).
+function briefRow(row, uid, withCount) {
+  const other = row.req === uid ? row.adr : row.req;
+  const out = { uid: other, name: row.name || "" };
+  if (withCount) {
+    let n = 0;
+    try { n = (JSON.parse(row.words || "[]") || []).length; } catch { /* 깨진 행은 0 */ }
+    out.count = n;
+  }
+  return out;
+}
 
 // 내 초대 코드. 없으면 만들어 둔다 — 같은 사람에게 늘 같은 링크가 나가야
-// 예전에 보낸 링크가 죽지 않는다.
+// 예전에 보낸 링크가 죽지 않는다. 회전(`POST /friends/code`)은 옛 행에 revoked_at 을 적는다.
 async function myCode(env, uid) {
-  const had = await env.KV.get("u:" + uid);
-  if (had) return had;
+  const had = await env.DB.prepare(
+    "SELECT code FROM invite_codes WHERE user_id = ? AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1")
+    .bind(uid).first();
+  if (had) return had.code;
+  return await rotateCode(env, uid);
+}
+
+async function rotateCode(env, uid) {
   const code = crypto.randomUUID().replace(/-/g, "").slice(0, 12); // 48비트 — 찍어서 못 맞힌다
-  await env.KV.put("u:" + uid, code);
-  await env.KV.put("c:" + code, uid);
+  await env.DB.batch([
+    env.DB.prepare("UPDATE invite_codes SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL")
+      .bind(Date.now(), uid),
+    env.DB.prepare("INSERT INTO invite_codes (code, user_id, created_at) VALUES (?, ?, ?)")
+      .bind(code, uid, Date.now()),
+  ]);
   return code;
 }
 
@@ -260,24 +413,29 @@ async function myCode(env, uid) {
 // 만든 사람의 계정은 무료 벽에 걸리지 않는다. **어느 기기에서 로그인해도** 그래야 하므로
 // 브라우저(localStorage)가 아니라 서버가 정한다 — 폰을 바꾸면 로컬 표시는 그냥 사라진다.
 //
-// 목록은 `wrangler secret put MASTER_UIDS` 로 넣는다(쉼표 구분). **wrangler.jsonc 에 적지 않는다** —
-// 그 파일은 공개 레포에 올라가고, 값이 제공자 계정 식별자라 밖에 나가면 안 된다.
+// 목록은 `wrangler pages secret put MASTER_UIDS` 로 넣는다(쉼표 구분).
+// **wrangler.jsonc 에 적지 않는다** — 그 파일은 공개 레포에 올라간다.
 // 비어 있으면 아무도 마스터가 아니다(기본값이 안전한 쪽).
+//
+// ⚠️ 값이 **내부 uid** 로 바뀌었다(예전엔 `kakao:1234567`). 옛 값을 그대로 두면 아무도 마스터가
+//    아닌 상태로 조용히 바뀐다. 내 uid 를 찾는 법:
+//    `npx wrangler d1 execute shhh-db --remote --command "SELECT id, created_at FROM users"`
 const isMaster = (env, uid) =>
   String(env.MASTER_UIDS || "").split(",").map((s) => s.trim()).filter(Boolean).includes(uid);
 
-// 화면에 뿌릴 최소 정보. **단어 목록은 여기서 안 준다** — 목록 화면엔 안 쓰는데 친구 수만큼
-// 레코드를 읽게 되고, 아직 수락 안 한 사람의 단어까지 실려 나간다.
-//
-// 개수(count)는 **수락된 친구에게만** 준다. 아직 요청 단계인 사이는 서로 남이라,
-// 별명 말고는 알려 줄 게 없다. 개인정보처리방침도 "친구에게 보이는 것"으로만 적혀 있다 —
-// 문서에 없는 것을 서버가 보내면 문서가 거짓말이 된다.
-async function brief(env, uid, withCount) {
-  const rec = JSON.parse((await env.KV.get("b:" + uid)) || "{}");
-  const out = { uid, name: rec.name || "" };
-  if (withCount) out.count = (rec.words || []).length;
+// 상대 한 사람의 최소 정보(요청을 보낸 직후 등, 목록 조회 없이 한 명만 필요할 때).
+async function briefOne(env, other, withCount) {
+  const b = await getBook(env, other);
+  const out = { uid: other, name: b.name };
+  if (withCount) out.count = b.words.length;
   return out;
 }
+
+// 로그에 남길 경로. **id 자리를 지운다.** `/friends/<uid>` 를 그대로 찍으면 운영 로그가
+// "누가 누구와 친구인가"의 기록이 된다 — 우리가 안 받기로 한 정보를 로그가 대신 모으는 꼴이다.
+// export 하는 이유는 테스트가 이 규칙을 직접 재기 위해서다.
+export const pathTemplate = (p) =>
+  p.replace(/^\/api/, "").replace(/^\/friends\/(?!code$)[^/]+/, "/friends/:id");
 
 export default {
   // 전역 예외 그물. 아래 어디서 던져도 제공자 응답·스택이 사용자에게 새지 않고 500 한 줄로 끝난다.
@@ -285,7 +443,11 @@ export default {
     try {
       return await route(req, env);
     } catch (e) {
-      console.log("[error]", new URL(req.url).pathname, String(e && e.message).slice(0, 200));
+      // ⚠️ **경로를 그대로 찍지 않는다.** `/friends/<uid>` 에는 계정 id 가 들어 있어서
+      //    운영 로그가 곧 "누가 누구와 친구인가"의 기록이 된다. 고치는 데 필요한 건 어느 **종류**의
+      //    요청이 죽었나뿐이라 id 자리를 `:id` 로 바꿔 찍는다. 예외 메시지도 200자에서 자른다
+      //    (제공자 응답이 통째로 실려 오는 경우가 있다).
+      console.log("[error]", pathTemplate(new URL(req.url).pathname), String(e && e.message).slice(0, 200));
       return json(env, req, { error: "잠시 문제가 생겼어요" }, 500);
     }
   },
@@ -299,12 +461,30 @@ async function route(req, env) {
     const path = url.pathname.replace(/^\/api/, "").replace(/\/$/, "");
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors(env, req) });
 
+    // ── 0. 살아있나 · 설정이 됐나 ──
+    // /health 는 **늘 200** 이다(프로세스가 도나). /ready 는 설정이 덜 됐으면 503 이다 —
+    // 배포 뒤 "로그인이 503" 을 사용자가 눌러 보고서야 알게 되는 걸 막는 자리다.
+    // 앱은 /health 의 providers 로 **설정 안 된 제공자의 버튼을 아예 안 그린다.**
+    // ⚠️ 값도, 비밀값 이름도 내보내지 않는다. 있나 없나만.
+    if (path === "/health") return json(env, req, health(env));
+    if (path === "/ready") {
+      const h = health(env);
+      return json(env, req, h, h.ready ? 200 : 503);
+    }
+
+    // 레이트리밋은 **두 자리에서만** 본다 — 라우트마다 흩어 두면 새 라우트를 더할 때 빠뜨린다.
+    // ① 인증 전(로그인 왕복): 아직 누구인지 모르므로 IP 로 센다.
+    if (/^\/(login|cb|exchange)\//.test(path) && (await limited(env, req, null, "auth")))
+      return tooMany(env, req);
+
     // ── 1. 로그인 시작 ── /login/kakao?return=<앱 주소>
     let m = path.match(/^\/login\/(\w+)$/);
     if (m && P[m[1]]) {
       const p = P[m[1]];
       const { id } = creds(env, m[1]);
-      if (!id) return new Response(m[1] + " 로그인이 아직 설정되지 않았어요", { status: 503 });
+      // 설정이 덜 된 채로 **조용히 돌지 않는다.** STATE_KEY 가 없으면 state 서명이 아무나
+      // 만들 수 있는 값이 되므로 로그인 자체를 열지 않는다(sign 이 던지는 것의 앞단 방어).
+      if (!id || !env.STATE_KEY) return new Response(m[1] + " 로그인이 아직 설정되지 않았어요", { status: 503 });
       // state 는 CSRF 방어다. 돌아갈 주소를 **서명 안에** 넣는 이유도 같다 — 서명 없이 쿼리로
       // 실어 보내면 남이 우리 도메인을 거쳐 아무 데로나 리다이렉트시킬 수 있다.
       const back = url.searchParams.get("return") || env.APP_ORIGIN;
@@ -333,9 +513,14 @@ async function route(req, env) {
       const code = url.searchParams.get("code");
       if (!code) return json(env, req, { error: "취소됐어요" }, 400);
       const token = await exchange(env, url.origin, m[1], code, url.searchParams.get("state"));
-      // n 을 같이 돌려준다. 앱이 자기가 보낸 값과 대조해 **이 브라우저가 시작한 로그인인지** 본다
-      // (아래 /cb 의 같은 자리 참조). 안 돌려주면 네이버 갈래만 세션 고정에 열린 채 남는다.
-      return token ? json(env, req, { token, n: st.nonce }) : json(env, req, { error: "로그인에 실패했어요" }, 502);
+      if (!token) return json(env, req, { error: "로그인에 실패했어요" }, 502);
+      // 토큰을 **본문에 싣지 않는다.** 쿠키로 심는다 — 앱이 손에 쥐지 않으면 잃어버릴 수도 없다.
+      // n 은 여전히 돌려준다: 이 갈래는 `?code=…&state=…` 링크를 남에게 보낼 수 있어서,
+      // 받은 사람의 앱이 **남의 code** 를 교환해 남의 계정 쿠키를 받게 된다(세션 고정).
+      // 앱이 자기가 보낸 n 과 대조해 다르면 그 자리에서 로그아웃한다.
+      const r = json(env, req, { ok: true, n: st.nonce });
+      r.headers.append("Set-Cookie", setCookie(token));
+      return r;
     }
 
     // ── 2b. 제공자가 우리에게 직접 돌려보내는 자리(카카오·구글) ── /cb/kakao?code&state
@@ -358,13 +543,15 @@ async function route(req, env) {
       }
       const token = await exchange(env, url.origin, m[1], code, state);
       if (!token) return redir(back + "#login=fail");
-      // ── 세션 고정(session fixation) 방어 ──
-      // 이 해시는 링크로 만들어 남에게 보낼 수 있다. 앱이 `#login=<토큰>` 을 그냥 받으면,
-      // 공격자가 **자기 토큰**을 담은 링크를 보내 피해자를 자기 계정에 로그인시킬 수 있다 —
-      // 그 뒤 피해자가 담는 단어와 별명이 공격자 계정에 쌓인다.
-      // 그래서 로그인을 시작한 브라우저가 만든 n 을 그대로 돌려주고, 앱이 대조해서 다르면 버린다.
-      // 공격자는 피해자 브라우저에 저장된 n 을 알 수 없으므로 링크를 만들 수 없다.
-      return redir(back + "#login=" + token + "&via=" + m[1] + "&n=" + encodeURIComponent(st.nonce));
+      // ── 토큰은 **주소에 싣지 않는다.** ──
+      // 예전엔 `#login=<토큰>` 이었다. 해시는 서버 로그엔 안 남지만 **링크로 만들어 남에게 보낼 수
+      // 있는 문자열**이라, 공격자가 자기 토큰 링크로 피해자를 자기 계정에 로그인시킬 수 있었다
+      // (그 뒤 피해자가 담는 단어와 별명이 공격자 계정에 쌓인다). nonce 로 막아 뒀지만,
+      // 쿠키로 심으면 **애초에 그런 링크를 만들 수 없다** — 남의 브라우저에 쿠키를 심을 방법이 없다.
+      // 그래서 해시에는 "됐다"는 사실과 어느 제공자였는지만 남는다.
+      const r = redir(back + "#login=ok&via=" + m[1] + "&n=" + encodeURIComponent(st.nonce));
+      r.headers.append("Set-Cookie", setCookie(token));
+      return r;
     }
 
     // ⚠️ `/master?code=…` 는 **지웠다**(2026-08-08). 로그인 없이 브라우저를 마스터로 만드는
@@ -372,18 +559,37 @@ async function route(req, env) {
     //    로그인 안 한 상태에서 벽에 걸리는 건 감수한다(앱 출시 기준에선 로그인이 기본이다).
     //    되살릴 일이 생기면 커밋 1b68a90 에 있다. 시크릿 MASTER_CODE 도 같이 지웠다.
 
-    // ── 3. 단어장 ──
-    // 토큰에 담긴 uid 는 **주장**이다. `s:<uid>:<token>` 이 KV 에 실제로 있어야 로그인으로 친다 —
-    // 없는 키를 지어내도 조회가 비므로 남의 계정을 주장할 수 없다.
-    const token = (req.headers.get("Authorization") || "").replace(/^Bearer /, "");
-    const claimed = token && uidOf(token);
-    const uid = claimed && (await env.KV.get("s:" + claimed + ":" + token)) ? claimed : null;
+    // ── 3. 누구인가 ──
+    // 토큰은 **쿠키에서만** 온다. Authorization 헤더는 더 이상 안 받는다 — 두 길을 다 열어 두면
+    // 잠금은 약한 쪽을 따르고, 앱이 토큰을 손에 쥐는 길(localStorage)이 살아남는다.
+    // 토큰 자체는 아무 정보도 안 담는다(완전 무작위). 누구인지는 sessions 행이 말한다.
+    const token = readCookie(req);
+    const uid = await whoAmI(env, token);
 
-    // 로그아웃 — 이 계정의 세션을 **전부** 끊는다. 브라우저에서 토큰만 지우면 KV 의 세션은
-    // 180일을 더 살아서, 한 번 샌 토큰이 로그아웃 뒤에도 그대로 쓰인다.
+    // ── CSRF ──
+    // 쿠키는 **브라우저가 알아서 붙인다.** 그래서 남의 사이트가 우리에게 보내는 요청에도 실린다 —
+    // Bearer 헤더 시절엔 원천적으로 불가능하던 공격면이 쿠키로 옮기면서 새로 열린다.
+    // SameSite=Lax 가 대부분 막지만 그건 브라우저의 선의라, 서버도 직접 본다.
+    // 읽기(GET)는 안 본다: 낯선 Origin 에는 CORS 를 안 열어 줘서 응답을 읽지 못한다.
+    if (req.method !== "GET" && req.method !== "OPTIONS") {
+      const o = req.headers.get("Origin");
+      // Origin 이 아예 없는 요청(curl 등)은 브라우저가 아니라서 CSRF 가 성립하지 않는다.
+      // 다만 **있는데 남의 것**이면 그건 정확히 우리가 막으려는 그것이다.
+      if (o && !allowed(env, o)) return json(env, req, { error: "허용되지 않은 요청이에요" }, 403);
+    }
+
+    // ② 상태를 바꾸는 요청 전부(PUT /book · DELETE /me · POST /friends · 수락 · 끊기 · 로그아웃).
+    //    읽기는 세지 않는다 — 남용해도 남는 게 없고, 세면 정상 사용이 먼저 걸린다.
+    //    로그인한 사람은 uid 로, 아니면 IP 로 센다.
+    if (req.method !== "GET" && (await limited(env, req, uid, "write"))) return tooMany(env, req);
+
+    // 로그아웃 — 이 계정의 로그인을 **전부** 끊는다(세대를 올린다). 쿠키도 그 자리에서 지운다.
     if (path === "/session" && req.method === "DELETE") {
       if (!uid) return json(env, req, { error: "로그인이 필요해요" }, 401);
-      return json(env, req, { ok: true, killed: await killSessions(env, uid, token) });
+      await killSessions(env, uid);
+      const r = json(env, req, { ok: true });
+      r.headers.append("Set-Cookie", clearCookie());
+      return r;
     }
 
     if (path === "/book" || path === "/me") {
@@ -397,8 +603,10 @@ async function route(req, env) {
       const master = isMaster(env, uid), pro = master;
 
       if (req.method === "GET") {
-        const raw = await env.KV.get("b:" + uid);
-        return json(env, req, { ...(raw ? JSON.parse(raw) : { words: [], name: "", updated: 0 }), pro, master });
+        // `me` 를 같이 준다. 앱이 **계정이 바뀐 것**을 알아채는 데 쓴다(앞 계정 단어장을 새 계정에
+        // 물려주지 않기 위해). 예전엔 토큰 앞부분을 뜯어 알았는데, 토큰이 무작위가 되면서
+        // 그 길이 사라졌다 — 서버가 말해 주는 편이 정직하기도 하다.
+        return json(env, req, { ...(await getBook(env, uid)), me: uid, pro, master });
       }
       if (req.method === "PUT") {
         const body = await readBody(req);
@@ -410,38 +618,63 @@ async function route(req, env) {
         // 별명은 **사용자가 지어 넣는 말**이지 제공자에게 받은 이름이 아니다. 그래서 아무 말이나 될 수
         // 있고, 그만큼 길이만 막으면 된다. 빈 문자열은 "지웠다"는 뜻이라 그대로 저장한다.
         const name = typeof (body && body.name) === "string" ? body.name.trim().slice(0, 20) : "";
-        const rec = { words, name, updated: Date.now() };
-        await env.KV.put("b:" + uid, JSON.stringify(rec));
-        return json(env, req, { ...rec, pro, master });
+
+        // ── 버전 확인 ──
+        // 전에는 무조건 덮어썼고, 어느 쪽이 새것인지는 **기기 시계**가 정했다(앱의 syncPlan 이
+        // `remote.updated > localAt` 으로 비교). 시계가 어긋난 기기는 늘 자기가 새것이라 여겨
+        // 다른 기기에서 담은 단어를 조용히 지웠다 — 시각은 권한 판정에 쓸 값이 아니다.
+        // 이제 버전은 **서버가 센다.** 손에 든 버전이 지금 것과 다르면 409 로 거절하고 현재
+        // 레코드를 같이 준다. 앱은 그걸 받아 합쳐서 다시 올린다(어느 쪽도 조용히 안 버린다).
+        const prev = await env.DB.prepare("SELECT version FROM books WHERE user_id = ?").bind(uid).first();
+        const now = prev ? prev.version : 0;
+        // 버전을 안 보낸 요청은 **처음 저장할 때만** 받는다. 레코드가 이미 있으면 거절한다 —
+        // 안 그러면 옛 앱이 버전을 빼고 보내는 것만으로 이 방어가 통째로 무효가 된다.
+        const sent = typeof (body && body.version) === "number" ? body.version : null;
+        if (prev && sent !== now)
+          return json(env, req, { error: "다른 기기에서 먼저 저장했어요", conflict: true,
+                                  ...(await getBook(env, uid)), pro, master }, 409);
+
+        const updated = Date.now();
+        // ⚠️ `WHERE version = ?` 을 조건에 넣는다. 위에서 읽고 여기서 쓰는 사이에 다른 기기가
+        //    먼저 저장하면 위 검사만으로는 못 막는다 — 조건을 문장 안에 넣어야 원자적이다.
+        const upd = await env.DB.prepare(
+          `INSERT INTO books (user_id, words, nickname, version, updated_at) VALUES (?1, ?2, ?3, 1, ?4)
+           ON CONFLICT (user_id) DO UPDATE SET words = ?2, nickname = ?3,
+             version = books.version + 1, updated_at = ?4 WHERE books.version = ?5`)
+          .bind(uid, JSON.stringify(words), name, updated, now).run();
+        if (!upd.meta || upd.meta.changes === 0)
+          return json(env, req, { error: "다른 기기에서 먼저 저장했어요", conflict: true,
+                                  ...(await getBook(env, uid)), pro, master }, 409);
+        return json(env, req, { words, name, updated, version: now + 1, pro, master });
       }
-      // 탈퇴: 단어장·친구·초대코드와 **이 계정의 모든 세션**을 지운다.
-      // 지금 기기 세션만 지우면 다른 기기가 살아남아 `myCode()` 로 초대 코드를,
-      // `PUT /book` 으로 단어장을 **되살린다** — privacy.html 의 "그 자리에서 지워집니다"가 거짓이 된다.
+      // 탈퇴. **한 문장이면 끝난다** — users 를 지우면 sessions·books·friendships·invite_codes 가
+      // 외래키 CASCADE 로 같이 사라진다. KV 시절엔 6번의 개별 삭제였고 중간에 죽으면 반쯤 지워진
+      // 계정이 남았다(그리고 지울 것을 하나 빠뜨리면 아무도 몰랐다).
+      //
+      // 세대도 같이 올린다: 다른 기기의 세션이 **행이 지워지기 전에** 요청을 보내도
+      // 그 순간 세대가 안 맞아 죽는다.
       if (req.method === "DELETE") {
-        // 친구 쪽 목록에서도 나를 뺀다. 안 빼면 상대 화면에 이름 없는 친구가 남고,
-        // 그 사람의 단어장을 열면 빈 화면이 뜬다.
-        const f = await getFr(env, uid);
-        for (const other of [...f.ok, ...f.in, ...f.out]) await putFr(env, other, drop(await getFr(env, other), uid));
-        const code = await env.KV.get("u:" + uid);
-        if (code) await env.KV.delete("c:" + code);
-        await env.KV.delete("u:" + uid);
-        await env.KV.delete("f:" + uid);
-        await env.KV.delete("b:" + uid);
-        await killSessions(env, uid, token);
-        return json(env, req, { ok: true });
+        await killSessions(env, uid);
+        await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(uid).run();
+        const r = json(env, req, { ok: true });
+        r.headers.append("Set-Cookie", clearCookie());
+        return r;
       }
     }
 
     // ── 4. 친구 ──
     if (path.startsWith("/friends")) {
       if (!uid) return json(env, req, { error: "로그인이 필요해요" }, 401);
-      const f = await getFr(env, uid);
 
       // 목록 + 내 초대 코드
       if (path === "/friends" && req.method === "GET") {
-        const [ok, incoming, outgoing] = await Promise.all(
-          [[f.ok, true], [f.in, false], [f.out, false]].map(([l, c]) => Promise.all(l.map((u) => brief(env, u, c)))));
-        return json(env, req, { code: await myCode(env, uid), friends: ok, in: incoming, out: outgoing });
+        const rows = await friendRows(env, uid);
+        return json(env, req, {
+          code: await myCode(env, uid),
+          friends: rows.filter((r) => r.status === "accepted").map((r) => briefRow(r, uid, true)),
+          in: rows.filter((r) => r.status === "pending" && r.adr === uid).map((r) => briefRow(r, uid, false)),
+          out: rows.filter((r) => r.status === "pending" && r.req === uid).map((r) => briefRow(r, uid, false)),
+        });
       }
 
       // 요청 보내기 — 초대 코드로. 상대가 이미 나에게 보냈으면 그 자리에서 맺어진다
@@ -449,25 +682,43 @@ async function route(req, env) {
       if (path === "/friends" && req.method === "POST") {
         const body = await readBody(req);
         const code = typeof (body && body.code) === "string" ? body.code.trim().slice(0, 64) : "";
-        const other = code && (await env.KV.get("c:" + code));
+        const owner = code && (await env.DB.prepare(
+          "SELECT user_id FROM invite_codes WHERE code = ? AND revoked_at IS NULL").bind(code).first());
+        const other = owner && owner.user_id;
         if (!other) return json(env, req, { error: "초대 링크가 만료됐거나 잘못됐어요" }, 404);
         if (other === uid) return json(env, req, { error: "자기 자신은 추가할 수 없어요" }, 400);
-        if (f.ok.includes(other)) return json(env, req, { state: "ok", friend: await brief(env, other, true) });
 
-        const g = await getFr(env, other);
-        if (f.in.includes(other)) {   // 상대가 먼저 보냈다 → 바로 친구
-          await putFr(env, uid, { ...drop(f, other), ok: [...f.ok, other] });
-          await putFr(env, other, { ...drop(g, uid), ok: [...g.ok, uid] });
-          return json(env, req, { state: "ok", friend: await brief(env, other, true) });
+        // 지금 이 둘 사이에 무엇이 있나. 방향이 둘뿐이라 행 하나면 다 알 수 있다.
+        const rel = await env.DB.prepare(
+          `SELECT requester_id AS req, status FROM friendships
+            WHERE (requester_id = ?1 AND addressee_id = ?2) OR (requester_id = ?2 AND addressee_id = ?1)`)
+          .bind(uid, other).first();
+        if (rel && rel.status === "accepted")
+          return json(env, req, { state: "ok", friend: await briefOne(env, other, true) });
+        if (rel && rel.req === other) {
+          // 상대가 먼저 보냈다 → **한 문장으로** 친구가 된다. KV 시절엔 두 번의 쓰기였고
+          // 첫 쓰기만 성공하면 반쪽이 남았다 — 여기선 그 상태가 존재할 수 없다.
+          await env.DB.prepare(
+            `UPDATE friendships SET status = 'accepted', accepted_at = ?
+              WHERE requester_id = ? AND addressee_id = ? AND status = 'pending'`)
+            .bind(Date.now(), other, uid).run();
+          return json(env, req, { state: "ok", friend: await briefOne(env, other, true) });
         }
-        if (f.out.includes(other)) return json(env, req, { state: "sent", friend: await brief(env, other, false) });
-        // 상한. 내 쪽만 보는 게 아니라 **상대의 받은 요청함**도 본다 — 안 그러면 여러 계정이
-        // 한 사람에게 요청을 몰아 그 사람 목록만 무한히 키울 수 있다.
-        if (f.ok.length + f.out.length >= MAX_FRIENDS || g.ok.length + g.in.length >= MAX_FRIENDS)
+        if (rel) return json(env, req, { state: "sent", friend: await briefOne(env, other, false) });
+
+        // 상한. 내 쪽만 보는 게 아니라 **상대 쪽도** 본다 — 안 그러면 여러 계정이 한 사람에게
+        // 요청을 몰아 그 사람 목록만 무한히 키울 수 있다.
+        const cnt = await env.DB.prepare(
+          `SELECT (SELECT COUNT(*) FROM friendships WHERE requester_id = ?1 OR addressee_id = ?1) AS mine,
+                  (SELECT COUNT(*) FROM friendships WHERE requester_id = ?2 OR addressee_id = ?2) AS theirs`)
+          .bind(uid, other).first();
+        if (cnt.mine >= MAX_FRIENDS || cnt.theirs >= MAX_FRIENDS)
           return json(env, req, { error: "친구가 너무 많아요" }, 429);
-        await putFr(env, uid, { ...f, out: [...f.out, other] });
-        await putFr(env, other, { ...g, in: [...g.in.filter((x) => x !== uid), uid] });
-        return json(env, req, { state: "sent", friend: await brief(env, other, false) });
+
+        await env.DB.prepare(
+          `INSERT INTO friendships (requester_id, addressee_id, status, created_at)
+           VALUES (?, ?, 'pending', ?) ON CONFLICT DO NOTHING`).bind(uid, other, Date.now()).run();
+        return json(env, req, { state: "sent", friend: await briefOne(env, other, false) });
       }
 
       // 초대 링크 새로 만들기. 옛 코드는 그 자리에서 죽는다 — 링크가 어디까지 퍼졌는지
@@ -476,14 +727,8 @@ async function route(req, env) {
       //
       // **이미 맺어진 친구는 그대로다.** 코드는 "요청을 보낼 자격"이지 관계 자체가 아니다.
       // 아래 m2 정규식이 `/friends/code` 도 잡으므로 **이 라우트가 먼저** 와야 한다.
-      if (path === "/friends/code" && req.method === "POST") {
-        const old = await env.KV.get("u:" + uid);
-        if (old) await env.KV.delete("c:" + old);
-        const code = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
-        await env.KV.put("u:" + uid, code);
-        await env.KV.put("c:" + code, uid);
-        return json(env, req, { code });
-      }
+      if (path === "/friends/code" && req.method === "POST")
+        return json(env, req, { code: await rotateCode(env, uid) });
 
       const m2 = path.match(/^\/friends\/([^/]+)(\/book)?$/);
       if (m2) {
@@ -491,26 +736,49 @@ async function route(req, env) {
         let other;
         try { other = decodeURIComponent(m2[1]); } catch { return json(env, req, { error: "잘못된 주소예요" }, 400); }
         // 친구 단어장 보기. **수락된 친구만** — 요청만 보낸 사이에서는 안 보인다.
+        //
+        // 관계가 **행 하나**라 "한쪽만 친구인 상태"가 존재하지 않는다. KV 시절엔 두 사람 레코드에
+        // 각각 적어서 반쪽이 남을 수 있었고, 그래서 양쪽을 다 확인하는 코드가 따로 필요했다.
+        // 여기서는 조인 하나가 곧 권한 판정이다.
         if (m2[2]) {
           if (req.method !== "GET") return json(env, req, { error: "안 되는 요청이에요" }, 405);
-          if (!f.ok.includes(other)) return json(env, req, { error: "친구가 아니에요" }, 403);
-          const rec = JSON.parse((await env.KV.get("b:" + other)) || "{}");
-          return json(env, req, { uid: other, name: rec.name || "", words: rec.words || [] });
+          const row = await env.DB.prepare(
+            `SELECT b.words AS words, b.nickname AS name FROM friendships f
+               LEFT JOIN books b ON b.user_id = ?2
+              WHERE f.status = 'accepted'
+                AND ((f.requester_id = ?1 AND f.addressee_id = ?2)
+                  OR (f.requester_id = ?2 AND f.addressee_id = ?1))`).bind(uid, other).first();
+          if (!row) return json(env, req, { error: "친구가 아니에요" }, 403);
+          let words = [];
+          try { words = JSON.parse(row.words || "[]") || []; } catch { /* 깨진 행은 빈 단어장 */ }
+          return json(env, req, { uid: other, name: row.name || "", words });
         }
         // 수락. 내가 **받은** 요청에만 쓴다 — 없는 요청을 수락해 친구가 되면
         // 상대는 보낸 적 없는 사람에게 단어장이 보인다.
+        //
+        // 조건이 전부 **UPDATE 문 안에** 있다: 상대가 requester 이고, 나에게 온 것이고, 아직 pending.
+        // 하나라도 아니면 changes 가 0 이다 — 읽고 나서 쓰는 사이에 상태가 바뀌어도 안전하다.
         if (req.method === "PUT") {
-          if (!f.in.includes(other)) return json(env, req, { error: "받은 요청이 아니에요" }, 400);
-          if (f.ok.length >= MAX_FRIENDS) return json(env, req, { error: "친구가 너무 많아요" }, 429);
-          const g = await getFr(env, other);
-          await putFr(env, uid, { ...drop(f, other), ok: [...f.ok, other] });
-          await putFr(env, other, { ...drop(g, uid), ok: [...g.ok.filter((x) => x !== uid), uid] });
-          return json(env, req, { state: "ok", friend: await brief(env, other, true) });
+          const cnt = await env.DB.prepare(
+            "SELECT COUNT(*) AS n FROM friendships WHERE (requester_id = ?1 OR addressee_id = ?1) AND status = 'accepted'")
+            .bind(uid).first();
+          if (cnt.n >= MAX_FRIENDS) return json(env, req, { error: "친구가 너무 많아요" }, 429);
+          const r = await env.DB.prepare(
+            `UPDATE friendships SET status = 'accepted', accepted_at = ?
+              WHERE requester_id = ? AND addressee_id = ? AND status = 'pending'`)
+            .bind(Date.now(), other, uid).run();
+          if (!r.meta || r.meta.changes === 0) return json(env, req, { error: "받은 요청이 아니에요" }, 400);
+          return json(env, req, { state: "ok", friend: await briefOne(env, other, true) });
         }
-        // 거절 · 요청 취소 · 친구 끊기 — 전부 "이 연결을 지운다" 하나다. 양쪽에서 지운다.
+        // 거절 · 요청 취소 · 친구 끊기 — 전부 "이 연결을 지운다" 하나다.
+        // **행이 하나라 한 번의 DELETE 로 끝난다.** 관계가 없으면 changes 가 0 이고,
+        // 그때는 아무것도 안 쓴 것이다(반복해도 안전하다).
         if (req.method === "DELETE") {
-          await putFr(env, uid, drop(f, other));
-          await putFr(env, other, drop(await getFr(env, other), uid));
+          const r = await env.DB.prepare(
+            `DELETE FROM friendships
+              WHERE (requester_id = ?1 AND addressee_id = ?2) OR (requester_id = ?2 AND addressee_id = ?1)`)
+            .bind(uid, other).run();
+          if (!r.meta || r.meta.changes === 0) return json(env, req, { error: "친구가 아니에요" }, 404);
           return json(env, req, { ok: true });
         }
       }

@@ -3,29 +3,34 @@
 // API 는 **같은 origin 의 `/api/*`** 다(Cloudflare Pages Functions). 옛 주소
 // `https://shhh-api.bu202.workers.dev` 는 다른 origin 이라 쿠키를 쓸 수 없었고 CORS 가 필요했다.
 const API = "/api";
-const TOKEN_KEY = "shh-token";   // 세션 토큰. 개인정보가 아니라 무작위 문자열이다.
-const VIA_KEY = "shh-via";       // 어느 걸로 로그인했는지(화면 표시용)
+// ⚠️ **세션 토큰은 이제 여기 없다.** HttpOnly 쿠키(`shh_s`)라 자바스크립트가 읽지도 쓰지도 못한다 —
+//    XSS 가 나도 세션을 통째로 훔쳐 갈 수 없고, 앱이 잃어버릴 수도 없다.
+//    예전엔 localStorage 의 `shh-token` 이었고 그 앞부분이 계정 id 였다.
+// 여기 남는 건 **자격증명이 아니라 화면 상태**뿐이다: 로그인했는지, 어느 제공자였는지.
+// 진짜 판정은 언제나 서버가 한다 — 이 값을 고쳐도 남의 것을 못 본다(401 이 온다).
+const VIA_KEY = "shh-via";
+const ME_KEY = "shh-me";         // 서버가 알려준 내 계정 id. 계정이 바뀐 것을 알아채는 데만 쓴다
 
-const authToken = () => localStorage.getItem(TOKEN_KEY);
+// "로그인한 것으로 보이나". 쿠키를 못 읽으므로 이 표시로 화면을 그리고,
+// 실제로 끊겼으면 첫 API 호출의 401 에서 정리된다(onAuthLost).
+const authToken = () => localStorage.getItem(VIA_KEY);
 const authVia = () => localStorage.getItem(VIA_KEY);
-// 토큰은 `<base64url(uid)>.<무작위>` 다(worker 의 mkToken). 어느 계정인지 알아야
-// **계정이 바뀐 것**을 알아채고 앞 계정 단어장을 새 계정에 물려주지 않을 수 있다.
-// 서버에 묻지 않는 이유: 이미 손에 든 문자열로 알 수 있고, 판정에 쓰지 않는다(표시·비교용).
-const authUid = () => {
-  const t = authToken() || "";
-  const i = t.indexOf(".");
-  if (i < 1) return "";
-  try { return atob(t.slice(0, i).replace(/-/g, "+").replace(/_/g, "/")); } catch { return ""; }
-};
+// 계정이 바뀌면 앞 계정 단어장을 새 계정에 물려주지 않는다(syncPlan 의 accountChanged).
+// 예전엔 토큰 앞부분을 뜯어 알았는데 토큰이 무작위가 되면서 그 길이 사라졌다 —
+// 이제 `GET /book` 이 `me` 로 알려준다.
+const authUid = () => localStorage.getItem(ME_KEY) || "";
+const setAuthUid = (v) => { if (v) localStorage.setItem(ME_KEY, v); };
 
 // 세션이 죽었을 때(로그아웃·만료) 화면을 다시 그리게 하는 훅. 여기는 데이터 계층이라
 // 화면을 직접 못 만진다 — 알리기만 하고 무엇을 그릴지는 js/auth.js 가 정한다.
 // ⚠️ 함정 44: 지금은 주인이 하나라 단일 함수다. 두 번째 파일이 붙는 순간 배열로 바꿀 것.
 let authLost = null;
 function onAuthLost(fn) { authLost = fn; }
-const setAuth = (token, via) => {
-  if (token) { localStorage.setItem(TOKEN_KEY, token); localStorage.setItem(VIA_KEY, via || ""); }
-  else { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(VIA_KEY); }
+// 로그인 표시만 세우고 지운다. **세션 자체는 서버의 쿠키가 들고 있다** —
+// 여기서 지워도 쿠키는 안 지워지므로, 로그아웃은 반드시 서버(`DELETE /session`)를 거쳐야 한다.
+const setAuth = (via) => {
+  if (via) localStorage.setItem(VIA_KEY, via);
+  else { localStorage.removeItem(VIA_KEY); localStorage.removeItem(ME_KEY); }
 };
 
 // ── 세션 고정 방어용 일회용 값 ──
@@ -56,16 +61,20 @@ const loginUrl = (provider) =>
 
 // 실패하면 null. **로컬 단어장은 절대 건드리지 않는다** — 오프라인에서 단어장이 비면 안 된다.
 async function apiCall(path, opts = {}) {
-  const t = authToken();
-  if (!t) return null;
+  if (!authToken()) return null;
   try {
     const res = await fetch(API + path, {
       ...opts,
-      headers: { Authorization: "Bearer " + t, "Content-Type": "application/json" },
+      // 쿠키를 실어 보낸다. **같은 origin 에만** — 앱과 API 가 한 Pages 프로젝트라 성립한다.
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
     });
-    // 세션이 죽었다 — 만료(180일)거나, 다른 기기에서 로그아웃·탈퇴했거나.
-    // 토큰만 지우면 화면은 로그인 상태로 남아, 담기를 눌러도 왜 안 되는지 말해주지 않는다.
+    // 세션이 죽었다 — 만료(180일)거나, 다른 기기에서 로그아웃·탈퇴했거나(세대가 올랐다).
+    // 표시만 지우면 화면은 로그인 상태로 남아, 담기를 눌러도 왜 안 되는지 말해주지 않는다.
     if (res.status === 401) { setAuth(null); authLost?.(); return null; }
+    // 409 는 **오류가 아니라 대답**이다: "다른 기기가 먼저 저장했다, 지금 것은 이거다."
+    // 여기서 null 로 뭉개면 앱이 충돌을 못 보고 조용히 옛 상태로 남는다.
+    if (res.status === 409) return { conflict: true, ...(await res.json().catch(() => ({}))) };
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -75,13 +84,34 @@ async function apiCall(path, opts = {}) {
 
 // 별명은 단어장과 **같은 레코드**에 산다. 저장할 곳이 하나뿐이라 시각 비교(LWW)도 한 번에 끝나고,
 // 별명만 따로 최신인 상태가 생기지 않는다.
-const apiGetBook = () => apiCall("/book");
-const apiPutBook = (words, name) =>
-  apiCall("/book", { method: "PUT", body: JSON.stringify({ words, name }) });
+// 서버가 세는 단어장 버전. **기기 시계 대신** 이 값이 "누가 먼저 저장했나"를 정한다.
+// localStorage 에 두는 이유: 앱을 껐다 켜도 손에 든 버전이 남아야 첫 저장이 바로 409 가 안 난다.
+const VER_KEY = "shh-bookver";
+const bookVersion = () => Number(localStorage.getItem(VER_KEY)) || 0;
+const setBookVersion = (v) => localStorage.setItem(VER_KEY, Number(v) || 0);
+
+const apiGetBook = async () => {
+  const r = await apiCall("/book");
+  if (r && typeof r.version === "number") setBookVersion(r.version);
+  if (r && r.me) setAuthUid(r.me);   // 계정 교체 판정에 쓴다(토큰을 못 뜯으므로 서버가 알려준다)
+  return r;
+};
+// 충돌이면 `{conflict:true, ...서버 레코드}` 가 온다 — 부르는 쪽(js/auth.js)이 합친다.
+const apiPutBook = async (words, name) => {
+  const r = await apiCall("/book", { method: "PUT", body: JSON.stringify({ words, name, version: bookVersion() }) });
+  if (r && typeof r.version === "number") setBookVersion(r.version);
+  return r;
+};
 const apiDeleteAccount = () => apiCall("/me", { method: "DELETE" });
 // 로그아웃은 **서버에도** 알린다. 브라우저에서 토큰만 지우면 KV 의 세션은 180일을 더 살아서,
 // 한 번 샌 토큰이 로그아웃 뒤에도 그대로 쓰인다. 이 계정에 로그인한 기기가 전부 함께 끊긴다.
 const apiLogout = () => apiCall("/session", { method: "DELETE" });
+// 로그인 표시가 아직 없는 상태에서 세션을 끊어야 할 때(네이버 갈래에서 nonce 가 안 맞은 경우).
+// apiCall 은 표시가 없으면 그냥 null 을 내므로 이 한 자리는 직접 부른다 —
+// 쿠키는 이미 심어져 있어서 **앱이 모르는 채 서버만 로그인 상태로 남는 것**을 막아야 한다.
+const apiLogoutRaw = async () => {
+  try { await fetch(API + "/session", { method: "DELETE", credentials: "same-origin" }); } catch { /* 오프라인 */ }
+};
 
 // ── 친구 ──
 // 목록은 {code, friends:[{uid,name,count}], in:[…], out:[…]}. 단어는 안 온다 — 목록엔 안 쓴다.
@@ -96,13 +126,26 @@ const apiFriendBook = (uid) => apiCall("/friends/" + encodeURIComponent(uid) + "
 // 모르게 됐을 때 되돌릴 방법이 이것뿐이다. 이미 맺어진 친구는 그대로다.
 const apiRotateCode = () => apiCall("/friends/code", { method: "POST" });
 
-// 네이버 전용. 앱 주소로 돌아온 code 를 서버에 넘겨 세션 토큰으로 바꾼다 —
-// 비밀키가 필요한 교환이라 브라우저에서 직접 못 한다. apiCall 을 안 쓰는 이유는
-// **아직 토큰이 없는 상태**의 호출이기 때문(apiCall 은 토큰이 없으면 그냥 null 을 낸다).
+// 어느 제공자로 로그인할 수 있나. 비밀값이 안 들어간 제공자의 버튼을 그리면 사용자가
+// 누르고 나서야 503 을 본다 — 화면에 보이는 것은 실제로 되는 것이어야 한다.
+// 토큰이 필요 없는 호출이라 apiCall 을 안 쓴다(apiCall 은 토큰이 없으면 그냥 null 을 낸다).
+// 실패하면 null — 그때는 **아무것도 숨기지 않는다**(오프라인이라고 로그인을 못 하게 만들지 않는다).
+async function apiHealth() {
+  try {
+    const res = await fetch(API + "/health");
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+// 네이버 전용. 앱 주소로 돌아온 code 를 서버에 넘긴다 — 비밀키가 필요한 교환이라 브라우저에서
+// 직접 못 한다. **응답에 토큰은 없다**: 서버가 Set-Cookie 로 심고 여기선 성공 여부와 n 만 받는다.
+// apiCall 을 안 쓰는 이유는 아직 로그인 표시가 없는 상태의 호출이기 때문이다.
 async function apiExchange(provider, code, state) {
   const q = new URLSearchParams({ code, state });
   try {
-    const res = await fetch(`${API}/exchange/${provider}?${q}`);
+    const res = await fetch(`${API}/exchange/${provider}?${q}`, { credentials: "same-origin" });
     return res.ok ? await res.json() : null;
   } catch {
     return null;
