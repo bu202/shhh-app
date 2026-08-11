@@ -1,6 +1,8 @@
 // 계층: 데이터·외부 접근 (apiClient). **fetch 는 이 파일에만 나온다.**
 // 화면·판단은 js/auth.js 가 한다. 서버 주소가 바뀌면 여기 API 한 줄만 고치면 된다.
-const API = "https://shhh-api.bu202.workers.dev";
+// API 는 **같은 origin 의 `/api/*`** 다(Cloudflare Pages Functions). 옛 주소
+// `https://shhh-api.bu202.workers.dev` 는 다른 origin 이라 쿠키를 쓸 수 없었고 CORS 가 필요했다.
+const API = "/api";
 const TOKEN_KEY = "shh-token";   // 세션 토큰. 개인정보가 아니라 무작위 문자열이다.
 const VIA_KEY = "shh-via";       // 어느 걸로 로그인했는지(화면 표시용)
 

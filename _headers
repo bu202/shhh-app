@@ -1,0 +1,29 @@
+# Cloudflare Pages 응답 헤더. GitHub Pages 에서 못 하던 자리다 — 거기는 커스텀 헤더를 아예
+# 지원하지 않아 CSP 를 <meta> 로 넣어야 했고, 그래서 `frame-ancestors` 를 쓸 수 없었다
+# (meta 에서는 무시된다). 헤더로 오면서 그 제약이 사라졌으므로 두 HTML 의 meta CSP 는 지웠다 —
+# 같은 정책이 두 곳에 있으면 한쪽만 고치는 실수가 난다(함정 51).
+#
+# ⚠️ 이 파일은 **정적 자산 응답에만** 적용된다. `/api/*` 는 Pages Functions 라 여기 안 걸린다 —
+#    API 응답 헤더는 worker/index.js 의 json() 에서 붙인다.
+#
+# ⚠️ `connect-src` 에 sldict 가 있는 이유 — **Service Worker 때문이다.**
+#    이 헤더는 `service-worker.js` 응답에도 붙고, 그러면 SW 안에서 도는 코드도 이 정책을 따른다.
+#    SW 의 fetch 핸들러가 수형 그림 요청을 가로채 `fetch()` 로 대신 받는데, `connect-src 'self'`
+#    만 두면 그게 막혀 **그림이 한 장도 안 뜬다**. img-src 가 허용돼 있어도 소용없다 — 막히는 것은
+#    이미지 태그가 아니라 SW 의 fetch 다.
+#    ⚠️ **SW 안의 위반은 문서의 `securitypolicyviolation` 이벤트에 안 잡힌다.** 화면에는 그림만
+#       안 뜨고 콘솔도 조용해서, 빼고 배포해 대조하기 전까지는 원인을 못 찾는다(실제로 그렇게 잡았다).
+#    meta CSP 시절에는 정책이 **문서에만** 붙어 SW 가 자유로웠고, 그래서 이 문제가 안 보였다.
+#    SW 에서 외부 요청을 그만두면 이 예외도 지울 수 있다 — 대신 본 적 있는 그림의 오프라인 캐시를 잃는다.
+#
+# ⚠️ `Referrer-Policy` 를 `no-referrer` 로 조이면 **sldict 가 503 을 준다.** 같은 이미지를 curl 로
+#    받으면 referer 없이도 200 이라 서버 설정만 봐서는 안 보인다. 옛 주소(GitHub Pages)와 나란히
+#    열어 한쪽만 뜨는 것으로 갈랐다. 지금 값은 브라우저 기본값과 같고 origin 까지만 보낸다.
+# ⚠️ 카메라(js/camera.js)를 되살리면 MediaPipe 가 cdn.jsdelivr.net · storage.googleapis.com 에서
+#    온다. **그때 script-src 와 connect-src 를 같이 고쳐야 한다** — 안 고치면 카메라가 조용히 안 뜬다.
+
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://sldict.korean.go.kr data:; connect-src 'self' https://sldict.korean.go.kr; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+  X-Content-Type-Options: nosniff

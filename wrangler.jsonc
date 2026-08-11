@@ -1,0 +1,21 @@
+{
+  // Cloudflare Pages 프로젝트 설정. 앱(정적)과 API(`functions/api/*`)가 **한 프로젝트**에 산다 —
+  // 그래야 같은 origin 이 되어 CSP 를 `connect-src 'self'` 로 조이고 쿠키를 쓸 수 있다.
+  //
+  // worker/wrangler.jsonc 는 옛 workers.dev 배포용이다. 전환이 끝나면 그쪽은 폐기한다.
+  "name": "shhh-app",
+  "compatibility_date": "2026-08-07",
+  "observability": { "enabled": true },
+  // 빌드 도구가 없어 레포 루트가 곧 배포 디렉터리다. 무엇을 뺄지는 `.assetsignore` 에 있다.
+  "pages_build_output_dir": ".",
+  // **기존 네임스페이스를 그대로 붙인다** — 단어장·친구·초대코드가 여기 들어 있다.
+  "kv_namespaces": [{ "binding": "KV", "id": "f55a12622af84380a0865dd8ff4824ac" }],
+  "vars": {
+    // 검증 단계에선 pages.dev. 도메인이 붙으면 **여기와 OAuth 콘솔 3사를 같이** 바꾼다.
+    "APP_ORIGIN": "https://shhh-app.pages.dev",
+    "APP_URL": "https://shhh-app.pages.dev/"
+  }
+  // 비밀값은 여기 적지 않는다 — `wrangler pages secret put <이름>` 으로 넣는다.
+  // KAKAO_ID · KAKAO_SECRET · NAVER_ID · NAVER_SECRET · GOOGLE_ID · GOOGLE_SECRET
+  // · STATE_KEY · MASTER_UIDS  (8개)
+}

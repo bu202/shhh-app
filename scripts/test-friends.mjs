@@ -112,6 +112,11 @@ await call(tokA, "/me", "DELETE");
 assert.deepEqual((await call(tokB, "/friends")).body.friends, [], "탈퇴한 사람이 친구 목록에 남았다");
 assert.equal(env._kv.get("c:" + a1.body.code), undefined, "탈퇴했는데 초대 코드가 살아있다");
 
+// 12b. Pages Functions 아래에선 주소가 `/api/book` 으로 온다. 접두어를 안 벗기면 **전부 404** 라
+//      앱이 통째로 죽는데, 테스트가 `/book` 으로만 부르면 그걸 못 본다.
+assert.equal((await call(tokB, "/api/book")).status, 200, "/api 접두어가 안 벗겨졌다 — Pages 에서 전부 404 난다");
+assert.equal((await call(tokB, "/api/friends")).status, 200, "/api/friends 가 안 잡힌다");
+
 // ── 초대 코드 회전 ──
 // 링크는 어디로든 퍼진다. 되돌릴 방법이 없으면 한 번 샌 코드가 영영 요청을 받는다.
 {
@@ -274,4 +279,4 @@ assert.equal(env._kv.get("c:" + a1.body.code), undefined, "탈퇴했는데 초�
     400, "다른 제공자의 state 가 통과했다");
 }
 
-console.log("test-friends: 35개 통과 — 단어장 비공개 · 마스터 · 복귀 주소 · 세션 무효화 · 본문 한도 · state 서명 · 코드 회전");
+console.log("test-friends: 36개 통과 — 단어장 비공개 · 마스터 · 복귀 주소 · 세션 무효화 · 본문 한도 · state 서명 · 코드 회전");

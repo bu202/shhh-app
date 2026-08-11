@@ -159,7 +159,7 @@ async function readBody(req) {
 // 제공자가 code 를 어디로 돌려보내는가. 여기서 만든 값과 **똑같은 문자열**을 토큰 교환에도 보내야
 // 한다 — 한 글자만 달라도 제공자가 거부한다. 그래서 두 곳이 이 함수 하나를 부른다.
 const redirectUri = (env, origin, name) =>
-  P[name].viaApp ? env.APP_URL : origin + "/cb/" + name;
+  P[name].viaApp ? env.APP_URL : origin + "/api/cb/" + name;
 
 // code → 세션 토큰. /cb(카카오·구글)와 /exchange(네이버) 둘 다 이 함수를 쓴다 —
 // 흐름이 갈려도 **토큰 교환과 사용자 판별은 한 곳**이어야 한쪽만 고치는 실수가 안 난다.
@@ -242,7 +242,10 @@ async function brief(env, uid, withCount) {
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
-    const path = url.pathname.replace(/\/$/, "");
+    // Pages Functions 아래에선 주소가 `/api/book` 으로 온다. **접두어만 여기서 벗기고**
+    // 라우트 문자열은 `/book` 그대로 둔다 — scripts/test-friends.mjs 가 그 이름으로 부르기 때문에,
+    // 라우트를 `/api/book` 으로 고쳐 적으면 35개 검사를 전부 손대야 한다.
+    const path = url.pathname.replace(/^\/api/, "").replace(/\/$/, "");
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors(env, req) });
 
     // ── 1. 로그인 시작 ── /login/kakao?return=<앱 주소>

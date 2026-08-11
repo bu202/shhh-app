@@ -6,7 +6,11 @@ const PREFIX = "shhh-";
 const CACHE = PREFIX + "v9";
 // 로그인 API 는 **절대 캐시하지 않는다.** 아래 fetch 핸들러는 모든 GET 을 캐시에 넣는데,
 // 그러면 한 기기를 두 사람이 쓸 때 앞사람의 단어장 응답이 캐시에 남아 뒷사람에게 보인다.
-const API_HOST = "shhh-api.bu202.workers.dev";
+//
+// ⚠️ 전에는 **호스트**로 걸렀다(`shhh-api.bu202.workers.dev`). API 가 같은 origin 의 `/api/*` 로
+// 들어오면서 그 조건은 영영 거짓이 된다 — 고치지 않으면 조용히 함정 34 가 재발한다.
+// 경로로 판정하는 이유도 같다: 호스트는 이제 앱과 구분되지 않는다.
+const API_PATH = "/api/";
 // 앱이 첫 화면을 그리는 데 쓰는 것 전부. 데이터 파일을 빼면 **첫 방문 직후 오프라인**이 깨진다 —
 // 첫 로드엔 SW 가 아직 페이지를 제어하지 않아 아래 fetch 핸들러의 런타임 캐시가 안 돈다(재방문부터 돎).
 const ASSETS = [
@@ -49,7 +53,7 @@ self.addEventListener("activate", (e) => {
 
 self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET") return;
-  if (new URL(e.request.url).host === API_HOST) return;   // 로그인·단어장 응답은 캐시 밖에 둔다
+  if (new URL(e.request.url).pathname.startsWith(API_PATH)) return;   // 로그인·단어장 응답은 캐시 밖에 둔다
   e.respondWith(
     fetch(e.request)
       .then((res) => {

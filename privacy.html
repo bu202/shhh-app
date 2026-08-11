@@ -5,8 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#FFF7F0" />
   <title>개인정보처리방침 — shhh!</title>
-  <!-- index.html 과 같은 규칙. 이 문서는 스크립트도 통신도 없어 더 좁게 잡는다. 설명은 index.html 에. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" />
+  <!-- CSP 는 `_headers` 가 응답 헤더로 붙인다(index.html 과 같은 규칙). -->
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="css/style.css" />
   <style>
