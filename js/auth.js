@@ -190,6 +190,14 @@ if (typeof document !== "undefined") {
       setAuth(null); renderAll(); GO("me"); toast("로그아웃했어요");
     });
     box.appendChild(out);
+
+    // 세션이 계정 단위라 로그아웃은 **모든 기기**에 듣는다. 노트북에서 눌렀는데 폰까지
+    // 풀리는 건 예상 밖이라 한 줄로 알린다 — 확인 대화상자를 세우지 않은 이유는
+    // 누르는 흐름을 막지 않기 위해서다(8/8 「읽을 것을 줄인다」와 저울질한 결과).
+    const note = document.createElement("p");
+    note.className = "hint";
+    note.textContent = "다른 기기에서도 로그인이 풀려요.";
+    box.appendChild(note);
   }
 
   // ── 계정 ── 설정 → 계정으로 들어온다. 여기서 하는 일은 하나: 계정을 지우는 것.
