@@ -132,4 +132,36 @@ assert.equal(env._kv.get("c:" + a1.body.code), undefined, "탈퇴했는데 초�
   assert.equal((await get("m")).pro, false, "목록에서 뺐는데 옛 레코드가 프로라고 말한다");
 }
 
-console.log("test-friends: 19개 통과 — 수락 전 단어장 비공개 · 양방향 정리 · 마스터 계정");
+// ── 로그인 복귀 주소 (allowed) ──────────────────────────────────────────
+// 여기가 틀리면 증상이 "남의 계정이 털린다"라서 화면으로는 영영 안 보인다.
+// allowed() 는 CORS 와 복귀 주소를 **둘 다** 정하므로 두 축을 같이 잰다.
+{
+  const e3 = makeEnv();
+  e3.KAKAO_ID = "test-client-id";   // 없으면 503 에서 멈춰 리다이렉트까지 못 간다
+  const login = (ret, env = e3) =>
+    worker.fetch(new Request("https://api.test/login/kakao" + (ret ? "?return=" + encodeURIComponent(ret) : "")), env);
+
+  // 16. 운영 기본값(DEV_ORIGINS 없음)에서 LAN·localhost 는 거부된다.
+  //     열려 있으면 `?return=http://192.168.x.x:8000` 으로 세션 토큰이 남의 서버로 간다.
+  for (const bad of ["http://192.168.1.9:8000", "http://localhost:8000", "http://127.0.0.1:8000", "https://evil.example"])
+    assert.equal((await login(bad)).status, 400, `${bad} 로 복귀가 허용됐다 — 세션 토큰이 새는 자리다`);
+
+  // 17. 주소가 아닌 문자열도 400 이다. 500(예외)이 나면 안 된다.
+  //     빈 문자열은 여기 없다 — "return 을 안 줬다"와 같아서 앱 주소로 폴백하는 게 맞다.
+  for (const junk of ["not a url", "javascript:alert(1)"])
+    assert.equal((await login(junk)).status, 400, `'${junk}' 가 400 이 아니다`);
+
+  // 18. 앱 주소는 그대로 통과한다(302). 막으면 로그인이 통째로 죽는다.
+  assert.equal((await login(ORIGIN + "/shhh-app/")).status, 302, "앱 주소로 못 돌아간다");
+  assert.equal((await login(null)).status, 302, "return 없이(기본값 APP_ORIGIN) 로그인이 안 된다");
+
+  // 19. 개발 Worker 에서는 여전히 열린다 — 폰 없이 확인하는 길을 막지 않았는지.
+  assert.equal((await login("http://192.168.1.9:8000", { ...e3, DEV_ORIGINS: "1" })).status, 302, "DEV_ORIGINS=1 인데 LAN 이 막혔다");
+
+  // 20. CORS 도 같은 판정을 쓴다. 낯선 Origin 에는 헤더를 안 붙인다.
+  const pre = (o, env = e3) => worker.fetch(new Request("https://api.test/book", { method: "OPTIONS", headers: { Origin: o } }), env);
+  assert.equal((await pre("http://192.168.1.9:8000")).headers.get("Access-Control-Allow-Origin"), null, "낯선 Origin 에 CORS 가 열렸다");
+  assert.equal((await pre(ORIGIN)).headers.get("Access-Control-Allow-Origin"), ORIGIN, "앱 Origin 에 CORS 가 안 붙었다");
+}
+
+console.log("test-friends: 24개 통과 — 수락 전 단어장 비공개 · 양방향 정리 · 마스터 계정 · 복귀 주소");

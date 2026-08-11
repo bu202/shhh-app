@@ -46,9 +46,16 @@ const P = {
   },
 };
 
-// 앱 주소는 env.APP_ORIGIN 하나. 로컬 개발(localhost)도 허용해야 폰 없이 확인할 수 있다.
+// 앱 주소는 env.APP_ORIGIN 하나. 로컬 개발(localhost·LAN)은 **개발용 Worker 에서만** 연다.
+//
+// ⚠️ 이 함수는 CORS 와 **로그인 복귀 주소**를 둘 다 정한다. 운영에서 LAN 을 열어 두면
+// `/login/kakao?return=http://192.168.1.9:8000` 로 세션 토큰이 남의 서버로 간다 —
+// 같은 와이파이(카페·기숙사)에 있는 사람이 링크 하나로 남의 계정을 가져갈 수 있다.
+// 켜려면 개발 Worker 에만 `wrangler secret put DEV_ORIGINS`(=1). **wrangler.jsonc 에 적지 않는다** —
+// 비어 있으면 앱 주소 하나만 허용한다(기본값이 안전한 쪽).
 const allowed = (env, origin) =>
-  origin === env.APP_ORIGIN || /^http:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+):\d+$/.test(origin || "");
+  origin === env.APP_ORIGIN ||
+  (env.DEV_ORIGINS === "1" && /^http:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+):\d+$/.test(origin || ""));
 
 const cors = (env, req) => {
   const o = req.headers.get("Origin");
@@ -172,7 +179,11 @@ export default {
       // state 는 CSRF 방어다. 돌아갈 주소를 URL 이 아니라 KV 에 담는 이유도 같다 —
       // 쿼리로 실어 보내면 남이 우리 도메인을 거쳐 아무 데로나 리다이렉트시킬 수 있다.
       const back = url.searchParams.get("return") || env.APP_ORIGIN;
-      if (!allowed(env, new URL(back).origin)) return new Response("허용되지 않은 주소예요", { status: 400 });
+      // 아무 문자열이나 올 수 있는 자리다. new URL 이 던지면 그대로 500 이 나가므로 여기서 받는다.
+      // 파싱이 안 되는 것도 "허용되지 않은 주소"다 — allowed(null) 은 어차피 거짓이다.
+      let backOrigin = null;
+      try { backOrigin = new URL(back).origin; } catch { /* 주소가 아니면 아래에서 400 */ }
+      if (!allowed(env, backOrigin)) return new Response("허용되지 않은 주소예요", { status: 400 });
       const state = crypto.randomUUID();
       // 어느 제공자로 시작한 state 인지 같이 적는다 — 남의 제공자 자리에서 재사용하지 못하게.
       await env.KV.put("x:" + state, m[1] + "|" + back, { expirationTtl: 600 });

@@ -9,3 +9,6 @@ scripts/all-resp.xml
 *.log
 node_modules/
 todo-100.txt
+
+# wrangler 의 로컬 KV 시뮬레이션. `kv key list` 를 --remote 없이 돌리면 생긴다
+worker/.wrangler/
