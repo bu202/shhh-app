@@ -344,10 +344,16 @@ if (typeof document !== "undefined") {
     const m = location.hash.match(/[#&]login=([^&]+)/);
     if (!m) return false;
     const via = (location.hash.match(/[#&]via=(\w+)/) || [])[1];
+    const n = decodeURIComponent((location.hash.match(/[#&]n=([^&]*)/) || [])[1] || "");
     // 토큰이 주소창·방문기록에 남지 않게 즉시 지운다.
     history.replaceState(null, "", location.pathname + location.search);
-    if (m[1] === "denied") { toast("로그인을 취소했어요"); return false; }
-    if (m[1] === "fail") { toast("로그인에 실패했어요. 다시 시도해 주세요."); return false; }
+    if (m[1] === "denied") { takeNonce(); toast("로그인을 취소했어요"); return false; }
+    if (m[1] === "fail") { takeNonce(); toast("로그인에 실패했어요. 다시 시도해 주세요."); return false; }
+    // **이 브라우저가 시작한 로그인인가.** 이 해시는 링크로 만들어 남에게 보낼 수 있어서,
+    // 그냥 받으면 받은 사람이 링크 주인의 계정으로 로그인된다(session fixation) — 그 뒤 담는
+    // 단어와 별명이 남의 계정에 쌓인다. 시작할 때 적어 둔 값과 같을 때만 받는다.
+    const mine = takeNonce();
+    if (!mine || n !== mine) { toast("로그인 정보가 맞지 않아요. 앱에서 다시 로그인해 주세요."); return false; }
     setAuth(m[1], via);
     return true;
   }
@@ -361,7 +367,11 @@ if (typeof document !== "undefined") {
     // code 가 주소창·방문기록에 남지 않게 즉시 지운다. 해시(#w= 같은)는 남긴다.
     history.replaceState(null, "", location.pathname + location.hash);
     const r = await apiExchange("naver", code, state);
-    if (!r || !r.token) { toast("로그인에 실패했어요. 다시 시도해 주세요."); return false; }
+    if (!r || !r.token) { takeNonce(); toast("로그인에 실패했어요. 다시 시도해 주세요."); return false; }
+    // 여기도 같은 검사가 필요하다. `?code=…&state=…` 역시 링크로 보낼 수 있고, 그러면 받은 사람의
+    // 앱이 **남의 code** 를 교환해 남의 계정으로 로그인한다(takeLoginHash 와 같은 공격).
+    const mine = takeNonce();
+    if (!mine || r.n !== mine) { toast("로그인 정보가 맞지 않아요. 앱에서 다시 로그인해 주세요."); return false; }
     setAuth(r.token, "naver");
     return true;
   }

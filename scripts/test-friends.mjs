@@ -279,4 +279,67 @@ assert.equal((await call(tokB, "/api/friends")).status, 200, "/api/friends 가 �
     400, "다른 제공자의 state 가 통과했다");
 }
 
-console.log("test-friends: 36개 통과 — 단어장 비공개 · 마스터 · 복귀 주소 · 세션 무효화 · 본문 한도 · state 서명 · 코드 회전");
+// ── 세션 고정(nonce) ─────────────────────────────────────────────────────
+// 여기가 뚫리면 증상이 "내가 담은 단어가 남의 계정에 쌓인다"라서 화면으로는 영영 안 보인다.
+// 서버 몫은 하나 — 브라우저가 준 n 을 **state 에 서명해 두었다가 그대로 돌려주는 것**.
+{
+  const e7 = makeEnv();
+  e7.KAKAO_ID = "id"; e7.NAVER_ID = "id";
+  const start = async (n, p = "kakao") => new URL((await worker.fetch(
+    new Request(`https://api.test/login/${p}?n=` + encodeURIComponent(n)), e7)).headers.get("Location"))
+    .searchParams.get("state");
+
+  // 32. n 이 state 안에 들어간다 — 밖(쿼리)에 있으면 남이 고쳐 붙일 수 있다.
+  const s1 = await start("nonce-1");
+  assert.ok(!s1.includes("nonce-1"), "n 이 서명 밖에 그대로 있다");
+  const [prov, back, exp, n1] = JSON.parse(Buffer.from(s1.slice(0, s1.lastIndexOf(".")), "base64url").toString());
+  assert.equal(n1, "nonce-1", "state 에 n 이 안 실렸다");
+  assert.equal(prov, "kakao");
+  assert.ok(back && exp > Date.now());
+
+  // 33. n 을 고치면 서명이 깨져 콜백이 거부된다.
+  const tampered = s1.replace(/^[^.]+/, Buffer.from(JSON.stringify([prov, back, exp, "nonce-evil"])).toString("base64url"));
+  assert.equal((await worker.fetch(new Request("https://api.test/cb/kakao?code=x&state=" + encodeURIComponent(tampered)), e7)).status,
+    400, "n 을 바꾼 state 가 통과했다 — 공격자가 자기 토큰 링크에 피해자 n 을 붙일 수 있다");
+
+  // 34. n 없이 시작해도 서버는 돈다(빈 문자열). 앱이 저장한 값과 다르므로 앱에서 걸린다.
+  assert.ok((await start("")) , "n 없이 로그인 시작이 죽었다");
+}
+
+// ── 잘못된 주소 · 친구 상한 ──────────────────────────────────────────────
+{
+  const e8 = makeEnv();
+  const t = tok("kakao:A", "a");
+  e8._kv.set("s:kakao:A:" + t, "1");
+  const g = async (path, method = "GET") => (await worker.fetch(new Request("https://api.test" + path, {
+    method, headers: { Authorization: "Bearer " + t, Origin: ORIGIN } }), e8)).status;
+
+  // 35. 반쪽 인코딩(`%zz`)은 decodeURIComponent 가 던진다. 500 이 나가면 안 된다.
+  assert.equal(await g("/friends/%zz"), 400, "잘못된 인코딩이 500 을 냈다");
+
+  // 36. 친구 상한. 없으면 목록 하나가 친구 수만큼 KV 를 읽으며 계속 자란다.
+  e8._kv.set("f:kakao:A", JSON.stringify({ ok: Array.from({ length: 50 }, (_, i) => "kakao:F" + i), in: [], out: [] }));
+  const victim = tok("kakao:V", "v");
+  e8._kv.set("s:kakao:V:" + victim, "1");
+  const vCode = (await (await worker.fetch(new Request("https://api.test/friends", {
+    headers: { Authorization: "Bearer " + victim, Origin: ORIGIN } }), e8)).json()).code;
+  assert.equal((await worker.fetch(new Request("https://api.test/friends", {
+    method: "POST", headers: { Authorization: "Bearer " + t, Origin: ORIGIN, "Content-Type": "application/json" },
+    body: JSON.stringify({ code: vCode }) }), e8)).status, 429, "친구 상한이 없다");
+}
+
+// ── API 응답 헤더 ────────────────────────────────────────────────────────
+// `_headers` 는 정적 자산에만 붙는다 — 여기 헤더는 worker 가 직접 붙여야 한다.
+{
+  const e9 = makeEnv();
+  const t = tok("kakao:A", "a");
+  e9._kv.set("s:kakao:A:" + t, "1");
+  const res = await worker.fetch(new Request("https://api.test/book", {
+    headers: { Authorization: "Bearer " + t, Origin: ORIGIN } }), e9);
+  // 37. 개인 단어장이 캐시에 남으면 한 기기를 두 사람이 쓸 때 앞사람 응답이 뒷사람에게 뜬다.
+  assert.match(res.headers.get("Cache-Control") || "", /no-store/, "API 응답에 no-store 가 없다");
+  // 38. CORS 헤더가 Origin 마다 다르므로 Vary 가 없으면 캐시가 다른 Origin 에 재사용한다.
+  assert.match(res.headers.get("Vary") || "", /Origin/, "Vary: Origin 이 없다");
+}
+
+console.log("test-friends: 43개 통과 — 단어장 비공개 · 마스터 · 복귀 주소 · 세션 무효화 · 본문 한도 · state 서명 · 코드 회전 · 세션 고정 · 친구 상한 · 응답 헤더");

@@ -25,7 +25,7 @@
 프로젝트 폴더에서 (Node 18+; 이 환경은 Node 24):
 
 ```bash
-cd /Users/bu/Desktop/translator
+cd /Users/bu/Desktop/claude/shhh!
 node scripts/fetch-ksl.mjs '<이메일로_받은_서비스키>'
 ```
 

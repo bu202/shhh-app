@@ -61,15 +61,26 @@ const allowed = (env, origin) =>
   origin === env.APP_ORIGIN ||
   (env.DEV_ORIGINS === "1" && /^http:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+):\d+$/.test(origin || ""));
 
+// 모든 API 응답에 붙는다. `_headers` 는 **정적 자산에만** 걸려서 여기까지 오지 않는다 —
+// Pages Functions 응답 헤더는 이 파일이 직접 붙여야 한다.
+//   Cache-Control: 개인 단어장이 브라우저·중간 캐시에 남으면 한 기기를 두 사람이 쓸 때
+//                  앞사람 응답이 뒷사람에게 뜬다(SW 는 이미 /api 를 안 캐시한다 — 그 두 번째 자물쇠).
+//   Vary: Origin — CORS 헤더가 Origin 마다 달라지므로, 없으면 캐시가 다른 Origin 에 재사용한다.
+const SEC = { "Cache-Control": "private, no-store", "Vary": "Origin", "X-Content-Type-Options": "nosniff" };
+
 const cors = (env, req) => {
   const o = req.headers.get("Origin");
   return allowed(env, o)
-    ? { "Access-Control-Allow-Origin": o, "Access-Control-Allow-Headers": "Authorization,Content-Type", "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS" }
-    : {};
+    ? { ...SEC, "Access-Control-Allow-Origin": o, "Access-Control-Allow-Headers": "Authorization,Content-Type", "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS" }
+    : { ...SEC };
 };
 
 const json = (env, req, body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...cors(env, req) } });
+
+// 리다이렉트도 우리가 만든다. `Response.redirect` 는 헤더를 못 얹는데, 이 응답의 Location 에는
+// **세션 토큰이 실려 있어서** no-store 가 가장 필요한 자리다.
+const redir = (url) => new Response(null, { status: 302, headers: { Location: url, ...SEC } });
 
 const creds = (env, provider) => ({
   id: env[provider.toUpperCase() + "_ID"],
@@ -92,8 +103,11 @@ async function sign(env, msg) {
 // ponytail: KV 를 안 쓰니 **1회용 보장이 사라진다** — 같은 state 를 두 번 낼 수 있다.
 //   그래도 손해가 없는 이유는 code 쪽이 1회용이기 때문이다: 두 번째 교환은 제공자가 거부해
 //   "로그인에 실패했어요"로 끝난다. 재사용 자체를 막아야 할 일이 생기면 그때 KV 로 되돌린다.
-const makeState = async (env, provider, back) => {
-  const body = b64u(ENC.encode(JSON.stringify([provider, back, Date.now() + 600e3])));
+//
+// nonce 는 **브라우저가 만들어 준 값**이다. 돌아올 때 그대로 돌려줘서, 이 브라우저가 실제로
+// 시작한 로그인인지 앱이 확인하게 한다(아래 「세션 고정」 참조).
+const makeState = async (env, provider, back, nonce) => {
+  const body = b64u(ENC.encode(JSON.stringify([provider, back, Date.now() + 600e3, nonce || ""])));
   return body + "." + (await sign(env, body));
 };
 
@@ -105,9 +119,9 @@ async function takeState(env, state) {
   if ((await sign(env, body)) !== state.slice(i + 1)) return null;
   let p;
   try { p = JSON.parse(new TextDecoder().decode(unb64u(body))); } catch { return null; }
-  const [provider, back, exp] = p;
+  const [provider, back, exp, nonce] = p;
   if (!(Date.now() < exp)) return null;
-  return { provider, back };
+  return { provider, back, nonce: nonce || "" };
 }
 
 // 세션 토큰은 `<uid>.<무작위>` 다. uid 를 담는 이유는 하나뿐 — 로그아웃·탈퇴가 **이 계정의 모든
@@ -123,13 +137,20 @@ const uidOf = (token) => {
 // 이 계정의 세션을 전부 지운다. 로그아웃과 탈퇴가 같은 자리를 쓴다 —
 // "이 계정의 로그인을 끊는다" 하나라서 경로를 둘로 만들지 않았다.
 //
-// ponytail: KV list 는 최종 일관성이라 **방금 만든 세션이 목록에 없을 수 있다**(최대 60초).
-//   그 창에 로그인한 기기는 안 끊긴다. 종전(아무것도 안 지움)보다는 훨씬 낫고, 정확히 하려면
-//   레코드에 버전을 두고 매 요청 대조해야 하는데 그건 요청마다 KV 읽기가 하나 는다.
-async function killSessions(env, uid) {
+// **지금 요청한 토큰은 목록과 별개로 지운다.** KV list 는 최종 일관성이라 방금 만든 세션이
+// 목록에 없을 수 있는데(최대 60초), 그러면 로그인하자마자 로그아웃한 사람의 **바로 그 기기**가
+// 안 끊긴다 — 사용자가 화면에서 확인할 수 있는 유일한 세션이 하필 그것이다. 키를 손에 들고 있으니
+// 목록을 기다릴 이유가 없다.
+//
+// ponytail: 남는 한도는 **다른 기기가 60초 안에 만든 세션**이다. 그건 목록에 아직 없어서 못 지운다.
+//   없애려면 계정마다 폐기 시각을 두고 매 요청 대조해야 하는데, 그 읽기 역시 KV 라 같은 최종
+//   일관성을 진다 — 요청마다 KV 읽기를 하나 늘리고도 창이 안 닫힌다. 정말 닫으려면 Durable Object 다.
+async function killSessions(env, uid, token) {
   const { keys } = await env.KV.list({ prefix: "s:" + uid + ":" });
-  await Promise.all(keys.map((k) => env.KV.delete(k.name)));
-  return keys.length;
+  const names = new Set(keys.map((k) => k.name));
+  if (token) names.add("s:" + uid + ":" + token);
+  await Promise.all([...names].map((n) => env.KV.delete(n)));
+  return names.size;
 }
 
 // 신뢰 경계. 무료 플랜 Worker 는 메모리가 128MB 인데 요청 본문 한도는 100MB 라,
@@ -163,6 +184,18 @@ const redirectUri = (env, origin, name) =>
 
 // code → 세션 토큰. /cb(카카오·구글)와 /exchange(네이버) 둘 다 이 함수를 쓴다 —
 // 흐름이 갈려도 **토큰 교환과 사용자 판별은 한 곳**이어야 한쪽만 고치는 실수가 안 난다.
+// 남의 서버를 부르는 자리. **응답이 JSON 이라고 믿지 않는다** — 제공자가 점검 중이면 HTML
+// 오류 페이지가 오고, `.json()` 이 그대로 던져 500 이 나간다. 타임아웃도 여기 있다: 없으면
+// 제공자가 늘어질 때 우리 요청이 같이 매달린다.
+const jsonFetch = async (url, init) => {
+  try {
+    const r = await fetch(url, { ...init, signal: AbortSignal.timeout(10000) });
+    return JSON.parse(await r.text());
+  } catch {
+    return null;
+  }
+};
+
 async function exchange(env, origin, name, code, state) {
   const p = P[name];
   const { id, secret } = creds(env, name);
@@ -171,18 +204,20 @@ async function exchange(env, origin, name, code, state) {
     redirect_uri: redirectUri(env, origin, name),
   });
   if (secret) form.set("client_secret", secret);   // 카카오는 보안 설정을 꺼두면 없어도 된다
-  const tr = await fetch(p.token, {
+  const tr = await jsonFetch(p.token, {
     method: "POST", body: form,
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-  }).then((r) => r.json());
-  if (!tr.access_token) {
-    console.log("[exchange] token fail", name, JSON.stringify(tr).slice(0, 300));
+  });
+  // 로그에는 **제공자가 준 오류 코드까지만** 남긴다. 응답 본문을 통째로 찍으면 토큰·회원번호가
+  // 운영 로그로 새는데, 고치는 데 필요한 건 어느 제공자가 무슨 코드로 거절했나뿐이다.
+  if (!tr || !tr.access_token) {
+    console.log("[exchange] token fail", name, (tr && (tr.error || tr.error_code)) || "no-json");
     return null;
   }
-  const me = await fetch(p.me, { headers: { Authorization: "Bearer " + tr.access_token } }).then((r) => r.json());
-  const who = p.uid(me);
+  const me = await jsonFetch(p.me, { headers: { Authorization: "Bearer " + tr.access_token } });
+  const who = me && p.uid(me);
   if (!who) {
-    console.log("[exchange] me fail", name, JSON.stringify(me).slice(0, 300));
+    console.log("[exchange] me fail", name, (me && (me.error || me.message)) || "no-json");
     return null;
   }
   const uid = name + ":" + who;
@@ -198,6 +233,11 @@ async function exchange(env, origin, name, code, state) {
 // ponytail: KV 에는 트랜잭션이 없다. 두 사람의 f: 레코드를 잇달아 쓰므로, 둘이 **같은 순간**
 //   서로에게 요청하면 한쪽 목록만 갱신되는 창이 있다. 실제 사용(둘이서 쓰는 앱)에서 그 창은
 //   사실상 안 열리고, 증상도 "다시 눌러보세요"로 끝난다. 문제가 되면 Durable Object 로 옮긴다.
+//
+// 목록 하나가 **친구 수만큼 KV 읽기**다(brief 를 사람마다 부른다). 상한이 없으면 초대 코드가
+// 퍼졌을 때 목록이 계속 자라 조회가 느려지고 무료 한도를 먹는다. 연인·친구 몇 명짜리 앱이라
+// 50 이면 실사용에서 안 닿는다 — 닿으면 그건 코드가 샌 것이라 회전이 답이다.
+const MAX_FRIENDS = 50;
 const FR = { ok: [], in: [], out: [] };
 const getFr = async (env, uid) => ({ ...FR, ...JSON.parse((await env.KV.get("f:" + uid)) || "{}") });
 const putFr = (env, uid, v) => env.KV.put("f:" + uid, JSON.stringify(v));
@@ -240,7 +280,18 @@ async function brief(env, uid, withCount) {
 }
 
 export default {
+  // 전역 예외 그물. 아래 어디서 던져도 제공자 응답·스택이 사용자에게 새지 않고 500 한 줄로 끝난다.
   async fetch(req, env) {
+    try {
+      return await route(req, env);
+    } catch (e) {
+      console.log("[error]", new URL(req.url).pathname, String(e && e.message).slice(0, 200));
+      return json(env, req, { error: "잠시 문제가 생겼어요" }, 500);
+    }
+  },
+};
+
+async function route(req, env) {
     const url = new URL(req.url);
     // Pages Functions 아래에선 주소가 `/api/book` 으로 온다. **접두어만 여기서 벗기고**
     // 라우트 문자열은 `/book` 그대로 둔다 — scripts/test-friends.mjs 가 그 이름으로 부르기 때문에,
@@ -263,12 +314,13 @@ export default {
       try { backOrigin = new URL(back).origin; } catch { /* 주소가 아니면 아래에서 400 */ }
       if (!allowed(env, backOrigin)) return new Response("허용되지 않은 주소예요", { status: 400 });
       // 어느 제공자로 시작한 state 인지 같이 서명한다 — 남의 제공자 자리에서 재사용하지 못하게.
-      const state = await makeState(env, m[1], back);
+      // n 은 브라우저가 만든 값이다. 그대로 돌려주기만 하고 서버는 뜻을 모른다 — 판정은 앱이 한다.
+      const state = await makeState(env, m[1], back, (url.searchParams.get("n") || "").slice(0, 64));
       const q = new URLSearchParams({
         response_type: "code", client_id: id, redirect_uri: redirectUri(env, url.origin, m[1]), state,
       });
       if (p.scope) q.set("scope", p.scope);
-      return Response.redirect(p.auth + "?" + q, 302);
+      return redir(p.auth + "?" + q);
     }
 
     // ── 2a. 앱이 code 를 넘겨 주는 자리(네이버) ── /exchange/naver?code&state
@@ -281,7 +333,9 @@ export default {
       const code = url.searchParams.get("code");
       if (!code) return json(env, req, { error: "취소됐어요" }, 400);
       const token = await exchange(env, url.origin, m[1], code, url.searchParams.get("state"));
-      return token ? json(env, req, { token }) : json(env, req, { error: "로그인에 실패했어요" }, 502);
+      // n 을 같이 돌려준다. 앱이 자기가 보낸 값과 대조해 **이 브라우저가 시작한 로그인인지** 본다
+      // (아래 /cb 의 같은 자리 참조). 안 돌려주면 네이버 갈래만 세션 고정에 열린 채 남는다.
+      return token ? json(env, req, { token, n: st.nonce }) : json(env, req, { error: "로그인에 실패했어요" }, 502);
     }
 
     // ── 2b. 제공자가 우리에게 직접 돌려보내는 자리(카카오·구글) ── /cb/kakao?code&state
@@ -299,12 +353,18 @@ export default {
       const back = st.back;
       const code = url.searchParams.get("code");
       if (!code) {
-        console.log("[cb] no code", m[1], url.searchParams.get("error"), url.searchParams.get("error_description"));
-        return Response.redirect(back + "#login=denied", 302);
+        console.log("[cb] no code", m[1], url.searchParams.get("error"));
+        return redir(back + "#login=denied");
       }
       const token = await exchange(env, url.origin, m[1], code, state);
-      if (!token) return Response.redirect(back + "#login=fail", 302);
-      return Response.redirect(back + "#login=" + token + "&via=" + m[1], 302);
+      if (!token) return redir(back + "#login=fail");
+      // ── 세션 고정(session fixation) 방어 ──
+      // 이 해시는 링크로 만들어 남에게 보낼 수 있다. 앱이 `#login=<토큰>` 을 그냥 받으면,
+      // 공격자가 **자기 토큰**을 담은 링크를 보내 피해자를 자기 계정에 로그인시킬 수 있다 —
+      // 그 뒤 피해자가 담는 단어와 별명이 공격자 계정에 쌓인다.
+      // 그래서 로그인을 시작한 브라우저가 만든 n 을 그대로 돌려주고, 앱이 대조해서 다르면 버린다.
+      // 공격자는 피해자 브라우저에 저장된 n 을 알 수 없으므로 링크를 만들 수 없다.
+      return redir(back + "#login=" + token + "&via=" + m[1] + "&n=" + encodeURIComponent(st.nonce));
     }
 
     // ⚠️ `/master?code=…` 는 **지웠다**(2026-08-08). 로그인 없이 브라우저를 마스터로 만드는
@@ -323,7 +383,7 @@ export default {
     // 180일을 더 살아서, 한 번 샌 토큰이 로그아웃 뒤에도 그대로 쓰인다.
     if (path === "/session" && req.method === "DELETE") {
       if (!uid) return json(env, req, { error: "로그인이 필요해요" }, 401);
-      return json(env, req, { ok: true, killed: await killSessions(env, uid) });
+      return json(env, req, { ok: true, killed: await killSessions(env, uid, token) });
     }
 
     if (path === "/book" || path === "/me") {
@@ -367,7 +427,7 @@ export default {
         await env.KV.delete("u:" + uid);
         await env.KV.delete("f:" + uid);
         await env.KV.delete("b:" + uid);
-        await killSessions(env, uid);
+        await killSessions(env, uid, token);
         return json(env, req, { ok: true });
       }
     }
@@ -401,6 +461,10 @@ export default {
           return json(env, req, { state: "ok", friend: await brief(env, other, true) });
         }
         if (f.out.includes(other)) return json(env, req, { state: "sent", friend: await brief(env, other, false) });
+        // 상한. 내 쪽만 보는 게 아니라 **상대의 받은 요청함**도 본다 — 안 그러면 여러 계정이
+        // 한 사람에게 요청을 몰아 그 사람 목록만 무한히 키울 수 있다.
+        if (f.ok.length + f.out.length >= MAX_FRIENDS || g.ok.length + g.in.length >= MAX_FRIENDS)
+          return json(env, req, { error: "친구가 너무 많아요" }, 429);
         await putFr(env, uid, { ...f, out: [...f.out, other] });
         await putFr(env, other, { ...g, in: [...g.in.filter((x) => x !== uid), uid] });
         return json(env, req, { state: "sent", friend: await brief(env, other, false) });
@@ -423,7 +487,9 @@ export default {
 
       const m2 = path.match(/^\/friends\/([^/]+)(\/book)?$/);
       if (m2) {
-        const other = decodeURIComponent(m2[1]);
+        // `%zz` 같은 반쪽 인코딩은 decodeURIComponent 가 던진다 — 잡지 않으면 500 이 나간다.
+        let other;
+        try { other = decodeURIComponent(m2[1]); } catch { return json(env, req, { error: "잘못된 주소예요" }, 400); }
         // 친구 단어장 보기. **수락된 친구만** — 요청만 보낸 사이에서는 안 보인다.
         if (m2[2]) {
           if (req.method !== "GET") return json(env, req, { error: "안 되는 요청이에요" }, 405);
@@ -435,6 +501,7 @@ export default {
         // 상대는 보낸 적 없는 사람에게 단어장이 보인다.
         if (req.method === "PUT") {
           if (!f.in.includes(other)) return json(env, req, { error: "받은 요청이 아니에요" }, 400);
+          if (f.ok.length >= MAX_FRIENDS) return json(env, req, { error: "친구가 너무 많아요" }, 429);
           const g = await getFr(env, other);
           await putFr(env, uid, { ...drop(f, other), ok: [...f.ok, other] });
           await putFr(env, other, { ...drop(g, uid), ok: [...g.ok.filter((x) => x !== uid), uid] });
@@ -450,5 +517,4 @@ export default {
     }
 
     return new Response("shhh! api", { status: 404, headers: cors(env, req) });
-  },
-};
+}

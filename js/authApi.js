@@ -28,10 +28,31 @@ const setAuth = (token, via) => {
   else { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(VIA_KEY); }
 };
 
+// ── 세션 고정 방어용 일회용 값 ──
+// 돌아오는 `#login=<토큰>` 은 **링크로 만들어 남에게 보낼 수 있는 문자열**이다. 그냥 받으면
+// 공격자가 자기 토큰을 담은 링크로 피해자를 자기 계정에 로그인시킬 수 있고, 그 뒤 피해자가
+// 담는 단어와 별명이 공격자 계정에 쌓인다(session fixation).
+// 그래서 로그인을 시작할 때 무작위 값을 하나 적어 두고 서버에 들려 보낸다. 서버는 그걸 state 에
+// 서명해 두었다가 그대로 돌려주고, 앱은 **적어 둔 값과 같을 때만** 토큰을 받는다.
+// localStorage 인 이유: 이 왕복은 탭을 떠났다 돌아오는 길이라 shh-back 과 같은 수명이 필요하다.
+const NONCE_KEY = "shh-nonce";
+const newNonce = () => {
+  const n = crypto.randomUUID();
+  localStorage.setItem(NONCE_KEY, n);
+  return n;
+};
+// 한 번 쓰면 지운다 — 남겨 두면 그 값을 아는 링크가 두 번째로도 통한다.
+const takeNonce = () => {
+  const n = localStorage.getItem(NONCE_KEY);
+  localStorage.removeItem(NONCE_KEY);
+  return n;
+};
+
 // 로그인은 리다이렉트다. 팝업은 폰 브라우저에서 자주 막히고, 설치된 PWA 에선 창이 아예 안 뜬다.
-// return 은 지금 주소 — 서버가 이 주소를 KV 의 state 로 검증하므로 아무 데로나 못 보낸다.
+// return 은 지금 주소 — 서버가 이 주소를 서명한 state 로 검증하므로 아무 데로나 못 보낸다.
 const loginUrl = (provider) =>
-  `${API}/login/${provider}?return=${encodeURIComponent(location.origin + location.pathname)}`;
+  `${API}/login/${provider}?return=${encodeURIComponent(location.origin + location.pathname)}`
+  + `&n=${encodeURIComponent(newNonce())}`;
 
 // 실패하면 null. **로컬 단어장은 절대 건드리지 않는다** — 오프라인에서 단어장이 비면 안 된다.
 async function apiCall(path, opts = {}) {

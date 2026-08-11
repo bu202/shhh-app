@@ -7,7 +7,7 @@
 정적 서버가 필요합니다 (service worker는 `file://`에서 안 돎):
 
 ```bash
-cd translator
+cd ~/Desktop/claude/shhh\!
 python3 -m http.server 8000
 # http://localhost:8000 접속
 ```

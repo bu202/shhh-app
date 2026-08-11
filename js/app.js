@@ -399,6 +399,10 @@ function jamoFrames(jamo) {
 // 그대로 보여주면 "4지"를 약지로 읽는다(실제로는 새끼). 사전 설명의 84%가 이 표기를 쓴다.
 const FINGERS = ["검지", "중지", "약지", "새끼", "엄지"];
 const JOSA = { 를: "을", 는: "은", 가: "이" }; // "…손가락"은 받침으로 끝나 조사가 바뀐다
+// 문자열을 HTML 에 넣기 전에. 이 앱에서 innerHTML 에 사전 문자열이 닿는 곳은 연습 해설 하나뿐이라
+// 함수도 하나면 된다 — 새로 생기면 여기를 부른다(직접 이어 붙이지 말 것).
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
 function namedFingers(s) {
   return s
     .replace(/([1-5])(?:·([1-5]))*지/g, (m) =>
@@ -1058,8 +1062,11 @@ function renderPractice() {
   });
   q.appendChild(strip); box.appendChild(q);
   // 해설은 부품마다. 하나뿐이면 종전과 같은 한 줄이다.
+  // 사전 문자열은 **우리가 쓴 글이 아니다**(국립국어원 API 에서 받아 빌드한 JSON). 여기만
+  // innerHTML 로 들어가므로 그 자리에서 막는다 — 카드 쪽은 card() 가 textContent 로 넣는다.
+  // CSP 가 인라인 스크립트를 이미 막지만, 데이터가 마크업이 되는 길 자체를 두지 않는다.
   const desc = it.entries
-    .map((e, n) => (multi ? `<b class="inline">${it.labels[n]}</b> ` : "") + namedFingers(e.description))
+    .map((e, n) => (multi ? `<b class="inline">${esc(it.labels[n])}</b> ` : "") + esc(namedFingers(e.description)))
     .join("<br>");
 
   const btns = new Map(); // 보기 -> 버튼. 글자로 되찾지 않는다 — @핀이 다른 동음이의는 글자가 같다.
@@ -1079,7 +1086,7 @@ function renderPractice() {
       fb.className = "note" + (right ? "" : " bad");
       fb.innerHTML = right
         ? "<b>잘했어요!</b>" + desc
-        : `<b>아쉬워요 — 정답은 '${bare(quiz.q.answer)}'</b>` + desc;
+        : `<b>아쉬워요 — 정답은 '${esc(bare(quiz.q.answer))}'</b>` + desc;
       box.appendChild(fb);
 
       const next = document.createElement("button");
