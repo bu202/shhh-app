@@ -21,16 +21,25 @@
 | **1. 정확성 보증** | 단어를 영상으로 대조해 대장에 쌓기 | 🔶 **도구 완성 · 부품 수형 640자리 남음** |
 | **2. 제품 골격** | 우리 단어장 · 링크 공유 · 연습 | ✅ **완료** |
 | **3. 디자인 적용** | `design/mockup.html` → 실제 앱 | ✅ **완료** |
-| **4. 수익 구조** | 무료 5단어 벽 · 프로 상태 · 결제 이음새 | 🔶 **벽·마스터 계정 완성, 결제는 5단계** |
+| **4. 수익 구조** | 무료 5단어 벽 · 프로 상태 · 결제 이음새 | ⏸ **베타 동안 벽을 껐다**(`BETA_NO_WALL`) — 결제는 5b |
 | **5a. PWA 출시** | 설치되는 PWA · 오프라인 · 개인정보처리방침 | 🔶 **← 지금 여기** |
+| **5a-5. 출시 전 보안** | 친구 권한 · 세션 · 배포 자산 · 방침 일치 | ✅ **P0 5/5 · P1 4/5 · P2 5/5** (`docs/SECURITY_RELEASE_CHECKLIST.md`) |
 | **5a-2. 로그인** | 단어장이 폰을 바꿔도 따라오게 (카카오·네이버·구글) | ✅ **3사 완료** (네이버 검수 2026-08-08 제출) |
 | **5a-3. 친구** | 초대 링크 → 요청 → 수락 → 서로의 단어장 보기 | ✅ **배포·라이브 검증 완료** |
 | **5a-4. 뜻 표시** | 카드에 낱말 뜻 + 손모양 설명 접기 | ✅ **대응표현 + 뜻풀이** (그림 있는 말의 60%) |
 | **5b. Play 출시** | Bubblewrap → assetlinks → Play($25) | ⬜ **예산 나온 뒤** |
 | **6. 카메라 채점** (후순위) | 지화 32자모 점수 + 교정 안내 | ⬜ 뒤로 미룸 |
 
-**다음 할 일**: **5a 는 코드상 끝났다 — 실기기(안드로이드·아이폰)에서 설치가 실제로 되는지 확인.**
-그 뒤엔 1단계(매일 100건)가 상시 작업으로 남고, 5b 는 예산이 잡히면 연다.
+**다음 할 일** (2026-08-12 기준, 순서대로):
+1. **OAuth 시크릿 6개를 Pages 에 넣는다.** 지금 로그인 3종이 503 이라 앱이 버튼을 아예 안 그린다
+   (`/api/health` 의 `providers` 가 비어 있다). 절차는 `docs/SECURITY_RELEASE_CHECKLIST.md`.
+   넣은 뒤 첫 로그인 때 **단어장 복구 링크**를 열 것 — D1 이전에서 데이터를 안 옮겼다(아래 「D1 이전」).
+2. **실기기(안드로이드·아이폰) PWA 설치 확인.** 특히 *설치된 PWA 에서 로그인 리다이렉트가 앱으로
+   돌아오는지* — 시뮬레이터로는 확인이 불가능하다(함정 39). 남은 목록은 체크리스트 맨 아래.
+3. 1단계(매일 100건)가 상시 작업으로 남고, 5b 는 예산이 잡히면 연다.
+
+**정식 출시(홍보·결제) 전에 반드시**: ① 개인정보 **법률 검토**(국외이전 고지·동의 방식·만 14세)
+② **커스텀 도메인** — 레이트리밋(WAF)과 엣지 캐시 퍼지가 **둘 다 그것 하나에 막혀 있다**.
 카피·방침·SNS 를 건드리기 전에 **「📣 마케팅·법무 스킬 팩을 이 프로젝트에 쓰는 법」**(⛔ 절대 규칙 바로 아래)
 을 먼저 읽을 것 — 고치지 않은 마케팅 스킬은 ⛔ 를 정면으로 깬다.
 
@@ -282,9 +291,53 @@ node scripts/test-compounds.mjs                    # ④ 마지막 줄에 남은
   대가로 「로그인 없이 둘러보기」 상태에서는 만든 사람도 벽에 걸린다. 되살릴 일이 생기면 커밋
   `1b68a90` 에 있다(시크릿 `MASTER_CODE` 도 같이 지웠다).
 - **어느 계정이 내 것인지 가리는 법**: 이메일은 안 받으므로(방침대로 고유 번호만) 대조할 게 없다.
-  대신 KV 의 `b:<uid>` 레코드 `updated` 를 보면 **마지막으로 로그인한 계정**이 드러난다.
+  → `wrangler d1 execute shhh-db --remote -y --command "SELECT id, provider, created_at FROM users"`
+    에서 **`created_at` 이 가장 최근인 행**. 그 `id` 를 `MASTER_UIDS` 에 넣는다.
+- ⚠️ **`MASTER_UIDS` 값이 2026-08-11 에 바뀌었다.** 예전엔 `kakao:1234567` 같은 제공자 번호였고
+  지금은 내부 무작위 id 다. 옛 값을 그대로 두면 **아무도 마스터가 아닌 상태로 조용히 바뀐다**
+  (기본값이 안전한 쪽이라 오류가 안 난다 — 그래서 눈치채기 어렵다).
 
-### 세션·삭제·본문 한도 — 2026-08-11 (출시 전 보안 점검 1단계)
+### D1 이전 + 쿠키 세션 — 2026-08-11 (출시 전 보안 점검 3단계 · **현재 상태**)
+
+**이 절이 저장소·세션에 관한 최신이다.** 아래 두 절(1단계·2단계)은 **KV 시절의 기록**이라
+거기 적힌 `s:<uid>:<token>`·`KV.list`·Bearer 토큰은 지금 코드에 없다 — 왜 그렇게 했었고 무엇이
+문제였는지를 읽는 용도로만 남긴다. 절차·롤백은 `docs/D1_MIGRATION.md`, 판정은 `docs/SECURITY_RELEASE_CHECKLIST.md`.
+
+**옮긴 이유는 친구다.** 8/7 에 "저장하는 게 사용자→단어 배열 하나뿐이라 쿼리도 조인도 없다"며 KV 를
+골랐는데, 그 판단은 **친구 기능이 생기는 순간 틀린 것이 됐다**. 관계는 두 사람에 걸친 데이터라 KV 로는
+두 곳에 적어야 하고 트랜잭션이 없다 → 첫 쓰기만 성공하면 반쪽이 남았다. 처음엔 그 반쪽에서 남의
+단어장이 안 열리게 **막는 코드를 붙였는데 그건 증상을 막은 것**이다. D1 에선 관계가 행 하나라
+**반쪽이라는 상태가 존재하지 않고**, 그 방어 코드도 같이 사라졌다.
+
+| 무엇 | KV 시절 | 지금 |
+|---|---|---|
+| 친구 관계 | 두 사람 레코드에 각각 | **`friendships` 행 하나** |
+| 수락 · 끊기 | 두 번의 쓰기 | `UPDATE` · `DELETE` **각 한 문장** (`changes` 로 판정) |
+| 계정 삭제 | 6번의 개별 삭제 | `DELETE FROM users` + **CASCADE** |
+| 로그아웃 | `KV.list` 훑기(≤60초 창) | `session_version + 1` — **훑지 않으므로 창이 없다** |
+| 세션 토큰 | `<b64u(uid)>.<무작위>`, localStorage | **완전 무작위**, HttpOnly 쿠키, DB엔 **SHA-256 만** |
+| uid | `kakao:1234567` (친구·주소·토큰에 노출) | 무작위 32자. 제공자 번호는 `users` 행 안에만 |
+
+- **쿠키와 D1 은 같은 커밋에 넣었다.** 쿠키만 먼저 나가면 지금 Bearer 라 **성립조차 안 하는 CSRF
+  공격면을 새로 열고** 얻는 게 없다. `session_version` 이 D1 에 있어야 "모든 기기 로그아웃"이 즉시 든다.
+  → 그래서 상태 변경 요청은 **`Origin` 을 본다**(`allowed()` 재사용). GET 은 안 본다 — 낯선 Origin 에는
+    CORS 를 안 열어 줘서 응답을 못 읽는다.
+- 쿠키 속성: `HttpOnly; Secure; SameSite=Lax; Path=/api`. `Path=/api` 라 정적 자산 요청엔 안 실린다.
+- **네이버 갈래만은 세션 고정이 아직 성립한다.** `?code=…&state=…` 링크를 받은 사람의 앱이 남의 code 를
+  대신 내밀면 서버가 그 브라우저에 **남의 계정 쿠키**를 심는다. 그래서 nonce 대조를 남겼고, 안 맞으면
+  `apiLogoutRaw()` 로 **그 자리에서 세션을 끊는다** — 안 끊으면 화면은 로그아웃인데 서버는 로그인이다.
+- **데이터는 안 옮겼다.** 이전 시점 KV 실측이 계정 1개·친구 0개라, 백필 스크립트보다 "다시 로그인 +
+  기존 `#w=` 공유 링크"가 싸고 안전했다(새로 쓴 코드 0줄). **사용자가 늘면 이 선택지가 영영 닫힌다.**
+  - 옮길 단어장(별명 `별이` · 7개)의 복구 링크. **로그인한 뒤 한 번 열면 담긴다**(일회용이고 앱 주소가 아니다):
+    `https://shhh-app.pages.dev/#w=7IKs656RCuuyjOyNqArrs7Tqs6Ag7Iu264ukCuyemOyekArqsIDrk50K6rKw7Zi8CuuniOuKmA`
+    별명은 마이 → ⚙ 설정에서 다시 넣는다. 다 옮기고 나면 이 두 줄을 지울 것.
+- **KV 바인딩은 남겨 뒀다.** 롤백하면 옛 코드가 KV 를 읽어야 선다. D1 이 자리를 잡으면 같이 지운다.
+- 테스트가 **가짜 KV(Map) → 진짜 SQL(`node:sqlite`)** 로 바뀌었다. Map 은 절대 실패하지 않고 즉시
+  일관적이라, 이번에 재려던 것(제약·트랜잭션·`changes`)을 정확히 지우고 있었다. 43 → **75개**.
+- 곁가지로 고친 것: 예외 로그가 `/friends/<uid>` 를 그대로 찍었다 → `pathTemplate()` 로 `:id`.
+  **운영 로그가 "누가 누구와 친구인가"의 기록이 되던 자리**다(안 받기로 한 정보를 로그가 대신 모은다).
+
+### 세션·삭제·본문 한도 — 2026-08-11 (출시 전 보안 점검 1단계 · **KV 시절 기록**)
 코덱스 보고서를 직접 재본 결과에서 나온 것들. **가장 큰 구멍은 보고서에 없던 것**이었다.
 - **로그인 시작(`/login/*`)이 인증 없이 KV 에 썼다.** 무료 플랜 KV 는 **하루 1,000 writes** 라
   `curl` 반복 1,000번이면 그날 남은 시간 동안 아무도 단어장을 저장하지 못한다. 계정도 도구도 필요 없다.
@@ -356,7 +409,7 @@ node scripts/test-compounds.mjs                    # ④ 마지막 줄에 남은
   | 유료벽 서버 판정 | 벽의 단위가 **손짓 수**라 서버가 사전을 알아야 한다. 결제를 붙일 때 함께 설계 |
   | 친구 관계 원자성 | Durable Object 이전. 사용자 둘짜리 앱에 과하다(코드 주석에 승급 조건 있음) |
 
-### 출시 전 적대적 검토 2차 — 2026-08-11 (보고서를 재보고 고친 것)
+### 출시 전 적대적 검토 2차 — 2026-08-11 (보고서를 재보고 고친 것 · **KV 시절 기록**)
 외부 검토 보고서(High 6 · Medium 6 · Low 1, 판정 No-Go)를 **그대로 받지 않고 직접 쟀다**(함정 52).
 절반은 사실이었고, 절반은 이 앱의 구조를 잘못 읽었다. 고친 것과 **일부러 안 고친 것**을 같이 남긴다.
 
@@ -408,6 +461,13 @@ node scripts/test-compounds.mjs                    # ④ 마지막 줄에 남은
   `localStorage.setItem('shh-pro','1')`. `?pro=1` 주소는 2026-08-11 에 지웠다 — 주소 하나로 유료를
   켤 수 있는데 화면은 가격을 말하고 있어서, 결제를 붙이는 순간 그대로 구멍이 된다.
 - 벽 문구는 `upsell()` 한 곳에서만 만든다 — 사전 화면과 단어장 화면에서 말이 갈리지 않게.
+- ⚠️ **2026-08-11: 베타 동안 벽을 껐다** (`BETA_NO_WALL = true`, `PRO_PRICE = ""`).
+  벽 자체가 문제가 아니라 **막다른 길**이었다 — 닿으면 `₩4,900` 버튼이 뜨는데 누르면
+  "결제는 앱(Play 스토어) 버전에서 열려요"로 끝나서, 사용자가 결제도 못 하고 담지도 못했다.
+  **파는 물건이 없는데 값을 부르지 않는다.** `FREE_LIMIT`·`upsell()`·`bookCost()`·마스터 판정은
+  손대지 않았으니 결제(5b)가 붙는 날 `BETA_NO_WALL` 한 줄만 `false` 로 되돌리면 그대로 돌아온다.
+  - 그때 **서버 판정도 같이 옮긴다.** 지금 `isPro` 는 localStorage 라 콘솔 한 줄로 켤 수 있는데,
+    팔기 시작하는 순간 그게 그대로 구멍이 된다(벽의 단위가 손짓 수라 서버가 사전을 알아야 한다).
 
 ### 2단계에서 정한 것
 - **단어장에 저장하는 건 문자열 하나뿐** (`localStorage: shh-wordbook`). 뜻·그림은 매번 사전에서 다시 찾는다 —
@@ -448,8 +508,11 @@ node scripts/test-compounds.mjs                    # ④ 마지막 줄에 남은
 ## 제약 (바뀌지 않는 전제)
 - 예산 **$0**. 정적 호스팅(GitHub/Cloudflare Pages).
 - **서버는 로그인·단어장 동기화 하나뿐이다** (2026-08-07 에 「안 할 것: 서버」를 여기서만 깼다).
-  `worker/index.js` — Cloudflare Worker + KV, 무료 한도 안. **앱은 서버 없이도 온전히 돈다** —
+  `worker/index.js` — Cloudflare **Pages Functions + D1**, 무료 한도 안. **앱은 서버 없이도 온전히 돈다** —
   로그인은 얹는 기능이지 단어장이 서 있는 조건이 아니다. 새 기능을 서버로 미루기 전에 이 문장을 다시 읽을 것.
+  - ⚠️ **2026-08-11 에 KV → D1 으로 옮겼다.** 8/7 의 "저장하는 게 단어 배열 하나뿐이라 SQL 이 과하다"는
+    판단은 **친구 기능이 생기는 순간 틀린 것이 됐다** — 관계는 두 사람에 걸친 데이터고 KV 엔 트랜잭션이
+    없다. 자세한 건 아래 「D1 이전」 절과 `docs/D1_MIGRATION.md`.
 - Vanilla HTML/CSS/JS, **빌드 도구·프레임워크 없음**. 의존성 최소.
 - 결정은 항상 **장단점 + 비용**을 표로 제시하고 승인받은 뒤 진행. 단계마다 실제 브라우저로 검증.
 
@@ -458,19 +521,34 @@ node scripts/test-compounds.mjs                    # ④ 마지막 줄에 남은
 # 로컬 실행 (SW는 file://에서 안 돎). no-store 라 옛 JS/CSS 를 안 문다 — 함정 6 회피
 python3 scripts/serve.py 8000       # http://localhost:8000
 
-# 검증 (전부 통과해야 함)
-for t in auth book fingers compounds match assemble knn screen home meaning friends; do node scripts/test-$t.mjs; done
+# 로그인·친구까지 같이 보려면 Pages Functions 가 필요하다(배포와 같은 모양으로 돈다)
+npm run build && npx wrangler pages dev dist   # http://127.0.0.1:8788
+#   ⚠️ 로컬에서는 **로그인이 안 된다**(복귀 주소가 APP_ORIGIN 하나로 잠겨 있다 — 함정 57).
 
-# 배포 — 앱과 API 가 **한 Pages 프로젝트**다. `cd worker && wrangler deploy` 는 이제 없다
-# (worker/wrangler.jsonc 를 지웠다: 그 명령이 옛 workers.dev 에 같은 KV 를 보는 두 번째 문을 되살린다).
-npx wrangler pages deploy --project-name shhh-app
-npx wrangler pages secret list --project-name shhh-app    # 넣은 키 목록(값은 안 보인다)
-npx wrangler pages deployment tail --project-name shhh-app  # 로그인이 실패할 때 서버 쪽 로그
+# 검증 (전부 통과해야 함). npm test 가 이 목록을 그대로 돈다.
+npm test    # auth book fingers compounds match assemble knn screen home meaning friends hash sw dist
+npm audit
 
-# KV 를 들여다볼 때는 --remote 를 반드시 붙인다 (함정 56). 없으면 로컬 시뮬레이션을 보여준다.
-NS=f55a12622af84380a0865dd8ff4824ac
-npx wrangler kv key list --namespace-id $NS --remote      # s:세션 b:단어장 c:·u:초대코드 f:친구 x:state
-npx wrangler kv bulk delete <파일.json> --namespace-id $NS --remote --force   # 파일은 ["s:…","s:…"]
+# 배포 — 앱과 API 가 **한 Pages 프로젝트**다. `cd worker && wrangler deploy` 는 이제 없다.
+# ⚠️ `--branch main` 을 빼면 **프리뷰로 간다**(git 브랜치가 cf-pages 라서). 한 번 겪었다.
+npm run build   # dist/ 만 배포된다. 넣을 파일 목록은 scripts/build.mjs 의 INCLUDE 한 곳
+npx wrangler pages deploy --project-name shhh-app --branch main --commit-dirty=true
+npx wrangler pages deployment list --project-name shhh-app   # Environment 열이 Production 인지 확인
+npx wrangler pages secret list --project-name shhh-app       # 넣은 키 목록(값은 안 보인다)
+npx wrangler pages deployment tail --project-name shhh-app   # 로그인이 실패할 때 서버 쪽 로그
+
+# DB 들여다보기 — D1. `--remote` 없으면 로컬 miniflare 를 본다(함정 56 은 D1 에도 그대로다).
+npx wrangler d1 execute shhh-db --remote -y --command "SELECT id, provider, created_at FROM users"
+npx wrangler d1 execute shhh-db --remote -y --command "SELECT COUNT(*) FROM friendships"
+npx wrangler d1 execute shhh-db --remote -y --file=worker/schema.sql   # 재실행 가능(IF NOT EXISTS)
+#   내 uid 를 찾을 때: users 에서 created_at 이 가장 최근인 행. MASTER_UIDS 에 넣는 값이 이것이다.
+#   ⚠️ KV 네임스페이스는 **롤백용으로 남겨 뒀다.** 새 코드는 KV 를 읽지 않는다.
+
+# 배포 후 검증 — 명령 자체가 세 가지로 거짓말한다(전부 겪었다). 자세한 건 docs/SECURITY_RELEASE_CHECKLIST.md
+#   ① ?cb= 없으면 엣지 캐시가 옛 파일 ② -L 없으면 .html 이 308 만 ③ 없는 경로에 index.html 을 200
+for u in /CLAUDE.md /worker/index.js /wrangler.jsonc; do
+  curl -sL -o /dev/null -w "$u %{content_type}\n" "https://shhh-app.pages.dev$u?cb=$RANDOM$RANDOM"
+done   # 전부 text/html 이어야 정상(= 파일이 없어 index.html 로 떨어진 것)
 
 # 데이터 수집 (키는 로컬 전용, 결과 JSON엔 키 미포함)
 node scripts/fetch-ksl.mjs '<서비스키>'     # 전체 사전 수집(~3700+)
@@ -484,9 +562,18 @@ node scripts/fetch-ksl.mjs --mock           # 매핑 로직 자가검증(키·�
 | `index.html` | 진입점: 로그인 게이트 + 안내문 + 헤더 + 화면들(`data-screen`: home·dict·book·quiz·me + 탭 없는 settings·account) + 하단 탭 + 크레딧 |
 | `js/friends.js` | **친구**(요청→수락) 목록·초대 링크(`#f=`)·친구 단어장 팝업. app.js 엔 훅 두 개(`onInviteLink`·`onScreenShown`)로만 닿는다 |
 | `js/app.js` | 사전 인덱스·매칭·렌더·지화. 흐름: 입력→`matchSentence`(그리디)→`renderResults` |
-| `js/authApi.js` | **fetch 는 여기에만.** 세션 토큰 보관 + `/book` 호출. 서버 주소가 바뀌면 `API` 한 줄 |
-| `js/auth.js` | 로그인 화면 + **어느 쪽 단어장이 새것인지 정하는 규칙**(`syncPlan`, 순수 함수). `scripts/test-auth.mjs` 가 잰다 |
-| `worker/index.js` | Cloudflare Worker. OAuth 3사 + KV 단어장. 등록 절차는 `worker/SETUP.md` |
+| `js/authApi.js` | **fetch 는 여기에만.** `credentials:"same-origin"` 으로 쿠키를 실어 보낸다. **세션 토큰은 여기 없다**(HttpOnly 쿠키) — 남는 건 로그인 표시(`shh-via`)와 내 uid(`shh-me`)뿐 |
+| `js/auth.js` | 로그인 화면 + **어느 쪽 단어장이 새것인지 정하는 규칙**(`syncPlan`, 순수 함수). `scripts/test-auth.mjs` 가 잰다. 409 충돌 병합은 `pushBook()` 한 곳 |
+| `worker/index.js` | Pages Functions 본체. OAuth 3사 + **D1** 단어장·친구·세션. 등록 절차는 `worker/SETUP.md` |
+| `worker/schema.sql` | **D1 스키마 5개 테이블**(users·sessions·books·friendships·invite_codes). 재실행 가능(`IF NOT EXISTS`) |
+| `functions/api/[[path]].js` | Pages 의 `onRequest` → Worker 의 `fetch` 이음새. **로직을 여기 옮겨 적지 않는다** |
+| `scripts/build.mjs` | 배포 산출물(`dist/`) 생성. **allowlist** — `INCLUDE` 에 없는 파일은 안 나간다(새 파일의 기본값이 "안 나감") |
+| `scripts/_d1.mjs` | 테스트용 D1 셰임(`node:sqlite`). **진짜 SQL** 이라 UNIQUE·CASCADE·트랜잭션이 실제로 일어난다 |
+| `scripts/test-dist.mjs` | 빌드를 돌린 뒤 `dist/` 에 내부 파일이 없는지 + 선캐시 목록이 실재하는지 |
+| `scripts/test-hash.mjs` | 조작된 주소 해시(`#q=%E0%A4%A`)가 앱 초기화를 못 멈추는지 |
+| `scripts/test-sw.mjs` | SW 가 OAuth 왕복 주소·API·실패 응답을 캐시하지 않는지 |
+| `docs/SECURITY_RELEASE_CHECKLIST.md` | **출시 판정.** 해결/미해결과 *어떻게 확인했는지*. 배포 절차·롤백·실기기 목록 |
+| `docs/D1_MIGRATION.md` | KV → D1 이전 계획·롤백. 데이터를 안 옮긴 이유(계정 1개)가 적혀 있다 |
 | `js/camera.js` | **6단계 카메라**(MediaPipe·KNN 지문자·한글 조합기). **`index.html` 이 로드하지 않는다** — 되살리는 법은 파일 맨 위 주석에. 자모 표는 app.js 와 한시적 중복이고 `test-assemble.mjs` 가 대조한다 |
 | `data/ksl-dict.json` | 이미지 사전(kcisa, 3,622·수형그림 O). `scripts/fetch-ksl.mjs`가 생성 |
 | `data/ksl-fulldict.json` | 전체 텍스트 사전(13,797·수형설명만, 그림 X). `scripts/fetch-fulldict.mjs`가 생성 |
@@ -710,7 +797,7 @@ python3 scripts/sim.py tap 603 2112      # 좌표는 스크린샷 픽셀(1206x26
 33. **로그인만 붙이면 아무것도 안 달라진다 — "나만의 단어장"은 저장소 문제였다.**
     카카오·네이버는 브라우저만으로도 로그인이 되지만, 그러면 단어장은 **여전히 localStorage 에만** 남아
     폰을 바꾸면 그대로 사라진다. 사용자는 로그인 화면만 하나 더 보고 얻는 게 없다.
-    → 서버(Worker+KV)를 세운 이유가 로그인이 아니라 **DB** 라는 걸 잊지 말 것. 이 구분을 놓치면
+    → 서버를 세운 이유가 로그인이 아니라 **DB** 라는 걸 잊지 말 것(그래서 2026-08-11 에 D1 로 갔다). 이 구분을 놓치면
       "로그인 붙였는데 왜 안 따라오죠"라는 버그를 나중에 처음부터 다시 만들게 된다.
 
 34. **SW 의 런타임 캐시가 API 응답까지 먹는다.** `service-worker.js` 의 fetch 핸들러는 **모든 GET** 을
@@ -867,8 +954,8 @@ python3 scripts/sim.py tap 603 2112      # 좌표는 스크린샷 픽셀(1206x26
 40. **별명은 제공자에게 받지 않고 사용자가 짓는다.** 이름·이메일을 카카오에서 받으면 비즈앱 전환
     심사가 붙고 개인정보처리방침도 커진다. 마이 화면의 한 칸으로 직접 받으면 **아무 말이나 쓸 수 있어
     신원 정보가 아니고**, 심사도 방침 대공사도 없이 "○○님"을 얻는다. 개인정보를 덜 받는 쪽이 더 짧았다.
-    - 별명은 단어장과 **같은 KV 레코드**(`{words, name, updated}`)에 산다. 따로 두면 "단어는 새것,
-      별명은 옛것" 인 반쪽 상태가 생기고 LWW 를 두 번 해야 한다.
+    - 별명은 단어장과 **같은 레코드**(`books` 행의 `nickname`)에 산다. 따로 두면 "단어는 새것,
+      별명은 옛것" 인 반쪽 상태가 생기고 판정을 두 번 해야 한다.
     - 별명을 고치면 `touch()` 로 **시각도 같이 올린다.** 안 올리면 다음 동기화에서 서버가 더 새것으로
       판정돼 방금 지은 별명이 되돌아간다.
     - 입력 글자는 **16px**(함정 31). 새 `<input>` 을 만들 때마다 걸리는 자리다.
@@ -884,12 +971,39 @@ python3 scripts/sim.py tap 603 2112      # 좌표는 스크린샷 픽셀(1206x26
     사전 로드 전에 서버 단어장을 받으면 **전부 "사전에 없음"으로 버려진다** — 다른 기기의 단어장이
     통째로 사라지는 사고다. 그래서 `appReady?.()` 를 `main()` 의 사전 로드 **뒤**에 뒀다.
 
+60. **배포 검증 명령이 세 가지로 거짓말한다 — 셋 다 "안 고쳐졌다"로 읽힌다.** 레포 전체 공개를
+    막고 확인하는데 `/CLAUDE.md` 가 계속 **200** 이었다.
+    - ① **Pages 는 없는 경로에 `index.html` 을 200 으로 준다**(SPA 폴백). 상태코드로 보면 파일이
+      아직 있는 것처럼 보인다 → **`Content-Type` 이나 본문**을 봐야 한다(`text/html` 이면 사라진 것).
+    - ② **엣지 캐시가 옛 파일을 붙들고 있다**(`cf-cache-status: HIT`, `s-maxage=604800` = 7일).
+      배포는 깨끗한데 맨 URL 만 옛것이다 → **`?cb=$RANDOM`** 을 붙여야 실제 배포본을 본다.
+      ⚠️ `*.pages.dev` 는 Cloudflare 소유 존이라 **퍼지할 수 없다.** 커스텀 도메인이 붙으면 풀린다.
+    - ③ **Pages 가 `/privacy.html` 을 `/privacy` 로 308 보낸다.** `-L` 이 없으면 빈 본문을 받고
+      "방침이 배포 안 됐다"고 오진한다(실제로 그랬다).
+    → `curl -sL … "?cb=$RANDOM$RANDOM"` 로 재고 **Content-Type** 을 본다. 함정 30·48 의 연장선이다:
+      **결과가 이상하면 코드보다 측정 방법을 먼저 의심한다.**
+
+61. **가짜 저장소는 "무엇이 실패할 수 있는가"를 지운다.** `test-friends` 의 가짜 KV 는 `Map` 이라
+    절대 실패하지 않고 즉시 일관적이었다 — 그런데 D1 이전에서 재려던 것이 정확히 **제약·트랜잭션·
+    `changes` 카운트**였다. 흉내내면 아무것도 안 재게 된다(함정 50 의 재발이다).
+    → `scripts/_d1.mjs` 가 `node:sqlite` 로 D1 규약을 얹는다. UNIQUE 충돌도 외래키 CASCADE 도
+      `BEGIN/ROLLBACK` 도 **실제로** 일어난다. **가짜로 대체하려는 것이 재려는 것이면 가짜를 쓰면 안 된다.**
+    - 곁가지: 이때 쓴 검사 하나가 **항진명제**였다(양변이 같은 식이라 늘 통과). 표본 2개 대신
+      **실데이터 400건**에 대고 "출제된 것에는 미확정 부품이 없다"로 바꿔야 실제로 물린다.
+
+62. **`wrangler d1 create` 가 만드는 바인딩 이름은 `shhh_db` 다** — 코드가 쓰는 `DB` 가 아니다.
+    출력에 나온 스니펫을 그대로 붙여넣으면 `env.DB` 가 undefined 라 **모든 요청이 500** 이 된다.
+    → `wrangler.jsonc` 에 `"binding": "DB"` 로 적는다. `pages dev` 시작 로그의 바인딩 표에서
+      `env.DB (shhh-db)` 가 뜨는지 확인하는 게 가장 빠르다.
+
 56. **`wrangler kv` 는 `--remote` 없이는 로컬 시뮬레이션을 본다.** wrangler 4 에서 `kv key list` 가
     `worker/.wrangler/` 안의 miniflare 저장소를 읽는다. 실제 KV 에 세션 11개·단어장 4개가 있는데
     화면엔 **"0개"** 가 떴고, 그대로 믿었으면 "지울 세션이 없다"고 넘어갈 뻔했다.
     → KV 를 볼 때는 늘 `--remote`. **"없다"는 답을 받으면 조회 방법부터 의심한다** — 함정 46
       ("응답이 없다"와 "없다는 응답"은 다르다)의 도구판이다.
-    곁가지: `worker/.wrangler/` 는 이 조회가 만든다. `.gitignore` 에 넣었다.
+    ⚠️ **`wrangler d1 execute` 도 똑같다.** 저장소가 KV 에서 D1 로 바뀌었다고 이 함정이 사라지지
+      않는다 — `--remote` 없이 돌리면 `.wrangler/` 안의 로컬 DB 를 보여주고 그건 늘 비어 있다.
+    곁가지: `.wrangler/` 는 이 조회가 만든다. `.gitignore` 에 넣었다.
 
 58. **`_headers` 의 CSP 는 Service Worker 에도 붙는다 — 그리고 SW 안의 위반은 조용하다.**
     Cloudflare Pages 로 옮기며 `connect-src 'self'` 로 조였더니 **수형 그림이 한 장도 안 떴다.**
