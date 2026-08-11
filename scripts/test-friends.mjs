@@ -112,6 +112,41 @@ await call(tokA, "/me", "DELETE");
 assert.deepEqual((await call(tokB, "/friends")).body.friends, [], "탈퇴한 사람이 친구 목록에 남았다");
 assert.equal(env._kv.get("c:" + a1.body.code), undefined, "탈퇴했는데 초대 코드가 살아있다");
 
+// ── 초대 코드 회전 ──
+// 링크는 어디로든 퍼진다. 되돌릴 방법이 없으면 한 번 샌 코드가 영영 요청을 받는다.
+{
+  const e6 = makeEnv();
+  const [x, y, z] = [tok("kakao:X", "x"), tok("kakao:Y", "y"), tok("kakao:Z", "z")];
+  for (const [t, u] of [[x, "kakao:X"], [y, "kakao:Y"], [z, "kakao:Z"]]) e6._kv.set("s:" + u + ":" + t, "1");
+  const f = async (t, path, method = "GET", body) => {
+    const res = await worker.fetch(new Request("https://api.test" + path, {
+      method, headers: { Authorization: "Bearer " + t, Origin: ORIGIN, "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }), e6);
+    return { status: res.status, body: await res.json().catch(() => null) };
+  };
+
+  const old = (await f(x, "/friends")).body.code;
+  // Y 는 옛 링크로 친구가 된 사람. 회전해도 이 관계는 살아 있어야 한다.
+  await f(y, "/friends", "POST", { code: old });
+  await f(x, "/friends/kakao:Y", "PUT");
+
+  // 28. 회전하면 코드가 바뀐다. `/friends/code` 가 `/friends/:uid` 정규식보다 먼저 잡혀야 한다.
+  const rotated = await f(x, "/friends/code", "POST");
+  assert.equal(rotated.status, 200, "회전 라우트가 /friends/:uid 로 새 버렸다");
+  assert.ok(rotated.body.code && rotated.body.code !== old, "회전했는데 코드가 그대로다");
+  assert.equal((await f(x, "/friends")).body.code, rotated.body.code, "목록이 아직 옛 코드를 준다");
+
+  // 29. **옛 링크는 죽는다.** 이게 이 기능의 전부다.
+  assert.equal((await f(z, "/friends", "POST", { code: old })).status, 404, "회전했는데 옛 링크가 아직 산다");
+
+  // 30. 새 링크는 된다.
+  assert.equal((await f(z, "/friends", "POST", { code: rotated.body.code })).body.state, "sent", "새 링크로 요청이 안 된다");
+
+  // 31. **이미 맺어진 친구는 그대로다.** 코드는 "요청을 보낼 자격"이지 관계가 아니다.
+  assert.deepEqual((await f(x, "/friends")).body.friends.map((u) => u.uid), ["kakao:Y"], "회전이 친구 관계를 끊었다");
+}
+
 // ── 마스터 계정 ──
 // 만든 사람 계정은 무료 벽에 안 걸린다. 판단은 **서버가** 한다 — 로컬에만 두면 폰을 바꾸는 순간
 // 사라져서 새 기기에서 벽에 걸린다.
@@ -239,4 +274,4 @@ assert.equal(env._kv.get("c:" + a1.body.code), undefined, "탈퇴했는데 초�
     400, "다른 제공자의 state 가 통과했다");
 }
 
-console.log("test-friends: 31개 통과 — 단어장 비공개 · 마스터 · 복귀 주소 · 세션 무효화 · 본문 한도 · state 서명");
+console.log("test-friends: 35개 통과 — 단어장 비공개 · 마스터 · 복귀 주소 · 세션 무효화 · 본문 한도 · state 서명 · 코드 회전");

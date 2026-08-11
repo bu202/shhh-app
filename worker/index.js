@@ -403,6 +403,21 @@ export default {
         return json(env, req, { state: "sent", friend: await brief(env, other, false) });
       }
 
+      // 초대 링크 새로 만들기. 옛 코드는 그 자리에서 죽는다 — 링크가 어디까지 퍼졌는지
+      // 모르게 됐을 때 되돌릴 방법이 이것뿐이다(코드에 만료를 두지 않는 이유이기도 하다:
+      // 언제 죽일지는 사람이 정한다. 자동 만료는 멀쩡한 링크까지 조용히 끊는다).
+      //
+      // **이미 맺어진 친구는 그대로다.** 코드는 "요청을 보낼 자격"이지 관계 자체가 아니다.
+      // 아래 m2 정규식이 `/friends/code` 도 잡으므로 **이 라우트가 먼저** 와야 한다.
+      if (path === "/friends/code" && req.method === "POST") {
+        const old = await env.KV.get("u:" + uid);
+        if (old) await env.KV.delete("c:" + old);
+        const code = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+        await env.KV.put("u:" + uid, code);
+        await env.KV.put("c:" + code, uid);
+        return json(env, req, { code });
+      }
+
       const m2 = path.match(/^\/friends\/([^/]+)(\/book)?$/);
       if (m2) {
         const other = decodeURIComponent(m2[1]);

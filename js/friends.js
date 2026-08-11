@@ -130,6 +130,22 @@ if (typeof document !== "undefined") {
     invite.textContent = "🔗 친구 초대 링크 보내기";
     invite.addEventListener("click", () => el("share-btn").click()); // 만드는 자리는 한 곳(app.js)
     box.appendChild(invite);
+
+    // 링크는 어디로든 퍼진다. 퍼진 걸 되돌릴 방법이 없으면 초대 코드는 한 번 새는 순간
+    // 영영 요청을 받는 주소가 된다. 만료를 자동으로 걸지 않은 이유는 그러면 멀쩡한 링크까지
+    // 조용히 끊기기 때문이다 — **언제 죽일지는 사람이 정한다.**
+    const rotate = document.createElement("button");
+    rotate.className = "btn-ghost"; rotate.type = "button";
+    rotate.textContent = "초대 링크 새로 만들기";
+    rotate.addEventListener("click", async () => {
+      if (!confirm("새 링크를 만들면 전에 보낸 링크는 못 쓰게 돼요.\n이미 친구가 된 사람은 그대로예요. 계속할까요?")) return;
+      const d = await apiRotateCode();
+      if (!d || !d.code) { toast("연결이 안 돼요. 잠시 뒤 다시 눌러주세요"); return; }
+      localStorage.setItem(CODE_KEY, d.code);
+      if (DATA) DATA.code = d.code;   // 손에 든 목록을 고친다 — KV 는 쓰고 바로 읽으면 옛 값이 온다(함정 49)
+      toast("새 초대 링크를 만들었어요");
+    });
+    box.appendChild(rotate);
   }
 
   function section(title, list, kind) {

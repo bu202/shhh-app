@@ -69,6 +69,9 @@ const apiAcceptFriend = (uid) => apiCall("/friends/" + encodeURIComponent(uid), 
 // 거절 · 요청 취소 · 친구 끊기가 전부 이 한 줄이다 — 서버에서도 "이 연결을 지운다" 하나다.
 const apiRemoveFriend = (uid) => apiCall("/friends/" + encodeURIComponent(uid), { method: "DELETE" });
 const apiFriendBook = (uid) => apiCall("/friends/" + encodeURIComponent(uid) + "/book");
+// 초대 링크 새로 만들기. 옛 코드는 서버에서 그 자리에 죽는다 — 링크가 어디까지 퍼졌는지
+// 모르게 됐을 때 되돌릴 방법이 이것뿐이다. 이미 맺어진 친구는 그대로다.
+const apiRotateCode = () => apiCall("/friends/code", { method: "POST" });
 
 // 네이버 전용. 앱 주소로 돌아온 code 를 서버에 넘겨 세션 토큰으로 바꾼다 —
 // 비밀키가 필요한 교환이라 브라우저에서 직접 못 한다. apiCall 을 안 쓰는 이유는

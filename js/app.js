@@ -647,11 +647,10 @@ let isMaster = localStorage.getItem(MASTER_KEY) === "1";
 let isPro = isMaster || localStorage.getItem(PRO_KEY) === "1";
 const limit = () => (isPro ? Infinity : FREE_LIMIT);
 
-// 개발용: ?pro=1 로 벽 너머 화면을 지금 확인할 수 있게. ?pro=0 이면 해제.
-(() => {
-  const v = new URLSearchParams(location.search).get("pro");
-  if (v === "1" || v === "0") { isPro = v === "1"; localStorage.setItem(PRO_KEY, v); }
-})();
+// ⚠️ `?pro=1` 로 벽을 넘던 개발 코드는 **지웠다**(2026-08-11). 주소 하나로 유료 상태를 켤 수 있는데
+//    화면은 가격을 말하고 있어서, 결제를 붙이는 순간 그대로 구멍이 된다. 개발 중에 벽 너머를 보려면
+//    콘솔에서 `localStorage.setItem('shh-pro','1')` 하면 된다 — 코드로 열어 둘 이유가 없다.
+//    진짜 해결(서버가 판정)은 결제가 붙을 때다. localStorage 를 직접 고치는 길은 그때까지 남는다.
 
 // 서버가 정하는 상태. 로그인한 계정이 MASTER_UIDS 에 있으면 master, 그러면 pro 도 참이다.
 // **로컬에도 적어 둔다** — 다음에 열 때 서버 응답을 기다리는 동안, 그리고 오프라인일 때도
