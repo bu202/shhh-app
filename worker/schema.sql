@@ -46,6 +46,9 @@ CREATE TABLE IF NOT EXISTS books (
 CREATE TABLE IF NOT EXISTS friendships (
   requester_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   addressee_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  -- 두 uid 를 **정렬해 이어 붙인 값**. 방향이 달라도 같은 쌍이면 같은 문자열이다.
+  -- 앱이 계산해 넣는다(생성 컬럼이 아닌 이유: ALTER 로 추가하려면 상수 기본값이어야 한다).
+  pair_key      TEXT,
   status        TEXT NOT NULL CHECK (status IN ('pending', 'accepted')),
   created_at    INTEGER NOT NULL,
   accepted_at   INTEGER,
@@ -53,8 +56,13 @@ CREATE TABLE IF NOT EXISTS friendships (
 );
 -- 받은 요청 목록을 뽑는 쪽. 없으면 목록 조회가 전체 스캔이 된다.
 CREATE INDEX IF NOT EXISTS friendships_addressee ON friendships(addressee_id, status);
--- ⚠️ A→B 와 B→A 가 **둘 다** 있으면 "서로 요청"이라 애플리케이션이 즉시 accepted 로 만든다.
---    DB 로 막지 않는 이유: 막으면 그 정상적인 경합이 오류가 되어 버린다.
+-- ⚠️ **관계는 두 사람당 하나다.** 전에는 이걸 애플리케이션이 SELECT 로 확인했는데,
+--    A→B 와 B→A 가 **동시에** 오면 둘 다 "관계 없음"을 읽고 각자 INSERT 해서 행이 둘 생겼다
+--    (PK 가 방향까지 포함해서 안 부딪힌다). 그러면 목록에 같은 사람이 두 번 나오고,
+--    남은 「취소」를 누르면 DELETE 가 양방향이라 **이미 맺은 친구가 끊겼다.**
+--    이제 그 경합은 UNIQUE 충돌이 되고, 충돌 자체가 "서로 보냈다"는 신호라
+--    같은 문장의 ON CONFLICT 가 그 자리에서 accepted 로 만든다(worker/index.js 의 POST /friends).
+CREATE UNIQUE INDEX IF NOT EXISTS friendships_pair ON friendships(pair_key);
 
 -- 초대 코드.
 -- ⚠️ 세션 토큰과 달리 **원문을 저장한다.** 처음엔 해시만 두려다 되돌렸다 — 사용자가 폰을 바꾸면

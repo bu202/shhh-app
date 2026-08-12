@@ -283,6 +283,156 @@ const call = async (env, token, path, method = "GET", body, extra = {}) => {
   assert.equal((await cb(tampered)).status, 400, "n 을 바꾼 state 가 통과했다");
 }
 
+// ══ 6b. 로그인 왕복 표 — **콜백을 연 브라우저가 시작한 브라우저인가** ══════════
+//
+// 여기가 이 파일에서 가장 중요한 자리다. state 서명은 "우리가 만든 state 인가"만 말한다 —
+// **누가 그 주소를 들고 왔는지는 모른다.** 그래서 이런 공격이 성립했었다:
+//   ① 공격자가 자기 로그인을 시작해 아직 안 쓴 `?code=…&state=…` 를 손에 쥔다
+//   ② 그 주소를 **이미 로그인해 있는 피해자**에게 보낸다
+//   ③ 서버가 서명이 맞으니 code 를 교환하고 세션을 만들어 피해자 브라우저에 공격자 계정 쿠키를 심는다
+//   ④ 앱은 그 뒤에야 nonce 가 다른 걸 알지만 이미 늦었고, 다음 동기화에서 피해자의
+//      단어장과 별명이 **공격자 계정으로** 올라간다
+// 이제 로그인을 시작할 때 그 브라우저에만 표(shh_t)를 심고, 콜백에서 먼저 대조한다.
+{
+  const env = makeEnv({ KAKAO_ID: "id", KAKAO_SECRET: "s", NAVER_ID: "id", NAVER_SECRET: "s" });
+
+  // 제공자 서버를 부르지 않는다. 진짜로 부르면 테스트가 남의 서버 상태에 매달리고,
+  // 재려는 것(우리 문이 언제 열리나)과도 상관이 없다.
+  const withProvider = async (fn) => {
+    const real = globalThis.fetch;
+    globalThis.fetch = async (url) => new Response(JSON.stringify(
+      // 제공자마다 회원번호가 있는 자리가 다르다(카카오 id · 네이버 response.id · 구글 sub).
+      // 셋을 다 담아 둔다 — 어느 갈래를 재든 같은 가짜가 쓰인다.
+      String(url).includes("token")
+        ? { access_token: "t" }
+        : { id: "u1", sub: "u1", response: { id: "u1" } }),
+      { headers: { "Content-Type": "application/json" } });
+    try { return await fn(); } finally { globalThis.fetch = real; }
+  };
+  const sessions = () => env.DB._db.prepare("SELECT COUNT(*) n FROM sessions").get().n;
+  const start = async (p = "kakao") => {
+    const r = await worker.fetch(new Request(`https://api.test/login/${p}?n=nonce-1`), env);
+    const set = r.headers.get("Set-Cookie") || "";
+    return {
+      state: new URL(r.headers.get("Location")).searchParams.get("state"),
+      txn: (set.match(/shh_t=([^;]*)/) || [])[1] || "",
+      set,
+    };
+  };
+  const cb = (state, cookie) => worker.fetch(new Request(
+    "https://api.test/cb/kakao?code=real-code&state=" + encodeURIComponent(state),
+    cookie ? { headers: { Cookie: cookie } } : undefined), env);
+
+  const a = await start();
+
+  // 76. 로그인 시작이 **그 브라우저에만** 표를 심는다. HttpOnly 여야 자바스크립트가 못 읽는다.
+  assert.ok(a.txn, "로그인 시작이 표를 안 심었다");
+  assert.match(a.set, /HttpOnly/, "표가 HttpOnly 가 아니다");
+  assert.match(a.set, /SameSite=Lax/, "표에 SameSite 가 없다 — 제공자에서 돌아올 때 안 실린다");
+  assert.match(a.set, /Max-Age=600/, "표에 수명이 없다");
+
+  // 77. **원본이 state 에 실리면 안 된다.** state 는 주소에 실려 남에게 보이므로,
+  //     원본이 거기 있으면 표를 그대로 베껴 붙일 수 있다. 실리는 건 해시뿐이다.
+  assert.ok(!a.state.includes(a.txn), "표 원본이 state 에 실려 있다 — 베껴 쓸 수 있다");
+
+  // 78. ★ **표가 없으면 거부한다.** 공격자의 유효한 code/state 를 남이 열었을 때가 이 경우다.
+  const noCookie = await cb(a.state, null);
+  assert.equal(noCookie.status, 400, "표 없이 콜백이 통과했다 — 남의 링크로 로그인이 된다");
+  assert.equal(sessions(), 0, "거부했는데 세션이 만들어졌다");
+  assert.ok(!/shh_s=/.test(noCookie.headers.get("Set-Cookie") || ""), "거부했는데 세션 쿠키를 심었다");
+
+  // 79. ★ **다른 표여도 거부한다.** 피해자가 자기 로그인을 시작한 적이 있어도 마찬가지다.
+  const b = await start();
+  assert.equal((await cb(a.state, "shh_t=" + b.txn)).status, 400, "남의 state 를 내 표로 통과시켰다");
+  assert.equal((await cb(a.state, "shh_t=" + a.txn.slice(0, -1))).status, 400, "표 한 글자를 지워도 통과했다");
+  assert.equal(sessions(), 0, "거부했는데 세션이 만들어졌다");
+
+  // 80. ★ **거부는 제공자를 부르기 전에 일어난다.** 세션이 안 생기는 것만 봐서는
+  //     "부르고 나서 버렸다"와 구분이 안 된다 — 그러면 남의 링크로 우리 쿼터를 태울 수 있다.
+  let called = 0;
+  const real = globalThis.fetch;
+  globalThis.fetch = async () => { called++; return new Response("{}"); };
+  await cb(a.state, null);
+  globalThis.fetch = real;
+  assert.equal(called, 0, "거부하기 전에 제공자를 불렀다");
+
+  // 81. 표가 맞으면 그대로 통과한다. 막으면 로그인이 통째로 죽으므로 반대쪽도 재야 한다.
+  const c = await start();
+  const okRes = await withProvider(() => cb(c.state, "shh_t=" + c.txn));
+  assert.equal(okRes.status, 302, "표가 맞는데 로그인이 막혔다");
+  assert.match(okRes.headers.get("Location") || "", /#login=ok/, "성공인데 실패로 돌아갔다");
+  assert.equal(sessions(), 1, "성공했는데 세션이 안 생겼다");
+  const cookies = okRes.headers.getSetCookie ? okRes.headers.getSetCookie() : [okRes.headers.get("Set-Cookie")];
+  assert.ok(cookies.some((s) => /shh_s=/.test(s)), "세션 쿠키를 안 심었다");
+  // 82. 표는 **한 번 쓰고 버린다.** 안 버리면 같은 표로 다음 왕복까지 통한다.
+  assert.ok(cookies.some((s) => /shh_t=;/.test(s) || /shh_t=[^;]*;\s*.*Max-Age=0/.test(s)),
+    "쓴 표를 안 지웠다");
+
+  // 83. 토큰은 **주소에 안 실린다.** 실리면 그 주소가 곧 남에게 보낼 수 있는 로그인 링크다.
+  const loc = okRes.headers.get("Location");
+  assert.ok(!loc.includes(env.DB._db.prepare("SELECT token_hash FROM sessions").get().token_hash),
+    "세션 값이 주소에 실렸다");
+
+  // 84. 네이버 갈래(/exchange)도 **같은 문**을 쓴다. 한쪽만 막으면 공격자는 막힌 쪽을 안 쓴다.
+  const n = await start("naver");
+  const ex = (state, cookie) => worker.fetch(new Request(
+    "https://api.test/exchange/naver?code=real-code&state=" + encodeURIComponent(state),
+    cookie ? { headers: { Cookie: cookie } } : undefined), env);
+  assert.equal((await ex(n.state, null)).status, 400, "표 없이 /exchange 가 통과했다");
+  assert.equal((await ex(n.state, "shh_t=" + a.txn)).status, 400, "남의 표로 /exchange 가 통과했다");
+  assert.equal(sessions(), 1, "/exchange 거부가 세션을 만들었다");
+  assert.equal((await withProvider(() => ex(n.state, "shh_t=" + n.txn))).status, 200, "표가 맞는데 막혔다");
+}
+
+// ══ 6c. 친구 관계는 두 사람당 하나 — 반대 방향 경합 ═══════════════════════
+// A→B 와 B→A 가 둘 다 들어가면 목록에 같은 사람이 두 번 나오고, 남은 「취소」를 누르면
+// DELETE 가 양방향이라 **이미 맺은 친구가 끊긴다.** 예전엔 기본키가 방향까지 포함해 안 부딪혔다.
+{
+  const env = makeEnv();
+  const A = await signUp(env, "kakao", "A"), B = await signUp(env, "kakao", "B");
+  const c = (t, p, m, b) => call(env, t, p, m, b);
+  const rows = () => env.DB._db.prepare("SELECT requester_id, status, pair_key FROM friendships").all();
+  const aCode = (await c(A.token, "/friends")).body.code;
+  const bCode = (await c(B.token, "/friends")).body.code;
+
+  // 85. ★ DB 가 직접 막는다. 애플리케이션이 확인을 빠뜨려도 두 줄이 될 수 없다.
+  assert.throws(() => env.DB._db
+    .prepare("INSERT INTO friendships (requester_id,addressee_id,pair_key,status,created_at) VALUES (?,?,?,'pending',0)")
+    .run(A.uid, B.uid, [A.uid, B.uid].sort().join("|")) &&
+    env.DB._db
+    .prepare("INSERT INTO friendships (requester_id,addressee_id,pair_key,status,created_at) VALUES (?,?,?,'pending',0)")
+    .run(B.uid, A.uid, [A.uid, B.uid].sort().join("|")),
+    /UNIQUE/, "반대 방향 관계가 두 줄 들어갔다");
+  env.DB._db.exec("DELETE FROM friendships");
+
+  // 86. 서로 보내면 한 줄이 되고 그 자리에서 맺어진다.
+  assert.equal((await c(A.token, "/friends", "POST", { code: bCode })).body.state, "sent");
+  assert.equal((await c(B.token, "/friends", "POST", { code: aCode })).body.state, "ok", "서로 보냈는데 안 맺어졌다");
+  assert.equal(rows().length, 1, "서로 보냈더니 관계가 두 줄 생겼다");
+  assert.equal(rows()[0].status, "accepted");
+
+  // 87. 목록에 **한 번만** 나온다. 두 줄이던 시절엔 「내 친구」와 「보낸 요청」에 같이 떴다.
+  for (const t of [A.token, B.token]) {
+    const l = (await c(t, "/friends")).body;
+    assert.equal(l.friends.length, 1, "친구가 목록에 두 번 나온다");
+    assert.deepEqual([l.in, l.out], [[], []], "맺어졌는데 요청이 남아 있다");
+  }
+
+  // 88. 같은 사람이 링크를 여러 번 눌러도 한 줄이고, **500 이 나면 안 된다**
+  //     (기본키에 부딪히는 자리라 그냥 다시 INSERT 하면 예외로 죽는다).
+  env.DB._db.exec("DELETE FROM friendships");
+  assert.equal((await c(A.token, "/friends", "POST", { code: bCode })).body.state, "sent");
+  const again = await c(A.token, "/friends", "POST", { code: bCode });
+  assert.equal(again.status, 200, "같은 링크를 두 번 눌렀더니 오류가 났다");
+  assert.equal(again.body.state, "sent", "혼자 두 번 눌렀는데 친구가 됐다");
+  assert.equal(rows().length, 1, "같은 방향으로 두 줄이 생겼다");
+  assert.ok(!("count" in again.body.friend), "요청 단계인데 단어 개수가 실렸다");
+
+  // 89. 끊으면 한 번의 DELETE 로 사라진다(방향과 무관).
+  await c(B.token, "/friends/" + A.uid, "DELETE");
+  assert.equal(rows().length, 0, "끊었는데 관계가 남았다");
+}
+
 // ══ 7. 잘못된 주소 · 친구 상한 ════════════════════════════════════════════
 {
   const env = makeEnv();
@@ -540,5 +690,5 @@ const call = async (env, token, path, method = "GET", body, extra = {}) => {
   assert.ok(!pathTemplate("/api/friends/" + A.uid + "/book").includes(A.uid), "경로 템플릿에 uid 가 남았다");
 }
 
-console.log("test-friends: 75개 통과 — 친구 권한(행 하나) · 쿠키 세션 · 세대 무효화 · CSRF · 제공자ID 비공개 "
+console.log("test-friends: 89개 통과 — 로그인 왕복 표(브라우저 결속) · 친구 쌍 유일성 · 친구 권한(행 하나) · 쿠키 세션 · 세대 무효화 · CSRF · 제공자ID 비공개 "
   + "· 버전 충돌 · 수락 트랜잭션 · 무관계 DELETE · 마스터 · 복귀 주소 · 본문 한도 · state 서명 · 코드 회전 · 상한 · 헤더");

@@ -4,7 +4,7 @@
 // 결국 하나 — 어느 쪽 단어장이 새것인지 정하는 것. 그 판단만 syncPlan() 에 순수 함수로 떼어
 // scripts/test-auth.mjs 가 직접 잰다(화면 없이 돌아야 규칙이 회귀검증된다).
 
-const AT_KEY = "shh-wordbook-at";   // 로컬 단어장이 마지막으로 바뀐 시각(ms)
+const DIRTY_KEY = "shh-dirty";      // 마지막 동기화 뒤에 이 기기에서 고친 적이 있는가
 const PEEK_KEY = "shh-peek";        // "로그인 없이 둘러보기"를 고른 적이 있는가
 const NAME_KEY = "shh-name";        // 사용자가 지은 별명. 제공자에게 받은 이름이 아니다.
 const BACK_KEY = "shh-back";        // 로그인하러 떠나기 직전의 해시(링크로 받은 단어장)
@@ -13,34 +13,49 @@ const NAMES = { kakao: "카카오", naver: "네이버", google: "구글" };
 
 // 어느 쪽을 남길지 정한다. 순수 함수 — localStorage 도 DOM 도 안 본다.
 //
-// ponytail: 통째로 last-write-wins 다. 두 기기가 **둘 다 오프라인에서** 고치면 나중에 올라온 쪽이
-//   이기고 다른 쪽 변경은 사라진다. 단어 단위 병합(CRDT)은 삭제를 기억할 저장소가 더 필요한데,
-//   연인 둘이 쓰는 단어장에서 그 동시 편집이 실제로 문제가 되면 그때 만든다.
-//   합집합으로 하지 않는 이유는 **뺀 단어가 다른 기기에서 되살아나기 때문**이다.
-function syncPlan(remote, local, localAt, firstLogin, localName = "", accountChanged = false) {
+// ⚠️ **기기 시계는 더 이상 안 본다.** 예전엔 `remote.updated > localAt` 으로 정했는데,
+//    시계가 미래인 기기(저가형 안드로이드·수동 설정·타임존 오류로 흔하다)는 언제나 자기가
+//    새것이라 여겨 다른 기기에서 담은 단어를 조용히 지웠다. 서버가 버전을 세고 있는데도
+//    막히지 않았다 — 앱이 **판정 직전에** 서버에서 최신 버전을 받아 그대로 되보냈기 때문이다
+//    (js/authApi.js 의 apiGetBook 이 저장을 그만둔 이유).
+//    이제 판정에 쓰는 것은 두 가지, **둘 다 시계와 무관하다**:
+//      dirty — 마지막 동기화 뒤 이 기기에서 고친 적이 있나
+//      base  — 그때 손에 들고 있던 서버 버전
+//
+// ponytail: 부딪히면 **합집합**이다. 어느 단어가 새로 담긴 것이고 어느 것이 지워진 것인지
+//   구분하려면 마지막 스냅샷을 따로 들고 있어야 하는데(3-way merge), 그건 저장소가 하나 더
+//   느는 일이다. 지금은 **지워진 단어가 되살아나는 쪽**을 고른다 — 되살아난 건 다시 지우면
+//   되지만 사라진 건 무엇이 사라졌는지조차 모른다. 실제로 문제가 되면 그때 스냅샷을 만든다.
+function syncPlan(remote, local, s = {}) {
+  const { dirty = true, base = 0, firstLogin = false, localName = "", accountChanged = false } = s;
+  const union = () => remote.words.concat(local.filter((w) => !remote.words.includes(w)));
   if (!remote) return { action: "none" };                     // 오프라인 — 로컬을 그대로 둔다
   // 계정이 바뀌었으면 이 기기의 단어장은 **앞 계정 것**이다. 새 계정에 물려주지 않는다 —
   // 안 그러면 한 기기를 두 사람이 쓸 때 앞사람 단어장이 뒷사람 계정으로 올라간다.
   // 버려도 잃는 게 없다: 앞 계정 것은 그쪽 서버에 있고, 담기는 로그인을 요구하므로
   // (mayAddToBook) 로그인 없이 생긴 로컬 단어장이란 것이 없다.
   if (accountChanged) return { action: "pull", words: remote.words, name: remote.name || "" };
-  // 로그인 첫 순간만 합집합. 로그인 전에 담아둔 단어를 잃으면 안 되고,
+  // 로그인 첫 순간만 무조건 합집합. 로그인 전에 담아둔 단어를 잃으면 안 되고,
   // 다른 기기에 있던 것도 가져와야 한다. 이때는 아직 "뺐다"는 뜻이 없으니 합집합이 안전하다.
-  if (firstLogin) {
-    const merged = remote.words.concat(local.filter((w) => !remote.words.includes(w)));
-    // 별명도 같은 이유로 합친다: 이 기기에서 지은 별명이 있으면 그걸 쓰고, 없으면 계정에 있던 것.
-    return { action: "merge", words: merged, name: localName || remote.name || "" };
-  }
-  // 별명은 단어장과 **같은 레코드**라 같은 시각을 공유한다. 따로 판정하면 "단어는 새것, 별명은 옛것"
-  // 같은 반쪽 상태가 생긴다.
-  if (remote.updated > localAt) return { action: "pull", words: remote.words, name: remote.name || "" };
-  return { action: "push", words: local, name: localName };
+  // 별명도 같은 이유로: 이 기기에서 지은 별명이 있으면 그걸 쓰고, 없으면 계정에 있던 것.
+  if (firstLogin) return { action: "merge", words: union(), name: localName || remote.name || "" };
+  // 이 기기에서 고친 적이 없다 → 서버가 진실이다. 시계를 볼 이유가 없다.
+  if (!dirty) return { action: "pull", words: remote.words, name: remote.name || "" };
+  // 고쳤고, 그 사이 서버는 그대로다 → 내 것을 올린다. 삭제도 이 길로 전파된다.
+  if (base === remote.version) return { action: "push", words: local, name: localName };
+  // 고쳤는데 서버도 움직였다 → **둘 다 고친 것**이다. 어느 쪽도 버리지 않는다.
+  return { action: "merge", words: union(), name: localName || remote.name || "" };
 }
 
 // ── 아래는 화면·부수효과 ────────────────────────────────────────────────
 if (typeof document !== "undefined") {
   let putTimer = null;
-  const touch = () => localStorage.setItem(AT_KEY, Date.now());
+  // "이 기기에서 고쳤다"는 표시. **키가 없으면 고친 것으로 본다** — 이 표시가 생기기 전에
+  // 담아둔 단어장이 있는 기기에서 clean 으로 오판하면 그 단어장이 통째로 서버 것으로 덮인다.
+  // 기본값이 안전한 쪽이다.
+  const isDirty = () => localStorage.getItem(DIRTY_KEY) !== "0";
+  const touch = () => localStorage.setItem(DIRTY_KEY, "1");
+  const synced = () => localStorage.setItem(DIRTY_KEY, "0");
   const myName = () => localStorage.getItem(NAME_KEY) || "";
 
   // 서버에 올린다. 충돌(409)이면 **어느 쪽도 버리지 않고 합친 뒤 다시 올린다.**
@@ -51,15 +66,15 @@ if (typeof document !== "undefined") {
   // (평상시 동기화는 그대로 LWW 다 — 합집합은 실제로 부딪힌 이 순간에만 쓴다.)
   async function pushBook(words, name) {
     const r = await apiPutBook(words, name);
-    if (!r || !r.conflict) return r;
+    if (!r || !r.conflict) { if (r) synced(); return r; }
     const mine = BOOK.slice();
     const merged = (r.words || []).concat(mine.filter((w) => !(r.words || []).includes(w)));
     replaceBook(merged);
-    touch();
     localStorage.setItem(NAME_KEY, name || r.name || "");
     renderAll();
     // 버전은 apiCall 이 409 본문에서 이미 받아 뒀다(apiPutBook) — 그래서 이번 저장은 통과한다.
     const again = await apiPutBook(merged, name || r.name || "");
+    if (again) synced();
     toast("다른 기기에서 담은 단어와 합쳤어요");
     return again;
   }
@@ -73,28 +88,39 @@ if (typeof document !== "undefined") {
   });
 
   async function sync(firstLogin) {
-    // 앞서 맞춰 둔 계정과 지금 계정이 다른가. 처음이면(빈 값) 다르다고 보지 않는다 —
+    // 앞서 맞춰 둔 계정. 처음이면(빈 값) 계정이 바뀌었다고 보지 않는다 —
     // 로그인 기능이 붙기 전에 담아둔 단어장을 첫 로그인에서 살려야 하기 때문이다.
     const was = localStorage.getItem(UID_KEY) || "";
-    const accountChanged = !!was && was !== authUid();
+    // 손에 든 서버 버전. **읽기 전에** 확보한다 — 응답이 이 값을 갈아치우면 판정 근거가 사라진다.
+    const base = bookVersion();
     const remote = await apiGetBook();
+    // ⚠️ 계정 판정은 **서버가 누구라고 대답한 뒤에** 한다. 예전엔 요청 전에 localStorage 의 옛
+    //    값끼리 비교해서, 로그인한 채로 다른 계정 로그인이 끝난 경우(탭 두 개, 또는 남의 콜백
+    //    링크를 연 경우) "계정이 안 바뀌었다"로 읽고 앞 계정 단어장을 뒷 계정 서버로 올렸다.
+    const nowUid = (remote && remote.me) || "";
+    const accountChanged = !!was && !!nowUid && was !== nowUid;
     // 프로 여부는 **서버가 정한다.** 로컬에만 두면 폰을 바꾸는 순간 사라져서, 마스터 계정도
     // 새 기기에서는 무료 벽에 걸린다. 오프라인(remote === null)이면 손대지 않는다 —
     // 연결이 안 된다고 프로를 끄면 지하철에서 벽이 다시 선다.
     if (remote && setEntitlement(remote.pro, remote.master)) renderAll();
-    const plan = syncPlan(remote, BOOK, +localStorage.getItem(AT_KEY) || 0, firstLogin, myName(), accountChanged);
-    // 서버가 대답한 뒤에만 적는다. 오프라인(none)에서 적어 두면 다음에 온라인으로 들어올 때
+    const plan = syncPlan(remote, BOOK, { dirty: isDirty(), base, firstLogin, localName: myName(), accountChanged });
+    if (plan.action === "none") return;   // 오프라인 — 아무것도 적지 않는다(계정 표시도)
+    // 서버가 대답한 뒤에만 적는다. 오프라인에서 적어 두면 다음에 온라인으로 들어올 때
     // 계정이 안 바뀐 것으로 보여 앞 계정 단어장이 그대로 올라간다.
-    if (plan.action !== "none") localStorage.setItem(UID_KEY, authUid());
-    if (plan.action === "none") return;
-    if (plan.action === "push") { if (BOOK.length || myName()) await pushBook(BOOK, myName()); return; }
+    setAuthUid(nowUid);
+    localStorage.setItem(UID_KEY, nowUid);
+    // 이제부터 손에 든 서버 버전은 방금 받은 것이다. push·merge 는 이 위에 얹는다.
+    setBookVersion(remote.version);
+    if (plan.action === "push") {
+      if (BOOK.length || myName()) await pushBook(BOOK, myName());
+      else synced();   // 올릴 것이 없으면 그 자체로 서버와 같은 상태다
+      return;
+    }
     localStorage.setItem(NAME_KEY, plan.name);
     replaceBook(plan.words);
     renderAll();   // 별명이 바뀌었을 수 있다
-    // pull 은 서버 시각을 그대로 물려받는다. 여기서 Date.now() 를 쓰면 받아온 것이 늘 최신이 돼
-    // 다음 기기의 변경을 계속 이긴다.
-    if (plan.action === "pull") localStorage.setItem(AT_KEY, Date.now());
-    else { touch(); await pushBook(BOOK, myName()); }   // merge 는 합친 결과를 서버에도 올린다
+    if (plan.action === "pull") synced();                  // 서버 것을 그대로 받았다
+    else await pushBook(BOOK, myName());                   // merge 는 합친 결과를 서버에도 올린다
   }
 
   // ── 마이페이지 ──
@@ -388,9 +414,14 @@ if (typeof document !== "undefined") {
   //
   // ⚠️ **토큰은 해시에 없다.** 서버가 HttpOnly 쿠키로 심었다 — 앱이 손에 쥐지 않으므로
   //    "남에게 보낼 수 있는 로그인 링크" 라는 것 자체가 만들어지지 않는다(세션 고정이 원천 봉쇄).
-  //    n 대조는 그대로 둔다: 이 갈래는 이제 안전하지만 아래 takeCodeQuery 는 여전히 필요하고,
-  //    두 갈래가 같은 규칙을 쓰는 편이 한쪽만 빠뜨리는 실수를 막는다.
-  function takeLoginHash() {
+  //    서버도 이제 **로그인 왕복 표**(shh_t 쿠키)로 이 브라우저가 시작한 왕복인지 확인한다 —
+  //    그게 진짜 방어이고, 아래 n 대조는 그 뒤에 오는 심층 방어다.
+  //
+  // ⚠️ n 이 안 맞으면 **서버에도 알려 세션을 끊는다.** 전에는 안내 문구만 띄우고 말았는데,
+  //    그 시점에 쿠키는 이미 심어져 있어서 화면은 로그아웃인데 서버는 로그인인 상태가 남았다.
+  //    그 상태로 다음 동기화가 돌면 이 기기의 단어장이 **남의 계정으로** 올라간다.
+  //    아래 takeCodeQuery 에는 이 처리가 있었는데 여기만 빠져 있었다 — 두 갈래가 같아야 한다.
+  async function takeLoginHash() {
     const m = location.hash.match(/[#&]login=([^&]+)/);
     if (!m) return false;
     const via = (location.hash.match(/[#&]via=(\w+)/) || [])[1];
@@ -401,7 +432,11 @@ if (typeof document !== "undefined") {
     if (m[1] === "denied") { takeNonce(); toast("로그인을 취소했어요"); return false; }
     if (m[1] !== "ok") { takeNonce(); toast("로그인에 실패했어요. 다시 시도해 주세요."); return false; }
     const mine = takeNonce();
-    if (!mine || n !== mine) { toast("로그인 정보가 맞지 않아요. 앱에서 다시 로그인해 주세요."); return false; }
+    if (!mine || n !== mine) {
+      await apiLogoutRaw();   // 쿠키가 이미 심어졌다 — 화면만 되돌리면 서버는 로그인인 채로 남는다
+      toast("로그인 정보가 맞지 않아요. 앱에서 다시 로그인해 주세요.");
+      return false;
+    }
     setAuth(via);
     return true;
   }
@@ -434,7 +469,7 @@ if (typeof document !== "undefined") {
   // app.js 의 main() 이 사전을 다 읽은 뒤 부른다 — replaceBook 이 bookItem 을 쓰므로
   // 사전보다 먼저 돌면 담아둔 단어가 통째로 "사전에 없음"으로 버려진다.
   onAppReady(async () => {
-    const fresh = takeLoginHash() || (await takeCodeQuery());
+    const fresh = (await takeLoginHash()) || (await takeCodeQuery());
     // 어느 제공자가 실제로 설정돼 있나. **renderAll 보다 먼저** 물어야 버튼이 한 번에 맞게 그려진다.
     const h = await apiHealth();
     if (h && Array.isArray(h.providers)) PROVIDERS = h.providers;

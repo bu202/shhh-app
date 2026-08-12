@@ -28,9 +28,19 @@ let authLost = null;
 function onAuthLost(fn) { authLost = fn; }
 // 로그인 표시만 세우고 지운다. **세션 자체는 서버의 쿠키가 들고 있다** —
 // 여기서 지워도 쿠키는 안 지워지므로, 로그아웃은 반드시 서버(`DELETE /session`)를 거쳐야 한다.
+// 로그아웃·세션 만료 때 **이 계정에 딸린 로컬 값**을 같이 지운다.
+// 안 지우면 한 기기를 두 사람이 쓸 때 앞사람 값이 뒷사람 화면과 서버로 새어 나간다:
+//   shh-invite  — 앞사람의 초대 링크. 뒷사람이 공유 버튼을 누르면 **앞사람에게 요청이 간다**
+//                 (온라인이면 목록을 새로 받아 덮이지만, 오프라인이면 옛 코드가 그대로 나간다)
+//   shh-name    — 앞사람 별명. 화면에 "○○님"으로 남는다
+//   shh-bookver — 앞사람 계정의 단어장 버전. 뒷사람 계정에서 뜻이 없는 숫자다
+//   shh-dirty   — 지우면 기본값이 "고친 적 있음"이라 안전한 쪽으로 떨어진다
+// **단어장(shh-wordbook)은 남긴다** — 로그아웃은 "이 기기에서 그만 보기"지 "지우기"가 아니다.
+// **shh-uid 도 남긴다** — 다음에 다른 계정이 로그인한 것을 알아채는 근거가 이 값이다.
+const ACCOUNT_KEYS = [VIA_KEY, ME_KEY, "shh-bookver", "shh-invite", "shh-name", "shh-dirty"];
 const setAuth = (via) => {
   if (via) localStorage.setItem(VIA_KEY, via);
-  else { localStorage.removeItem(VIA_KEY); localStorage.removeItem(ME_KEY); }
+  else for (const k of ACCOUNT_KEYS) localStorage.removeItem(k);
 };
 
 // ── 세션 고정 방어용 일회용 값 ──
@@ -90,12 +100,13 @@ const VER_KEY = "shh-bookver";
 const bookVersion = () => Number(localStorage.getItem(VER_KEY)) || 0;
 const setBookVersion = (v) => localStorage.setItem(VER_KEY, Number(v) || 0);
 
-const apiGetBook = async () => {
-  const r = await apiCall("/book");
-  if (r && typeof r.version === "number") setBookVersion(r.version);
-  if (r && r.me) setAuthUid(r.me);   // 계정 교체 판정에 쓴다(토큰을 못 뜯으므로 서버가 알려준다)
-  return r;
-};
+// ⚠️ **읽기는 아무것도 저장하지 않는다.** 예전엔 여기서 버전과 내 계정 id 를 바로 적었는데,
+//    그 두 값이 곧 "어느 쪽이 새것인가"와 "계정이 바뀌었나"의 근거라 **판정하기도 전에
+//    근거가 갈아치워졌다.** 그래서 시계가 미래인 기기가 방금 받은 최신 버전을 그대로 되보내
+//    서버의 버전 검사를 통과하고 남의 기기 단어장을 덮어썼다.
+//    이제 응답을 돌려주기만 하고, 무엇을 적을지는 js/auth.js 가 판정한 뒤에 정한다
+//    (데이터 계층이 화면·판단의 상태를 몰래 바꾸지 않는다는 규칙이기도 하다).
+const apiGetBook = () => apiCall("/book");
 // 충돌이면 `{conflict:true, ...서버 레코드}` 가 온다 — 부르는 쪽(js/auth.js)이 합친다.
 const apiPutBook = async (words, name) => {
   const r = await apiCall("/book", { method: "PUT", body: JSON.stringify({ words, name, version: bookVersion() }) });

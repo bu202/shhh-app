@@ -105,6 +105,15 @@ async function sign(env, msg) {
   return b64u(await crypto.subtle.sign("HMAC", k, ENC.encode(msg)));
 }
 
+// 비밀값 비교는 **끝까지** 한다. 앞에서 끊으면 몇 글자가 맞았는지가 응답 시간으로 새어,
+// 한 글자씩 붙여 가며 값을 알아낼 수 있다. 길이가 다르면 그 자리에서 거짓 — 길이는 비밀이 아니다.
+const sameSecret = (a, b) => {
+  if (typeof a !== "string" || typeof b !== "string" || !a || a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
+};
+
 // ── 설정 점검 ────────────────────────────────────────────────────────────
 // **값은 절대 내보내지 않는다.** 있나 없나만 본다. 이름도 그대로 쓰지 않는다 —
 // 화면에 필요한 건 "어느 제공자로 로그인할 수 있나" 하나뿐이다.
@@ -124,9 +133,13 @@ const health = (env) => {
 //   "로그인에 실패했어요"로 끝난다. 재사용 자체를 막아야 할 일이 생기면 그때 KV 로 되돌린다.
 //
 // nonce 는 **브라우저가 만들어 준 값**이다. 돌아올 때 그대로 돌려줘서, 이 브라우저가 실제로
-// 시작한 로그인인지 앱이 확인하게 한다(아래 「세션 고정」 참조).
-const makeState = async (env, provider, back, nonce) => {
-  const body = b64u(ENC.encode(JSON.stringify([provider, back, Date.now() + 600e3, nonce || ""])));
+// 시작한 로그인인지 앱이 확인하게 한다. 다만 **그건 앱의 사후 확인일 뿐이다** —
+// 서버 쪽 결속은 아래 txn 이 한다(「로그인 왕복 표」 참조).
+//
+// txn 은 **서버가 만들어 그 브라우저에만 심어 둔 값의 해시**다. state 에는 해시만 싣는다:
+// state 는 주소에 실려 남에게 보일 수 있으므로 원본을 실으면 표를 베낄 수 있게 된다.
+const makeState = async (env, provider, back, nonce, txn) => {
+  const body = b64u(ENC.encode(JSON.stringify([provider, back, Date.now() + 600e3, nonce || "", txn || ""])));
   return body + "." + (await sign(env, body));
 };
 
@@ -135,12 +148,12 @@ async function takeState(env, state) {
   const i = state.lastIndexOf(".");
   if (i < 0) return null;
   const body = state.slice(0, i);
-  if ((await sign(env, body)) !== state.slice(i + 1)) return null;
+  if (!sameSecret(await sign(env, body), state.slice(i + 1))) return null;
   let p;
   try { p = JSON.parse(new TextDecoder().decode(unb64u(body))); } catch { return null; }
-  const [provider, back, exp, nonce] = p;
+  const [provider, back, exp, nonce, txn] = p;
   if (!(Date.now() < exp)) return null;
-  return { provider, back, nonce: nonce || "" };
+  return { provider, back, nonce: nonce || "", txn: txn || "" };
 }
 
 // ── 세션 ─────────────────────────────────────────────────────────────────
@@ -159,14 +172,36 @@ const mkToken = () => b64u(crypto.getRandomValues(new Uint8Array(32)));
 //   SameSite=Lax: 남의 사이트에서 우리에게 보내는 POST 에는 안 실린다(CSRF 의 절반)
 //   Secure     : https 에서만. 로컬(http)에서 로그인이 안 되는 건 이미 그렇다(함정 57)
 const COOKIE = "shh_s";
-const setCookie = (token) =>
-  `${COOKIE}=${token}; HttpOnly; Secure; SameSite=Lax; Path=/api; Max-Age=${SESSION_DAYS * 86400}`;
-const clearCookie = () => `${COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/api; Max-Age=0`;
-const readCookie = (req) => {
+const ATTRS = "HttpOnly; Secure; SameSite=Lax; Path=/api";
+const setCookie = (token) => `${COOKIE}=${token}; ${ATTRS}; Max-Age=${SESSION_DAYS * 86400}`;
+const clearCookie = () => `${COOKIE}=; ${ATTRS}; Max-Age=0`;
+const readCookie = (req, name = COOKIE) => {
   const raw = req.headers.get("Cookie") || "";
-  const m = raw.match(new RegExp("(?:^|;\\s*)" + COOKIE + "=([^;]*)"));
+  const m = raw.match(new RegExp("(?:^|;\\s*)" + name + "=([^;]*)"));
   return m ? m[1] : "";
 };
+
+// ── 로그인 왕복 표 (OAuth transaction) ───────────────────────────────────
+// **state 서명은 "우리가 만든 state 인가"만 말한다.** 누가 그 주소를 들고 왔는지는 모른다.
+// 그래서 예전에는 이런 공격이 성립했다: 공격자가 자기 로그인을 시작해 아직 안 쓴
+// `?code=…&state=…` 를 손에 쥐고, 그 주소를 **이미 로그인해 있는 사람**에게 보낸다.
+// 서버는 서명이 맞으니 code 를 교환하고 세션을 만들어 **피해자 브라우저에 공격자 계정 쿠키를 심는다.**
+// 앱은 그 뒤에야 nonce 가 다른 걸 알아채는데 이미 늦었고, 다음 동기화에서 피해자의 단어장과
+// 별명이 공격자 계정으로 올라갔다.
+//
+// 이제 로그인을 시작할 때 **그 브라우저에만** 무작위 표를 심고, state 에는 그 해시를 서명해 둔다.
+// 콜백에서 둘이 맞지 않으면 **code 교환도 세션 생성도 하기 전에** 돌려보낸다.
+// 공격자는 피해자 브라우저에 쿠키를 심을 수 없으므로 그런 링크를 만들 수 없다.
+//
+// ponytail: 표는 쿠키 한 칸이라 **마지막으로 시작한 로그인만 유효**하다. 탭을 여럿 열어
+//   두 번 시작하면 먼저 시작한 쪽이 "다시 눌러 주세요"로 실패한다 — 지금보다 엄격해지는
+//   방향이라 그대로 둔다. 탭마다 살리려면 DB 테이블이 필요한데(인증 없는 자리의 쓰기),
+//   그건 2026-08-11 에 일부러 없앤 것이다.
+const TXN = "shh_t";
+const setTxn = (t) => `${TXN}=${t}; ${ATTRS}; Max-Age=600`;
+const clearTxn = () => `${TXN}=; ${ATTRS}; Max-Age=0`;
+// 표가 없거나 다르면 거짓. state 에 표가 안 실린 옛 왕복도 거짓이다(10분이면 다 만료된다).
+const bound = async (env, req, st) => !!st.txn && sameSecret(st.txn, await sha256(readCookie(req, TXN)));
 
 // 새 세션 한 줄. 발급 시점의 session_version 을 같이 박아 둔다 — 그 값이 users 와 달라지는 순간
 // 이 세션은 죽는다(아래 killSessions).
@@ -360,6 +395,10 @@ async function getBook(env, uid) {
 // 초대 코드가 샜을 때 목록이 무한히 자라는 것 자체가 증상이라 상한은 남긴다.
 const MAX_FRIENDS = 50;
 
+// 두 사람의 쌍 이름. **정렬해서** 이어 붙이므로 A→B 와 B→A 가 같은 값이 된다 —
+// 이 값에 UNIQUE 가 걸려 있어서 "두 사람 사이에 관계 하나"가 DB 규칙이 된다(schema.sql).
+const pairKey = (a, b) => (a < b ? a + "|" + b : b + "|" + a);
+
 // 내 목록. **쿼리 하나**로 세 갈래(수락됨·받은 요청·보낸 요청)를 다 만든다.
 // 예전엔 친구 수만큼 KV 를 읽었다(brief 를 사람마다 불렀다).
 // 상대 별명·단어는 books 를 LEFT JOIN 해서 같이 가져온다 — 없는 사람도 목록에 나와야 하므로 LEFT.
@@ -495,12 +534,16 @@ async function route(req, env) {
       if (!allowed(env, backOrigin)) return new Response("허용되지 않은 주소예요", { status: 400 });
       // 어느 제공자로 시작한 state 인지 같이 서명한다 — 남의 제공자 자리에서 재사용하지 못하게.
       // n 은 브라우저가 만든 값이다. 그대로 돌려주기만 하고 서버는 뜻을 모른다 — 판정은 앱이 한다.
-      const state = await makeState(env, m[1], back, (url.searchParams.get("n") || "").slice(0, 64));
+      // txn 은 **서버가 만들어 이 브라우저에만 심는 표**다. state 에는 해시만 실린다(위 「로그인 왕복 표」).
+      const txn = mkToken();
+      const state = await makeState(env, m[1], back, (url.searchParams.get("n") || "").slice(0, 64), await sha256(txn));
       const q = new URLSearchParams({
         response_type: "code", client_id: id, redirect_uri: redirectUri(env, url.origin, m[1]), state,
       });
       if (p.scope) q.set("scope", p.scope);
-      return redir(p.auth + "?" + q);
+      const r = redir(p.auth + "?" + q);
+      r.headers.append("Set-Cookie", setTxn(txn));
+      return r;
     }
 
     // ── 2a. 앱이 code 를 넘겨 주는 자리(네이버) ── /exchange/naver?code&state
@@ -510,6 +553,12 @@ async function route(req, env) {
     if (m && P[m[1]]) {
       const st = await takeState(env, url.searchParams.get("state"));
       if (!st || st.provider !== m[1]) return json(env, req, { error: "로그인 요청이 만료됐어요" }, 400);
+      // **표를 먼저 본다.** 여기를 통과하기 전에는 code 를 교환하지도, 세션을 만들지도 않는다.
+      if (!(await bound(env, req, st))) {
+        const bad = json(env, req, { error: "이 기기에서 시작한 로그인이 아니에요. 앱에서 다시 로그인해 주세요." }, 400);
+        bad.headers.append("Set-Cookie", clearTxn());
+        return bad;
+      }
       const code = url.searchParams.get("code");
       if (!code) return json(env, req, { error: "취소됐어요" }, 400);
       const token = await exchange(env, url.origin, m[1], code, url.searchParams.get("state"));
@@ -520,6 +569,7 @@ async function route(req, env) {
       // 앱이 자기가 보낸 n 과 대조해 다르면 그 자리에서 로그아웃한다.
       const r = json(env, req, { ok: true, n: st.nonce });
       r.headers.append("Set-Cookie", setCookie(token));
+      r.headers.append("Set-Cookie", clearTxn());   // 표는 한 번 쓰고 버린다
       return r;
     }
 
@@ -529,6 +579,15 @@ async function route(req, env) {
       const state = url.searchParams.get("state");
       const st = await takeState(env, state);
       if (!st || st.provider !== m[1]) return new Response("로그인 요청이 만료됐어요. 다시 눌러 주세요.", { status: 400 });
+      // **표를 먼저 본다.** 공격자가 자기 code/state 링크를 남에게 보내도 여기서 끝난다 —
+      // 그 사람 브라우저에는 우리가 심은 표가 없다. code 교환·세션 생성 **이전**이라
+      // 실패해도 남는 것이 없다(제공자 호출도 안 나간다).
+      if (!(await bound(env, req, st))) {
+        const bad = new Response("이 기기에서 시작한 로그인이 아니에요. 앱에서 다시 눌러 주세요.",
+          { status: 400, headers: { ...SEC } });
+        bad.headers.append("Set-Cookie", clearTxn());
+        return bad;
+      }
       // 심층 방어: state 는 우리가 서명했지만 back 은 **리다이렉트 목적지**라 한 번 더 본다.
       // allowed 가 좁아진 직후 옛 state 가 돌아오는 경우가 여기서 걸린다 — 서명이 유효해도
       // 지금 규칙에서 허용되지 않으면 토큰을 실어 보내지 않는다.
@@ -551,6 +610,7 @@ async function route(req, env) {
       // 그래서 해시에는 "됐다"는 사실과 어느 제공자였는지만 남는다.
       const r = redir(back + "#login=ok&via=" + m[1] + "&n=" + encodeURIComponent(st.nonce));
       r.headers.append("Set-Cookie", setCookie(token));
+      r.headers.append("Set-Cookie", clearTxn());   // 표는 한 번 쓰고 버린다
       return r;
     }
 
@@ -688,37 +748,47 @@ async function route(req, env) {
         if (!other) return json(env, req, { error: "초대 링크가 만료됐거나 잘못됐어요" }, 404);
         if (other === uid) return json(env, req, { error: "자기 자신은 추가할 수 없어요" }, 400);
 
-        // 지금 이 둘 사이에 무엇이 있나. 방향이 둘뿐이라 행 하나면 다 알 수 있다.
+        // 지금 이 둘 사이에 무엇이 있나. **쌍 이름으로** 찾는다 — 방향을 신경 쓸 자리가 없어진다.
+        const key = pairKey(uid, other);
         const rel = await env.DB.prepare(
-          `SELECT requester_id AS req, status FROM friendships
-            WHERE (requester_id = ?1 AND addressee_id = ?2) OR (requester_id = ?2 AND addressee_id = ?1)`)
-          .bind(uid, other).first();
+          "SELECT requester_id AS req, status FROM friendships WHERE pair_key = ?").bind(key).first();
         if (rel && rel.status === "accepted")
           return json(env, req, { state: "ok", friend: await briefOne(env, other, true) });
-        if (rel && rel.req === other) {
-          // 상대가 먼저 보냈다 → **한 문장으로** 친구가 된다. KV 시절엔 두 번의 쓰기였고
-          // 첫 쓰기만 성공하면 반쪽이 남았다 — 여기선 그 상태가 존재할 수 없다.
-          await env.DB.prepare(
-            `UPDATE friendships SET status = 'accepted', accepted_at = ?
-              WHERE requester_id = ? AND addressee_id = ? AND status = 'pending'`)
-            .bind(Date.now(), other, uid).run();
-          return json(env, req, { state: "ok", friend: await briefOne(env, other, true) });
-        }
-        if (rel) return json(env, req, { state: "sent", friend: await briefOne(env, other, false) });
+        // **내가 이미 보낸 요청이면 아무것도 쓰지 않는다.** 같은 사람이 링크를 두 번 눌렀을 뿐이다.
+        // (여기서 다시 INSERT 하면 방향까지 같아 기본키에 부딪히는데, 그건 아래 ON CONFLICT 가
+        //  받는 충돌이 아니라서 예외로 죽는다. 반대 방향 경합만 아래가 받는다.)
+        if (rel && rel.req === uid)
+          return json(env, req, { state: "sent", friend: await briefOne(env, other, false) });
 
         // 상한. 내 쪽만 보는 게 아니라 **상대 쪽도** 본다 — 안 그러면 여러 계정이 한 사람에게
-        // 요청을 몰아 그 사람 목록만 무한히 키울 수 있다.
-        const cnt = await env.DB.prepare(
-          `SELECT (SELECT COUNT(*) FROM friendships WHERE requester_id = ?1 OR addressee_id = ?1) AS mine,
-                  (SELECT COUNT(*) FROM friendships WHERE requester_id = ?2 OR addressee_id = ?2) AS theirs`)
-          .bind(uid, other).first();
-        if (cnt.mine >= MAX_FRIENDS || cnt.theirs >= MAX_FRIENDS)
-          return json(env, req, { error: "친구가 너무 많아요" }, 429);
+        // 요청을 몰아 그 사람 목록만 무한히 키울 수 있다. (이미 관계가 있으면 셀 이유가 없다)
+        if (!rel) {
+          const cnt = await env.DB.prepare(
+            `SELECT (SELECT COUNT(*) FROM friendships WHERE requester_id = ?1 OR addressee_id = ?1) AS mine,
+                    (SELECT COUNT(*) FROM friendships WHERE requester_id = ?2 OR addressee_id = ?2) AS theirs`)
+            .bind(uid, other).first();
+          if (cnt.mine >= MAX_FRIENDS || cnt.theirs >= MAX_FRIENDS)
+            return json(env, req, { error: "친구가 너무 많아요" }, 429);
+        }
 
+        // ⚠️ **읽고 나서 쓰는 사이**에 상대가 반대 방향으로 보낼 수 있다. 그래서 판정을
+        //    전부 이 한 문장 안에 넣는다: 같은 쌍이면 UNIQUE 에 부딪히고, 그 부딪힘이 곧
+        //    "서로 보냈다"는 신호라 그 자리에서 accepted 가 된다.
+        //    WHERE 가 막는 것 — 이미 accepted 인 행(그대로 둔다)과 **내가 보낸 pending**
+        //    (같은 사람이 두 번 눌렀을 뿐이라 친구로 만들면 안 된다).
+        const now = Date.now();
         await env.DB.prepare(
-          `INSERT INTO friendships (requester_id, addressee_id, status, created_at)
-           VALUES (?, ?, 'pending', ?) ON CONFLICT DO NOTHING`).bind(uid, other, Date.now()).run();
-        return json(env, req, { state: "sent", friend: await briefOne(env, other, false) });
+          `INSERT INTO friendships (requester_id, addressee_id, pair_key, status, created_at)
+           VALUES (?1, ?2, ?3, 'pending', ?4)
+           ON CONFLICT (pair_key) DO UPDATE SET status = 'accepted', accepted_at = ?4
+             WHERE friendships.status = 'pending' AND friendships.requester_id = ?2`)
+          .bind(uid, other, key, now).run();
+
+        // 무엇이 됐는지는 **DB 에 다시 묻는다.** 위 문장이 넣었는지 고쳤는지 아무것도 안 했는지를
+        // changes 로 갈라 보면 세 갈래가 또 생긴다 — 결과 한 줄이면 충분하다.
+        const made = await env.DB.prepare("SELECT status FROM friendships WHERE pair_key = ?").bind(key).first();
+        const ok = !!made && made.status === "accepted";
+        return json(env, req, { state: ok ? "ok" : "sent", friend: await briefOne(env, other, ok) });
       }
 
       // 초대 링크 새로 만들기. 옛 코드는 그 자리에서 죽는다 — 링크가 어디까지 퍼졌는지
