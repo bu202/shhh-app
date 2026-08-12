@@ -1160,7 +1160,21 @@ function dailyIndex(dateStr, len) {
 // data/ksl-daily.json 이다(scripts/build-daily.mjs). 소령·대령은 '일상생활 > 기타'라 여기서 빠진다.
 // 손으로 고른 목록이 아니라 **사전이 이미 갖고 있던 판단**이라 데이터가 늘어도 다시 빌드하면 된다.
 const presentable = (e) => !!e.media?.src?.length && e.word.length <= 4 && /^[가-힣]+$/.test(e.word);
-const dailyPool = (dict) => dict.filter((e) => presentable(e) && (!DAILY || DAILY.has(e.word)));
+// 분류로도 못 거른 것이 남았다 — 홈에 '죄수'(죄를 지어 교도소에 수감된 사람)가 떴다.
+// 분류는 **주제**를 적어 둔 것이지 **말의 무게**를 적어 둔 게 아니라, '일상생활 > 인간' 안에
+// 죄수·감옥이 같이 들어 있다. 사전이 대신 판단해 줄 수 있는 축이 아니다.
+// 그래서 여기서만 손으로 뺀다: 범죄·형벌·죽음·중병. 하루의 얼굴로 삼기엔 무거운 말이다.
+// 감기·두통·배탈 같은 가벼운 병은 남긴다 — 둘이 실제로 주고받는 말이다.
+// ponytail: 반응형 목록이라 새 단어는 못 막는다. 후보가 크게 늘거나 같은 지적이 또 나오면
+//           그때 사람이 훑은 허용 목록으로 뒤집는다(2,054개를 지금 훑는 건 값보다 대가가 크다).
+const HEAVY = new Set([
+  "감금", "감옥", "교도소", "죄수", "범죄", "절도", "절도죄", "횡령죄", "사형",
+  "납치", "폭행", "피해자", "군사재판", "압류", "권총",
+  "죽다", "뇌사", "지옥",
+  "백혈병", "결핵", "성병", "치매", "당뇨병", "질병", "마비",
+]);
+const dailyPool = (dict) =>
+  dict.filter((e) => presentable(e) && !HEAVY.has(e.word) && (!DAILY || DAILY.has(e.word)));
 function todaysWord(dict, dateStr) {
   const pool = dailyPool(dict);
   return pool.length ? pool[dailyIndex(dateStr, pool.length)] : null;

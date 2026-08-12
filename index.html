@@ -104,7 +104,7 @@
     <!-- ── 우리 단어장 ── 내 것과 친구 것을 가른다. 섞어 두면 어느 게 내가 담은 건지 모른다. -->
     <div class="segbar" data-screen="book" hidden role="tablist" aria-label="단어장">
       <button class="seg on" data-book="mine" role="tab" aria-selected="true">내 단어장</button>
-      <button class="seg" data-book="friends" role="tab" aria-selected="false">친구<i id="fr-badge" class="badge" hidden></i></button>
+      <button class="seg" data-book="friends" role="tab" aria-selected="false">친구<i id="fr-badge" class="badge" role="img" aria-label="새 친구 요청" hidden></i></button>
     </div>
     <section id="wordbook" class="result" data-screen="book" hidden></section>
     <!-- 단어장 비우기는 여기에 둔다. 지우는 일은 지울 것이 보이는 화면에서 해야 한다 —
@@ -146,7 +146,9 @@
     <nav class="tabs" aria-label="화면">
       <button class="tab on" data-go="home" aria-selected="true"><i>🏠</i>홈</button>
       <button class="tab" data-go="dict" aria-selected="false"><i>🔤</i>사전</button>
-      <button class="tab" data-go="book" aria-selected="false"><i>💌</i>우리</button>
+      <!-- 빨간 점이 여기에도 있어야 한다. 안쪽 세그먼트에만 있으면 「우리」를 열어야 보이는데,
+           그건 이미 알고 들어간 사람만 보는 것이라 알림 노릇을 못 한다(2026-08-12 시뮬레이션). -->
+      <button class="tab" data-go="book" aria-selected="false"><i>💌</i>우리<b id="fr-tab-badge" class="badge on-tab" role="img" aria-label="새 친구 요청" hidden></b></button>
       <button class="tab" data-go="quiz" aria-selected="false"><i>🎯</i>연습</button>
       <button class="tab" data-go="me" aria-selected="false"><i>🙂</i>마이</button>
     </nav>

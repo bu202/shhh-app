@@ -49,12 +49,23 @@ if (typeof document !== "undefined") {
   // ── 받은 요청 표시 ──
   // 푸시가 없는 동안 이게 유일한 알림이다. 숫자를 안 쓰고 점만 찍는다 — 몇 개인지는
   // 들어가면 바로 보이고, 탭 안에 숫자를 넣으면 글자가 두 줄이 된다.
+  //
+  // **두 곳에 찍는다.** 전에는 「우리」 화면 안의 세그먼트에만 있어서, 요청이 와도 홈에서는
+  // 아무것도 안 보였다 — 이미 알고 들어간 사람만 보는 알림이라 알림이 아니었다.
+  // 하단 탭의 점이 "들어가 볼 이유"를 만들고, 안쪽 점이 "어느 갈래인지"를 가리킨다.
+  const showBadge = (n) => {
+    for (const id of ["fr-badge", "fr-tab-badge"]) {
+      const b = el(id);
+      if (b) b.hidden = !n;
+    }
+  };
+
   async function refreshBadge() {
     const d = await apiFriends();
     if (!d) return;
     DATA = d;
     if (d.code) localStorage.setItem(CODE_KEY, d.code);
-    el("fr-badge").hidden = !d.in.length;
+    showBadge(d.in.length);
   }
 
   // ── 초대 링크 ──
@@ -115,7 +126,12 @@ if (typeof document !== "undefined") {
     }
 
     // 받은 요청이 맨 위. 사용자가 해야 할 일이 있는 자리를 먼저 보여준다.
-    if (DATA.in.length) box.appendChild(section("나에게 온 친구 요청", DATA.in, "in"));
+    // 안내문을 같이 둔다 — 별명은 선택이라 대부분 비어 있고, 그러면 화면에 "이름 없는 사람이
+    // 수락을 기다린다"만 남는다. 이게 연인인지 링크를 주운 사람인지 가릴 단서가 하나도 없다.
+    // 서버가 더 알려줄 수 있는 것도 없다(우리가 아는 건 초대 코드를 열었다는 사실뿐이다).
+    // 그래서 **아는 사실을 그대로** 적는다: 내 초대 링크를 연 사람이다.
+    if (DATA.in.length) box.appendChild(section("나에게 온 친구 요청", DATA.in, "in",
+      "내 초대 링크를 연 사람이에요. 수락하면 서로의 단어장이 보여요 — 링크를 보낸 상대가 맞는지 확인하고 수락해주세요."));
     if (DATA.friends.length) box.appendChild(section("내 친구", DATA.friends, "ok"));
     else if (!DATA.in.length) {
       const p = document.createElement("p");
@@ -148,11 +164,16 @@ if (typeof document !== "undefined") {
     box.appendChild(rotate);
   }
 
-  function section(title, list, kind) {
+  function section(title, list, kind, note) {
     const wrap = document.createElement("div");
     const h = document.createElement("p");
     h.className = "list-head"; h.textContent = title;
     wrap.appendChild(h);
+    if (note) {
+      const p = document.createElement("p");
+      p.className = "hint"; p.textContent = note;
+      wrap.appendChild(p);
+    }
     const box = document.createElement("div");
     box.className = "list";
     for (const f of list) box.appendChild(friendRow(f, kind));
@@ -166,7 +187,8 @@ if (typeof document !== "undefined") {
     const l = document.createElement("span");
     l.className = "l";
     // 별명은 사용자가 짓는 값이라 안 지은 사람이 있다. 그때 빈칸을 두면 누구인지 알 수가 없다.
-    l.textContent = f.name || "이름 없는 친구";
+    // 아직 수락 전인 사람을 "친구"라 부르지 않는다 — 이미 이어진 것처럼 읽혀서 수락을 재촉한다.
+    l.textContent = f.name || (kind === "ok" ? "이름 없는 친구" : "별명을 안 지은 사람");
     // 수락된 친구만 단어 개수를 보여준다. 요청 단계에서 개수를 보여주면 아직 남인데 정보가 샌다.
     if (kind === "ok") {
       const s = document.createElement("small");
@@ -190,7 +212,7 @@ if (typeof document !== "undefined") {
       DATA = { ...DATA, friends: DATA.friends.filter((x) => x.uid !== f.uid),
                in: DATA.in.filter((x) => x.uid !== f.uid), out: DATA.out.filter((x) => x.uid !== f.uid) };
       if (to) DATA[to] = [...DATA[to], f];
-      el("fr-badge").hidden = !DATA.in.length;
+      showBadge(DATA.in.length);
       renderFriends();
     };
 
