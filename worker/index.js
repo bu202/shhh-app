@@ -32,6 +32,9 @@ const P = {
     me: "https://kapi.kakao.com/v2/user/me",
     scope: "",                       // 동의항목 0개. 회원번호만 받는다.
     uid: (j) => j.id,
+    // 카카오만 secret 이 선택이다 — 콘솔에서 "보안 > client_secret" 을 꺼두면 없이도 교환된다.
+    // 켜 두고 값을 안 넣으면 교환이 실패하지만, 서버는 어느 쪽인지 알 수 없다(콘솔의 상태다).
+    optionalSecret: true,
   },
   naver: {
     auth: "https://nid.naver.com/oauth2.0/authorize",
@@ -117,12 +120,30 @@ const sameSecret = (a, b) => {
 // ── 설정 점검 ────────────────────────────────────────────────────────────
 // **값은 절대 내보내지 않는다.** 있나 없나만 본다. 이름도 그대로 쓰지 않는다 —
 // 화면에 필요한 건 "어느 제공자로 로그인할 수 있나" 하나뿐이다.
-const readyProviders = (env) => Object.keys(P).filter((n) => creds(env, n).id);
+// **쌍이 맞아야 제공자로 친다.** 전에는 id 만 봐서, secret 을 안 넣은 제공자의 버튼이 화면에
+// 그려지고 사용자가 누르면 콜백에서 교환이 실패했다 — 배포자가 아니라 사용자가 먼저 알게 된다.
+// 카카오만 예외다(위 optionalSecret 참조).
+const readyProviders = (env) => Object.keys(P).filter((n) => {
+  const { id, secret } = creds(env, n);
+  return !!id && (!!secret || !!P[n].optionalSecret);
+});
 const health = (env) => {
   const providers = readyProviders(env);
   // DB 바인딩이 없으면 로그인도 단어장도 못 한다 — ready 가 아니다.
   // ⚠️ KV 는 더 이상 안 본다. 바인딩은 **롤백용으로 남겨 두지만** 새 코드는 쓰지 않는다.
   return { ok: true, ready: !!(env.STATE_KEY && env.APP_ORIGIN && env.DB && providers.length), providers };
+};
+
+// /ready 전용. 바인딩이 **있다**와 DB 가 **답한다**는 다른 말이다 — 잘못된 database_id 로 배포하면
+// 바인딩은 멀쩡히 있고 첫 질의에서만 터진다. 그 실패를 사용자의 로그인이 아니라 여기서 낸다.
+// ⚠️ 오류 내용을 밖으로 내지 않는다. D1 오류 문자열에는 테이블·컬럼 이름이 섞여 나온다.
+const dbAnswers = async (env) => {
+  if (!env.DB) return false;
+  try {
+    return (await env.DB.prepare("SELECT 1 AS ok").first())?.ok === 1;
+  } catch {
+    return false;
+  }
 };
 
 // state 는 KV 가 아니라 **서명한 문자열**이다. 담는 건 종전과 같다(어느 제공자로 시작했나 ·
@@ -508,7 +529,10 @@ async function route(req, env) {
     if (path === "/health") return json(env, req, health(env));
     if (path === "/ready") {
       const h = health(env);
-      return json(env, req, h, h.ready ? 200 : 503);
+      // 설정이 덜 됐으면 DB 를 부르지도 않는다 — 답이 이미 정해졌는데 질의를 날릴 이유가 없다.
+      const db = h.ready && (await dbAnswers(env));
+      const r = { ...h, db, ready: h.ready && db };
+      return json(env, req, r, r.ready ? 200 : 503);
     }
 
     // 레이트리밋은 **두 자리에서만** 본다 — 라우트마다 흩어 두면 새 라우트를 더할 때 빠뜨린다.

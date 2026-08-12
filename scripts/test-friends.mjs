@@ -649,12 +649,33 @@ const call = async (env, token, path, method = "GET", body, extra = {}) => {
   assert.equal(h0.ready, false, "설정이 없는데 ready 다");
   // 68. /ready 는 설정이 덜 됐으면 503 이다.
   assert.equal((await get("/ready", bare)).status, 503, "설정이 없는데 /ready 가 200 이다");
-  const full = makeEnv({ KAKAO_ID: "id", GOOGLE_ID: "id" });
+  const full = makeEnv({ KAKAO_ID: "id", GOOGLE_ID: "id", GOOGLE_SECRET: "s" });
   const h1 = await (await get("/health", full)).json();
   assert.deepEqual(h1.providers, ["kakao", "google"], "설정된 제공자만 오지 않는다");
   assert.equal((await get("/ready", full)).status, 200, "다 설정됐는데 /ready 가 503 이다");
   // 69. DB 바인딩이 없으면 ready 가 아니다 — 로그인도 단어장도 못 한다.
   assert.equal((await (await get("/health", { ...full, DB: undefined })).json()).ready, false, "DB 없이 ready 다");
+
+  // 69b. **ID 만 있고 secret 이 없는 제공자는 세지 않는다.** 전에는 셌고, 그래서 화면에 버튼이
+  //      그려진 뒤 사용자가 눌러야 콜백에서 교환이 실패했다 — 배포자가 아니라 사용자가 먼저 안다.
+  const half = makeEnv({ NAVER_ID: "id" });
+  assert.deepEqual((await (await get("/health", half)).json()).providers, [],
+    "secret 없는 제공자를 쓸 수 있다고 말한다");
+  assert.equal((await get("/ready", half)).status, 503, "secret 이 없는데 /ready 가 200 이다");
+  // 69c. 카카오만 예외다 — 콘솔에서 client_secret 을 끌 수 있어 없는 게 정상 설정일 수 있다.
+  assert.deepEqual((await (await get("/health", makeEnv({ KAKAO_ID: "id" }))).json()).providers, ["kakao"],
+    "카카오가 secret 없이 빠졌다 — 카카오는 secret 이 선택이다");
+
+  // 69d. **바인딩이 있다 ≠ DB 가 답한다.** database_id 가 틀린 채 배포하면 바인딩은 멀쩡하고
+  //      첫 질의에서만 터진다. /ready 가 실제로 질의해야 그 배포를 여기서 잡는다.
+  const dead = { ...full, DB: { prepare: () => ({ first: async () => { throw new Error("D1_ERROR: no such table"); } }) } };
+  const rd = await get("/ready", dead);
+  assert.equal(rd.status, 503, "DB 가 질의에 실패하는데 /ready 가 200 이다");
+  const rj = await rd.json();
+  assert.equal(rj.db, false, "/ready 가 db:false 를 말하지 않는다");
+  assert.ok(!JSON.stringify(rj).includes("no such table"), "/ready 응답에 DB 오류 문자열이 새어 나왔다");
+  // /health 는 여전히 200 이다 — "프로세스가 도나"와 "쓸 수 있나"는 다른 질문이다.
+  assert.equal((await get("/health", dead)).status, 200, "/health 가 DB 때문에 200 이 아니다");
 
   // 70. **비밀값도 그 이름도 새지 않는다.** (`id` 처럼 짧은 문자열은 안 쓴다 — "providers" 에 걸린다)
   const txt = JSON.stringify(h1);
@@ -690,5 +711,5 @@ const call = async (env, token, path, method = "GET", body, extra = {}) => {
   assert.ok(!pathTemplate("/api/friends/" + A.uid + "/book").includes(A.uid), "경로 템플릿에 uid 가 남았다");
 }
 
-console.log("test-friends: 89개 통과 — 로그인 왕복 표(브라우저 결속) · 친구 쌍 유일성 · 친구 권한(행 하나) · 쿠키 세션 · 세대 무효화 · CSRF · 제공자ID 비공개 "
-  + "· 버전 충돌 · 수락 트랜잭션 · 무관계 DELETE · 마스터 · 복귀 주소 · 본문 한도 · state 서명 · 코드 회전 · 상한 · 헤더");
+console.log("test-friends: 96개 통과 — 로그인 왕복 표(브라우저 결속) · 친구 쌍 유일성 · 친구 권한(행 하나) · 쿠키 세션 · 세대 무효화 · CSRF · 제공자ID 비공개 "
+  + "· 버전 충돌 · 수락 트랜잭션 · 무관계 DELETE · 마스터 · 복귀 주소 · 본문 한도 · state 서명 · 코드 회전 · 상한 · 헤더 · readiness(secret 쌍·DB 실질의)");

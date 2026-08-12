@@ -70,7 +70,7 @@ Claude가 자율적으로 할 수 있는 일:
 | ~~P0~~ ✅ | 친구 관계 쌍 유일성 | **완료 2026-08-12.** `pair_key` UNIQUE + 같은 문장의 `ON CONFLICT` (`test-friends` 85~89) |
 | P1 | 남용 방어 | 공개 베타 전에 실효성 있는 rate limiting 또는 동등 방어 활성 |
 | P1 | **원격 D1 이전 적용** | `migrations/0002` 를 원격에 적용(사용자 승인·백업 후). **적용 전에는 친구 기능이 서버에서 500** — 코드가 `pair_key` 를 쓴다 |
-| P1 | readiness | DB 실제 쿼리와 OAuth ID/secret 쌍의 완전성을 점검 |
+| ~~P1~~ ✅ | readiness | **완료 2026-08-12.** `/ready` 가 `SELECT 1` 을 실제로 던지고, `providers` 가 id·secret 쌍이 맞는 것만 센다(카카오만 secret 선택). `test-friends` 69b~69d |
 | P1 | 운영 안전 | 버전형 D1 migration, 백업·복원 시험, 배포 후 smoke test, 롤백 |
 | P1 | 개인정보 | 실제 동작과 방침 일치, 동의·만 14세·계정 삭제 정책 검토 |
 
