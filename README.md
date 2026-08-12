@@ -12,11 +12,12 @@
 |---|---|---|
 | 입력 수신 (UI) | 화면 전환·이벤트·렌더 | `js/app.js` · `js/auth.js` · `js/friends.js` |
 | 핵심 로직 | 문장 매칭·활용 풀기·동기화 판정 | `js/app.js`(`matchSentence`) · `js/auth.js`(`syncPlan`) |
-| 데이터·외부 접근 | **`fetch` 는 여기에만** | `js/authApi.js` |
+| 데이터·외부 접근 | **계정 API 호출은 여기에만** | `js/authApi.js` |
 | 서버 | OAuth 3사 + 단어장·친구 (Cloudflare Pages Functions) | `worker/index.js` ← `functions/api/[[path]].js` |
-| 저장소 | Cloudflare Workers KV | — |
+| 저장소 | Cloudflare **D1** (`worker/schema.sql` · `migrations/`) | — |
 
-> 계층 규칙(grep 으로 확인 가능): **`fetch()` 는 `js/authApi.js` 에만 나온다.**
+> 계층 규칙(grep 으로 확인 가능): **계정 API(`/api/*`)를 부르는 `fetch()` 는 `js/authApi.js` 에만 나온다.**
+> (`js/app.js` 의 `fetch()` 는 `data/ksl-*.json` 정적 사전을 읽는 것뿐이다 — 계정도 세션도 안 탄다.)
 > `worker/index.js` 는 Pages Functions 로 번들되며 **정적으로 배포되지 않는다.**
 
 `package.json` 의 의존성(`@anthropic-ai/sdk`)은 `scripts/` 전용 개발 도구다 — 앱은 쓰지 않는다.
@@ -47,8 +48,9 @@ npm audit
 
 | 검사 | 무엇을 재나 |
 |---|---|
-| `test-friends` (70) | 친구 권한·비대칭 IDOR·세션 무효화·제공자ID 비공개·본문 한도·state 서명·레이트리밋 이음새 |
-| `test-auth` (16) | 어느 쪽 단어장이 새것인지(`syncPlan`) |
+| `test-friends` (89) | **로그인 왕복 표(브라우저 결속)**·**친구 쌍 유일성**·친구 권한·세션 무효화·제공자ID 비공개·본문 한도·state 서명·CSRF |
+| `test-auth` (24) | 어느 쪽 단어장이 새것인지(`syncPlan`) — **기기 시계를 안 본다** · 계정 교체 · 로그아웃 정리 |
+| `test-migrations` | `migrations/` 를 다 돌린 모양 == `worker/schema.sql` · 중복 관계 정리 |
 | `test-hash` | 조작된 주소 해시가 앱 초기화를 못 멈춘다 |
 | `test-sw` | SW 가 OAuth 왕복 주소·API·실패 응답을 캐시하지 않는다 |
 | `test-dist` | 배포 산출물에 내부 파일이 없다 |
@@ -61,12 +63,16 @@ npm audit
 
 ```bash
 npm run build                                    # allowlist 로 dist/ 생성 (scripts/build.mjs)
-npx wrangler pages deploy --project-name shhh-app --branch main --commit-dirty=true
+npx wrangler pages deploy --project-name shhh-app --branch main
 ```
 
 - 넣을 파일 목록은 `scripts/build.mjs` 의 `INCLUDE` **한 곳**. 새 정적 파일을 추가하면 여기에 적는다
   (allowlist 라 안 적으면 배포되지 않는다 — 기본값이 안전한 쪽).
 - ⚠️ `--branch main` 을 빼면 프리뷰로 간다(git 브랜치가 `cf-pages` 라서).
+- ⚠️ **`--commit-dirty=true` 로 운영에 배포하지 않는다.** 무엇이 올라갔는지 커밋으로 되짚을 수 없어
+  롤백할 대상이 없어진다(`CLAUDE.md` 9번). 커밋한 뒤 배포한다.
+- ⚠️ 스키마를 바꿨으면 **`migrations/` 에 새 번호 파일**을 만든다. `worker/schema.sql` 을 원격에
+  다시 실행하는 방식으로는 컬럼 추가가 반영되지 않는다(전부 `IF NOT EXISTS` 라 조용히 건너뛴다).
 - 배포 전후 절차와 검증 명령은 **[`docs/SECURITY_RELEASE_CHECKLIST.md`](docs/SECURITY_RELEASE_CHECKLIST.md)**.
 
 ## 환경 변수

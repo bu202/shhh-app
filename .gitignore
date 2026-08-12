@@ -10,6 +10,10 @@ scripts/all-resp.xml
 node_modules/
 todo-100.txt
 
+# 이 기기에서만 쓰는 Claude Code 설정과 개인 복구 메모
+.claude/settings.local.json
+CLAUDE.local.md
+
 # wrangler 의 로컬 KV 시뮬레이션. `kv key list` 를 --remote 없이 돌리면 생긴다
 worker/.wrangler/
 .wrangler/
