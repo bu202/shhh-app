@@ -11,7 +11,8 @@
 **앱스토어 미출시, 공개 계정 베타 No-Go.** 서버 P0 4건은 2026-08-12 에, **클라이언트 P0 3건**은
 2026-08-14 에 닫혔다. P1(레이트리밋·세션 정리·스키마 readiness·상한 경합·Origin)도 2026-08-14 에 닫혔다.
 
-남은 것은 **① 프로덕션 재배포 ② 개인정보 법률 검토 ③ 실기기 확인** 셋이다.
+프로덕션 재배포는 2026-08-14 에 끝났다(배포 `774015e9`, source `cd767ee`, Production/main).
+남은 것은 **① 개인정보 법률 검토 ② 실기기 확인** 둘이다.
 
 `npm test` 16개 스위트 전부 통과한다(2026-08-14 실측). 단, **테스트 통과는 보안 완료가 아니다** —
 이 저장소는 "초록불인데 P0 가 살아 있던" 사고를 **두 번** 겪었다(§5 참고). 두 번째가 더 중요하다:
@@ -112,8 +113,8 @@
 
 | 항목 | 완료 조건 | 막고 있는 것 |
 |---|---|---|
-| **프로덕션 재배포** | 아래 §7 의 배포 명령 · 배포 후 `/api/ready` 에 `db` 가 보일 것 | 사람이 실행해야 한다 |
-| 실기기 확인 | 설치된 PWA 에서 OAuth 복귀 · iOS/Android · 느린 회선에서 12초 타임아웃 | 배포 이후 |
+| ~~프로덕션 재배포~~ ✅ | **완료 2026-08-14.** `774015e9` (Production/main, source `cd767ee`). 스모크 결과는 §4-4 | — |
+| 실기기 확인 | 설치된 PWA 에서 OAuth 복귀 · iOS/Android · 느린 회선에서 12초 타임아웃 | 기기가 필요하다. Node·헤드리스로 못 잰다 |
 | 개인정보 | 동의·만 14세·계정 삭제 정책 | **법률 판단은 AI 가 하지 않는다.** 사용자 몫 |
 | OAuth 활성화 | P0 완료(됨) + 사용자 승인 | 승인 대기 |
 
@@ -137,6 +138,26 @@ npx wrangler pages deployment list --project-name shhh-app
 ⚠️ **DB 롤백은 배포 롤백과 다르다.** 0003 은 테이블을 새로 만들어 옮기므로 되돌리려면 백업 복원이
 필요하다. 옛 코드로 배포를 되돌려도 새 스키마는 그대로 남는다 — `pair_key` 가 NOT NULL 이라
 **pair_key 를 안 채우는 옛 코드는 친구 추가에서 실패한다.** 되돌릴 거면 배포와 DB 를 같이 본다.
+
+### 4-4. 배포 후 스모크 (2026-08-14 실측, 배포 `774015e9`)
+
+```bash
+npm test && npm run build
+npx wrangler pages deploy dist --project-name shhh-app --branch main   # --commit-dirty 금지
+```
+
+| 확인한 것 | 결과 |
+|---|---|
+| `/api/ready` | `{"ok":true,"ready":false,"providers":[],"db":false}` — **`db` 필드가 생겼다**(새 코드) |
+| `ready:false`·`db:false` 인 이유 | OAuth 시크릿이 없어 `providers` 가 비었고, `db` 는 `ready` 뒤에만 물어본다. **의도한 값** |
+| 내부 파일 6개(`CLAUDE.md`·`worker/index.js`·`package.json`·`.git/config` …) | 전부 index.html 폴백. **상태코드 말고 Content-Type 으로 판정**(§5-4) |
+| 정적 자산 | `service-worker.js` `application/javascript` (캐시 `shh-v10`) · `manifest.webmanifest` · `js/*.js` 정상 |
+| 보안 헤더 | CSP(`frame-ancestors 'none'`, `object-src 'none'`) · `nosniff` · Referrer-Policy · Permissions-Policy |
+| **Origin 없는 상태 변경** | `POST /api/friends` — Origin 없음/외부 Origin **둘 다 403**. 쿠키 없이도 인증보다 먼저 막는다 |
+| 원격 D1 | `migrations list` → 적용 대기 없음. 코드와 스키마가 같은 세대다 |
+
+⚠️ **프로덕션 별칭은 배포 직후 1분 정도 옛 응답을 준다.** 한 번 보고 "배포가 안 됐다"고 판단하지
+말 것 — 배포 고유 주소(`https://<id>.shhh-app.pages.dev`)로 먼저 확인하면 구분된다.
 
 `privacy.html` 과 코드의 *사실 대조표*는 `docs/SECURITY_RELEASE_CHECKLIST.md` 에 있다.
 그 표는 사실 대조이지 **법적 충분성 판정이 아니다**.
