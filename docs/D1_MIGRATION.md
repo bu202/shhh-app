@@ -1,10 +1,16 @@
-# KV → D1 이전 (P1-1) — **완료 · 배포 대기**
+# KV → D1 이전 (P1-1) — **완료** · 이 문서는 배경 기록이다
 
-스키마: [`worker/schema.sql`](../worker/schema.sql) · 상태: **코드·테스트·리소스 완료 / 프로덕션 배포만 남음**
+스키마: [`worker/schema.sql`](../worker/schema.sql) · 이전 파일: [`migrations/`](../migrations/)
 
-> ✅ 2026-08-11 완료: `shhh-db` 생성(APAC, `c279078b-…`), 원격·로컬 스키마 적용, 코드 전환,
-> 쿠키 세션 전환(P1-2), 테스트 75개 통과, `wrangler pages dev` 실기 확인.
-> **남은 것은 프로덕션 배포 하나뿐이다.**
+> ✅ 2026-08-11: `shhh-db` 생성(APAC), 코드 전환, 쿠키 세션 전환(P1-2), `wrangler pages dev` 실기 확인.
+> ✅ 2026-08-14: 원격에 `0001`·`0002`·`0003` **이전 이력으로** 적용(그전에는 이력 없이 스키마만
+> 올라가 있었다 — `d1_migrations` 가 비어 있었고 `friendships.pair_key` 가 아예 없었다).
+> 적용 전 실측: 모든 테이블 **0행**(OAuth 가 비활성이라 아무도 로그인한 적이 없다). 백업은
+> 저장소 밖에 받았다.
+>
+> ⚠️ **아래 「스키마 적용」 절차는 이제 쓰지 않는다.** `schema.sql` 을 원격에 직접 돌리면 이력이
+> 안 남아 다음 `migrations apply` 가 이미 있는 것을 또 돌린다 — 2026-08-14 에 실제로 그 상태를
+> 발견했다. 스키마 변경은 **번호 붙은 migration 으로만** 한다(`CLAUDE.md` §9).
 
 ---
 
@@ -46,11 +52,15 @@ npx wrangler d1 create shhh-db          # → database_id 를 받는다
 ```
 > `database_id` 는 비밀값이 아니다(KV 네임스페이스 ID 와 같은 성격) — `wrangler.jsonc` 에 적어도 된다.
 
-### 2. 스키마 적용 — **승인 필요**
+### 2. 스키마 적용 — **역사 기록. 지금은 이렇게 하지 않는다**
 ```bash
-npx wrangler d1 execute shhh-db --remote --file=worker/schema.sql
+# ⛔ 쓰지 말 것 — 이력이 안 남아 다음 이전이 꼬인다
+# npx wrangler d1 execute shhh-db --remote --file=worker/schema.sql
+
+# ✅ 지금의 절차 (승인 필요)
+npx wrangler d1 export shhh-db --remote --output <저장소 밖 경로>   # 백업 먼저
+npx wrangler d1 migrations apply shhh-db --remote
 ```
-재실행 가능하다(`IF NOT EXISTS`). 중간에 죽으면 그냥 다시 돌린다.
 
 ### 3. 데이터 이전 — **승인 필요**
 계정 1개라 스크립트를 쓰지 않는다. **아무것도 옮기지 않는 것이 가장 안전하다:**
@@ -89,14 +99,16 @@ npx wrangler d1 execute shhh-db --remote --file=worker/schema.sql
 
 ## 검증 (전환 커밋에 반드시 포함)
 
-기존 `scripts/test-friends.mjs` 76개가 **그대로 통과해야 한다.** 라우트 계약이 안 바뀌기 때문이다 —
+기존 `scripts/test-friends.mjs` 가 **그대로 통과해야 한다**(이전 당시 76개, 2026-08-14 기준 109개). 라우트 계약이 안 바뀌기 때문이다 —
 가짜 KV 대신 로컬 D1 을 물리고 같은 검사를 돌린다. 그게 이 이전이 옳은지 재는 가장 강한 신호다.
 
 새로 추가할 것:
 1. 친구 수락 중간에 SQL 이 죽어도 **반쪽 상태가 남지 않는다**(트랜잭션 롤백)
 2. `session_version` 을 올리면 **모든 세션이 그 즉시** 401 (KV 의 60초 창이 사라졌는지)
 3. `sessions` 에 **원본 토큰이 없다**(해시만)
-4. `invite_codes` 에 **코드 원문이 없다**
+4. ~~`invite_codes` 에 **코드 원문이 없다**~~ — **이 항목은 폐기됐다.** 초대 코드는 **원문으로
+   저장한다**(`worker/schema.sql` 의 주석에 이유가 있다: 폰을 바꾸면 앱이 자기 초대 링크를 다시
+   보여줘야 하는데 해시만 있으면 되살릴 수가 없다). 감수하는 것도 거기 적혀 있다.
 5. 계정 삭제가 한 문장이고 CASCADE 로 전부 사라진다
 6. 응답에 `provider_subject` 가 절대 안 실린다 (지금 59번 검사를 그대로)
 
