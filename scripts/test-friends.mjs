@@ -125,6 +125,16 @@ const call = async (env, token, path, method = "GET", body, extra = {}) => {
   assert.equal((await c(B.token, "/api/friends")).status, 200, "/api/friends 가 안 잡힌다");
 }
 
+// 친구 관계를 DB 에 **직접** 심는 픽스처. pair_key 를 여기서 한 번만 계산한다 —
+// 0003 이 NOT NULL 을 붙이기 전에는 세 자리가 각자 넣으면서 그중 둘이 이 컬럼을 빠뜨렸고,
+// 그게 통과했다. "앱이 항상 채운다"가 이미 이 파일에서 틀렸던 셈이다.
+function befriend(env, a, b, status = "accepted") {
+  const [x, y] = [a, b].sort();
+  env.DB._db.prepare(
+    "INSERT INTO friendships (requester_id,addressee_id,pair_key,status,created_at) VALUES (?,?,?,?,0)")
+    .run(a, b, `${x}|${y}`, status);
+}
+
 // ══ 2. 초대 코드 회전 ═════════════════════════════════════════════════════
 // 링크는 어디로든 퍼진다. 되돌릴 방법이 없으면 한 번 샌 코드가 영영 요청을 받는다.
 {
@@ -444,8 +454,10 @@ const call = async (env, token, path, method = "GET", body, extra = {}) => {
   const V = await signUp(env, "kakao", "V");
   for (let i = 0; i < 50; i++) {
     const f = await signUp(env, "kakao", "F" + i);
-    env.DB._db.prepare("INSERT INTO friendships (requester_id,addressee_id,status,created_at) VALUES (?,?,'accepted',0)")
-      .run(A.uid, f.uid);
+    // pair_key 를 **여기서도 채운다.** 0003 이 NOT NULL 을 붙이기 전에는 이 픽스처가 NULL 을
+    // 넣고 있었고, 그게 통과했다 — 즉 "앱이 항상 채운다"는 말이 이 자리에서 이미 틀렸다.
+    // (SQLite 의 UNIQUE 는 NULL 을 서로 다르게 보므로 유니크 인덱스도 못 잡았다.)
+    befriend(env, A.uid, f.uid);
   }
   const vCode = (await call(env, V.token, "/friends")).body.code;
   assert.equal((await call(env, A.token, "/friends", "POST", { code: vCode })).status, 429, "친구 상한이 없다");
@@ -619,8 +631,7 @@ const call = async (env, token, path, method = "GET", body, extra = {}) => {
 {
   const env = makeEnv();
   const A = await signUp(env, "kakao", "A"), B = await signUp(env, "kakao", "B"), Q = await signUp(env, "kakao", "Q");
-  env.DB._db.prepare("INSERT INTO friendships (requester_id,addressee_id,status,created_at) VALUES (?,?,'accepted',0)")
-    .run(B.uid, Q.uid);
+  befriend(env, B.uid, Q.uid);
 
   // 64. 관계가 없으면 거부한다.
   const res = await call(env, A.token, "/friends/" + B.uid, "DELETE");
@@ -629,8 +640,7 @@ const call = async (env, token, path, method = "GET", body, extra = {}) => {
   assert.equal(env.DB._db.prepare("SELECT COUNT(*) n FROM friendships WHERE requester_id=?").get(B.uid).n, 1,
     "남의 친구 관계가 지워졌다");
   // 66. 진짜 관계는 지워지고, **반복해도 안전하다**(두 번째는 404, 쓰기 없음).
-  env.DB._db.prepare("INSERT INTO friendships (requester_id,addressee_id,status,created_at) VALUES (?,?,'accepted',0)")
-    .run(A.uid, B.uid);
+  befriend(env, A.uid, B.uid);
   assert.equal((await call(env, A.token, "/friends/" + B.uid, "DELETE")).status, 200, "진짜 친구를 못 끊는다");
   assert.equal((await call(env, A.token, "/friends/" + B.uid, "DELETE")).status, 404, "두 번째 DELETE 가 통과했다");
   assert.equal(env.DB._db.prepare("SELECT COUNT(*) n FROM friendships WHERE requester_id=?").get(B.uid).n, 1,
@@ -711,5 +721,123 @@ const call = async (env, token, path, method = "GET", body, extra = {}) => {
   assert.ok(!pathTemplate("/api/friends/" + A.uid + "/book").includes(A.uid), "경로 템플릿에 uid 가 남았다");
 }
 
-console.log("test-friends: 96개 통과 — 로그인 왕복 표(브라우저 결속) · 친구 쌍 유일성 · 친구 권한(행 하나) · 쿠키 세션 · 세대 무효화 · CSRF · 제공자ID 비공개 "
-  + "· 버전 충돌 · 수락 트랜잭션 · 무관계 DELETE · 마스터 · 복귀 주소 · 본문 한도 · state 서명 · 코드 회전 · 상한 · 헤더 · readiness(secret 쌍·DB 실질의)");
+// ══ 17. readiness 가 **스키마**까지 본다 ══════════════════════════════════
+// 예전엔 `SELECT 1` 이라 "DB 가 살아 있나"만 답했다. 원격에 이전이 안 걸린 배포는 그걸 통과하고
+// 사용자의 첫 친구 요청에서 500 을 낸다 — 실패를 사용자가 아니라 여기서 내야 한다.
+{
+  // 76. 코드가 쓰는 테이블이 하나라도 없으면 준비 안 됨이다.
+  const env = makeEnv({ KAKAO_ID: "id", NAVER_ID: "id", NAVER_SECRET: "s", GOOGLE_ID: "id", GOOGLE_SECRET: "s" });
+  const ready = await worker.fetch(new Request("https://api.test/ready"), env);
+  assert.equal(ready.status, 200, "정상 스키마인데 준비 안 됐다고 한다");
+
+  env.DB._db.exec("DROP TABLE rate_limits");
+  const gone = await worker.fetch(new Request("https://api.test/ready"), env);
+  assert.equal(gone.status, 503, "테이블이 통째로 없는데 준비됐다고 한다");
+  assert.equal((await gone.json()).db, false, "db 항목이 실패를 안 알린다");
+
+  // 77. **컬럼까지** 본다. 0002·0003 이 원격에 안 걸린 상태가 정확히 이 모양이다.
+  const env2 = makeEnv({ KAKAO_ID: "id", NAVER_ID: "id", NAVER_SECRET: "s", GOOGLE_ID: "id", GOOGLE_SECRET: "s" });
+  env2.DB._db.exec("DROP TABLE friendships");
+  env2.DB._db.exec("CREATE TABLE friendships (requester_id TEXT, addressee_id TEXT, status TEXT, created_at INTEGER)");
+  assert.equal((await worker.fetch(new Request("https://api.test/ready"), env2)).status, 503,
+    "pair_key 가 없는 옛 스키마인데 준비됐다고 한다");
+}
+
+// ══ 18. 친구 상한을 **문장 안에서** 센다 ══════════════════════════════════
+// 밖에서 세고 나서 쓰면 그 사이에 들어온 요청이 같은 자리를 또 가져간다.
+// (동시 실행 자체는 이 하니스가 못 만든다 — 연결 하나로 순차 실행이라. 그래서 재는 것은
+//  "조건이 문장 안에 있는가"이고, 그 증거로 **미리보기가 안 도는 경로**를 쓴다.)
+{
+  const env = makeEnv();
+  const V = await signUp(env, "kakao", "V"), W = await signUp(env, "kakao", "W");
+  // V 에게 W 가 요청을 보낸 뒤에 V 를 상한까지 채운다 — 수락 시점에 이미 꽉 차 있다.
+  const vCode = (await call(env, V.token, "/friends")).body.code;
+  await call(env, W.token, "/friends", "POST", { code: vCode });
+  for (let i = 0; i < 50; i++) befriend(env, V.uid, (await signUp(env, "kakao", "L" + i)).uid);
+
+  // 78. 수락이 상한을 넘기지 못한다. 이 경로에는 미리보기 COUNT 가 아예 없다 —
+  //     막는 것은 UPDATE 문 안의 조건뿐이다.
+  const r = await call(env, V.token, "/friends/" + W.uid, "PUT");
+  assert.equal(r.status, 429, "상한을 넘겨 수락됐다");
+  assert.match(r.body.error, /너무 많아요/, "상한인데 '받은 요청이 아니에요'라고 말한다");
+  // 79. 상한 때문이 아니라 **정말 없는 요청**은 여전히 400 이다(문구가 뒤바뀌면 안 된다).
+  const env2 = makeEnv();
+  const P = await signUp(env2, "kakao", "P"), Q = await signUp(env2, "kakao", "Q");
+  assert.equal((await call(env2, P.token, "/friends/" + Q.uid, "PUT")).status, 400, "없는 요청이 429 로 나갔다");
+}
+
+// ══ 19. 죽은 세션 행이 쌓이지 않는다 ══════════════════════════════════════
+// whoAmI 는 만료를 판정에서만 걸러내고 행은 뒀다 — 다시 오지 않는 사용자의 행이 영원히 남았다.
+{
+  const env = makeEnv();
+  const A = await signUp(env, "kakao", "A");
+  env.DB._db.prepare("UPDATE sessions SET expires_at = 1 WHERE user_id = ?").run(A.uid);
+  // 80. 다음 로그인이 지난 행을 치운다(청소용 크론이 없으니 드문 자리에 붙였다).
+  await newSession(env, A.uid);
+  assert.equal(env.DB._db.prepare("SELECT COUNT(*) n FROM sessions WHERE expires_at < ?").get(Date.now()).n, 0,
+    "만료된 세션 행이 그대로 남았다");
+  // 81. 살아 있는 세션은 안 건드린다.
+  assert.equal(env.DB._db.prepare("SELECT COUNT(*) n FROM sessions WHERE user_id = ?").get(A.uid).n, 1,
+    "청소가 멀쩡한 세션까지 지웠다");
+}
+
+// ══ 20. Origin 이 **없는** 상태 변경도 막는다 ═════════════════════════════
+// 예전엔 "Origin 이 없으면 브라우저가 아니라서 CSRF 가 성립하지 않는다"고 통과시켰다.
+// 성립하지 않는 건 맞지만, 그 판단은 브라우저가 반드시 붙인다는 전제에 기대고 있었다 —
+// 통과시켜서 얻는 것은 curl 편의뿐이고, 잃는 것은 허용 목록을 안 지나는 상태 변경 경로다.
+{
+  const env = makeEnv();
+  const A = await signUp(env, "kakao", "A");
+  const noOrigin = (path, method, body) => worker.fetch(new Request("https://api.test" + path, {
+    method, headers: { Cookie: "shh_s=" + A.token, "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }), env);
+  // 82. 상태를 바꾸는 메서드는 전부 막힌다.
+  for (const [p, m, b] of [["/book", "PUT", { words: [], version: 0 }], ["/me", "DELETE"],
+                           ["/session", "DELETE"], ["/friends", "POST", { code: "x" }]]) {
+    assert.equal((await noOrigin(p, m, b)).status, 403, `${m} ${p} 가 Origin 없이 통과했다`);
+  }
+  // 83. **읽기는 그대로 열려 있다.** 낯선 Origin 에 CORS 를 안 열어 줘서 응답을 못 읽는다.
+  assert.equal((await noOrigin("/book", "GET")).status, 200, "Origin 이 없다고 읽기까지 막혔다");
+  assert.equal(env.DB._db.prepare("SELECT COUNT(*) n FROM users WHERE id = ?").get(A.uid).n, 1,
+    "막았다면서 계정이 지워졌다");
+}
+
+// ══ 21. 레이트리밋이 **실제로** 막는다 ════════════════════════════════════
+// 이 자리는 오래 "이음새만 있고 아무것도 안 막는다"였다. KV(하루 1,000 writes)로는 리미터가
+// 곧 서비스 거부 수단이었지만 D1 은 10만이라 같은 판단이 뒤집힌다.
+{
+  const env = makeEnv();
+  const A = await signUp(env, "kakao", "A"), B = await signUp(env, "kakao", "B");
+  const bCode = (await call(env, B.token, "/friends")).body.code;
+
+  // 84. 초대 코드로 요청을 보내는 자리가 가장 좁다(유일한 열거 공격면).
+  //     정상 사용자는 링크를 눌러 한 번 보낼 뿐이라 20회면 넉넉하다.
+  let blocked = 0;
+  for (let i = 0; i < 25; i++) {
+    const r = await call(env, A.token, "/friends", "POST", { code: "없는코드" + i });
+    if (r.status === 429) blocked++;
+  }
+  assert.ok(blocked > 0, "초대 코드를 무한히 두드릴 수 있다");
+  assert.ok(blocked >= 4, `20회를 넘겨도 거의 안 막힌다(막힌 횟수 ${blocked})`);
+
+  // 85. 막힌 응답에 Retry-After 가 붙는다 — 언제 다시 오라는 말이 없으면 곧바로 다시 두드린다.
+  const r429 = await call(env, A.token, "/friends", "POST", { code: bCode });
+  assert.equal(r429.status, 429, "창 안인데 다시 통과했다");
+  assert.equal(r429.headers.get("Retry-After"), "60", "언제 다시 오라는 말이 없다");
+
+  // 86. **읽기는 안 센다.** 남용해도 남는 게 없고, 세면 정상 사용이 먼저 걸린다.
+  for (let i = 0; i < 30; i++) assert.equal((await call(env, A.token, "/friends")).status, 200, "읽기가 막혔다");
+
+  // 87. 세는 단위는 사람이다 — 한 사람이 막혔다고 다른 사람까지 막히면 그건 방어가 아니라 고장이다.
+  assert.equal((await call(env, B.token, "/friends", "POST", { code: "없는코드" })).status, 404,
+    "남이 두드렸다고 이 사람까지 막혔다");
+
+  // 88. 카운터에 **원문 uid·IP 가 남지 않는다.** 남용을 세려고 개인정보를 쌓지 않는다.
+  for (const row of env.DB._db.prepare("SELECT bucket FROM rate_limits").all()) {
+    assert.ok(!row.bucket.includes(A.uid) && !row.bucket.includes(B.uid), "리미터 키에 uid 원문이 남았다");
+  }
+}
+
+console.log("test-friends: 109개 통과 — 로그인 왕복 표(브라우저 결속) · 친구 쌍 유일성 · 친구 권한(행 하나) · 쿠키 세션 · 세대 무효화 · CSRF(Origin 필수) · 제공자ID 비공개 "
+  + "· 버전 충돌 · 수락 트랜잭션(상한 포함) · 무관계 DELETE · 마스터 · 복귀 주소 · 본문 한도 · state 서명 · 코드 회전 · 상한 · 헤더 · readiness(스키마 실질의) · 세션 청소 · 레이트리밋");

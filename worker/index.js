@@ -137,10 +137,20 @@ const health = (env) => {
 // /ready 전용. 바인딩이 **있다**와 DB 가 **답한다**는 다른 말이다 — 잘못된 database_id 로 배포하면
 // 바인딩은 멀쩡히 있고 첫 질의에서만 터진다. 그 실패를 사용자의 로그인이 아니라 여기서 낸다.
 // ⚠️ 오류 내용을 밖으로 내지 않는다. D1 오류 문자열에는 테이블·컬럼 이름이 섞여 나온다.
+// ⚠️ 예전엔 `SELECT 1` 만 던졌다. 그건 "DB 가 살아 있나"만 답하고 **"이 코드가 쓰는 스키마가
+//    거기 있나"** 는 답하지 않는다 — 원격에 이전이 안 걸린 배포는 SELECT 1 을 멀쩡히 통과하고
+//    사용자의 첫 친구 요청에서 500 을 낸다. 그래서 코드가 실제로 만지는 테이블과 **컬럼까지**
+//    건드려 본다(pair_key 를 조건에 넣은 이유가 그것이다: 0002·0003 이 걸렸는지 여기서 드러난다).
+//    COUNT 는 작은 테이블이라 값싸고, readiness 는 자주 부르는 자리가 아니다.
 const dbAnswers = async (env) => {
   if (!env.DB) return false;
   try {
-    return (await env.DB.prepare("SELECT 1 AS ok").first())?.ok === 1;
+    const r = await env.DB.prepare(
+      `SELECT (SELECT COUNT(*) FROM users) + (SELECT COUNT(*) FROM sessions)
+            + (SELECT COUNT(*) FROM books) + (SELECT COUNT(*) FROM invite_codes)
+            + (SELECT COUNT(*) FROM rate_limits)
+            + (SELECT COUNT(*) FROM friendships WHERE pair_key IS NOT NULL) AS n`).first();
+    return typeof r?.n === "number";
   } catch {
     return false;
   }
@@ -231,9 +241,21 @@ const bound = async (env, req, st) => !!st.txn && sameSecret(st.txn, await sha25
 export async function newSession(env, userId) {
   const token = mkToken();
   const u = await env.DB.prepare("SELECT session_version FROM users WHERE id = ?").bind(userId).first();
+  const now = Date.now();
   await env.DB.prepare(
     "INSERT INTO sessions (token_hash, user_id, session_version, expires_at) VALUES (?, ?, ?, ?)")
-    .bind(await sha256(token), userId, u ? u.session_version : 0, Date.now() + SESSION_DAYS * 86400e3).run();
+    .bind(await sha256(token), userId, u ? u.session_version : 0, now + SESSION_DAYS * 86400e3).run();
+  // ⚠️ **죽은 행을 여기서 치운다.** whoAmI 는 만료를 판정에서만 걸러내고 행은 그대로 뒀다 —
+  //    그래서 다시 오지 않는 사용자의 세션 행이 영원히 남았다. 방침(180일 뒤 만료)이 거짓말은
+  //    아니지만, 만료된 뒤에도 보관할 이유가 없는 것을 보관하고 있었다.
+  //    청소용 크론이 없으니 **로그인이라는 드문 자리**에 붙인다. 실패해도 로그인은 되어야 한다 —
+  //    청소가 안 되는 것과 로그인이 안 되는 것은 무게가 다르다.
+  try {
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM sessions WHERE expires_at < ? OR revoked_at IS NOT NULL").bind(now),
+      env.DB.prepare("DELETE FROM rate_limits WHERE expires_at < ?").bind(now),
+    ]);
+  } catch { /* 청소 실패는 로그인을 막지 않는다 */ }
   return token;
 }
 
@@ -276,13 +298,46 @@ async function killSessions(env, uid) {
 //   ② API 를 Pages Functions 에서 Worker 로 되돌리고 `ratelimits` 바인딩 — 그러면 앱과 API 의
 //      origin 이 다시 갈라져 쿠키·CSP·네이버 조건을 전부 되돌려야 한다. 값보다 대가가 크다.
 //
-// 그래서 여기 있는 건 **이음새**다: 바인딩이 생기는 날 이 함수 하나만 살아나면 된다.
-// ⚠️ 키에는 uid·토큰·IP 원문을 **로그로 남기지 않는다**(아래 어디에서도 console.log 하지 않는다).
+// ⚠️ **위 문단은 이제 절반만 맞다(2026-08-14).** ①·②는 그대로지만, "KV 카운터라 못 한다"는
+//    결론이 D1 로 옮긴 뒤에도 남아 있었다. KV 무료는 하루 1,000 writes 라 리미터가 곧 서비스
+//    거부 수단이었지만 **D1 은 하루 10만 writes** 다 — 같은 판단이 반대로 뒤집힌다.
+//    그래서 지금은 D1 카운터가 **실제로 막는다.** WAF(①)는 여전히 더 좋은 답이다(엣지에서
+//    끊어 볼류메트릭까지 막는다). 이건 그것이 없는 동안 **느린 남용**을 막는 것이다.
+//
+// 어디에 거는가 — **값이 있는 세 곳만.** 전부에 걸면 PUT /book(0.8초 자동저장)마다 D1 쓰기가
+// 하나씩 늘고, 막아서 얻는 것은 없다(본문 한도 8KB 라 쌓일 것이 없다).
+//   login   /exchange · /cb — 세션을 무한히 찍어내는 것을 막는다
+//   friends POST /friends — **초대 코드 무차별 대입**을 막는다. 이게 유일한 열거 공격면이다
+//   write   그 밖의 상태 변경 — 넉넉하게. 정상 사용이 먼저 걸리면 방어가 아니라 고장이다
+const RL_WINDOW = 60_000;
+const RL_MAX = { login: 10, friends: 20, write: 120 };
+
+// 고정 창. **세는 것과 판정이 UPSERT 한 문장 안에서 끝난다** — 읽고 나서 쓰면 동시 요청이
+// 창 하나를 여러 번 통과한다(친구 상한이 겪은 것과 같은 종류의 경합이다).
+// 리미터가 고장 나면 통과시킨다(fail-open): 남용 방어가 서비스를 멈추는 쪽이 더 나쁘고,
+// 진짜 방어선은 WAF 다. 이 선택을 아는 채로 한다.
 async function limited(env, req, uid, bucket) {
-  if (!env.RL) return false;
+  // 바인딩이 생기는 날(Workers 로 돌아가는 등) 그쪽을 먼저 쓴다 — 엣지가 더 값싸다.
+  if (env.RL) {
+    const who = uid || req.headers.get("CF-Connecting-IP") || "anon";
+    const { success } = await env.RL.limit({ key: bucket + "|" + who });
+    return !success;
+  }
+  if (!env.DB) return false;
+  const now = Date.now();
+  // ⚠️ 키에 uid·IP **원문을 넣지 않는다.** 남용을 세려고 개인정보를 쌓는 건 목적에 비해 과하다.
+  //    (로그에도 남기지 않는다 — 아래 어디에서도 console.log 하지 않는다.)
   const who = uid || req.headers.get("CF-Connecting-IP") || "anon";
-  const { success } = await env.RL.limit({ key: bucket + "|" + who });
-  return !success;
+  const key = await sha256(`${bucket}|${who}|${Math.floor(now / RL_WINDOW)}`);
+  try {
+    const r = await env.DB.prepare(
+      `INSERT INTO rate_limits (bucket, n, expires_at) VALUES (?1, 1, ?2)
+       ON CONFLICT (bucket) DO UPDATE SET n = rate_limits.n + 1
+       RETURNING n`).bind(key, now + RL_WINDOW * 2).first();
+    return (r?.n || 0) > (RL_MAX[bucket] ?? RL_MAX.write);
+  } catch {
+    return false;
+  }
 }
 const tooMany = (env, req) =>
   new Response(JSON.stringify({ error: "잠시 뒤에 다시 시도해 주세요" }),
@@ -575,6 +630,8 @@ async function route(req, env) {
     // 여기서 한다 — code 는 이 한 번의 교환에만 쓰이고 세션 토큰으로 바뀐다.
     m = path.match(/^\/exchange\/(\w+)$/);
     if (m && P[m[1]]) {
+      // 세션을 찍어내는 자리다. GET 이라 위 ② 에 안 걸리므로 여기서 직접 센다.
+      if (await limited(env, req, null, "login")) return tooMany(env, req);
       const st = await takeState(env, url.searchParams.get("state"));
       if (!st || st.provider !== m[1]) return json(env, req, { error: "로그인 요청이 만료됐어요" }, 400);
       // **표를 먼저 본다.** 여기를 통과하기 전에는 code 를 교환하지도, 세션을 만들지도 않는다.
@@ -598,6 +655,8 @@ async function route(req, env) {
     }
 
     // ── 2b. 제공자가 우리에게 직접 돌려보내는 자리(카카오·구글) ── /cb/kakao?code&state
+    // /cb 도 세션을 만든다. 제공자가 부르는 자리라 사람이 직접 두드릴 수도 있다.
+    if (/^\/cb\/\w+$/.test(path) && (await limited(env, req, null, "login"))) return tooMany(env, req);
     m = path.match(/^\/cb\/(\w+)$/);
     if (m && P[m[1]]) {
       const state = url.searchParams.get("state");
@@ -657,14 +716,19 @@ async function route(req, env) {
     // 읽기(GET)는 안 본다: 낯선 Origin 에는 CORS 를 안 열어 줘서 응답을 읽지 못한다.
     if (req.method !== "GET" && req.method !== "OPTIONS") {
       const o = req.headers.get("Origin");
-      // Origin 이 아예 없는 요청(curl 등)은 브라우저가 아니라서 CSRF 가 성립하지 않는다.
-      // 다만 **있는데 남의 것**이면 그건 정확히 우리가 막으려는 그것이다.
-      if (o && !allowed(env, o)) return json(env, req, { error: "허용되지 않은 요청이에요" }, 403);
+      // ⚠️ **없는 것도 막는다.** 예전엔 "Origin 이 없으면 브라우저가 아니라서 CSRF 가 성립하지
+      //    않는다"고 통과시켰다. 성립하지 않는다는 것 자체는 맞지만, 그 판단은 **브라우저가
+      //    반드시 Origin 을 붙인다**는 전제에 기대고 있었다. 우리 앱의 상태 변경은 전부
+      //    같은 origin 의 fetch 이고 브라우저는 GET·HEAD 가 아닌 요청에 Origin 을 **항상**
+      //    붙이므로, 없다는 건 우리 앱이 보낸 것이 아니라는 뜻이다. 통과시켜서 얻는 것은
+      //    curl 편의뿐이고, 잃는 것은 "허용 목록을 지나지 않는 상태 변경 경로"의 존재다.
+      if (!o || !allowed(env, o)) return json(env, req, { error: "허용되지 않은 요청이에요" }, 403);
     }
 
-    // ② 상태를 바꾸는 요청 전부(PUT /book · DELETE /me · POST /friends · 수락 · 끊기 · 로그아웃).
-    //    읽기는 세지 않는다 — 남용해도 남는 게 없고, 세면 정상 사용이 먼저 걸린다.
-    //    로그인한 사람은 uid 로, 아니면 IP 로 센다.
+    // ② 상태를 바꾸는 요청. 읽기는 세지 않는다 — 남용해도 남는 게 없고, 세면 정상 사용이
+    //    먼저 걸린다. 로그인한 사람은 uid 로, 아니면 IP 로 센다.
+    //    **초대 코드로 요청을 보내는 자리는 따로 더 좁게 센다**(아래 POST /friends) —
+    //    거기가 유일하게 남의 것을 맞혀 볼 수 있는 자리다.
     if (req.method !== "GET" && (await limited(env, req, uid, "write"))) return tooMany(env, req);
 
     // 로그아웃 — 이 계정의 로그인을 **전부** 끊는다(세대를 올린다). 쿠키도 그 자리에서 지운다.
@@ -764,6 +828,10 @@ async function route(req, env) {
       // 요청 보내기 — 초대 코드로. 상대가 이미 나에게 보냈으면 그 자리에서 맺어진다
       // (서로 링크를 주고받았는데 둘 다 수락 버튼을 기다리는 상태가 안 생기게).
       if (path === "/friends" && req.method === "POST") {
+        // **여기가 유일한 열거 공격면이다.** 초대 코드를 맞히면 남에게 요청을 보낼 수 있다
+        // (수락은 여전히 상대가 하지만, 무차별 대입은 그 자체로 스팸이 된다).
+        // 위 "write" 보다 좁게 센다 — 정상 사용자는 링크를 눌러 한 번 보낼 뿐이다.
+        if (await limited(env, req, uid, "friends")) return tooMany(env, req);
         const body = await readBody(req);
         const code = typeof (body && body.code) === "string" ? body.code.trim().slice(0, 64) : "";
         const owner = code && (await env.DB.prepare(
@@ -786,6 +854,11 @@ async function route(req, env) {
 
         // 상한. 내 쪽만 보는 게 아니라 **상대 쪽도** 본다 — 안 그러면 여러 계정이 한 사람에게
         // 요청을 몰아 그 사람 목록만 무한히 키울 수 있다. (이미 관계가 있으면 셀 이유가 없다)
+        //
+        // ⚠️ 이 미리보기는 **문구를 위한 것**이고 방어가 아니다. 세고 나서 넣는 사이에 다른
+        //    요청이 들어오면 둘 다 통과한다(pair_key 가 겪은 것과 같은 종류의 경합이다).
+        //    진짜 방어는 아래 INSERT 의 WHERE 안에 있다 — 거기서 막히면 행이 안 생기고,
+        //    그걸 아래에서 "행이 없다"로 알아채 429 를 낸다.
         if (!rel) {
           const cnt = await env.DB.prepare(
             `SELECT (SELECT COUNT(*) FROM friendships WHERE requester_id = ?1 OR addressee_id = ?1) AS mine,
@@ -800,18 +873,25 @@ async function route(req, env) {
         //    "서로 보냈다"는 신호라 그 자리에서 accepted 가 된다.
         //    WHERE 가 막는 것 — 이미 accepted 인 행(그대로 둔다)과 **내가 보낸 pending**
         //    (같은 사람이 두 번 눌렀을 뿐이라 친구로 만들면 안 된다).
+        // 상한도 **이 문장 안에서** 센다(SELECT … WHERE 형태라야 조건을 걸 수 있다).
+        // 그래서 동시 요청 두 개가 마지막 한 자리를 나눠 갖는 일이 생기지 않는다.
         const now = Date.now();
         await env.DB.prepare(
           `INSERT INTO friendships (requester_id, addressee_id, pair_key, status, created_at)
-           VALUES (?1, ?2, ?3, 'pending', ?4)
+           SELECT ?1, ?2, ?3, 'pending', ?4
+            WHERE (SELECT COUNT(*) FROM friendships WHERE requester_id = ?1 OR addressee_id = ?1) < ?5
+              AND (SELECT COUNT(*) FROM friendships WHERE requester_id = ?2 OR addressee_id = ?2) < ?5
            ON CONFLICT (pair_key) DO UPDATE SET status = 'accepted', accepted_at = ?4
              WHERE friendships.status = 'pending' AND friendships.requester_id = ?2`)
-          .bind(uid, other, key, now).run();
+          .bind(uid, other, key, now, MAX_FRIENDS).run();
 
         // 무엇이 됐는지는 **DB 에 다시 묻는다.** 위 문장이 넣었는지 고쳤는지 아무것도 안 했는지를
         // changes 로 갈라 보면 세 갈래가 또 생긴다 — 결과 한 줄이면 충분하다.
         const made = await env.DB.prepare("SELECT status FROM friendships WHERE pair_key = ?").bind(key).first();
-        const ok = !!made && made.status === "accepted";
+        // 행이 없다 = 위 WHERE 가 상한에서 막았다는 뜻이다. 여기서 잡지 않으면
+        // "요청을 보냈어요"라고 말해놓고 아무것도 안 보낸 화면이 나온다.
+        if (!made) return json(env, req, { error: "친구가 너무 많아요" }, 429);
+        const ok = made.status === "accepted";
         return json(env, req, { state: ok ? "ok" : "sent", friend: await briefOne(env, other, ok) });
       }
 
@@ -853,15 +933,25 @@ async function route(req, env) {
         // 조건이 전부 **UPDATE 문 안에** 있다: 상대가 requester 이고, 나에게 온 것이고, 아직 pending.
         // 하나라도 아니면 changes 가 0 이다 — 읽고 나서 쓰는 사이에 상태가 바뀌어도 안전하다.
         if (req.method === "PUT") {
-          const cnt = await env.DB.prepare(
-            "SELECT COUNT(*) AS n FROM friendships WHERE (requester_id = ?1 OR addressee_id = ?1) AND status = 'accepted'")
-            .bind(uid).first();
-          if (cnt.n >= MAX_FRIENDS) return json(env, req, { error: "친구가 너무 많아요" }, 429);
+          // 상한을 **UPDATE 안에서** 센다 — 밖에서 세면 요청 두 개가 동시에 마지막 자리를
+          // 채워 51번째 친구가 생긴다. 세는 것은 accepted 만이다(pending 은 아직 친구가 아니다).
           const r = await env.DB.prepare(
-            `UPDATE friendships SET status = 'accepted', accepted_at = ?
-              WHERE requester_id = ? AND addressee_id = ? AND status = 'pending'`)
-            .bind(Date.now(), other, uid).run();
-          if (!r.meta || r.meta.changes === 0) return json(env, req, { error: "받은 요청이 아니에요" }, 400);
+            `UPDATE friendships SET status = 'accepted', accepted_at = ?1
+              WHERE requester_id = ?2 AND addressee_id = ?3 AND status = 'pending'
+                AND (SELECT COUNT(*) FROM friendships f2
+                      WHERE (f2.requester_id = ?3 OR f2.addressee_id = ?3)
+                        AND f2.status = 'accepted') < ?4`)
+            .bind(Date.now(), other, uid, MAX_FRIENDS).run();
+          // changes 가 0 인 이유가 둘이다: 받은 요청이 아니거나, 상한에 걸렸거나.
+          // **실패한 뒤에만** 한 번 더 세어 문구를 가른다(정상 경로에는 질의를 늘리지 않는다).
+          if (!r.meta || r.meta.changes === 0) {
+            const cnt = await env.DB.prepare(
+              "SELECT COUNT(*) AS n FROM friendships WHERE (requester_id = ?1 OR addressee_id = ?1) AND status = 'accepted'")
+              .bind(uid).first();
+            return cnt.n >= MAX_FRIENDS
+              ? json(env, req, { error: "친구가 너무 많아요" }, 429)
+              : json(env, req, { error: "받은 요청이 아니에요" }, 400);
+          }
           return json(env, req, { state: "ok", friend: await briefOne(env, other, true) });
         }
         // 거절 · 요청 취소 · 친구 끊기 — 전부 "이 연결을 지운다" 하나다.

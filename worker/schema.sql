@@ -47,8 +47,10 @@ CREATE TABLE IF NOT EXISTS friendships (
   requester_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   addressee_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   -- 두 uid 를 **정렬해 이어 붙인 값**. 방향이 달라도 같은 쌍이면 같은 문자열이다.
-  -- 앱이 계산해 넣는다(생성 컬럼이 아닌 이유: ALTER 로 추가하려면 상수 기본값이어야 한다).
-  pair_key      TEXT,
+  -- 앱이 계산해 넣는다(생성 컬럼이 아닌 이유: 0002 가 ALTER 로 더한 컬럼이라 상수 기본값만 됐다).
+  -- NOT NULL 은 0003 이 테이블을 새로 만들어 붙였다 — **SQLite 의 UNIQUE 인덱스는 NULL 을
+  -- 서로 다르게 보므로**, 비어 들어갈 수 있으면 아래 유니크가 중복 관계를 못 막는다.
+  pair_key      TEXT NOT NULL,
   status        TEXT NOT NULL CHECK (status IN ('pending', 'accepted')),
   created_at    INTEGER NOT NULL,
   accepted_at   INTEGER,
@@ -79,6 +81,16 @@ CREATE TABLE IF NOT EXISTS invite_codes (
 );
 -- 지금 살아 있는 코드를 사람마다 하나 찾는 쪽.
 CREATE INDEX IF NOT EXISTS invite_user ON invite_codes(user_id, revoked_at);
+
+-- 레이트리밋 카운터(0003). 고정 창이고 창 하나에 행 하나다.
+-- ⚠️ **원문 IP·uid 를 넣지 않는다.** 키는 SHA-256(용도|주체|창번호) 다 — 남용을 세는 대가로
+--    개인정보를 쌓지 않는다. 지난 행은 로그인할 때 함께 지운다(청소용 크론이 없다).
+CREATE TABLE IF NOT EXISTS rate_limits (
+  bucket      TEXT PRIMARY KEY,
+  n           INTEGER NOT NULL,
+  expires_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS rate_limits_expires ON rate_limits(expires_at);
 
 -- ⚠️ entitlements 는 **만들지 않는다.** 지금 파는 물건이 없고(BETA_NO_WALL), 마스터는
 --    MASTER_UIDS 시크릿이 정한다. 결제를 붙이는 날 그때의 요구에 맞춰 만든다 —
