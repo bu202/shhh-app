@@ -199,10 +199,11 @@ if (typeof document !== "undefined") {
 
     const act = document.createElement("span");
     act.className = "v row-act";
+    // 처리기에 **자기 버튼을 넘긴다** — 요청이 도는 동안 그 버튼을 잠그기 위해서다.
     const btn = (text, cls, fn) => {
       const b = document.createElement("button");
       b.type = "button"; b.className = "chip " + cls; b.textContent = text;
-      b.addEventListener("click", (e) => { e.stopPropagation(); fn(); });
+      b.addEventListener("click", (e) => { e.stopPropagation(); fn(b); });
       act.appendChild(b);
     };
     // 서버를 다시 부르지 않고 **손에 든 목록을 그 자리에서 고친다.**
@@ -216,6 +217,25 @@ if (typeof document !== "undefined") {
       renderFriends();
     };
 
+    // 거절 · 요청 취소 · 친구 끊기는 서버에서 **같은 한 가지**다(이 연결을 지운다).
+    //
+    // ⚠️ **서버가 확인해 준 뒤에만 목록에서 지운다.** 예전엔 결과를 안 보고 행부터 지워서,
+    //    500 이나 오프라인일 때 사용자는 "끊었다"고 믿는데 관계는 서버에 그대로 남았다 —
+    //    상대에겐 내 단어장이 계속 보인다. privacy.html 의 "끊는 즉시 사라진다"와 어긋난다.
+    //
+    // 404 는 예외다. 서버는 지운 행이 0개일 때 404 를 내는데, 그건 "이미 그런 관계가 없다"는
+    // 뜻이라 **사용자가 원한 결과가 이미 이뤄진 것**이다. 이걸 실패로 묶으면 이미 사라진
+    // 관계의 유령 행을 화면에서 영영 못 지운다.
+    const withdraw = async (b) => {
+      if (b.disabled) return;   // 도는 동안 또 누르면 두 번째 요청은 404 를 받는다
+      b.disabled = true;
+      const r = await apiRemoveFriend(f.uid);
+      if (r.ok || r.status === 404) return move(null);
+      b.disabled = false;
+      toast(r.kind === "network" ? "연결이 안 돼요. 잠시 뒤 다시 눌러주세요"
+        : "지금은 처리하지 못했어요. 잠시 뒤 다시 눌러주세요");
+    };
+
     if (kind === "in") {
       btn("수락", "ok", async () => {
         const r = await apiAcceptFriend(f.uid);
@@ -225,14 +245,14 @@ if (typeof document !== "undefined") {
         toast(`${f.name || "친구"}님과 친구가 됐어요!`);
         move("friends");
       });
-      btn("거절", "no", async () => { await apiRemoveFriend(f.uid); move(null); });
+      btn("거절", "no", withdraw);
     } else if (kind === "out") {
-      btn("취소", "no", async () => { await apiRemoveFriend(f.uid); move(null); });
+      btn("취소", "no", withdraw);
     } else {
       btn("단어장 보기", "ok", () => openFriendBook(f));
-      btn("끊기", "no", async () => {
+      btn("끊기", "no", (b) => {
         if (!confirm(`${f.name || "이 친구"}와 친구를 끊어요.\n서로의 단어장이 안 보이게 됩니다. 계속할까요?`)) return;
-        await apiRemoveFriend(f.uid); move(null);
+        withdraw(b);
       });
     }
     row.appendChild(act);

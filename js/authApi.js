@@ -69,27 +69,58 @@ const loginUrl = (provider) =>
   `${API}/login/${provider}?return=${encodeURIComponent(location.origin + location.pathname)}`
   + `&n=${encodeURIComponent(newNonce())}`;
 
-// 실패하면 null. **로컬 단어장은 절대 건드리지 않는다** — 오프라인에서 단어장이 비면 안 된다.
-async function apiCall(path, opts = {}) {
-  if (!authToken()) return null;
+// 요청을 보내고 **결과를 구분해서** 돌려준다. 이 파일에서 실제로 fetch 하는 자리는 여기 하나다.
+//
+// ⚠️ 왜 이 함수가 생겼나: 예전엔 아래 apiCall 이 403·404·429·5xx·오프라인·본문 파싱 실패를
+//    **전부 null 하나로** 뭉갰다. 부르는 쪽은 "서버가 거절했다"와 "물어보지 않았다"를 가릴 수가
+//    없어서 결국 아무도 결과를 안 봤고, 로그아웃·계정 삭제·친구 끊기가 서버 실패에도 성공한 척했다.
+//
+//   ok      2xx 였나
+//   status  HTTP 상태. 네트워크가 끊겨 상태 자체가 없으면 0 (있는 척하지 않는다)
+//   kind    unauthenticated | forbidden | not_found | conflict | rate_limited | server
+//           | network | invalid_response
+//   data    응답 본문(없으면 null). 서버가 준 사람용 문구는 data.error 에 있다
+//
+// **로컬 단어장은 절대 건드리지 않는다** — 오프라인에서 단어장이 비면 안 된다.
+async function request(path, opts = {}) {
+  // 로그인 표시가 없으면 아예 안 보낸다. 상태코드가 없으므로 0.
+  if (!authToken()) return { ok: false, status: 0, kind: "unauthenticated", data: null };
+  let res;
   try {
-    const res = await fetch(API + path, {
+    res = await fetch(API + path, {
       ...opts,
       // 쿠키를 실어 보낸다. **같은 origin 에만** — 앱과 API 가 한 Pages 프로젝트라 성립한다.
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
     });
-    // 세션이 죽었다 — 만료(180일)거나, 다른 기기에서 로그아웃·탈퇴했거나(세대가 올랐다).
-    // 표시만 지우면 화면은 로그인 상태로 남아, 담기를 눌러도 왜 안 되는지 말해주지 않는다.
-    if (res.status === 401) { setAuth(null); authLost?.(); return null; }
-    // 409 는 **오류가 아니라 대답**이다: "다른 기기가 먼저 저장했다, 지금 것은 이거다."
-    // 여기서 null 로 뭉개면 앱이 충돌을 못 보고 조용히 옛 상태로 남는다.
-    if (res.status === 409) return { conflict: true, ...(await res.json().catch(() => ({}))) };
-    if (!res.ok) return null;
-    return await res.json();
   } catch {
-    return null;   // 오프라인
+    return { ok: false, status: 0, kind: "network", data: null };   // 오프라인
   }
+  // 세션이 죽었다 — 만료(180일)거나, 다른 기기에서 로그아웃·탈퇴했거나(세대가 올랐다).
+  // 표시만 지우면 화면은 로그인 상태로 남아, 담기를 눌러도 왜 안 되는지 말해주지 않는다.
+  if (res.status === 401) {
+    setAuth(null); authLost?.();
+    return { ok: false, status: 401, kind: "unauthenticated", data: null };
+  }
+  const data = await res.json().catch(() => null);
+  // 2xx 인데 본문이 JSON 이 아니다 — 프록시나 오류 페이지가 200 으로 돌아온 경우다.
+  // 성공으로 치면 화면이 빈 값을 진짜 응답으로 받아들인다.
+  if (res.ok) return data === null
+    ? { ok: false, status: res.status, kind: "invalid_response", data: null }
+    : { ok: true, status: res.status, kind: "", data };
+  // 409 는 **오류가 아니라 대답**이다: "다른 기기가 먼저 저장했다, 지금 것은 이거다."
+  const kind = { 403: "forbidden", 404: "not_found", 409: "conflict", 429: "rate_limited" }[res.status] || "server";
+  return { ok: false, status: res.status, kind, data };
+}
+
+// 종전 계약(성공이면 본문, 실패면 null, 충돌이면 {conflict:true,…})을 그대로 흉내 낸다.
+// 결과를 실제로 구분해야 하는 자리만 위 request 를 직접 쓰고, 나머지 호출자는 손대지 않는다 —
+// 한 번에 다 옮기면 고쳐지는 건 없이 회귀 위험만 열여섯 곳으로 늘어난다.
+async function apiCall(path, opts = {}) {
+  const r = await request(path, opts);
+  if (r.ok) return r.data;
+  if (r.kind === "conflict") return { conflict: true, ...(r.data || {}) };
+  return null;
 }
 
 // 별명은 단어장과 **같은 레코드**에 산다. 저장할 곳이 하나뿐이라 시각 비교(LWW)도 한 번에 끝나고,
@@ -99,6 +130,16 @@ async function apiCall(path, opts = {}) {
 const VER_KEY = "shh-bookver";
 const bookVersion = () => Number(localStorage.getItem(VER_KEY)) || 0;
 const setBookVersion = (v) => localStorage.setItem(VER_KEY, Number(v) || 0);
+// 저장 응답으로 받은 번호는 **되돌리지 않는다.** 같은 기기의 탭 두 개는 이 localStorage 를
+// 공유하는데, 저장 요청이 겹치면 응답이 뒤집혀 도착한다 — 그냥 대입하면 번호가 뒤로 가고
+// 다음 저장이 옛 번호로 나가 반드시 충돌한다(그러면 합집합 병합이 돌아 지운 단어가 되살아난다).
+//
+// ⚠️ setBookVersion 자체를 단조 증가로 만들면 안 된다. js/auth.js 의 sync 는 **계정이 바뀐**
+//    직후에도 이 값을 적는데, 새 계정의 버전은 앞 계정보다 작을 수 있어 그때는 내려가야 한다.
+const advanceBookVersion = (v) => {
+  const n = Number(v);
+  if (Number.isFinite(n) && n > bookVersion()) setBookVersion(n);
+};
 
 // ⚠️ **읽기는 아무것도 저장하지 않는다.** 예전엔 여기서 버전과 내 계정 id 를 바로 적었는데,
 //    그 두 값이 곧 "어느 쪽이 새것인가"와 "계정이 바뀌었나"의 근거라 **판정하기도 전에
@@ -107,16 +148,19 @@ const setBookVersion = (v) => localStorage.setItem(VER_KEY, Number(v) || 0);
 //    이제 응답을 돌려주기만 하고, 무엇을 적을지는 js/auth.js 가 판정한 뒤에 정한다
 //    (데이터 계층이 화면·판단의 상태를 몰래 바꾸지 않는다는 규칙이기도 하다).
 const apiGetBook = () => apiCall("/book");
-// 충돌이면 `{conflict:true, ...서버 레코드}` 가 온다 — 부르는 쪽(js/auth.js)이 합친다.
+// 결과를 그대로 돌려준다 — 충돌(kind:"conflict")이면 r.data 에 서버 레코드가 있고,
+// 부르는 쪽(js/auth.js)이 합친다. **충돌은 저장 성공이 아니다.**
 const apiPutBook = async (words, name) => {
-  const r = await apiCall("/book", { method: "PUT", body: JSON.stringify({ words, name, version: bookVersion() }) });
-  if (r && typeof r.version === "number") setBookVersion(r.version);
+  const r = await request("/book", { method: "PUT", body: JSON.stringify({ words, name, version: bookVersion() }) });
+  // 성공이든 충돌이든 서버가 말한 번호는 사실이다. 낡은 요청의 응답이어도 받아 적는다 —
+  // 버리면 다음 저장이 옛 번호로 나가 불필요한 충돌을 만든다. 되돌리지만 않으면 된다.
+  advanceBookVersion(r.data && r.data.version);
   return r;
 };
-const apiDeleteAccount = () => apiCall("/me", { method: "DELETE" });
+const apiDeleteAccount = () => request("/me", { method: "DELETE" });
 // 로그아웃은 **서버에도** 알린다. 브라우저에서 토큰만 지우면 KV 의 세션은 180일을 더 살아서,
 // 한 번 샌 토큰이 로그아웃 뒤에도 그대로 쓰인다. 이 계정에 로그인한 기기가 전부 함께 끊긴다.
-const apiLogout = () => apiCall("/session", { method: "DELETE" });
+const apiLogout = () => request("/session", { method: "DELETE" });
 // 로그인 표시가 아직 없는 상태에서 세션을 끊어야 할 때(네이버 갈래에서 nonce 가 안 맞은 경우).
 // apiCall 은 표시가 없으면 그냥 null 을 내므로 이 한 자리는 직접 부른다 —
 // 쿠키는 이미 심어져 있어서 **앱이 모르는 채 서버만 로그인 상태로 남는 것**을 막아야 한다.
@@ -131,7 +175,9 @@ const apiFriends = () => apiCall("/friends");
 const apiAddFriend = (code) => apiCall("/friends", { method: "POST", body: JSON.stringify({ code }) });
 const apiAcceptFriend = (uid) => apiCall("/friends/" + encodeURIComponent(uid), { method: "PUT" });
 // 거절 · 요청 취소 · 친구 끊기가 전부 이 한 줄이다 — 서버에서도 "이 연결을 지운다" 하나다.
-const apiRemoveFriend = (uid) => apiCall("/friends/" + encodeURIComponent(uid), { method: "DELETE" });
+// 결과를 그대로 돌려준다: 서버가 지웠는지(2xx), 이미 없었는지(404), 못 지웠는지(그 밖)를
+// 부르는 쪽이 가려야 목록에서 지울지 말지 정할 수 있다.
+const apiRemoveFriend = (uid) => request("/friends/" + encodeURIComponent(uid), { method: "DELETE" });
 const apiFriendBook = (uid) => apiCall("/friends/" + encodeURIComponent(uid) + "/book");
 // 초대 링크 새로 만들기. 옛 코드는 서버에서 그 자리에 죽는다 — 링크가 어디까지 퍼졌는지
 // 모르게 됐을 때 되돌릴 방법이 이것뿐이다. 이미 맺어진 친구는 그대로다.

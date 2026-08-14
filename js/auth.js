@@ -54,9 +54,30 @@ if (typeof document !== "undefined") {
   // 담아둔 단어장이 있는 기기에서 clean 으로 오판하면 그 단어장이 통째로 서버 것으로 덮인다.
   // 기본값이 안전한 쪽이다.
   const isDirty = () => localStorage.getItem(DIRTY_KEY) !== "0";
-  const touch = () => localStorage.setItem(DIRTY_KEY, "1");
+  // 이 기기의 **편집 세대**. 고칠 때마다 하나 오른다(그래서 touch 안에 둔다 — 따로 두면
+  // 새 편집 자리가 생길 때마다 둘 중 하나를 빠뜨린다).
+  // 저장 응답이 왔을 때 "그 사이에 또 고쳤나"를 이 값으로 안다. 고쳤다면 서버에 있는 건 옛
+  // 것이므로 dirty 를 지우면 안 된다.
+  // 서버 버전(shh-bookver)과는 **다른 값**이다: 저쪽은 서버가 세고 이쪽은 이 탭이 센다.
+  // 저장이 성공했는데 그 사이 편집이 있었다면 **서버 버전은 받아 적고 dirty 만 남긴다** —
+  // 둘을 한 값으로 묶으면 둘 중 하나는 반드시 틀린 말을 하게 된다.
+  let localRevision = 0;
+  const touch = () => { localRevision++; localStorage.setItem(DIRTY_KEY, "1"); };
   const synced = () => localStorage.setItem(DIRTY_KEY, "0");
   const myName = () => localStorage.getItem(NAME_KEY) || "";
+
+  // 저장은 한 번에 하나만 날아간다. 겹쳐 보내면 서로 충돌을 만들고, 응답 순서가 뒤집혀
+  // 어느 응답이 어느 편집의 것인지 알 수 없게 된다. 큐 길이는 1 — 밀린 저장이 몇 개든
+  // 마지막 상태 한 번이면 같은 결과다.
+  let inflight = null, queued = false;
+  function queuePush(words, name) {
+    if (inflight) { queued = true; return inflight; }
+    inflight = pushBook(words, name).finally(() => {
+      inflight = null;
+      if (queued) { queued = false; queuePush(BOOK, myName()); }
+    });
+    return inflight;
+  }
 
   // 서버에 올린다. 충돌(409)이면 **어느 쪽도 버리지 않고 합친 뒤 다시 올린다.**
   //
@@ -64,18 +85,29 @@ if (typeof document !== "undefined") {
   // 사라지는데, **담은 단어를 잃는 것이 지운 단어가 되살아나는 것보다 나쁘다** — 되살아난 건
   // 다시 지우면 되지만, 사라진 건 무엇이 사라졌는지조차 모른다.
   // (평상시 동기화는 그대로 LWW 다 — 합집합은 실제로 부딪힌 이 순간에만 쓴다.)
+  //
+  // ⚠️ **저장 완료 표시(synced)는 서버가 2xx 로 대답했을 때만** 세운다. 예전엔 재시도 결과를
+  //    `if (again)` 으로 봤는데 충돌 응답도 객체라 참이었다 — 두 번째도 충돌인데(=저장 안 됨)
+  //    "저장 끝"으로 적었고, 다음 동기화가 dirty:false 를 보고 로컬을 서버 것으로 덮었다.
   async function pushBook(words, name) {
+    const rev = localRevision;
     const r = await apiPutBook(words, name);
-    if (!r || !r.conflict) { if (r) synced(); return r; }
+    // 성공. 다만 이 요청이 날아간 뒤에 또 고쳤다면 서버에 있는 건 그 편집 전 상태다.
+    if (r.ok) { if (rev === localRevision) synced(); return r; }
+    if (r.kind !== "conflict") return r;   // 실패 — dirty 를 그대로 둬야 다음에 다시 올라간다
+    const server = (r.data && r.data.words) || [];
     const mine = BOOK.slice();
-    const merged = (r.words || []).concat(mine.filter((w) => !(r.words || []).includes(w)));
+    const merged = server.concat(mine.filter((w) => !server.includes(w)));
     replaceBook(merged);
-    localStorage.setItem(NAME_KEY, name || r.name || "");
+    localStorage.setItem(NAME_KEY, name || (r.data && r.data.name) || "");
+    touch();           // 합친 것도 이 기기의 편집이다 — 아직 서버에 없다
+    const rev2 = localRevision;
     renderAll();
-    // 버전은 apiCall 이 409 본문에서 이미 받아 뒀다(apiPutBook) — 그래서 이번 저장은 통과한다.
-    const again = await apiPutBook(merged, name || r.name || "");
-    if (again) synced();
-    toast("다른 기기에서 담은 단어와 합쳤어요");
+    // 버전은 apiPutBook 이 409 본문에서 이미 받아 뒀다 — 그래서 이번 저장은 통과할 수 있다.
+    const again = await apiPutBook(merged, name || (r.data && r.data.name) || "");
+    if (again.ok && rev2 === localRevision) synced();
+    toast(again.ok ? "다른 기기에서 담은 단어와 합쳤어요"
+                   : "다른 기기 단어와 합쳤어요. 저장은 연결되면 다시 시도해요");
     return again;
   }
 
@@ -84,7 +116,7 @@ if (typeof document !== "undefined") {
     touch();
     if (!authToken()) return;
     clearTimeout(putTimer);
-    putTimer = setTimeout(() => pushBook(words, myName()), 800);
+    putTimer = setTimeout(() => queuePush(words, myName()), 800);
   });
 
   async function sync(firstLogin) {
@@ -112,7 +144,7 @@ if (typeof document !== "undefined") {
     // 이제부터 손에 든 서버 버전은 방금 받은 것이다. push·merge 는 이 위에 얹는다.
     setBookVersion(remote.version);
     if (plan.action === "push") {
-      if (BOOK.length || myName()) await pushBook(BOOK, myName());
+      if (BOOK.length || myName()) await queuePush(BOOK, myName());
       else synced();   // 올릴 것이 없으면 그 자체로 서버와 같은 상태다
       return;
     }
@@ -120,7 +152,7 @@ if (typeof document !== "undefined") {
     replaceBook(plan.words);
     renderAll();   // 별명이 바뀌었을 수 있다
     if (plan.action === "pull") synced();                  // 서버 것을 그대로 받았다
-    else await pushBook(BOOK, myName());                   // merge 는 합친 결과를 서버에도 올린다
+    else await queuePush(BOOK, myName());                  // merge 는 합친 결과를 서버에도 올린다
   }
 
   // ── 마이페이지 ──
@@ -235,10 +267,23 @@ if (typeof document !== "undefined") {
     const out = document.createElement("button");
     out.className = "btn-ghost logout"; out.type = "button"; out.textContent = "로그아웃";
     out.addEventListener("click", async () => {
-      // 서버에 **먼저** 알린다. 토큰을 지운 뒤에 부르면 apiCall 이 토큰이 없다고 그냥 돌아가서
-      // KV 의 세션이 180일을 더 산다. 오프라인이면 실패하지만 그때도 로컬은 정리한다 —
-      // 사용자가 로그아웃을 눌렀는데 화면이 로그인 상태로 남으면 그게 더 나쁘다.
-      await apiLogout();
+      // 서버에 **먼저** 알린다. 표시를 지운 뒤에 부르면 request 가 표시가 없다고 그냥 돌아가서
+      // D1 의 세션이 180일을 더 산다.
+      //
+      // ⚠️ **서버가 끊었다고 대답해야만 로그아웃한다.** 예전엔 결과를 안 보고 무조건 화면을
+      //    정리해서, 오프라인이나 500 일 때 "화면은 로그아웃, 서버는 로그인"이 남았다.
+      //    이 앱의 세션은 계정 단위라 그 상태에서는 **다른 기기도 계속 열려 있다** —
+      //    폰을 빌려준 사람이 로그아웃했다고 믿는 순간이 가장 위험한 자리다.
+      const r = await apiLogout();
+      // 401 = 세션이 이미 죽어 있었다. 사용자가 원한 결과가 이미 이뤄진 것이고,
+      // request 가 로컬 정리와 안내까지 끝냈다. 여기서 또 말하지 않는다.
+      if (r.status === 401) return;
+      if (!r.ok) {
+        toast(r.kind === "network"
+          ? "연결이 안 돼요. 인터넷에 연결된 뒤 다시 눌러주세요"
+          : "로그아웃하지 못했어요. 잠시 뒤 다시 눌러주세요");
+        return;
+      }
       // 로컬 단어장은 남긴다. 로그아웃은 "이 기기에서 그만 보기"지 "지우기"가 아니다.
       // 다만 **마스터·프로는 끈다** — 계정에 달린 값이라 계정을 놓으면 같이 놓아야 한다.
       // 안 끄면 로그아웃한 기기가 계속 마스터로 보이고, 다음 사람이 그대로 물려받는다.
@@ -284,7 +329,17 @@ if (typeof document !== "undefined") {
     del.addEventListener("click", async () => {
       if (!confirm("계정 연결을 끊고 서버에 저장된 단어장을 지워요. 모든 기기에서 로그인이 풀립니다.\n"
         + "이 폰의 단어장은 남지만, 다른 계정으로 로그인하면 바뀝니다.\n계속할까요?")) return;
-      await apiDeleteAccount();
+      // ⚠️ **서버가 지웠다고 대답해야만 지웠다고 말한다.** 예전엔 결과를 안 보고 무조건
+      //    "계정을 지웠어요"를 띄웠다 — 500 이 나도 그랬고, 그때 단어장·별명·친구 관계는
+      //    서버에 그대로 남아 있었다. privacy.html 이 "그 자리에서 지워진다"고 약속하는
+      //    바로 그 자리라, 화면이 거짓말하면 방침도 같이 거짓이 된다.
+      const r = await apiDeleteAccount();
+      if (!r.ok) {
+        toast(r.status === 401 ? "로그인이 풀렸어요. 다시 로그인한 뒤 지워주세요"
+          : r.kind === "network" ? "연결이 안 돼요. 인터넷에 연결된 뒤 다시 눌러주세요"
+          : "계정을 지우지 못했어요. 잠시 뒤 다시 시도해 주세요");
+        return;
+      }
       setAuth(null); renderAll(); GO("me"); toast("계정을 지웠어요");
     });
     box.appendChild(del);
@@ -324,7 +379,7 @@ if (typeof document !== "undefined") {
       // 별명은 단어장과 같은 레코드라 시각도 같이 올린다 — 안 올리면 다음 동기화에서
       // 서버가 더 새것으로 판정돼 방금 지은 별명이 되돌아간다.
       touch();
-      pushBook(BOOK, v);
+      queuePush(BOOK, v);
       // 화면을 다시 그리지 않는다. 지금 이 입력칸을 부수는 짓이고, 목록엔 별명이 안 쓰인다.
       // 바뀌는 건 헤더 부제 한 줄뿐이라 그것만 갈아끼운다.
       const el = document.getElementById("screen-sub");
