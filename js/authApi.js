@@ -69,16 +69,36 @@ const loginUrl = (provider) =>
   `${API}/login/${provider}?return=${encodeURIComponent(location.origin + location.pathname)}`
   + `&n=${encodeURIComponent(newNonce())}`;
 
+// 답이 안 오는 요청을 언제 포기하나. 예전엔 아무 데도 시간 제한이 없어서, 응답이 영원히
+// 오지 않으면 버튼이 "처리 중"에 영원히 머물렀다(거짓말은 아니지만 사용자는 끝을 못 본다).
+//
+// 12초는 폰의 느린 회선에서 정상 응답이 도착할 시간은 주면서, 사람이 "멈췄다"고 느끼기 전에
+// 끝나는 값이다. 이 숫자 자체는 테스트로 못 재고 **실제 느린 회선에서 확인해야 한다** —
+// 테스트는 "시간이 초과되면 어떻게 말하나"만 잰다(타이머는 브라우저 기능이라 잴 값이 없다).
+const REQUEST_TIMEOUT = 12000;
+// AbortSignal.timeout 은 iOS 16 · Chrome 103 부터다. 그 아래에서 fetch 가 통째로 죽지 않게
+// 폴백을 둔다 — 시간 제한을 붙이려다 옛 폰에서 앱이 안 도는 쪽이 훨씬 나쁘다.
+function timeoutSignal(ms) {
+  if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) {
+    return { signal: AbortSignal.timeout(ms), done() {} };
+  }
+  if (typeof AbortController === "undefined") return { signal: undefined, done() {} };
+  const c = new AbortController();
+  // 이름을 맞춰 둔다 — 위에서 e.name 으로 시간 초과와 오프라인을 가르기 때문이다.
+  const id = setTimeout(() => c.abort(new DOMException("timeout", "TimeoutError")), ms);
+  return { signal: c.signal, done: () => clearTimeout(id) };
+}
+
 // 요청을 보내고 **결과를 구분해서** 돌려준다. 이 파일에서 실제로 fetch 하는 자리는 여기 하나다.
 //
-// ⚠️ 왜 이 함수가 생겼나: 예전엔 아래 apiCall 이 403·404·429·5xx·오프라인·본문 파싱 실패를
-//    **전부 null 하나로** 뭉갰다. 부르는 쪽은 "서버가 거절했다"와 "물어보지 않았다"를 가릴 수가
-//    없어서 결국 아무도 결과를 안 봤고, 로그아웃·계정 삭제·친구 끊기가 서버 실패에도 성공한 척했다.
+// ⚠️ 왜 이 함수가 생겼나: 예전엔 403·404·429·5xx·오프라인·본문 파싱 실패가 **전부 null 하나**로
+//    돌아왔다. 부르는 쪽은 "서버가 거절했다"와 "물어보지 않았다"를 가릴 수가 없어서 결국
+//    아무도 결과를 안 봤고, 로그아웃·계정 삭제·친구 끊기가 서버 실패에도 성공한 척했다.
 //
 //   ok      2xx 였나
 //   status  HTTP 상태. 네트워크가 끊겨 상태 자체가 없으면 0 (있는 척하지 않는다)
 //   kind    unauthenticated | forbidden | not_found | conflict | rate_limited | server
-//           | network | invalid_response
+//           | network | timeout | invalid_response
 //   data    응답 본문(없으면 null). 서버가 준 사람용 문구는 data.error 에 있다
 //
 // **로컬 단어장은 절대 건드리지 않는다** — 오프라인에서 단어장이 비면 안 된다.
@@ -86,15 +106,22 @@ async function request(path, opts = {}) {
   // 로그인 표시가 없으면 아예 안 보낸다. 상태코드가 없으므로 0.
   if (!authToken()) return { ok: false, status: 0, kind: "unauthenticated", data: null };
   let res;
+  const t = timeoutSignal(REQUEST_TIMEOUT);
   try {
     res = await fetch(API + path, {
       ...opts,
+      signal: t.signal,
       // 쿠키를 실어 보낸다. **같은 origin 에만** — 앱과 API 가 한 Pages 프로젝트라 성립한다.
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
     });
-  } catch {
-    return { ok: false, status: 0, kind: "network", data: null };   // 오프라인
+  } catch (e) {
+    // 시간 초과와 오프라인을 가른다. 화면에는 둘 다 "연결이 안 돼요"로 말하지만,
+    // 답이 영원히 안 오는 경우와 처음부터 못 보낸 경우는 다른 일이다.
+    const kind = e && (e.name === "TimeoutError" || e.name === "AbortError") ? "timeout" : "network";
+    return { ok: false, status: 0, kind, data: null };
+  } finally {
+    t.done();
   }
   // 세션이 죽었다 — 만료(180일)거나, 다른 기기에서 로그아웃·탈퇴했거나(세대가 올랐다).
   // 표시만 지우면 화면은 로그인 상태로 남아, 담기를 눌러도 왜 안 되는지 말해주지 않는다.
@@ -111,16 +138,6 @@ async function request(path, opts = {}) {
   // 409 는 **오류가 아니라 대답**이다: "다른 기기가 먼저 저장했다, 지금 것은 이거다."
   const kind = { 403: "forbidden", 404: "not_found", 409: "conflict", 429: "rate_limited" }[res.status] || "server";
   return { ok: false, status: res.status, kind, data };
-}
-
-// 종전 계약(성공이면 본문, 실패면 null, 충돌이면 {conflict:true,…})을 그대로 흉내 낸다.
-// 결과를 실제로 구분해야 하는 자리만 위 request 를 직접 쓰고, 나머지 호출자는 손대지 않는다 —
-// 한 번에 다 옮기면 고쳐지는 건 없이 회귀 위험만 열여섯 곳으로 늘어난다.
-async function apiCall(path, opts = {}) {
-  const r = await request(path, opts);
-  if (r.ok) return r.data;
-  if (r.kind === "conflict") return { conflict: true, ...(r.data || {}) };
-  return null;
 }
 
 // 별명은 단어장과 **같은 레코드**에 산다. 저장할 곳이 하나뿐이라 시각 비교(LWW)도 한 번에 끝나고,
@@ -147,7 +164,7 @@ const advanceBookVersion = (v) => {
 //    서버의 버전 검사를 통과하고 남의 기기 단어장을 덮어썼다.
 //    이제 응답을 돌려주기만 하고, 무엇을 적을지는 js/auth.js 가 판정한 뒤에 정한다
 //    (데이터 계층이 화면·판단의 상태를 몰래 바꾸지 않는다는 규칙이기도 하다).
-const apiGetBook = () => apiCall("/book");
+const apiGetBook = () => request("/book");
 // 결과를 그대로 돌려준다 — 충돌(kind:"conflict")이면 r.data 에 서버 레코드가 있고,
 // 부르는 쪽(js/auth.js)이 합친다. **충돌은 저장 성공이 아니다.**
 const apiPutBook = async (words, name) => {
@@ -162,7 +179,7 @@ const apiDeleteAccount = () => request("/me", { method: "DELETE" });
 // 한 번 샌 토큰이 로그아웃 뒤에도 그대로 쓰인다. 이 계정에 로그인한 기기가 전부 함께 끊긴다.
 const apiLogout = () => request("/session", { method: "DELETE" });
 // 로그인 표시가 아직 없는 상태에서 세션을 끊어야 할 때(네이버 갈래에서 nonce 가 안 맞은 경우).
-// apiCall 은 표시가 없으면 그냥 null 을 내므로 이 한 자리는 직접 부른다 —
+// request 는 표시가 없으면 아예 안 보내므로 이 한 자리는 fetch 를 직접 부른다 —
 // 쿠키는 이미 심어져 있어서 **앱이 모르는 채 서버만 로그인 상태로 남는 것**을 막아야 한다.
 const apiLogoutRaw = async () => {
   try { await fetch(API + "/session", { method: "DELETE", credentials: "same-origin" }); } catch { /* 오프라인 */ }
@@ -170,35 +187,44 @@ const apiLogoutRaw = async () => {
 
 // ── 친구 ──
 // 목록은 {code, friends:[{uid,name,count}], in:[…], out:[…]}. 단어는 안 온다 — 목록엔 안 쓴다.
-const apiFriends = () => apiCall("/friends");
+const apiFriends = () => request("/friends");
 // 초대 코드로 요청 보내기. 상대가 이미 나에게 보냈으면 서버가 그 자리에서 맺어 준다.
-const apiAddFriend = (code) => apiCall("/friends", { method: "POST", body: JSON.stringify({ code }) });
-const apiAcceptFriend = (uid) => apiCall("/friends/" + encodeURIComponent(uid), { method: "PUT" });
+const apiAddFriend = (code) => request("/friends", { method: "POST", body: JSON.stringify({ code }) });
+const apiAcceptFriend = (uid) => request("/friends/" + encodeURIComponent(uid), { method: "PUT" });
 // 거절 · 요청 취소 · 친구 끊기가 전부 이 한 줄이다 — 서버에서도 "이 연결을 지운다" 하나다.
 // 결과를 그대로 돌려준다: 서버가 지웠는지(2xx), 이미 없었는지(404), 못 지웠는지(그 밖)를
 // 부르는 쪽이 가려야 목록에서 지울지 말지 정할 수 있다.
 const apiRemoveFriend = (uid) => request("/friends/" + encodeURIComponent(uid), { method: "DELETE" });
-const apiFriendBook = (uid) => apiCall("/friends/" + encodeURIComponent(uid) + "/book");
+const apiFriendBook = (uid) => request("/friends/" + encodeURIComponent(uid) + "/book");
 // 초대 링크 새로 만들기. 옛 코드는 서버에서 그 자리에 죽는다 — 링크가 어디까지 퍼졌는지
 // 모르게 됐을 때 되돌릴 방법이 이것뿐이다. 이미 맺어진 친구는 그대로다.
-const apiRotateCode = () => apiCall("/friends/code", { method: "POST" });
+const apiRotateCode = () => request("/friends/code", { method: "POST" });
 
 // 어느 제공자로 로그인할 수 있나. 비밀값이 안 들어간 제공자의 버튼을 그리면 사용자가
 // 누르고 나서야 503 을 본다 — 화면에 보이는 것은 실제로 되는 것이어야 한다.
-// 토큰이 필요 없는 호출이라 apiCall 을 안 쓴다(apiCall 은 토큰이 없으면 그냥 null 을 낸다).
-// 실패하면 null — 그때는 **아무것도 숨기지 않는다**(오프라인이라고 로그인을 못 하게 만들지 않는다).
+// 로그인 표시가 필요 없는 호출이라 request 를 안 쓴다(request 는 표시가 없으면 안 보낸다).
+//
+// ⚠️ **"못 물어봤다"와 "제공자가 없다"를 가려서 돌려준다.** 예전엔 둘 다 null 이었고, 화면은
+//    null 을 "아직 모르니 셋 다 그린다"로 읽었다 — 그래서 서버에 못 닿을 때 오히려 눌러도
+//    안 되는 버튼 세 개가 떴다. 지금은 ok 로 가른다: ok:false 면 연결 문제, providers:[] 면
+//    서버가 아직 아무 제공자도 못 쓴다는 뜻이다(문구가 달라야 사용자가 할 일이 달라진다).
 async function apiHealth() {
+  const t = timeoutSignal(REQUEST_TIMEOUT);
   try {
-    const res = await fetch(API + "/health");
-    return res.ok ? await res.json() : null;
+    const res = await fetch(API + "/health", { signal: t.signal });
+    if (!res.ok) return { ok: false, providers: [] };
+    const d = await res.json().catch(() => null);
+    return d && Array.isArray(d.providers) ? { ok: true, providers: d.providers } : { ok: false, providers: [] };
   } catch {
-    return null;
+    return { ok: false, providers: [] };
+  } finally {
+    t.done();
   }
 }
 
 // 네이버 전용. 앱 주소로 돌아온 code 를 서버에 넘긴다 — 비밀키가 필요한 교환이라 브라우저에서
 // 직접 못 한다. **응답에 토큰은 없다**: 서버가 Set-Cookie 로 심고 여기선 성공 여부와 n 만 받는다.
-// apiCall 을 안 쓰는 이유는 아직 로그인 표시가 없는 상태의 호출이기 때문이다.
+// request 를 안 쓰는 이유는 아직 로그인 표시가 없는 상태의 호출이기 때문이다.
 async function apiExchange(provider, code, state) {
   const q = new URLSearchParams({ code, state });
   try {

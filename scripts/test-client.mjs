@@ -61,6 +61,10 @@ function loadClient({ store = {}, routes } = {}) {
     calls.push({ method, path });
     const r = await route(method, path, opt);
     if (r.throw) throw new Error("offline");           // 네트워크 끊김
+    // 시간 초과. **실제 타이머를 기다리지 않는다** — 12초를 세는 것은 브라우저 기능이고
+    // 우리가 재려는 것은 "초과되면 화면이 뭐라고 하나"다. 그래서 결과만 흉내 낸다.
+    // (12초라는 숫자 자체는 실제 느린 회선에서 사람이 확인해야 한다.)
+    if (r.throwName) { const e = new Error("aborted"); e.name = r.throwName; throw e; }
     return {
       ok: r.status >= 200 && r.status < 300,
       status: r.status,
@@ -153,7 +157,8 @@ async function T(name, fn) {
 }
 
 // ══ red 1~2 · 로그아웃은 서버가 확인해 줄 때만 (결정 ① = A) ══════════════
-for (const [label, resp] of [["500", { status: 500 }], ["네트워크 끊김", { throw: true }]]) {
+for (const [label, resp] of [["500", { status: 500 }], ["네트워크 끊김", { throw: true }],
+                             ["시간 초과", { throwName: "TimeoutError" }]]) {
   await T(`로그아웃 ${label} — 화면만 로그아웃되지 않는다`, async () => {
     const c = await boot();
     c.setRoutes((m, p) => (m === "DELETE" && p === "/session" ? resp : defaultRoutes(m, p)));
@@ -367,6 +372,25 @@ await T("providers 가 비면 로그인 버튼을 그리지 않는다", async ()
   assert.ok(!findText(box, "카카오로 로그인"), "설정된 제공자가 없는데 로그인 버튼을 그렸다");
   assert.ok(allText(box).includes("로그인을 준비 중"), "버튼도 안 그리고 이유도 안 말한다");
 });
+
+// ══ red · 서버에 못 물어봤으면 되는 척하지 않는다(fail-closed) ══════════
+// 예전에는 이 경우 오히려 버튼 셋을 다 그렸다("아직 모르니 숨기지 말자") — 사용자가 얻는 것은
+// 눌러도 503 만 나는 버튼이었다. **문구는 providers:[] 와 달라야 한다**: 원인이 다르면
+// 사용자가 할 일도 다르다(다시 시도할 일 vs 기다릴 일).
+for (const [label, resp] of [["연결 실패", { throw: true }], ["시간 초과", { throwName: "TimeoutError" }],
+                             ["503", { status: 503 }]]) {
+  await T(`/health ${label} — 로그인 버튼을 그리지 않고 이유를 말한다`, async () => {
+    const c = await boot({ store: {}, routes: (m, p) => (p === "/health" ? resp : defaultRoutes(m, p)) });
+    const box = c.document.getElementById("mypage");
+    for (const k of ["카카오", "네이버", "구글"]) {
+      assert.ok(!findText(box, `${k}로 로그인`), `서버에 못 물어봤는데 ${k} 버튼을 그렸다`);
+    }
+    const t = allText(box);
+    assert.ok(t.includes("연결할 수 없어"), "왜 로그인이 안 되는지 말하지 않는다");
+    assert.ok(!t.includes("로그인을 준비 중"), "연결 실패를 '준비 중'이라고 말한다 — 원인이 다르다");
+    assert.ok(t.includes("사전과 연습은 그대로"), "로그인만 닫는다는 걸 안 알린다 — 앱이 죽은 줄 안다");
+  });
+}
 
 const failed = RESULTS.filter((r) => !r[0]);
 for (const [pass, name, why] of RESULTS) if (!pass) console.log(`  ✗ ${name}\n      ${why}`);

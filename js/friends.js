@@ -61,8 +61,9 @@ if (typeof document !== "undefined") {
   };
 
   async function refreshBadge() {
-    const d = await apiFriends();
-    if (!d) return;
+    const r = await apiFriends();
+    if (!r.ok) return;   // 못 받아왔으면 손에 든 목록을 그대로 둔다(빈 목록으로 덮지 않는다)
+    const d = r.data;
     DATA = d;
     if (d.code) localStorage.setItem(CODE_KEY, d.code);
     showBadge(d.in.length);
@@ -75,9 +76,9 @@ if (typeof document !== "undefined") {
     if (!authToken()) { toast("친구를 추가하려면 로그인이 필요해요"); GO("me"); return ""; }
     let code = localStorage.getItem(CODE_KEY);
     if (!code) {
-      const d = await apiFriends();
-      if (!d) { toast("연결이 안 돼요. 잠시 뒤 다시 눌러주세요"); return ""; }
-      DATA = d; code = d.code;
+      const r = await apiFriends();
+      if (!r.ok) { toast("연결이 안 돼요. 잠시 뒤 다시 눌러주세요"); return ""; }
+      DATA = r.data; code = r.data.code;
       localStorage.setItem(CODE_KEY, code);
     }
     return location.origin + location.pathname + "#f=" + code;
@@ -94,9 +95,11 @@ if (typeof document !== "undefined") {
       return;
     }
     history.replaceState(null, "", location.pathname + location.search); // 새로고침마다 다시 보내지 않게
-    const r = await apiAddFriend(m[1]);
-    if (!r) return toast("친구 추가에 실패했어요");
-    if (r.error) return toast(r.error);
+    const res = await apiAddFriend(m[1]);
+    // 서버가 왜 안 됐는지 말해 줬으면 그 말을 그대로 쓴다(이미 친구다·없는 코드다 등).
+    if (!res.ok) return toast(res.data?.error || (res.kind === "network" || res.kind === "timeout"
+      ? "연결이 안 돼요. 잠시 뒤 다시 열어주세요" : "친구 추가에 실패했어요"));
+    const r = res.data;
     const who = r.friend?.name ? `${r.friend.name}님` : "상대방";
     toast(r.state === "ok" ? `${who}과 친구가 됐어요!` : `${who}에게 친구 요청을 보냈어요`);
     // 방금 만든 상태를 목록에 직접 반영한다. 다시 GET 하면 KV 가 옛 값을 줄 수 있어서
@@ -121,7 +124,10 @@ if (typeof document !== "undefined") {
     }
     if (!DATA) {
       box.innerHTML = '<p class="hint">불러오는 중이에요…</p>';
-      apiFriends().then((d) => { if (d) { DATA = d; localStorage.setItem(CODE_KEY, d.code); renderFriends(); } });
+      apiFriends().then((r) => {
+        if (r.ok) { DATA = r.data; localStorage.setItem(CODE_KEY, r.data.code); renderFriends(); return; }
+        box.innerHTML = '<p class="hint">친구 목록을 불러오지 못했어요. 잠시 뒤 다시 열어주세요.</p>';
+      });
       return;
     }
 
@@ -155,10 +161,10 @@ if (typeof document !== "undefined") {
     rotate.textContent = "초대 링크 새로 만들기";
     rotate.addEventListener("click", async () => {
       if (!confirm("새 링크를 만들면 전에 보낸 링크는 못 쓰게 돼요.\n이미 친구가 된 사람은 그대로예요. 계속할까요?")) return;
-      const d = await apiRotateCode();
-      if (!d || !d.code) { toast("연결이 안 돼요. 잠시 뒤 다시 눌러주세요"); return; }
-      localStorage.setItem(CODE_KEY, d.code);
-      if (DATA) DATA.code = d.code;   // 손에 든 목록을 고친다 — KV 는 쓰고 바로 읽으면 옛 값이 온다(함정 49)
+      const r = await apiRotateCode();
+      if (!r.ok || !r.data.code) { toast("연결이 안 돼요. 잠시 뒤 다시 눌러주세요"); return; }
+      localStorage.setItem(CODE_KEY, r.data.code);
+      if (DATA) DATA.code = r.data.code;   // 손에 든 목록을 고친다 — KV 는 쓰고 바로 읽으면 옛 값이 온다(함정 49)
       toast("새 초대 링크를 만들었어요");
     });
     box.appendChild(rotate);
@@ -238,10 +244,11 @@ if (typeof document !== "undefined") {
 
     if (kind === "in") {
       btn("수락", "ok", async () => {
-        const r = await apiAcceptFriend(f.uid);
-        if (!r || r.error) return toast(r?.error || "수락하지 못했어요");
+        const res = await apiAcceptFriend(f.uid);
+        if (!res.ok) return toast(res.data?.error || (res.kind === "network" || res.kind === "timeout"
+          ? "연결이 안 돼요. 잠시 뒤 다시 눌러주세요" : "수락하지 못했어요"));
         // 개수는 서버가 방금 준 값으로 채운다 — 요청 단계에선 안 받아 온 값이라 0 으로 남는다.
-        f.count = r.friend?.count ?? 0;
+        f.count = res.data.friend?.count ?? 0;
         toast(`${f.name || "친구"}님과 친구가 됐어요!`);
         move("friends");
       });
@@ -270,9 +277,10 @@ if (typeof document !== "undefined") {
     const body = el("fr-book-body");
     body.innerHTML = '<p class="hint">불러오는 중이에요…</p>';
     dlg.showModal();
-    const r = await apiFriendBook(f.uid);
+    const res = await apiFriendBook(f.uid);
     body.innerHTML = "";
-    if (!r || r.error) { body.innerHTML = '<p class="hint">단어장을 불러오지 못했어요.</p>'; return; }
+    if (!res.ok) { body.innerHTML = '<p class="hint">단어장을 불러오지 못했어요.</p>'; return; }
+    const r = res.data;
     if (!r.words.length) { body.innerHTML = '<p class="hint">아직 담은 단어가 없어요.</p>'; return; }
 
     for (const w of r.words) {

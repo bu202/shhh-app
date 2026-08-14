@@ -125,7 +125,11 @@ if (typeof document !== "undefined") {
     const was = localStorage.getItem(UID_KEY) || "";
     // 손에 든 서버 버전. **읽기 전에** 확보한다 — 응답이 이 값을 갈아치우면 판정 근거가 사라진다.
     const base = bookVersion();
-    const remote = await apiGetBook();
+    // syncPlan 은 "서버 레코드 또는 null"만 안다(순수 함수라 HTTP 를 몰라야 한다).
+    // 그래서 경계인 여기서 결과를 레코드로 바꾼다 — 실패는 전부 null = 오프라인 취급이고,
+    // 그때 syncPlan 은 action:"none" 을 내어 **로컬을 건드리지 않는다**(가장 안전한 쪽).
+    const res = await apiGetBook();
+    const remote = res.ok ? res.data : null;
     // ⚠️ 계정 판정은 **서버가 누구라고 대답한 뒤에** 한다. 예전엔 요청 전에 localStorage 의 옛
     //    값끼리 비교해서, 로그인한 채로 다른 계정 로그인이 끝난 경우(탭 두 개, 또는 남의 콜백
     //    링크를 연 경우) "계정이 안 바뀌었다"로 읽고 앞 계정 단어장을 뒷 계정 서버로 올렸다.
@@ -391,8 +395,7 @@ if (typeof document !== "undefined") {
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
   }
 
-  // 서버가 실제로 로그인시킬 수 있는 제공자. null = 아직 안 물어봤거나 오프라인 —
-  // 그때는 **아무것도 숨기지 않는다**(연결이 안 된다고 버튼을 지우면 그게 더 나쁘다).
+  // 서버가 실제로 로그인시킬 수 있는 제공자. null = **아직 물어보지 못했다**(연결 실패 포함).
   let PROVIDERS = null;
 
   // 로그인 버튼. 마이페이지와 게이트가 **같은 함수**를 쓴다 — 둘이 갈라지면
@@ -400,12 +403,23 @@ if (typeof document !== "undefined") {
   //
   // ⚠️ **비밀값이 안 들어간 제공자는 그리지 않는다.** 예전엔 셋을 늘 그렸고, 서버에 키가 없으면
   //    누른 뒤에야 503 을 봤다 — 화면이 "된다"고 말하고 서버가 "안 된다"고 하는 상태다.
+  //
+  // ⚠️ **서버에 못 물어봤을 때도 그리지 않는다(fail-closed).** 예전에는 그 경우 오히려 셋 다
+  //    그렸다 — "아직 모르니 아무것도 숨기지 말자"는 뜻이었는데, 실제로 사용자가 얻는 것은
+  //    눌러도 503 만 나는 버튼 세 개였다. 모를 때는 되는 척하지 않는 쪽이 맞다.
+  //
+  // 문구를 두 갈래로 가른다. **원인이 다르면 사용자가 할 일도 다르다** — 연결 문제는
+  // 다시 시도할 일이고, 제공자 미설정은 기다릴 일이라 같은 말을 하면 헛수고를 시킨다.
+  // 어느 쪽이든 **사전과 연습은 그대로 열려 있다**는 말을 반드시 붙인다(로그인만 닫는 것이다).
   function loginButtons(box, cls) {
-    const list = PROVIDERS ? ["kakao", "naver", "google"].filter((k) => PROVIDERS.includes(k)) : ["kakao", "naver", "google"];
+    // 순서는 **우리가 정한다**(서버 응답 순서에 화면 순서를 맡기지 않는다).
+    const list = ["kakao", "naver", "google"].filter((k) => (PROVIDERS || []).includes(k));
     if (!list.length) {
       const p = document.createElement("p");
       p.className = "hint";
-      p.textContent = "지금은 로그인을 준비 중이에요. 로그인 없이도 사전과 연습은 그대로 쓸 수 있어요.";
+      p.textContent = PROVIDERS === null
+        ? "지금은 서버에 연결할 수 없어 로그인을 시작할 수 없어요. 연결된 뒤 앱을 다시 열어주세요. 사전과 연습은 그대로 쓸 수 있어요."
+        : "지금은 로그인을 준비 중이에요. 로그인 없이도 사전과 연습은 그대로 쓸 수 있어요.";
       box.appendChild(p);
       return;
     }
@@ -527,7 +541,8 @@ if (typeof document !== "undefined") {
     const fresh = (await takeLoginHash()) || (await takeCodeQuery());
     // 어느 제공자가 실제로 설정돼 있나. **renderAll 보다 먼저** 물어야 버튼이 한 번에 맞게 그려진다.
     const h = await apiHealth();
-    if (h && Array.isArray(h.providers)) PROVIDERS = h.providers;
+    // 못 물어봤으면 null 로 남긴다 — loginButtons 가 그걸 보고 "연결 안 됨"이라 말한다.
+    if (h.ok) PROVIDERS = h.providers;
     renderAll();
     if (fresh) toast("로그인했어요");
     if (authToken()) {
