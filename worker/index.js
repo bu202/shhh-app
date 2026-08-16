@@ -860,7 +860,7 @@ async function route(req, env) {
     if (path === "/book" || path === "/me") {
       if (!uid) return json(env, req, { error: "로그인이 필요해요" }, 401);
 
-      // 응답에만 얹고 레코드에는 안 넣는다. 넣으면 KV 에 굳어서, 나중에 목록에서 빼도
+      // 응답에만 얹고 레코드에는 안 넣는다. 넣으면 books 행에 굳어서, 나중에 목록에서 빼도
       // 옛 레코드가 계속 마스터라고 말한다. 판단은 언제나 지금의 MASTER_UIDS 가 한다.
       //
       // master 와 pro 를 갈라 보낸다. 지금은 마스터만 pro 지만 결제가 붙으면 **산 사람도 pro** 가

@@ -90,8 +90,11 @@ CREATE INDEX IF NOT EXISTS invite_user ON invite_codes(user_id, revoked_at);
 CREATE UNIQUE INDEX IF NOT EXISTS invite_codes_active ON invite_codes(user_id) WHERE revoked_at IS NULL;
 
 -- 레이트리밋 카운터(0003). 고정 창이고 창 하나에 행 하나다.
--- ⚠️ **원문 IP·uid 를 넣지 않는다.** 키는 SHA-256(용도|주체|창번호) 다 — 남용을 세는 대가로
---    개인정보를 쌓지 않는다. 지난 행은 로그인할 때 함께 지운다(청소용 크론이 없다).
+-- ⚠️ **원문 IP·uid 를 넣지 않는다.** 키는 **HMAC(RL_KEY, 용도|주체|창번호)** 다 — 남용을 세는
+--    대가로 개인정보를 쌓지 않는다. 지난 행은 로그인할 때 함께 지운다(청소용 크론이 없다).
+--    ⚠️ 평문 SHA-256 이 아닌 이유: IPv4 는 경우의 수가 43억뿐이라 **전부 넣어 보면 풀린다**
+--    (실측: /24 대역만 대입해 43회에 원본 IP 복원). 키를 모르면 넣어 볼 값 자체를 못 만든다.
+--    0003 의 이 자리 주석은 **그때 사실**이라 SHA-256 이라 적혀 있다 — 적용된 이력은 고치지 않는다.
 CREATE TABLE IF NOT EXISTS rate_limits (
   bucket      TEXT PRIMARY KEY,
   n           INTEGER NOT NULL,

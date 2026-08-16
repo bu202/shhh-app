@@ -181,7 +181,7 @@ const apiPutBook = async (words, name) => {
   return r;
 };
 const apiDeleteAccount = () => request("/me", { method: "DELETE" });
-// 로그아웃은 **서버에도** 알린다. 브라우저에서 토큰만 지우면 KV 의 세션은 180일을 더 살아서,
+// 로그아웃은 **서버에도** 알린다. 브라우저에서 토큰만 지우면 D1 의 세션 행은 180일을 더 살아서,
 // 한 번 샌 토큰이 로그아웃 뒤에도 그대로 쓰인다. 이 계정에 로그인한 기기가 전부 함께 끊긴다.
 const apiLogout = () => request("/session", { method: "DELETE" });
 // 로그인 표시가 아직 없는 상태에서 세션을 끊어야 할 때(네이버 갈래에서 nonce 가 안 맞은 경우).

@@ -141,8 +141,9 @@ if (typeof document !== "undefined") {
     const r = res.data;
     const who = r.friend?.name ? `${r.friend.name}님` : "상대방";
     toast(r.state === "ok" ? `${who}과 친구가 됐어요!` : `${who}에게 친구 요청을 보냈어요`);
-    // 방금 만든 상태를 목록에 직접 반영한다. 다시 GET 하면 KV 가 옛 값을 줄 수 있어서
-    // "요청을 보냈다"고 말해놓고 목록은 비어 있는 화면이 나온다.
+    // 방금 만든 상태를 목록에 직접 반영한다. 서버 응답을 그 자리에서 화면에 얹으면
+    // 불필요한 재조회가 없어지고, "요청을 보냈다"고 말한 직후 목록이 잠깐 비었다가
+    // 채워지는 되돌림도 안 생긴다. 무엇이 바뀌었는지는 응답이 이미 말해 줬다.
     if (DATA && r.friend) {
       const where = r.state === "ok" ? "friends" : "out";
       if (!DATA[where].some((x) => x.uid === r.friend.uid)) DATA = { ...DATA, [where]: [...DATA[where], r.friend] };
@@ -229,7 +230,7 @@ if (typeof document !== "undefined") {
         return;
       }
       localStorage.setItem(CODE_KEY, r.data.code);
-      if (DATA) DATA.code = r.data.code;   // 손에 든 목록을 고친다 — KV 는 쓰고 바로 읽으면 옛 값이 온다(함정 49)
+      if (DATA) DATA.code = r.data.code;   // 손에 든 목록을 고친다 — 재조회 없이 새 코드가 바로 보인다
       toast("새 초대 링크를 만들었어요");
     });
     box.appendChild(rotate);
@@ -278,8 +279,9 @@ if (typeof document !== "undefined") {
       act.appendChild(b);
     };
     // 서버를 다시 부르지 않고 **손에 든 목록을 그 자리에서 고친다.**
-    // Cloudflare KV 는 쓰고 바로 읽으면 옛 값이 올 수 있어서(최대 60초), 수락 직후 GET 하면
-    // "수락했는데 목록이 그대로"인 화면이 나온다. 무엇이 바뀌었는지는 우리가 이미 아는 값이다.
+    // 서버가 2xx 로 대답한 뒤에만 부르므로 무엇이 바뀌었는지는 우리가 이미 아는 값이고,
+    // 재조회를 한 번 아끼면서 "수락했는데 목록이 잠깐 그대로"인 구간도 없앤다.
+    // (실패는 이 함수에 오지 않는다 — 부르는 쪽이 응답을 먼저 가른다.)
     const move = (to) => {
       DATA = { ...DATA, friends: DATA.friends.filter((x) => x.uid !== f.uid),
                in: DATA.in.filter((x) => x.uid !== f.uid), out: DATA.out.filter((x) => x.uid !== f.uid) };
