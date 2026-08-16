@@ -1291,6 +1291,22 @@ if ("serviceWorker" in navigator) {
   window.addEventListener("load", () =>
     navigator.serviceWorker.register("service-worker.js").catch(() => {})
   );
+
+  // 새 서비스워커가 제어를 넘겨받으면 **한 번만** 다시 읽는다.
+  //
+  // 왜 필요한가: SW 는 skipWaiting + clients.claim 으로 **이미 떠 있는 화면**의 제어를 잡는다.
+  // 그런데 그 화면이 들고 있는 js/*.js 는 옛 세대다 — 새 세대의 캐시·응답 계약과 섞여 돈다.
+  // 실제로 그 조합에서 친구 화면이 「불러오는 중이에요…」에 멈췄다(옛 friends.js 에는 실패 분기가 없었다).
+  // 다시 읽으면 화면과 캐시가 같은 세대가 된다.
+  let refreshed = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (refreshed) return;              // 두 번째부터는 무시한다 — 새로고침 고리에 빠지지 않게
+    refreshed = true;
+    // ⚠️ 로그인 왕복 중에는 절대 다시 읽지 않는다. `#login=…` · `?code=…&state=…` 는 **일회용**이라
+    //    다시 읽는 사이에 소모되면 로그인이 조용히 실패한다(nonce 는 한 번 쓰면 지워진다).
+    if (/[#&?](login|code|state)=/.test(location.href)) return;
+    location.reload();
+  });
 }
 
 main();

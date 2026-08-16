@@ -14,6 +14,8 @@ if (typeof document !== "undefined") {
 
   let VIEW = "mine";               // 단어장 화면의 갈래: mine | friends
   let DATA = null;                 // 마지막으로 받은 {code, friends, in, out}
+  let LOAD = null;                 // 진행 중인 목록 GET. 없으면 아무도 안 물어보는 중이다
+  let ERROR = "";                  // 마지막 실패 이유(사람이 읽는 문장). 비어 있으면 실패한 적 없다
 
   const el = (id) => document.getElementById(id);
 
@@ -60,13 +62,51 @@ if (typeof document !== "undefined") {
     }
   };
 
+  // ── 목록을 받아오는 자리는 여기 하나다 ──
+  // 왜 하나로 모았나: 예전엔 renderFriends 와 refreshBadge 가 **따로** 물어봤다. 그래서
+  //   ① 화면에 들어갈 때마다 GET 이 두 번 나갔고
+  //   ② 실패 처리도 두 곳에 따로 있었다 — renderFriends 쪽은 `if (d)` 하나뿐이라
+  //      실패하면 `불러오는 중이에요…` 가 **영원히** 남았다(사용자가 실제로 본 화면).
+  // 이제 둘 다 이 함수를 부르고, 도는 중이면 **같은 요청 하나를 나눠 쓴다**.
+  //
+  // 이 함수는 **절대 throw 하지 않고 반드시 끝난다.** 끝나면 셋 중 하나다:
+  // DATA 가 새 목록이거나 · ERROR 에 이유가 있거나 · 401 이라 로그인 화면으로 돌아갔거나.
+  function loadFriends() {
+    if (LOAD) return LOAD;
+    LOAD = apiFriends().then((r) => {
+      // 401 은 세션이 죽은 것이다. 여기서 재시도를 권하면 눌러도 같은 401 만 온다 —
+      // 할 일은 로그인이다. request() 가 이미 로그인 표시와 계정별 값을 지웠으므로
+      // 손에 든 목록도 같이 버린다(앞 계정 친구가 다음 사람 화면에 남으면 안 된다).
+      if (r.status === 401) { DATA = null; ERROR = ""; return; }
+      if (!r.ok) { ERROR = failWhy(r); return; }
+      // 2xx 라도 **모양이 다르면 목록이 아니다.** 여기서 안 막으면 화면을 그리다 도중에
+      // 예외가 나고, 그러면 로딩 문구가 지워지지도 채워지지도 않은 채 남는다.
+      if (!isList(r.data)) { ERROR = "친구 목록을 불러오지 못했어요."; return; }
+      DATA = r.data; ERROR = "";
+      localStorage.setItem(CODE_KEY, r.data.code);
+    })
+      // then 안에서 난 예외(localStorage 가 꽉 찼다 등)도 여기서 받는다.
+      // **어떤 이유로도 로딩이 안 끝나는 길을 남기지 않는다.**
+      .catch(() => { ERROR = "친구 목록을 불러오지 못했어요."; })
+      .finally(() => { LOAD = null; });
+    return LOAD;
+  }
+
+  // 서버가 준 것이 정말 목록인가. 화면이 실제로 읽는 네 자리만 본다.
+  const isList = (d) => !!d && typeof d === "object" && !Array.isArray(d)
+    && typeof d.code === "string"
+    && Array.isArray(d.friends) && Array.isArray(d.in) && Array.isArray(d.out);
+
+  // 원인이 다르면 사용자가 할 일도 다르다. 다만 **왜 막혔는지까지는 말하지 않는다** —
+  // 사용자가 고칠 수 없는 정보고, 서버 사정을 화면에 옮겨 적을 이유도 없다.
+  const failWhy = (r) => r.kind === "network" || r.kind === "timeout"
+    ? "연결이 안 돼요. 잠시 뒤 다시 시도해주세요."
+    : r.kind === "rate_limited" ? "요청이 많아요. 잠시 뒤 다시 시도해주세요."
+    : "친구 목록을 불러오지 못했어요.";
+
   async function refreshBadge() {
-    const r = await apiFriends();
-    if (!r.ok) return;   // 못 받아왔으면 손에 든 목록을 그대로 둔다(빈 목록으로 덮지 않는다)
-    const d = r.data;
-    DATA = d;
-    if (d.code) localStorage.setItem(CODE_KEY, d.code);
-    showBadge(d.in.length);
+    await loadFriends();
+    if (DATA) showBadge(DATA.in.length);   // 못 받아왔으면 손에 든 목록을 그대로 둔다
   }
 
   // ── 초대 링크 ──
@@ -76,10 +116,9 @@ if (typeof document !== "undefined") {
     if (!authToken()) { toast("친구를 추가하려면 로그인이 필요해요"); GO("me"); return ""; }
     let code = localStorage.getItem(CODE_KEY);
     if (!code) {
-      const r = await apiFriends();
-      if (!r.ok) { toast("연결이 안 돼요. 잠시 뒤 다시 눌러주세요"); return ""; }
-      DATA = r.data; code = r.data.code;
-      localStorage.setItem(CODE_KEY, code);
+      await loadFriends();   // 목록을 받는 자리는 하나다 — 여기서도 같은 검증·같은 요청을 쓴다
+      code = localStorage.getItem(CODE_KEY);
+      if (!code) { toast(ERROR || "연결이 안 돼요. 잠시 뒤 다시 눌러주세요"); return ""; }
     }
     return location.origin + location.pathname + "#f=" + code;
   });
@@ -108,7 +147,7 @@ if (typeof document !== "undefined") {
       const where = r.state === "ok" ? "friends" : "out";
       if (!DATA[where].some((x) => x.uid === r.friend.uid)) DATA = { ...DATA, [where]: [...DATA[where], r.friend] };
     } else {
-      DATA = null;   // 아직 목록을 받은 적이 없으면 renderFriends 가 받아온다
+      DATA = null; ERROR = "";   // 아직 목록을 받은 적이 없으면 renderFriends 가 받아온다
     }
     VIEW = "friends";
     GO("book");
@@ -116,6 +155,9 @@ if (typeof document !== "undefined") {
 
   // ── 친구 목록 화면 ──
   function renderFriends() {
+    // 늦게 온 응답이 **지금 보고 있는 화면을 덮지 않게** 한다. 목록을 기다리는 동안
+    // 사용자가 내 단어장으로 옮겨갈 수 있는데, 그때 그리면 남의 화면에 글씨를 쓰는 셈이다.
+    if (VIEW !== "friends") return;
     const box = el("friends");
     box.innerHTML = "";
     if (!authToken()) {
@@ -123,11 +165,22 @@ if (typeof document !== "undefined") {
       return;
     }
     if (!DATA) {
+      // 실패했으면 **왜 안 됐는지와 다음에 할 일**을 같이 준다. 예전엔 실패해도 로딩 문구가
+      // 그대로 남아, 사용자는 끝나지 않는 화면 앞에서 앱을 껐다 켜는 것 말고 할 게 없었다.
+      if (ERROR) {
+        const p = document.createElement("p");
+        p.className = "hint"; p.textContent = ERROR;
+        box.appendChild(p);
+        const again = document.createElement("button");
+        again.className = "btn-primary"; again.type = "button";
+        again.textContent = "다시 시도";
+        again.addEventListener("click", () => { ERROR = ""; renderFriends(); });
+        box.appendChild(again);
+        return;
+      }
       box.innerHTML = '<p class="hint">불러오는 중이에요…</p>';
-      apiFriends().then((r) => {
-        if (r.ok) { DATA = r.data; localStorage.setItem(CODE_KEY, r.data.code); renderFriends(); return; }
-        box.innerHTML = '<p class="hint">친구 목록을 불러오지 못했어요. 잠시 뒤 다시 열어주세요.</p>';
-      });
+      // loadFriends 는 throw 하지 않고 반드시 끝나므로, 이 renderFriends 는 반드시 다시 돈다.
+      loadFriends().then(renderFriends);
       return;
     }
 

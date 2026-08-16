@@ -181,8 +181,15 @@ const apiLogout = () => request("/session", { method: "DELETE" });
 // 로그인 표시가 아직 없는 상태에서 세션을 끊어야 할 때(네이버 갈래에서 nonce 가 안 맞은 경우).
 // request 는 표시가 없으면 아예 안 보내므로 이 한 자리는 fetch 를 직접 부른다 —
 // 쿠키는 이미 심어져 있어서 **앱이 모르는 채 서버만 로그인 상태로 남는 것**을 막아야 한다.
+// ⚠️ **시간 제한을 반드시 붙인다.** 이 호출은 onAppReady 안에서 await 되므로, 답이 안 오면
+//    로그인·친구·동기화가 통째로 안 붙은 채 화면만 떠 있다. 세션을 못 끊은 것보다
+//    앱이 아예 안 뜨는 쪽이 훨씬 나쁘다(못 끊은 세션은 다음 실행에서 다시 시도된다).
 const apiLogoutRaw = async () => {
-  try { await fetch(API + "/session", { method: "DELETE", credentials: "same-origin" }); } catch { /* 오프라인 */ }
+  const t = timeoutSignal(REQUEST_TIMEOUT);
+  try {
+    await fetch(API + "/session", { method: "DELETE", credentials: "same-origin", signal: t.signal });
+  } catch { /* 오프라인·시간 초과 — 어느 쪽이든 여기서 더 할 수 있는 일이 없다 */ }
+  finally { t.done(); }
 };
 
 // ── 친구 ──
@@ -225,12 +232,22 @@ async function apiHealth() {
 // 네이버 전용. 앱 주소로 돌아온 code 를 서버에 넘긴다 — 비밀키가 필요한 교환이라 브라우저에서
 // 직접 못 한다. **응답에 토큰은 없다**: 서버가 Set-Cookie 로 심고 여기선 성공 여부와 n 만 받는다.
 // request 를 안 쓰는 이유는 아직 로그인 표시가 없는 상태의 호출이기 때문이다.
+//
+// ⚠️ 여기도 **시간 제한과 결과 구분**이 붙는다. 예전엔 시간 제한이 없어서 응답이 안 오면
+//    onAppReady 가 끝나지 않았고, 실패는 전부 null 이라 화면은 시간 초과에도 "로그인에
+//    실패했어요"라고 말했다 — 사용자가 할 일이 다른데(다시 시도 vs 연결 확인) 같은 말을 한다.
+// ⚠️ code·state·토큰은 어디에도 기록하지 않는다. 돌려주는 것은 성공 여부와 n 뿐이다.
 async function apiExchange(provider, code, state) {
   const q = new URLSearchParams({ code, state });
+  const t = timeoutSignal(REQUEST_TIMEOUT);
   try {
-    const res = await fetch(`${API}/exchange/${provider}?${q}`, { credentials: "same-origin" });
-    return res.ok ? await res.json() : null;
-  } catch {
-    return null;
+    const res = await fetch(`${API}/exchange/${provider}?${q}`, { credentials: "same-origin", signal: t.signal });
+    if (!res.ok) return { ok: false, kind: "server" };
+    const d = await res.json().catch(() => null);
+    return d && d.ok ? { ok: true, n: d.n } : { ok: false, kind: "server" };
+  } catch (e) {
+    return { ok: false, kind: e && (e.name === "TimeoutError" || e.name === "AbortError") ? "timeout" : "network" };
+  } finally {
+    t.done();
   }
 }

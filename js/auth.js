@@ -58,11 +58,23 @@ if (typeof document !== "undefined") {
   // 새 편집 자리가 생길 때마다 둘 중 하나를 빠뜨린다).
   // 저장 응답이 왔을 때 "그 사이에 또 고쳤나"를 이 값으로 안다. 고쳤다면 서버에 있는 건 옛
   // 것이므로 dirty 를 지우면 안 된다.
-  // 서버 버전(shh-bookver)과는 **다른 값**이다: 저쪽은 서버가 세고 이쪽은 이 탭이 센다.
+  // 서버 버전(shh-bookver)과는 **다른 값**이다: 저쪽은 서버가 세고 이쪽은 이 기기가 센다.
   // 저장이 성공했는데 그 사이 편집이 있었다면 **서버 버전은 받아 적고 dirty 만 남긴다** —
   // 둘을 한 값으로 묶으면 둘 중 하나는 반드시 틀린 말을 하게 된다.
-  let localRevision = 0;
-  const touch = () => { localRevision++; localStorage.setItem(DIRTY_KEY, "1"); };
+  //
+  // ⚠️ **localStorage 에 둔다(탭 안의 변수가 아니다).** 짝이 되는 `shh-dirty` 가 이미 공용이라,
+  //    한쪽만 탭별이면 둘이 어긋난다. 실제로 어긋났다:
+  //      탭 A 가 저장을 보낸다 → 탭 B 가 단어를 담아 공용 dirty 를 1 로 만든다 →
+  //      A 의 응답이 성공으로 온다 → A 는 **자기 편집만** 보고 "그 사이 편집 없음"이라 판정해
+  //      공용 dirty 를 0 으로 지운다 → B 가 담은 단어는 서버에 없는데 "저장 끝"이 된다.
+  //    B 의 저장까지 실패하면(오프라인) 다음 동기화가 pull 로 덮어 **그 단어가 사라진다.**
+  //    공용 값으로 두면 A 는 "누구든 그 사이에 고쳤나"를 보게 되고, 답은 언제나 안전한 쪽이다.
+  const REV_KEY = "shh-rev";
+  const editRevision = () => Number(localStorage.getItem(REV_KEY)) || 0;
+  const touch = () => {
+    localStorage.setItem(REV_KEY, String(editRevision() + 1));
+    localStorage.setItem(DIRTY_KEY, "1");
+  };
   const synced = () => localStorage.setItem(DIRTY_KEY, "0");
   const myName = () => localStorage.getItem(NAME_KEY) || "";
 
@@ -90,10 +102,10 @@ if (typeof document !== "undefined") {
   //    `if (again)` 으로 봤는데 충돌 응답도 객체라 참이었다 — 두 번째도 충돌인데(=저장 안 됨)
   //    "저장 끝"으로 적었고, 다음 동기화가 dirty:false 를 보고 로컬을 서버 것으로 덮었다.
   async function pushBook(words, name) {
-    const rev = localRevision;
+    const rev = editRevision();
     const r = await apiPutBook(words, name);
-    // 성공. 다만 이 요청이 날아간 뒤에 또 고쳤다면 서버에 있는 건 그 편집 전 상태다.
-    if (r.ok) { if (rev === localRevision) synced(); return r; }
+    // 성공. 다만 이 요청이 날아간 뒤에 **누가(어느 탭이든) 또 고쳤다면** 서버에 있는 건 그 편집 전 상태다.
+    if (r.ok) { if (rev === editRevision()) synced(); return r; }
     if (r.kind !== "conflict") return r;   // 실패 — dirty 를 그대로 둬야 다음에 다시 올라간다
     const server = (r.data && r.data.words) || [];
     const mine = BOOK.slice();
@@ -101,11 +113,11 @@ if (typeof document !== "undefined") {
     replaceBook(merged);
     localStorage.setItem(NAME_KEY, name || (r.data && r.data.name) || "");
     touch();           // 합친 것도 이 기기의 편집이다 — 아직 서버에 없다
-    const rev2 = localRevision;
+    const rev2 = editRevision();
     renderAll();
     // 버전은 apiPutBook 이 409 본문에서 이미 받아 뒀다 — 그래서 이번 저장은 통과할 수 있다.
     const again = await apiPutBook(merged, name || (r.data && r.data.name) || "");
-    if (again.ok && rev2 === localRevision) synced();
+    if (again.ok && rev2 === editRevision()) synced();
     toast(again.ok ? "다른 기기에서 담은 단어와 합쳤어요"
                    : "다른 기기 단어와 합쳤어요. 저장은 연결되면 다시 시도해요");
     return again;
@@ -519,7 +531,14 @@ if (typeof document !== "undefined") {
     // code 가 주소창·방문기록에 남지 않게 즉시 지운다. 해시(#w= 같은)는 남긴다.
     history.replaceState(null, "", location.pathname + location.hash);
     const r = await apiExchange("naver", code, state);
-    if (!r || !r.ok) { takeNonce(); toast("로그인에 실패했어요. 다시 시도해 주세요."); return false; }
+    // 원인이 다르면 할 일도 다르다 — 연결 문제는 인터넷을 확인할 일이고, 서버 거절은 다시 누를 일이다.
+    if (!r.ok) {
+      takeNonce();
+      toast(r.kind === "timeout" || r.kind === "network"
+        ? "연결이 안 돼요. 인터넷에 연결된 뒤 다시 로그인해 주세요."
+        : "로그인에 실패했어요. 다시 시도해 주세요.");
+      return false;
+    }
     // ⚠️ **이 갈래에는 n 대조가 여전히 필수다.** `?code=…&state=…` 는 링크로 보낼 수 있고,
     //    받은 사람의 앱이 **남의 code** 를 교환하면 서버가 그 브라우저에 **남의 계정 쿠키**를 심는다.
     //    쿠키로 옮겨도 이 갈래만은 세션 고정이 그대로 성립한다 — code 를 우리 앱이 대신 내밀기 때문이다.

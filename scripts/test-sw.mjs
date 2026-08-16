@@ -61,4 +61,68 @@ for (const a of assets) assert.ok(!a.includes("?") && !a.startsWith("/api"), `�
 const ver = (src.match(/const CACHE = PREFIX \+ "(v\d+)"/) || [])[1];
 assert.ok(ver && Number(ver.slice(1)) >= 10, `캐시 버전이 안 올라갔다(${ver}) — 옛 캐시가 안 비워진다`);
 
-console.log(`test-sw: 통과 — 로그인 왕복·API·실패 응답 미캐시, 정적 자산 ${assets.length}개 선캐시, 캐시 ${ver}`);
+// ── 10. 설치 → 활성 생명주기를 실제로 돌린다 ────────────────────────────
+// 왜 필요한가: 위 검사들은 `cacheable` 이라는 **판정 함수 하나**만 봤다. 그래서 "옛 캐시가
+// 실제로 지워지는가", "제어권을 언제 넘겨받는가"는 아무도 안 재고 있었고, 그 사이에
+// 캐시 이름이 v10 에 멈춘 채로 자산 계약만 바뀌는 일이 실제로 벌어졌다 — 설치형 PWA 가
+// v10 캐시의 **옛 friends.js** 를 계속 돌려 친구 화면이 「불러오는 중이에요…」에 멈췄다.
+//
+// Playwright 를 넣지 않은 이유: 여기서 재려는 것은 브라우저의 렌더링이 아니라 **이 파일의
+// 생명주기 로직**이다. 실기기 확인(설치형 PWA 새로고침·오프라인)은 자동화가 대신할 수 없는
+// 별개의 항목이라 사용자 체크리스트로 남긴다(.claude/rules/frontend-pwa.md).
+function runSW({ existing = [] } = {}) {
+  const store = new Map(existing.map((k) => [k, new Map()]));
+  const log = [];
+  const caches = {
+    open: async (k) => {
+      if (!store.has(k)) store.set(k, new Map());
+      const m = store.get(k);
+      return { addAll: async (list) => { for (const u of list) m.set(u, "ok"); },
+               put: async (req, res) => { m.set(req.url ?? String(req), res); } };
+    },
+    keys: async () => [...store.keys()],
+    delete: async (k) => { log.push("delete:" + k); return store.delete(k); },
+    match: async () => undefined,
+  };
+  const handlers = {};
+  const selfStub = {
+    location: { origin: O },
+    addEventListener: (n, fn) => { handlers[n] = fn; },
+    skipWaiting: () => log.push("skipWaiting"),
+    clients: { claim: async () => { log.push("claim"); } },
+  };
+  new Function("self", "caches", "fetch", src)(selfStub, caches, async () => ({ ok: true, type: "basic" }));
+  return { handlers, store, log };
+}
+const fire = async (fn) => {
+  const waits = [];
+  fn({ waitUntil: (p) => waits.push(p), request: null, respondWith: () => {} });
+  await Promise.all(waits);
+};
+
+{
+  const CACHE = "shhh-" + ver;
+  // 옛 세대 캐시 · 더 옛날 이름 · **다른 앱의 캐시**(origin 을 공유하는 경우)를 함께 둔다.
+  const sw = runSW({ existing: ["shhh-v10", "sueo-v3", "someone-elses-app"] });
+
+  await fire(sw.handlers.install);
+  assert.deepEqual([...sw.store.get(CACHE).keys()].sort(), [...assets].sort(),
+    "install 이 선캐시 목록을 통째로 담지 않았다 — 반쪽짜리 세대가 생긴다");
+
+  await fire(sw.handlers.activate);
+  assert.deepEqual([...sw.store.keys()].sort(), [CACHE, "someone-elses-app"].sort(),
+    "옛 세대 캐시가 남았거나 남의 앱 캐시를 지웠다");
+  // **순서가 중요하다.** claim 이 지우기보다 먼저 오면, 제어권을 넘겨받은 순간에도 옛 세대
+  // 캐시가 살아 있어 그 사이 요청이 어느 세대를 받을지 정해져 있지 않다.
+  const claimAt = sw.log.indexOf("claim");
+  const lastDelete = sw.log.map((x, i) => [x, i]).filter(([x]) => x.startsWith("delete:")).pop()?.[1] ?? -1;
+  assert.ok(claimAt > lastDelete, "옛 캐시를 다 지우기 전에 제어권을 넘겨받았다");
+  assert.ok(sw.log.includes("skipWaiting"), "새 세대가 기다리기만 하고 안 올라온다");
+
+  // 이 세대의 캐시에는 **핵심 스크립트 네 개가 함께** 들어 있다. 하나라도 빠지면 온라인이
+  // 흔들릴 때 옛 세대와 새 세대가 섞여 돈다.
+  for (const js of ["js/app.js", "js/authApi.js", "js/auth.js", "js/friends.js"])
+    assert.ok(sw.store.get(CACHE).has(js), `${js} 가 이 세대 캐시에 없다 — 세대가 섞일 수 있다`);
+}
+
+console.log(`test-sw: 통과 — 로그인 왕복·API·실패 응답 미캐시, 정적 자산 ${assets.length}개 선캐시, 캐시 ${ver}, install→activate 세대 교체`);

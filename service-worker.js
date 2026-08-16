@@ -6,7 +6,13 @@ const PREFIX = "shhh-";
 // ⚠️ v10 으로 올린 이유: 옛 정책이 **로그인 왕복 주소(`?code=…&state=…`)와 오류 응답까지**
 //    캐시에 넣고 있었다. 이름을 안 바꾸면 이미 들어간 그것들이 그대로 남는다.
 //    버전을 올리면 activate 가 옛 캐시를 통째로 지운다(아래).
-const CACHE = PREFIX + "v10";
+// ⚠️ **배포본의 이 이름은 빌드가 다시 쓴다.** `scripts/build.mjs` 가 선캐시 자산 전체의 해시를
+//    뒤에 붙여 `shhh-v11-<해시12>` 로 만든다. 여기 숫자를 사람이 올려 주기를 기다리는 방식은
+//    **실제로 잊었다**: friends.js·authApi.js 의 응답 계약을 바꾼 뒤에도 이름이 v10 그대로라,
+//    설치형 PWA 가 v10 캐시의 옛 friends.js 를 계속 돌렸다(그 세대엔 실패 분기가 없어서
+//    친구 화면이 「불러오는 중이에요…」에서 영영 멈췄다). 이제 자산이 바뀌면 이름이 자동으로 갈린다.
+//    이 줄의 `v11` 은 사람이 읽는 앞자리일 뿐이고, `scripts/serve.py` 로 여는 로컬 개발용 값이다.
+const CACHE = PREFIX + "v11";
 // 로그인 API 는 **절대 캐시하지 않는다.** 아래 fetch 핸들러는 모든 GET 을 캐시에 넣는데,
 // 그러면 한 기기를 두 사람이 쓸 때 앞사람의 단어장 응답이 캐시에 남아 뒷사람에게 보인다.
 //
@@ -43,15 +49,17 @@ self.addEventListener("install", (e) => {
 });
 
 self.addEventListener("activate", (e) => {
-  e.waitUntil(
+  // ⚠️ **지우기와 claim 을 한 waitUntil 안에 둔다.** 예전엔 claim 이 밖에 있어서, 옛 캐시를 다
+  // 지우기 전에 제어권이 넘어왔다 — 그 틈에 들어온 요청은 어느 세대를 받을지 정해져 있지 않았다.
+  // 지운 뒤 claim 하면 새 SW 가 제어를 잡는 순간 남아 있는 캐시는 이 세대 하나뿐이다.
+  e.waitUntil((async () => {
     // 우리 이름표가 붙은 것만 지운다. github.io 프로젝트 사이트는 **origin 을 다른 프로젝트와 공유**해서,
     // 이름표를 안 보면 bu202.github.io 의 다른 앱 캐시까지 이 SW 가 지워버린다.
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE && (k.startsWith(PREFIX) || k.startsWith("sueo-")))
-                      .map((k) => caches.delete(k)))
-    )
-  );
-  self.clients.claim();
+    const keys = await caches.keys();
+    await Promise.all(keys.filter((k) => k !== CACHE && (k.startsWith(PREFIX) || k.startsWith("sueo-")))
+                          .map((k) => caches.delete(k)));
+    await self.clients.claim();
+  })());
 });
 
 // ── 무엇을 캐시하나 ──────────────────────────────────────────────────────

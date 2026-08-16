@@ -41,7 +41,7 @@ const findText = (root, t) => walk(root).find((e) => e._text === t);
 const allText = (root) => walk(root).map((e) => e._text + " " + e._html).join(" | ");
 
 // store 를 **참조로** 받는다 — 같은 객체를 두 인스턴스에 주면 "한 기기의 탭 두 개"가 된다.
-function loadClient({ store = {}, routes } = {}) {
+function loadClient({ store = {}, routes, loc = {} } = {}) {
   const calls = [];
   let route = routes || (() => ({ status: 200, body: {} }));
   let confirmAnswer = true;
@@ -51,14 +51,17 @@ function loadClient({ store = {}, routes } = {}) {
     setItem: (k, v) => { store[k] = String(v); },
     removeItem: (k) => { delete store[k]; },
   };
-  const location = { origin: "https://test", pathname: "/", search: "", hash: "", href: "" };
+  // loc 으로 로그인 왕복에서 돌아온 주소(`?code=…&state=…` · `#login=ok…`)를 만들 수 있다.
+  const location = { origin: "https://test", pathname: "/", search: "", hash: "", href: "", ...loc };
   const history = { replaceState() {} };
   const crypto = { randomUUID: () => "nonce-fixed" };
 
   const fetch = async (url, opt = {}) => {
     const method = (opt.method || "GET").toUpperCase();
     const path = String(url).replace(/^\/api/, "");
-    calls.push({ method, path });
+    // 시간 제한이 **붙었는지**도 기록한다. 이 스텁은 진짜 타이머를 돌리지 않으므로
+    // "12초 뒤에 끊기나"는 못 재지만, "끊을 수단을 들려 보냈나"는 여기서 잴 수 있다.
+    calls.push({ method, path, aborts: !!opt.signal });
     const r = await route(method, path, opt);
     if (r.throw) throw new Error("offline");           // 네트워크 끊김
     // 시간 초과. **실제 타이머를 기다리지 않는다** — 12초를 세는 것은 브라우저 기능이고
@@ -136,7 +139,7 @@ const defaultRoutes = (m, p) => {
 };
 
 async function boot(o = {}) {
-  const c = loadClient({ store: o.store ?? LOGGED_IN(), routes: o.routes || defaultRoutes });
+  const c = loadClient({ store: o.store ?? LOGGED_IN(), routes: o.routes || defaultRoutes, loc: o.loc });
   for (const fn of c.HOOKS.ready) await fn();
   await tick();
   return c;
@@ -392,10 +395,236 @@ for (const [label, resp] of [["연결 실패", { throw: true }], ["시간 초과
   });
 }
 
+// ══ P1-3 · 로그인 왕복 요청도 언젠가 끝난다 ═══════════════════════════════
+// apiExchange 와 apiLogoutRaw 만 공통 request() 를 안 거친다(아직 로그인 표시가 없는 자리라서).
+// 그래서 이 둘만 **시간 제한이 없었다.** 응답이 영원히 안 오면 onAppReady 가 끝나지 않고,
+// 그러면 로그인·친구·동기화가 통째로 안 붙은 채 화면만 떠 있다.
+{
+  const CODE_BACK = { search: "?code=test-code&state=test-state" };
+
+  // 시간 초과와 진짜 4xx/5xx 는 **다른 일**이다 — 하나는 다시 시도할 일, 하나는 기다릴 일이다.
+  for (const [label, resp, want] of [
+    ["시간 초과", { throwName: "TimeoutError" }, "연결"],
+    ["네트워크 끊김", { throw: true }, "연결"],
+    ["502", { status: 502 }, "로그인에 실패"],
+  ]) {
+    await T(`OAuth 교환 ${label} — 끝나고, 원인에 맞게 말한다`, async () => {
+      const done = await Promise.race([
+        boot({ store: {}, loc: CODE_BACK, routes: (m, p) => (p.startsWith("/exchange") ? resp : defaultRoutes(m, p)) }),
+        sleep(3000).then(() => null),
+      ]);
+      assert.ok(done, "OAuth 교환이 안 끝나 앱 초기화가 멈췄다");
+      assert.ok(done.TOASTS.some((t) => t.includes(want)),
+        `${label} 인데 안 맞는 말을 한다: ${JSON.stringify(done.TOASTS)}`);
+      assert.equal(done.store["shh-via"], undefined, "교환이 실패했는데 로그인 표시를 세웠다");
+    });
+  }
+
+  // nonce 가 안 맞으면 서버에 세션을 끊으라고 알린다. 그 요청이 안 끝나면 앱 전체가 멈춘다 —
+  // **로그아웃 요청 하나 때문에 앱이 안 뜨는 것**이 가장 나쁜 결과다.
+  const nonceMismatch = (routes) => boot({
+    store: { "shh-nonce": "내가-적어둔-값" },
+    loc: { hash: "#login=ok&via=kakao&n=남이-보낸-값" },
+    routes,
+  });
+
+  await T("nonce 불일치 뒤 raw 로그아웃이 시간 초과여도 앱 초기화는 끝난다", async () => {
+    const done = await Promise.race([
+      nonceMismatch((m, p) => (m === "DELETE" && p === "/session" ? { throwName: "TimeoutError" } : defaultRoutes(m, p))),
+      sleep(3000).then(() => null),
+    ]);
+    assert.ok(done, "raw 로그아웃이 안 끝나 앱 초기화가 영원히 멈췄다");
+    assert.equal(done.store["shh-via"], undefined, "nonce 가 안 맞는데 로그인 표시를 세웠다");
+    assert.ok(done.TOASTS.some((t) => t.includes("맞지 않아요")), "왜 로그인이 안 됐는지 말하지 않는다");
+  });
+
+  // 위 검사는 "시간이 초과되면 어떻게 되나"를 잰다. **초과될 수단이 실제로 붙어 있는지**는
+  // 따로 봐야 한다 — 스텁은 진짜 12초를 세지 않으므로 둘을 한 검사로 묶으면 한쪽이 빈다.
+  await T("로그인 왕복 요청에도 끊을 수단(AbortSignal)이 붙는다", async () => {
+    const c = await nonceMismatch(defaultRoutes);
+    const raw = c.calls.find((x) => x.method === "DELETE" && x.path === "/session");
+    assert.ok(raw, "nonce 가 안 맞는데 서버 세션을 안 끊었다 — 화면만 로그아웃이고 서버는 로그인이다");
+    assert.ok(raw.aborts, "raw 로그아웃에 시간 제한이 없다 — 응답이 안 오면 앱이 안 뜬다");
+    const ex = (await boot({
+      store: {}, loc: { search: "?code=test-code&state=test-state" },
+      routes: (m, p) => (p.startsWith("/exchange") ? { status: 502 } : defaultRoutes(m, p)),
+    })).calls.find((x) => x.path.startsWith("/exchange"));
+    assert.ok(ex && ex.aborts, "OAuth 교환에 시간 제한이 없다 — 영원히 기다릴 수 있다");
+  });
+}
+
+// ══ P0-3 · 탭 두 개. 내 저장 성공이 **다른 탭의 편집**을 지우지 않는다 ═══
+// `shh-dirty` 는 localStorage 라 탭이 함께 쓰는데, "그 사이에 또 고쳤나"를 재는 편집 세대는
+// 탭 안의 변수였다. 그래서 A 의 저장이 성공하면 A 는 **자기 편집만** 보고 공용 dirty 를 0 으로
+// 만들었다 — 그 사이 B 가 담은 단어는 아직 서버에 없는데 "저장 끝"이 된다.
+// B 의 저장이 실패(오프라인)하면 그 단어는 다음 동기화에서 pull 로 덮여 **사라진다.**
+await T("탭 두 개 — 다른 탭의 편집을 내 저장 성공이 지우지 않는다", async () => {
+  const store = { ...LOGGED_IN(), "shh-dirty": "0" };
+  let releaseA;
+  const a = loadClient({
+    store,
+    routes: (m, p) => (m === "PUT" && p === "/book"
+      ? new Promise((r) => { releaseA = () => r({ status: 200, body: { ok: true, version: 4 } }); })
+      : defaultRoutes(m, p)),
+  });
+  // B 는 오프라인이다 — B 가 자기 편집을 스스로 올려 dirty 를 지우면 이 경합이 안 보인다.
+  const b = loadClient({
+    store,
+    routes: (m, p) => (m === "PUT" && p === "/book" ? { throw: true } : defaultRoutes(m, p)),
+  });
+  for (const fn of a.HOOKS.ready) await fn();
+  for (const fn of b.HOOKS.ready) await fn();
+  await tick();
+
+  a.setBook(["가"]); a.HOOKS.bookChanged(["가"]);
+  await sleep(900);                                    // A 의 저장이 날아갔다(응답 대기)
+  b.setBook(["가", "나"]); b.HOOKS.bookChanged(["가", "나"]);   // 다른 탭이 한 단어 더 담았다
+  await tick(4);
+  assert.equal(store["shh-dirty"], "1", "이 테스트의 전제가 깨졌다 — B 의 편집이 dirty 를 안 세웠다");
+  releaseA();
+  await sleep(900);
+  await tick(12);
+  assert.equal(store["shh-dirty"], "1",
+    "다른 탭이 담은 단어가 아직 서버에 없는데 '저장 끝'으로 표시했다 — 그 탭을 닫으면 그 단어가 사라진다");
+});
+
+// ══ P0-1 · 친구 목록이 「불러오는 중」에서 멈추지 않는다 ══════════════════
+// 사용자가 실제로 겪은 증상이다: 「우리 → 친구」에서 `불러오는 중이에요…` 만 계속 남고
+// 오류도 재시도도 없었다. 원인은 308ea43 세대의 renderFriends 다 —
+//   apiFriends().then((d) => { if (d) { … } });
+// **else 도 catch 도 finally 도 없다.** 그 세대의 apiCall 은 401·5xx·오프라인·파싱 실패를
+// 전부 null 하나로 돌려줬으므로, 실패하면 화면이 영원히 로딩에 머문다.
+// 그 세대가 아직 도는 이유는 P0-2(서비스워커 캐시 세대)다.
+//
+// 아래는 **어떤 실패에서도 로딩이 끝나고 사람이 할 수 있는 다음 행동이 남는지**를 잰다.
+const FRIENDS_GETS = (c) => c.calls.filter((x) => x.method === "GET" && x.path === "/friends").length;
+const LOADING = "불러오는 중";
+const FRIENDS_EMPTY = { code: "invite000", friends: [], in: [], out: [] };
+
+for (const [label, resp] of [
+  ["401", { status: 401, body: { error: "로그인이 필요해요" } }],
+  ["403", { status: 403 }], ["429", { status: 429 }], ["500", { status: 500 }],
+  ["네트워크 끊김", { throw: true }], ["시간 초과", { throwName: "TimeoutError" }],
+  ["JSON 파싱 실패", { status: 200, badJson: true }],
+]) {
+  await T(`친구 목록 ${label} — 로딩에서 멈추지 않는다`, async () => {
+    const c = await boot({ routes: (m, p) => (m === "GET" && p === "/friends" ? resp : defaultRoutes(m, p)) });
+    const box = openFriends(c);
+    await tick(12);
+    const t = allText(box);
+    assert.ok(!t.includes(LOADING), `${label} 인데 '불러오는 중'에 멈춰 있다 — 사용자가 끝을 못 본다`);
+    // 401 은 세션이 죽은 것이라 화면 전체가 로그인 안내로 돌아간다(재시도가 아니라 로그인이 할 일이다).
+    if (label === "401") {
+      assert.ok(t.includes("로그인하면"), "세션이 죽었는데 친구 화면을 그대로 둔다");
+      assert.equal(c.store["shh-invite"], undefined, "세션이 죽었는데 앞 계정 초대 코드가 남았다");
+    } else {
+      assert.ok(findText(box, "다시 시도"), `${label} 인데 다시 시도할 방법이 없다`);
+    }
+  });
+}
+
+// 서버가 2xx 를 줬어도 **모양이 다르면 목록이 아니다.** 경계에서 안 보면 화면을 그리다
+// 도중에 예외가 나고, 그러면 로딩 문구가 지워지지도 채워지지도 않은 채 남는다.
+for (const [label, body] of [
+  ["friends 누락", { code: "c1", in: [], out: [] }],
+  ["in 이 배열이 아님", { code: "c1", friends: [], in: "nope", out: [] }],
+  ["out 이 null", { code: "c1", friends: [], in: [], out: null }],
+  ["code 가 문자열이 아님", { code: 7, friends: [], in: [], out: [] }],
+  ["본문이 배열", []],
+  ["본문이 빈 객체", {}],
+]) {
+  await T(`친구 목록 스키마 위반(${label}) — 목록으로 받아들이지 않는다`, async () => {
+    const c = await boot({ routes: (m, p) => (m === "GET" && p === "/friends" ? { status: 200, body } : defaultRoutes(m, p)) });
+    const box = openFriends(c);
+    await tick(12);
+    const t = allText(box);
+    assert.ok(!t.includes(LOADING), "이상한 응답을 받고 로딩에 멈춰 있다");
+    assert.ok(findText(box, "다시 시도"), "이상한 응답인데 다시 시도할 방법이 없다");
+    assert.ok(!c.store["shh-invite"] || typeof c.store["shh-invite"] === "string" && c.store["shh-invite"] !== "undefined",
+      "코드가 아닌 값을 초대 코드로 저장했다 — 그 링크는 아무 데도 안 닿는다");
+  });
+}
+
+await T("친구 목록 200 정상 — 목록이 나온다", async () => {
+  const c = await boot();
+  const box = openFriends(c);
+  await tick(12);
+  const t = allText(box);
+  assert.ok(!t.includes(LOADING), "성공했는데 로딩이 남아 있다");
+  assert.ok(t.includes("친구1"), "목록이 안 나온다");
+});
+
+await T("친구 목록 200 빈 목록 — 로딩이 아니라 안내를 보여준다", async () => {
+  const c = await boot({ routes: (m, p) => (m === "GET" && p === "/friends" ? { status: 200, body: FRIENDS_EMPTY } : defaultRoutes(m, p)) });
+  const box = openFriends(c);
+  await tick(12);
+  const t = allText(box);
+  assert.ok(!t.includes(LOADING), "빈 목록인데 로딩에 멈춰 있다");
+  assert.ok(t.includes("아직 친구가 없어요"), "빈 목록 안내가 없다 — 고장인지 빈 건지 알 수 없다");
+});
+
+await T("badge 갱신과 목록 열기가 겹쳐도 GET 은 한 번", async () => {
+  let release;
+  const c = loadClient({
+    store: LOGGED_IN(),
+    routes: (m, p) => (m === "GET" && p === "/friends"
+      ? new Promise((r) => { release = () => r({ status: 200, body: FRIENDS_OK }); })
+      : defaultRoutes(m, p)),
+  });
+  c.HOOKS.ready.forEach((fn) => fn());   // await 하지 않는다 — 응답이 아직 안 왔을 때를 만든다
+  await tick();
+  openFriends(c);                        // 화면 진입도 같은 목록을 원한다
+  await tick();
+  assert.equal(FRIENDS_GETS(c), 1, "같은 목록을 두 번 물어봤다 — 열 때마다 요청이 늘어난다");
+  release();
+  await tick(12);
+  assert.ok(allText(c.document.getElementById("friends")).includes("친구1"), "하나로 합친 응답이 화면에 안 닿았다");
+});
+
+await T("실패 뒤 다시 시도 — 성공하면 목록이 나온다", async () => {
+  let fail = true;
+  const c = await boot({
+    routes: (m, p) => (m === "GET" && p === "/friends"
+      ? (fail ? { status: 500 } : { status: 200, body: FRIENDS_OK })
+      : defaultRoutes(m, p)),
+  });
+  const box = openFriends(c);
+  await tick(12);
+  const retry = findText(box, "다시 시도");
+  assert.ok(retry, "재시도 버튼이 없다");
+  fail = false;
+  retry.click();
+  await tick(12);
+  const t = allText(c.document.getElementById("friends"));
+  assert.ok(t.includes("친구1"), "다시 시도했는데 목록이 안 나온다 — 실패가 영구히 붙었다");
+  assert.ok(!t.includes(LOADING), "다시 시도 뒤에도 로딩이 남아 있다");
+});
+
+await T("친구 갈래를 떠난 뒤 늦게 온 응답이 내 단어장 화면을 덮지 않는다", async () => {
+  let release;
+  const c = loadClient({
+    store: LOGGED_IN(),
+    routes: (m, p) => (m === "GET" && p === "/friends"
+      ? new Promise((r) => { release = () => r({ status: 200, body: FRIENDS_OK }); })
+      : defaultRoutes(m, p)),
+  });
+  c.HOOKS.ready.forEach((fn) => fn());
+  await tick();
+  openFriends(c);            // 친구 갈래 — 로딩
+  await tick();
+  c.segs[0].click();         // 내 단어장으로 떠난다
+  await tick();
+  release();
+  await tick(12);
+  assert.ok(c.document.getElementById("friends").hidden, "떠났는데 늦게 온 응답이 친구 화면을 다시 열었다");
+  assert.ok(!c.document.getElementById("wordbook").hidden, "늦게 온 응답이 내 단어장을 가렸다");
+});
+
 const failed = RESULTS.filter((r) => !r[0]);
 for (const [pass, name, why] of RESULTS) if (!pass) console.log(`  ✗ ${name}\n      ${why}`);
 if (failed.length) {
   console.log(`test-client: ${n - failed.length}/${n} 통과, ${failed.length}개 실패`);
   process.exit(1);
 }
-console.log(`test-client: ${n}개 통과 — 로그아웃·계정삭제·친구철회 실패 처리 · 저장 완료 판정`);
+console.log(`test-client: ${n}개 통과 — 로그아웃·계정삭제·친구철회 실패 처리 · 저장 완료 판정`
+  + ` · 친구 목록 로딩/실패/재시도/스키마/중복요청 · 탭 간 편집 세대 · OAuth 왕복 시간 제한`);

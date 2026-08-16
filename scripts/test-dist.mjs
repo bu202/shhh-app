@@ -4,7 +4,7 @@
 // 전부 200 이었다. 서버 소스와 내부 문서가 열려 있으면 방어를 읽고 우회 지점을 고르면 된다.
 // 이 검사는 **빌드를 직접 돌린 뒤** 결과물을 훑는다 — 사람이 기억해서 돌리는 검사는 안 돈다.
 import assert from "node:assert";
-import { build, FORBIDDEN } from "./build.mjs";
+import { build, FORBIDDEN, swCacheName } from "./build.mjs";
 
 const files = await build();
 
@@ -39,4 +39,27 @@ const assets = [...(await sw).matchAll(/^\s*"([^"]+)",\s*$/gm)].map((m) => m[1])
 for (const a of assets)
   assert.ok(files.includes(a), `service-worker 가 선캐시하는 ${a} 가 dist/ 에 없다 — SW 설치가 통째로 실패한다`);
 
-console.log(`test-dist: 통과 — dist/ ${files.length}개, 내부 파일 0개, 선캐시 ${assets.length}개 전부 존재`);
+// 6. **캐시 이름이 자산 내용에 묶여 있는지.** 사람이 기억해서 버전을 올리는 방식은 잊는다 —
+//    실제로 잊었다: js/friends.js·js/authApi.js 의 응답 계약을 바꾼 뒤에도 캐시 이름은 `shhh-v10`
+//    그대로였고, 그래서 설치형 PWA 는 v10 캐시에 들어 있던 **옛 friends.js** 를 계속 돌렸다.
+//    그 세대의 renderFriends 에는 실패 분기가 아예 없어서 `불러오는 중이에요…` 가 영원히 남았다.
+//    이제 빌드가 선캐시 자산 전체의 해시를 이름에 박는다 — 한 글자만 바뀌어도 이름이 달라지고,
+//    activate 가 옛 캐시를 통째로 지운다. 잊을 수 있는 자리가 없어진다.
+const cacheName = (await sw).match(/const CACHE = PREFIX \+ "([^"]+)"/)?.[1];
+assert.ok(/-[0-9a-f]{12}$/.test(cacheName || ""),
+  `캐시 이름에 내용 해시가 없다(${cacheName}) — 자산이 바뀌어도 이름이 그대로라 옛 세대가 남는다`);
+assert.equal(cacheName, await swCacheName(), "캐시 이름이 지금 dist 자산의 해시와 다르다");
+
+// 7. 자산이 바뀌면 이름도 **반드시** 바뀐다. 위 검사만으로는 "해시를 늘 상수로 계산해도" 통과한다.
+{
+  const { writeFile, readFile } = await import("node:fs/promises");
+  const target = new URL("../dist/js/friends.js", import.meta.url);
+  const keep = await readFile(target, "utf8");
+  const before = await swCacheName();
+  await writeFile(target, keep + "\n// 자산 한 줄 변경\n");
+  const after = await swCacheName();
+  await writeFile(target, keep);
+  assert.notEqual(after, before, "자산을 바꿨는데 캐시 이름이 그대로다 — 세대가 안 갈린다");
+}
+
+console.log(`test-dist: 통과 — dist/ ${files.length}개, 내부 파일 0개, 선캐시 ${assets.length}개 전부 존재, 캐시 ${cacheName}`);
