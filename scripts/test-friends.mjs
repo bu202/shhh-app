@@ -320,8 +320,15 @@ function befriend(env, a, b, status = "accepted") {
     try { return await fn(); } finally { globalThis.fetch = real; }
   };
   const sessions = () => env.DB._db.prepare("SELECT COUNT(*) n FROM sessions").get().n;
+  // ⚠️ 이 블록이 재는 것은 **표(txn) 결속**이지 레이트리밋이 아니다. 그런데 로그인 왕복이
+  //    `login` 버킷 하나로 모이면서, IP 를 안 붙이면 여기 나오는 브라우저 여럿이 전부 같은
+  //    "anon" 한 사람으로 세어져 표 검사 도중에 429 가 난다(실제 배포에서는 각자 다른 IP 다).
+  //    그래서 요청마다 다른 IP 를 준다 — 검사를 느슨하게 하는 게 아니라 현실과 맞추는 것이다.
+  //    레이트리밋이 실제로 막는지는 아래 22번 블록이 따로 잰다.
+  let ip = 0;
+  const asBrowser = (h = {}) => ({ ...h, "CF-Connecting-IP": `203.0.113.${++ip}` });
   const start = async (p = "kakao") => {
-    const r = await worker.fetch(new Request(`https://api.test/login/${p}?n=nonce-1`), env);
+    const r = await worker.fetch(new Request(`https://api.test/login/${p}?n=nonce-1`, { headers: asBrowser() }), env);
     const set = r.headers.get("Set-Cookie") || "";
     return {
       state: new URL(r.headers.get("Location")).searchParams.get("state"),
@@ -331,7 +338,7 @@ function befriend(env, a, b, status = "accepted") {
   };
   const cb = (state, cookie) => worker.fetch(new Request(
     "https://api.test/cb/kakao?code=real-code&state=" + encodeURIComponent(state),
-    cookie ? { headers: { Cookie: cookie } } : undefined), env);
+    { headers: asBrowser(cookie ? { Cookie: cookie } : {}) }), env);
 
   const a = await start();
 
@@ -387,7 +394,7 @@ function befriend(env, a, b, status = "accepted") {
   const n = await start("naver");
   const ex = (state, cookie) => worker.fetch(new Request(
     "https://api.test/exchange/naver?code=real-code&state=" + encodeURIComponent(state),
-    cookie ? { headers: { Cookie: cookie } } : undefined), env);
+    { headers: asBrowser(cookie ? { Cookie: cookie } : {}) }), env);
   assert.equal((await ex(n.state, null)).status, 400, "표 없이 /exchange 가 통과했다");
   assert.equal((await ex(n.state, "shh_t=" + a.txn)).status, 400, "남의 표로 /exchange 가 통과했다");
   assert.equal(sessions(), 1, "/exchange 거부가 세션을 만들었다");
@@ -556,8 +563,11 @@ function befriend(env, a, b, status = "accepted") {
   // 51. **읽기는 안 막는다.** 세면 정상 사용이 먼저 걸린다.
   assert.equal((await call(env, A.token, "/book")).status, 200, "읽기까지 막았다");
   // 52. 인증 전/후 버킷이 갈린다. 한 버킷이면 남의 로그인 시도가 내 저장을 막는다.
-  assert.ok(calls.some((k) => k.startsWith("auth|")) && calls.some((k) => k.startsWith("write|")),
+  //     ⚠️ 인증 전 버킷 이름은 `login` **하나**다. 전에는 공통 `auth` 와 라우트별 `login` 이
+  //     둘 다 있어서 한 번의 로그인이 두 곳에 세어졌다(한도는 절반, D1 쓰기는 두 배).
+  assert.ok(calls.some((k) => k.startsWith("login|")) && calls.some((k) => k.startsWith("write|")),
     "버킷이 안 갈렸다: " + JSON.stringify(calls));
+  assert.ok(!calls.some((k) => k.startsWith("auth|")), "없어진 auth 버킷이 아직 세고 있다: " + JSON.stringify(calls));
   assert.ok(calls.includes("write|" + A.uid), "쓰기 키가 uid 기준이 아니다");
   // 53. **바인딩이 없으면 아무것도 안 막는다.** 지금 운영이 이 상태다 — 되는 척하지 않는다.
   delete env.RL;
@@ -686,6 +696,19 @@ function befriend(env, a, b, status = "accepted") {
   assert.ok(!JSON.stringify(rj).includes("no such table"), "/ready 응답에 DB 오류 문자열이 새어 나왔다");
   // /health 는 여전히 200 이다 — "프로세스가 도나"와 "쓸 수 있나"는 다른 질문이다.
   assert.equal((await get("/health", dead)).status, 200, "/health 가 DB 때문에 200 이 아니다");
+
+  // 69e. **"DB 가 죽었다"와 "DB 를 안 봤다"를 가른다.** OAuth 비밀값이 없는 지금 라이브가
+  //      바로 이 상태인데, 전에는 설정이 덜 됐다는 이유로 질의를 건너뛰고 `db:false` 를 냈다 —
+  //      그 false 는 거짓말이었고, 진짜로 DB 가 죽는 날에도 화면이 똑같아 아무도 못 알아챈다.
+  const noOAuth = makeEnv();                     // DB 는 멀쩡, OAuth 만 비어 있다
+  const rn = await (await get("/ready", noOAuth)).json();
+  assert.equal(rn.db, true, "DB 는 멀쩡한데 db:false 라고 말한다 — 안 물어본 것을 실패라고 한다");
+  assert.equal(rn.configReady, false, "OAuth 가 비었는데 configReady 가 true 다");
+  assert.equal(rn.ready, false, "설정이 덜 됐는데 ready 다");
+  assert.deepEqual(rn.providers, [], "제공자가 없는데 목록이 비어 있지 않다");
+  // 반대쪽: 설정은 됐는데 DB 만 죽은 경우와 응답이 **달라야** 한다.
+  assert.notDeepEqual({ configReady: rn.configReady, db: rn.db }, { configReady: rj.configReady, db: rj.db },
+    "DB 장애와 설정 미비가 같은 응답으로 보인다 — 무엇이 문제인지 구분할 수 없다");
 
   // 70. **비밀값도 그 이름도 새지 않는다.** (`id` 처럼 짧은 문자열은 안 쓴다 — "providers" 에 걸린다)
   const txt = JSON.stringify(h1);
@@ -839,5 +862,78 @@ function befriend(env, a, b, status = "accepted") {
   }
 }
 
-console.log("test-friends: 109개 통과 — 로그인 왕복 표(브라우저 결속) · 친구 쌍 유일성 · 친구 권한(행 하나) · 쿠키 세션 · 세대 무효화 · CSRF(Origin 필수) · 제공자ID 비공개 "
+// ══ 22. 리미터가 **공격자의 증폭 수단이 되지 않는다** ═══════════════════
+// 리미터는 D1 에 쓰면서 센다. 그래서 리미터 자체가 자원을 쓴다 — 막힌 뒤에도 계속 세면
+// 공격자는 429 를 받으면서 우리 DB 쓰기 할당량을 태울 수 있다(하루 10만이면 정상 저장이 먼저 죽는다).
+// **막기로 결정한 뒤에는 더 세지 않는다.**
+{
+  const env = makeEnv();
+  const A = await signUp(env, "kakao", "A"), B = await signUp(env, "kakao", "B");
+  const counters = () => env.DB._db.prepare("SELECT bucket, n FROM rate_limits").all();
+  const total = () => counters().reduce((s, r) => s + r.n, 0);
+
+  // 89. 한도까지 두드려 막힌 상태를 만든다.
+  for (let i = 0; i < 25; i++) await call(env, A.token, "/friends", "POST", { code: "없는코드" + i });
+  assert.equal((await call(env, A.token, "/friends", "POST", { code: "x" })).status, 429, "전제가 깨졌다 — 안 막힌다");
+
+  // 90. **막힌 뒤 늘어나는 양에 천장이 있고, 천장에 닿으면 쓰기가 0 이 된다.**
+  //     한 요청이 버킷 두 개(좁은 friends · 넉넉한 write)를 지나므로, friends 가 막힌 뒤에도
+  //     write 가 찰 때까지는 조금 더 자란다. 중요한 건 **창 하나 안에서 총량이 한도로 묶이는가** 다 —
+  //     안 묶이면 공격자는 429 를 받으면서 우리 D1 쓰기 할당량(하루 10만)을 무한히 태울 수 있고,
+  //     그게 바닥나면 정상 사용자의 단어장 저장이 먼저 죽는다(리미터가 증폭기가 된다).
+  for (let i = 0; i < 200; i++) await call(env, A.token, "/friends", "POST", { code: "또없는코드" + i });
+  const settled = total();
+  for (let i = 0; i < 200; i++) await call(env, A.token, "/friends", "POST", { code: "계속두드린다" + i });
+  assert.equal(total(), settled,
+    `모든 버킷이 찼는데도 계속 세고 있다(${settled} → ${total()}) — 429 하나당 D1 쓰기가 하나씩 난다`);
+  assert.ok(settled < 400, `창 하나에서 카운터가 ${settled} 까지 자랐다 — 한도로 안 묶인다`);
+
+  // 91. **없는 경로는 세지 않는다.** 없는 자리를 두드리는 것으로 카운터 행을 만들 수 있으면,
+  //     공격자는 라우트를 몰라도 쓰기를 유발할 수 있다.
+  const rowsBefore = counters().length;
+  for (let i = 0; i < 10; i++) {
+    const r = await call(env, B.token, "/이런건없다" + i, "POST", { x: 1 });
+    assert.equal(r.status, 404, "없는 경로가 404 가 아니다");
+  }
+  assert.equal(counters().length, rowsBefore, "없는 경로가 리미터 행을 만들었다");
+
+  // 92. **한 요청은 한 번만 센다.** /cb 는 공통 검사와 개별 검사에 두 번 걸려 있었다 —
+  //     한 번의 로그인 시도가 카운터를 둘 올리면 한도가 실제로는 절반이고 쓰기는 두 배다.
+  const env2 = makeEnv();
+  const t0 = env2.DB._db.prepare("SELECT COUNT(*) AS n FROM rate_limits").get().n;
+  await worker.fetch(new Request("https://api.test/cb/kakao?code=x&state=y"), env2);
+  const t1 = env2.DB._db.prepare("SELECT COUNT(*) AS n FROM rate_limits").get().n;
+  assert.equal(t1 - t0, 1, `로그인 왕복 한 번에 카운터가 ${t1 - t0}개 늘었다 — 이중 집계다`);
+
+  // 93. 로그인 왕복은 **login 한도(10)** 로 막힌다. 이름이 갈려 있으면 넉넉한 write 한도(120)가
+  //     적용돼 세션을 100번 넘게 찍어낼 수 있다.
+  const env3 = makeEnv({ KAKAO_ID: "id" });
+  let loginBlocked = 0;
+  for (let i = 0; i < 14; i++) {
+    const r = await worker.fetch(new Request("https://api.test/login/kakao?return=" + encodeURIComponent(ORIGIN),
+      { headers: { "CF-Connecting-IP": "198.51.100.7" } }), env3);   // 한 사람이 계속 두드린다
+    if (r.status === 429) loginBlocked++;
+  }
+  assert.ok(loginBlocked >= 3, `로그인 시작이 10회 뒤에 안 막힌다(막힌 횟수 ${loginBlocked})`);
+
+  // 94. **리미터가 고장 나면 통과시킨다(fail-open).** 남용 방어가 서비스를 멈추는 쪽이 더 나쁘다.
+  //     D1 갈래는 이미 try/catch 지만 env.RL 갈래는 예외가 그대로 500 으로 나갔다.
+  const env4 = makeEnv({ RL: { limit: () => { throw new Error("binding down"); } } });
+  const C = await signUp(env4, "kakao", "C");
+  const r4 = await call(env4, C.token, "/book", "PUT", { words: ["사랑"], name: "" });
+  assert.ok(r4.status < 500, `리미터 바인딩이 고장 나자 요청이 ${r4.status} 로 죽었다 — fail-open 이 아니다`);
+
+  // 95. **정상 자동저장은 안 막힌다.** 0.8초마다 올라오는 단어장 저장이 먼저 걸리면
+  //     그건 방어가 아니라 고장이다.
+  const env5 = makeEnv();
+  const D = await signUp(env5, "kakao", "D");
+  let ver = 0;
+  for (let i = 0; i < 60; i++) {
+    const r = await call(env5, D.token, "/book", "PUT", { words: ["사랑", "손짓" + i], name: "", version: ver });
+    assert.equal(r.status, 200, `정상 자동저장 ${i + 1}번째가 막혔다(${r.status})`);
+    ver = r.body.version;
+  }
+}
+
+console.log("test-friends: 115개 통과 — 로그인 왕복 표(브라우저 결속) · 친구 쌍 유일성 · 친구 권한(행 하나) · 쿠키 세션 · 세대 무효화 · CSRF(Origin 필수) · 제공자ID 비공개 "
   + "· 버전 충돌 · 수락 트랜잭션(상한 포함) · 무관계 DELETE · 마스터 · 복귀 주소 · 본문 한도 · state 서명 · 코드 회전 · 상한 · 헤더 · readiness(스키마 실질의) · 세션 청소 · 레이트리밋");

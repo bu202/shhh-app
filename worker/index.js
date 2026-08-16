@@ -311,6 +311,9 @@ async function killSessions(env, uid) {
 //   write   그 밖의 상태 변경 — 넉넉하게. 정상 사용이 먼저 걸리면 방어가 아니라 고장이다
 const RL_WINDOW = 60_000;
 const RL_MAX = { login: 10, friends: 20, write: 120 };
+// 상태를 바꾸는 **실제 라우트**만. 여기 없는 경로는 세지 않고 그냥 404 로 보낸다 —
+// 없는 자리를 두드리는 것으로 우리 DB 쓰기를 유발할 수 있으면 리미터가 공격 도구가 된다.
+const WRITE_ROUTES = /^\/(session|book|me|friends)(\/|$)/;
 
 // 고정 창. **세는 것과 판정이 UPSERT 한 문장 안에서 끝난다** — 읽고 나서 쓰면 동시 요청이
 // 창 하나를 여러 번 통과한다(친구 상한이 겪은 것과 같은 종류의 경합이다).
@@ -318,23 +321,40 @@ const RL_MAX = { login: 10, friends: 20, write: 120 };
 // 진짜 방어선은 WAF 다. 이 선택을 아는 채로 한다.
 async function limited(env, req, uid, bucket) {
   // 바인딩이 생기는 날(Workers 로 돌아가는 등) 그쪽을 먼저 쓴다 — 엣지가 더 값싸다.
+  // ⚠️ **여기도 fail-open 이다.** 전에는 이 갈래만 try 밖에 있어서, 바인딩이 흔들리면
+  //    리미터가 요청을 통과시키는 게 아니라 **500 으로 죽였다** — 남용 방어가 서비스 거부가 된다.
   if (env.RL) {
-    const who = uid || req.headers.get("CF-Connecting-IP") || "anon";
-    const { success } = await env.RL.limit({ key: bucket + "|" + who });
-    return !success;
+    try {
+      const who = uid || req.headers.get("CF-Connecting-IP") || "anon";
+      const { success } = await env.RL.limit({ key: bucket + "|" + who });
+      return !success;
+    } catch {
+      return false;
+    }
   }
   if (!env.DB) return false;
   const now = Date.now();
   // ⚠️ 키에 uid·IP **원문을 넣지 않는다.** 남용을 세려고 개인정보를 쌓는 건 목적에 비해 과하다.
   //    (로그에도 남기지 않는다 — 아래 어디에서도 console.log 하지 않는다.)
+  //    ⚠️ 다만 이 해시는 **되돌릴 수 없다는 뜻이 아니다.** IP 는 값의 범위가 좁아서
+  //       사전 공격이 성립한다. 진짜로 되돌릴 수 없게 하려면 비밀키 HMAC(RL_KEY)이 필요하다 —
+  //       docs/SECURITY_RELEASE_CHECKLIST.md 의 결정 항목이다.
   const who = uid || req.headers.get("CF-Connecting-IP") || "anon";
+  const max = RL_MAX[bucket] ?? RL_MAX.write;
   const key = await sha256(`${bucket}|${who}|${Math.floor(now / RL_WINDOW)}`);
   try {
+    // ⚠️ **막기로 정한 뒤에는 더 세지 않는다.** 전에는 한도를 넘긴 뒤에도 UPSERT 가 계속
+    //    n+1 을 썼다 — 공격자는 429 를 받으면서 우리 D1 쓰기 할당량(하루 10만)을 태울 수 있었고,
+    //    그게 바닥나면 **정상 사용자의 단어장 저장이 먼저 죽는다**(리미터가 증폭기가 된 셈).
+    //    DO UPDATE 의 WHERE 가 거짓이면 SQLite 는 행을 건드리지 않고 RETURNING 도 비운다 —
+    //    그 "빈 결과"가 곧 "이미 한도를 넘었다"는 뜻이다.
     const r = await env.DB.prepare(
       `INSERT INTO rate_limits (bucket, n, expires_at) VALUES (?1, 1, ?2)
        ON CONFLICT (bucket) DO UPDATE SET n = rate_limits.n + 1
-       RETURNING n`).bind(key, now + RL_WINDOW * 2).first();
-    return (r?.n || 0) > (RL_MAX[bucket] ?? RL_MAX.write);
+         WHERE rate_limits.n <= ?3
+       RETURNING n`).bind(key, now + RL_WINDOW * 2, max).first();
+    if (!r) return true;      // 갱신을 건너뛰었다 = 이미 넘겼다. 쓰기도 안 났다.
+    return r.n > max;
   } catch {
     return false;
   }
@@ -584,16 +604,23 @@ async function route(req, env) {
     if (path === "/health") return json(env, req, health(env));
     if (path === "/ready") {
       const h = health(env);
-      // 설정이 덜 됐으면 DB 를 부르지도 않는다 — 답이 이미 정해졌는데 질의를 날릴 이유가 없다.
-      const db = h.ready && (await dbAnswers(env));
-      const r = { ...h, db, ready: h.ready && db };
+      // ⚠️ **설정이 덜 됐어도 DB 는 실제로 물어본다.** 전에는 `h.ready &&` 로 건너뛰어서,
+      //    OAuth 비밀값이 없는 지금 같은 상태에서 `db:false` 가 나왔다 — 그런데 그 false 는
+      //    "DB 가 죽었다"가 아니라 "안 물어봤다"였다. 두 가지를 한 값으로 말하면, 진짜로 DB 가
+      //    죽은 날에도 화면이 똑같아서 **아무도 알아채지 못한다.**
+      //    이제 바인딩이 있으면 OAuth 설정과 무관하게 스키마까지 확인한다(dbAnswers).
+      //    ⚠️ 오류 문자열·테이블 이름·SQL 은 응답에 싣지 않는다 — 참/거짓만 나간다.
+      const db = await dbAnswers(env);
+      // configReady = 설정이 갖춰졌나(비밀값·주소·바인딩·제공자). db = DB 가 실제로 답하나.
+      // 둘을 갈라 두면 배포 뒤 "무엇이 덜 됐나"를 한 번에 읽을 수 있다.
+      const r = { ok: true, configReady: h.ready, db, providers: h.providers, ready: h.ready && db };
       return json(env, req, r, r.ready ? 200 : 503);
     }
 
-    // 레이트리밋은 **두 자리에서만** 본다 — 라우트마다 흩어 두면 새 라우트를 더할 때 빠뜨린다.
-    // ① 인증 전(로그인 왕복): 아직 누구인지 모르므로 IP 로 센다.
-    if (/^\/(login|cb|exchange)\//.test(path) && (await limited(env, req, null, "auth")))
-      return tooMany(env, req);
+    // ⚠️ 여기 있던 공통 `auth` 버킷을 지웠다. `/login`·`/cb`·`/exchange` 는 **각자 `login` 버킷으로**
+    //    이미 세고 있어서, 이 줄은 같은 요청을 한 번 더 세는 일만 했다(요청 하나당 D1 쓰기 두 번).
+    //    게다가 `auth` 는 RL_MAX 에 없어서 write 기본값 120 이 적용됐다 — login 한도 10 보다
+    //    훨씬 느슨해 **한 번도 먼저 막은 적이 없다.** 막지도 못하면서 쓰기만 두 배였다.
 
     // ── 1. 로그인 시작 ── /login/kakao?return=<앱 주소>
     let m = path.match(/^\/login\/(\w+)$/);
@@ -603,6 +630,10 @@ async function route(req, env) {
       // 설정이 덜 된 채로 **조용히 돌지 않는다.** STATE_KEY 가 없으면 state 서명이 아무나
       // 만들 수 있는 값이 되므로 로그인 자체를 열지 않는다(sign 이 던지는 것의 앞단 방어).
       if (!id || !env.STATE_KEY) return new Response(m[1] + " 로그인이 아직 설정되지 않았어요", { status: 503 });
+      // 세션을 찍어내는 왕복의 시작점이다. `/exchange`·`/cb` 와 **같은 `login` 버킷**으로 센다 —
+      // 셋이 한 번의 로그인을 이루므로 버킷이 갈리면 한도가 셋으로 늘어난 것과 같다.
+      // (설정이 안 된 제공자는 위에서 이미 돌아갔다 — 없는 자리를 두드리는 건 세지 않는다.)
+      if (await limited(env, req, null, "login")) return tooMany(env, req);
       // state 는 CSRF 방어다. 돌아갈 주소를 **서명 안에** 넣는 이유도 같다 — 서명 없이 쿼리로
       // 실어 보내면 남이 우리 도메인을 거쳐 아무 데로나 리다이렉트시킬 수 있다.
       const back = url.searchParams.get("return") || env.APP_ORIGIN;
@@ -729,7 +760,11 @@ async function route(req, env) {
     //    먼저 걸린다. 로그인한 사람은 uid 로, 아니면 IP 로 센다.
     //    **초대 코드로 요청을 보내는 자리는 따로 더 좁게 센다**(아래 POST /friends) —
     //    거기가 유일하게 남의 것을 맞혀 볼 수 있는 자리다.
-    if (req.method !== "GET" && (await limited(env, req, uid, "write"))) return tooMany(env, req);
+    //    ⚠️ **실제로 있는 라우트에만 건다.** 전에는 인증만 통과하면 어느 경로든 셌다 —
+    //       `/이런건없다` 로 POST 를 퍼부으면 404 를 받으면서 D1 쓰기를 유발할 수 있었다.
+    //       리미터가 자원을 쓰는 이상, 리미터를 부를지 말지도 방어의 일부다.
+    if (req.method !== "GET" && WRITE_ROUTES.test(path) && (await limited(env, req, uid, "write")))
+      return tooMany(env, req);
 
     // 로그아웃 — 이 계정의 로그인을 **전부** 끊는다(세대를 올린다). 쿠키도 그 자리에서 지운다.
     if (path === "/session" && req.method === "DELETE") {
