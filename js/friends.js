@@ -221,7 +221,13 @@ if (typeof document !== "undefined") {
       rotate.disabled = true;
       const r = await apiRotateCode();
       rotate.disabled = false;
-      if (!r.ok || !r.data.code) { toast("연결이 안 돼요. 잠시 뒤 다시 눌러주세요"); return; }
+      // 서버가 왜 안 됐는지 말해 줬으면 그 말을 그대로 쓴다. 회전에는 자기 한도(분당 5회)가
+      // 있어서 429 가 올 수 있는데, 그때 "연결이 안 돼요"라고 하면 사용자는 와이파이를
+      // 확인하러 간다 — 원인이 다르면 할 일도 다르다(여기서 할 일은 잠깐 기다리는 것뿐이다).
+      if (!r.ok || !r.data?.code) {
+        toast(r.data?.error || "연결이 안 돼요. 잠시 뒤 다시 눌러주세요");
+        return;
+      }
       localStorage.setItem(CODE_KEY, r.data.code);
       if (DATA) DATA.code = r.data.code;   // 손에 든 목록을 고친다 — KV 는 쓰고 바로 읽으면 옛 값이 온다(함정 49)
       toast("새 초대 링크를 만들었어요");

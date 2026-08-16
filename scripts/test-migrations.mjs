@@ -88,5 +88,51 @@ if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
   assert.equal(left[0].status, "accepted", "맺어진 관계 대신 대기 중인 쪽이 남았다");
   assert.equal(left[0].pair_key, "a|b", "쌍 이름이 안 채워졌다");
 
-  console.log(`test-migrations: 통과 — ${files.length}개 이전, schema.sql 과 같은 모양, 중복 정리 확인`);
+  // 6. **users 를 참조하는 모든 테이블이 ON DELETE CASCADE 여야 한다.**
+  //    계정 삭제는 `DELETE FROM users` 한 문장이다(worker/index.js) — 한 문장이라 원자적이라는
+  //    것이 그 선택의 이유인데, 그게 성립하려면 **지울 것을 CASCADE 가 빠짐없이 안다**는 전제가 있다.
+  //    새 테이블을 CASCADE 없이 붙이면 탈퇴한 사람의 데이터가 조용히 남고, 아무도 안 알아챈다.
+  //    사람이 기억해야 도는 규칙 대신 여기서 깨뜨린다.
+  for (const { name } of migrated.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all()) {
+    for (const fk of migrated.prepare(`PRAGMA foreign_key_list(${name})`).all()) {
+      if (fk.table !== "users") continue;
+      assert.equal(fk.on_delete, "CASCADE",
+        `${name}.${fk.from} 이 users 를 참조하는데 ON DELETE ${fk.on_delete} 다 — 탈퇴해도 이 행이 남는다`);
+    }
+  }
+  // 7. 그리고 **정말로 지워지는지** 한 번 돌려 본다. 선언과 동작은 다른 말이다
+  //    (PRAGMA foreign_keys 가 꺼져 있으면 CASCADE 는 조용히 안 돈다 — 로컬 D1 은 1 로 확인했다).
+  migrated.exec("INSERT INTO books (user_id,words,nickname,version,updated_at) VALUES ('a','[]','',0,0)");
+  migrated.exec("INSERT INTO invite_codes (code,user_id,created_at) VALUES ('c1','a',0)");
+  migrated.exec("INSERT INTO sessions (token_hash,user_id,session_version,expires_at) VALUES ('h','a',0,9e15)");
+  migrated.exec("DELETE FROM users WHERE id = 'a'");
+  for (const t of ["books", "invite_codes", "sessions", "friendships"]) {
+    assert.equal(migrated.prepare(`SELECT COUNT(*) n FROM ${t}`).get().n, 0,
+      `users 를 지웠는데 ${t} 에 행이 남았다 — 한 문장 삭제가 성립하지 않는다`);
+  }
+
+  // 8. **살아 있는 초대 코드는 사람당 하나**(0004). 두 탭이 동시에 친구 화면을 열면
+  //    둘 다 "코드 없음"을 읽고 각자 만들었고, 먼저 응답을 받은 탭은 죽은 코드를 손에 쥐었다.
+  migrated.exec("INSERT INTO users (id,provider,provider_subject,session_version,created_at) VALUES ('z','k','9',0,0)");
+  migrated.exec("INSERT INTO invite_codes (code,user_id,created_at) VALUES ('live1','z',1)");
+  assert.throws(() => migrated.exec("INSERT INTO invite_codes (code,user_id,created_at) VALUES ('live2','z',2)"),
+    /UNIQUE/, "활성 초대 코드가 사람당 둘이 될 수 있다");
+  // 폐기된 것은 여럿이어도 된다 — 아니면 회전 자체가 막힌다.
+  migrated.exec("INSERT INTO invite_codes (code,user_id,created_at,revoked_at) VALUES ('dead1','z',3,3)");
+  migrated.exec("INSERT INTO invite_codes (code,user_id,created_at,revoked_at) VALUES ('dead2','z',4,4)");
+
+  // 9. **중복 활성 코드가 이미 있는 DB** 에서도 0004 가 통과하는가. 원격이 깨끗하다고
+  //    가정하지 않는다 — 가정이 틀리면 실패하는 자리가 운영 DB 다(5번과 같은 이유).
+  const dirtyCodes = fresh(files.slice(0, 3).map((f) => readFileSync(path.join(MIG_DIR, f), "utf8")));
+  dirtyCodes.exec("INSERT INTO users (id,provider,provider_subject,session_version,created_at) VALUES ('a','k','1',0,0)");
+  dirtyCodes.exec("INSERT INTO invite_codes (code,user_id,created_at) VALUES ('old','a',1)");
+  dirtyCodes.exec("INSERT INTO invite_codes (code,user_id,created_at) VALUES ('new','a',2)");
+  dirtyCodes.exec(readFileSync(path.join(MIG_DIR, files[3]), "utf8"));
+  const alive = dirtyCodes.prepare("SELECT code FROM invite_codes WHERE revoked_at IS NULL").all();
+  assert.equal(alive.length, 1, "0004 가 중복 활성 코드를 정리하지 못했다");
+  assert.equal(alive[0].code, "new", "가장 최근 코드가 아니라 옛 코드를 남겼다 — 방금 공유한 링크가 죽는다");
+  assert.equal(dirtyCodes.prepare("SELECT COUNT(*) n FROM invite_codes").get().n, 2, "정리하면서 행을 지웠다");
+
+  console.log(`test-migrations: 통과 — ${files.length}개 이전, schema.sql 과 같은 모양, 중복 정리, users CASCADE 전수, 활성 초대 코드 1개`);
 }

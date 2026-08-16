@@ -8,12 +8,16 @@
 //    지금은 진짜 SQL 이라 UNIQUE 충돌·외래키 CASCADE·changes 카운트가 실제로 일어난다.
 import assert from "node:assert";
 import worker, { internalUid, newSession, pathTemplate } from "../worker/index.js";
-import { makeD1 } from "./_d1.mjs";
+import { makeD1, withLatency } from "./_d1.mjs";
 
 const ORIGIN = "https://app.test";
 
+// RL_KEY 는 **있어야 하는 값**이다(리미터 버킷 키를 HMAC 으로 만든다). 없으면 리미터가
+// 세지 않으므로, 여기서 안 주면 아래 레이트리밋 검사들이 전부 조용히 통과해 버린다.
+// 없을 때 무슨 일이 나는지는 26번 블록이 따로 잰다.
 function makeEnv(extra = {}) {
-  return { APP_ORIGIN: ORIGIN, APP_URL: ORIGIN + "/", STATE_KEY: "test-signing-key", DB: makeD1(), ...extra };
+  return { APP_ORIGIN: ORIGIN, APP_URL: ORIGIN + "/", STATE_KEY: "test-signing-key",
+           RL_KEY: "test-rate-limit-key", DB: makeD1(), ...extra };
 }
 
 // 계정 하나 + 그 계정의 세션 하나. **진짜 코드 경로**를 쓴다 — 토큰 해시를 여기서 계산하면
@@ -559,7 +563,12 @@ function befriend(env, a, b, status = "accepted") {
   assert.equal(put.status, 429, "레이트리밋이 쓰기를 안 막는다");
   assert.equal(put.headers.get("Retry-After"), "60", "Retry-After 가 없다");
   // 50. 로그인 왕복도 막힌다(아직 누구인지 모르는 자리 — IP 로 센다).
-  assert.equal((await worker.fetch(new Request("https://api.test/login/kakao"), env)).status, 429, "로그인 왕복이 안 막힌다");
+  //     ⚠️ 재는 자리는 `/cb` 다. 상한은 **세션이 실제로 생기는 자리**에만 걸고, 시작(`/login`)은
+  //     세지 않는다 — 둘 다 세면 한 번의 로그인이 두 번 세어져 한도가 절반이 된다(27번 블록).
+  assert.equal((await worker.fetch(new Request("https://api.test/cb/kakao?code=x&state=y"), env)).status, 429,
+    "로그인 왕복이 안 막힌다");
+  assert.equal((await worker.fetch(new Request("https://api.test/login/kakao"), env)).status, 302,
+    "로그인 시작까지 막았다 — 세션도 안 만드는 자리다");
   // 51. **읽기는 안 막는다.** 세면 정상 사용이 먼저 걸린다.
   assert.equal((await call(env, A.token, "/book")).status, 200, "읽기까지 막았다");
   // 52. 인증 전/후 버킷이 갈린다. 한 버킷이면 남의 로그인 시도가 내 저장을 막는다.
@@ -907,14 +916,15 @@ function befriend(env, a, b, status = "accepted") {
 
   // 93. 로그인 왕복은 **login 한도(10)** 로 막힌다. 이름이 갈려 있으면 넉넉한 write 한도(120)가
   //     적용돼 세션을 100번 넘게 찍어낼 수 있다.
+  //     ⚠️ 두드리는 자리는 `/cb`(세션이 생기는 자리)다. 시작(`/login`)은 안 센다 — 27번 블록.
   const env3 = makeEnv({ KAKAO_ID: "id" });
   let loginBlocked = 0;
   for (let i = 0; i < 14; i++) {
-    const r = await worker.fetch(new Request("https://api.test/login/kakao?return=" + encodeURIComponent(ORIGIN),
+    const r = await worker.fetch(new Request("https://api.test/cb/kakao?code=x&state=y",
       { headers: { "CF-Connecting-IP": "198.51.100.7" } }), env3);   // 한 사람이 계속 두드린다
     if (r.status === 429) loginBlocked++;
   }
-  assert.ok(loginBlocked >= 3, `로그인 시작이 10회 뒤에 안 막힌다(막힌 횟수 ${loginBlocked})`);
+  assert.ok(loginBlocked >= 3, `세션을 만드는 자리가 10회 뒤에 안 막힌다(막힌 횟수 ${loginBlocked})`);
 
   // 94. **리미터가 고장 나면 통과시킨다(fail-open).** 남용 방어가 서비스를 멈추는 쪽이 더 나쁘다.
   //     D1 갈래는 이미 try/catch 지만 env.RL 갈래는 예외가 그대로 500 으로 나갔다.
@@ -976,5 +986,383 @@ function befriend(env, a, b, status = "accepted") {
     "세션 없이 uid 만으로 저장이 됐다");
 }
 
-console.log("test-friends: 120개 통과 — 로그인 왕복 표(브라우저 결속) · 친구 쌍 유일성 · 친구 권한(행 하나) · 쿠키 세션 · 세대 무효화 · CSRF(Origin 필수) · 제공자ID 비공개 "
-  + "· 버전 충돌 · 수락 트랜잭션(상한 포함) · 무관계 DELETE · 마스터 · 복귀 주소 · 본문 한도 · state 서명 · 코드 회전 · 상한 · 헤더 · readiness(스키마 실질의) · 세션 청소 · 레이트리밋");
+// ══ 24. 제공자 응답은 **신뢰 경계다** ══════════════════════════════════════
+// 여기서 부르는 것은 남의 서버다. 응답이 정상 JSON 이라는 보장이 없고, 크기 보장도 없다.
+// 예전엔 `JSON.parse(await r.text())` 하나였다 — `text()` 에 상한이 없어서 제공자가(또는
+// 그 자리에 끼어든 무엇이) 큰 본문을 주면 그대로 Worker 메모리에 올라갔다. 무료 Worker 는
+// 128MB 이고 이 코드는 로그인마다 두 번 부른다.
+//
+// 정상 응답의 실제 크기: 구글 토큰(id_token 포함)이 가장 크고 2~4KB, 나머지는 1KB 미만이다
+// (scope 가 openid·없음뿐이라 프로필 필드가 안 온다). 상한 64KB 는 그 16배 이상이라
+// 제공자가 필드를 늘려도 안 걸리고, 걸리는 경우는 정상 응답이 아니다.
+//
+// ⚠️ Content-Type 은 **일부러 안 본다.** 실제 판정은 JSON.parse 가 하고 그건 속일 수 없다.
+//    허용 목록을 두면 제공자가 `text/plain` 으로 바꾸는 날 로그인이 통째로 죽는다 —
+//    막는 것은 없고 잃는 것만 있는 검사다.
+{
+  const env = makeEnv({ KAKAO_ID: "id", KAKAO_SECRET: "s" });
+  let ip = 0;
+  const asBrowser = () => ({ "CF-Connecting-IP": `198.51.100.${++ip}` });
+  const start = async () => {
+    const r = await worker.fetch(new Request("https://api.test/login/kakao?n=n", { headers: asBrowser() }), env);
+    const set = r.headers.get("Set-Cookie") || "";
+    return { state: new URL(r.headers.get("Location")).searchParams.get("state"),
+             txn: (set.match(/shh_t=([^;]*)/) || [])[1] || "" };
+  };
+  const sessions = () => env.DB._db.prepare("SELECT COUNT(*) n FROM sessions").get().n;
+
+  // 제공자를 갈아끼우고 콜백을 한 번 돈다. 로그를 함께 모은다 —
+  // 응답 본문·토큰이 로그로 새면 그것도 여기서 잡혀야 한다.
+  const login = async (respond) => {
+    const realFetch = globalThis.fetch, realLog = console.log;
+    const logs = [];
+    globalThis.fetch = async (url) => respond(String(url));
+    console.log = (...a) => { logs.push(a.map(String).join(" ")); };
+    try {
+      const s = await start();
+      const res = await worker.fetch(new Request(
+        "https://api.test/cb/kakao?code=real-code&state=" + encodeURIComponent(s.state),
+        { headers: { ...asBrowser(), Cookie: "shh_t=" + s.txn } }), env);
+      return { status: res.status, loc: res.headers.get("Location") || "", logs };
+    } finally { globalThis.fetch = realFetch; console.log = realLog; }
+  };
+  const jsonRes = (o, type = "application/json") =>
+    new Response(typeof o === "string" ? o : JSON.stringify(o), { headers: { "Content-Type": type } });
+  const SECRET_TOKEN = "ya29.super-secret-access-token";
+  const ok = (url) => jsonRes(url.includes("token") ? { access_token: SECRET_TOKEN } : { id: "u-ok" });
+
+  // 101. 정상 응답은 그대로 통과한다. 막는 쪽만 재면 "로그인이 아예 안 되는" 회귀를 못 잡는다.
+  const good = await login(ok);
+  assert.equal(good.status, 302, "정상 제공자 응답인데 로그인이 막혔다");
+  assert.match(good.loc, /#login=ok/, "정상인데 실패로 돌아갔다");
+  assert.equal(sessions(), 1, "정상인데 세션이 안 생겼다");
+
+  // 102. ★ **너무 큰 응답은 안 받는다.** 이 본문은 문법상 멀쩡한 JSON 이라 파서가 안 막는다 —
+  //      막는 것은 크기 상한뿐이다. 상한이 없으면 1MB 가 통째로 메모리에 올라가고
+  //      로그인은 **성공한다**(그래서 증상이 안 보인 채 자원만 태운다).
+  const huge = await login((url) => jsonRes(
+    url.includes("token") ? `{"access_token":"${"x".repeat(1_000_000)}"}` : '{"id":"u-huge"}'));
+  assert.equal(huge.status, 302);
+  assert.match(huge.loc, /#login=fail/, "1MB 짜리 제공자 응답을 그대로 받아 로그인이 됐다");
+  assert.equal(sessions(), 1, "큰 응답으로 세션이 만들어졌다");
+
+  // 102b. **두 번째 호출(me)에도 같은 상한이 걸린다.** 토큰 교환만 막으면 공격면이 반만 닫힌다.
+  const hugeMe = await login((url) => jsonRes(
+    url.includes("token") ? { access_token: "t" } : `{"id":"u","pad":"${"y".repeat(1_000_000)}"}`));
+  assert.match(hugeMe.loc, /#login=fail/, "me 응답에는 상한이 없다");
+  assert.equal(sessions(), 1, "큰 me 응답으로 세션이 만들어졌다");
+
+  // 103. 잘린 JSON · HTML 오류 페이지 · 4xx/5xx — 전부 조용히 실패로 수렴한다.
+  //      HTML 은 제공자 점검 중에 실제로 온다. `.json()` 이었다면 여기서 던져 500 이 나갔다.
+  for (const [why, body, init] of [
+    ["잘린 JSON", '{"access_token":"t"', {}],
+    ["HTML 오류 페이지", "<html><body>502 Bad Gateway</body></html>", { headers: { "Content-Type": "text/html" } }],
+    ["빈 본문", "", {}],
+  ]) {
+    const r = await login((url) => url.includes("token") ? new Response(body, init) : jsonRes({ id: "u" }));
+    assert.match(r.loc, /#login=fail/, `${why} 인데 로그인이 됐다`);
+  }
+  const bad4xx = await login((url) => url.includes("token")
+    ? new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400, headers: { "Content-Type": "application/json" } })
+    : jsonRes({ id: "u" }));
+  assert.match(bad4xx.loc, /#login=fail/, "제공자가 400 을 줬는데 로그인이 됐다");
+  assert.equal(sessions(), 1, "실패 응답들이 세션을 만들었다");
+
+  // 104. **Content-Type 이 틀려도 본문이 JSON 이면 받는다.** 위 주석의 판단을 잠근다 —
+  //      누가 Content-Type 허용 목록을 넣으면 여기가 빨개져서 그 대가를 먼저 보게 된다.
+  const oddType = await login((url) => jsonRes(
+    url.includes("token") ? { access_token: "t" } : { id: "u-odd" }, "text/plain;charset=utf-8"));
+  assert.match(oddType.loc, /#login=ok/, "본문이 JSON 인데 Content-Type 때문에 로그인이 막혔다");
+
+  // 105. 제공자가 늘어지거나 끊겨도 **던지지 않는다.** 여기서 예외가 새면 500 이 나가고,
+  //      그 500 에는 제공자 쪽 문자열이 섞여 나갈 수 있다.
+  const dead = await login(() => { throw new DOMException("timeout", "TimeoutError"); });
+  assert.match(dead.loc, /#login=fail/, "제공자가 끊겼는데 실패로 안 돌아갔다");
+
+  // 106. ★ **토큰도 응답 본문도 로그에 안 남는다.** 고치는 데 필요한 건 어느 제공자가
+  //      무슨 코드로 거절했나뿐이고, 나머지는 운영 로그를 개인정보 저장소로 만든다.
+  const leak = await login((url) => url.includes("token")
+    ? jsonRes({ access_token: SECRET_TOKEN })
+    : jsonRes({ error: "unauthorized", message: "z".repeat(5000) }));
+  const all = leak.logs.join("\n");
+  assert.ok(!all.includes(SECRET_TOKEN), "제공자 토큰이 로그에 남았다");
+  assert.ok(!/z{200}/.test(all), "제공자 응답 문자열이 통째로 로그에 남았다");
+  assert.ok(all.includes("kakao"), "어느 제공자가 실패했는지가 로그에 없다 — 고칠 수가 없다");
+}
+
+// ══ 24b. 계정 삭제는 **중간이 없다** ══════════════════════════════════════
+// 전에는 두 작업이었다: `killSessions()`(세대 +1 · 세션 삭제) 다음에 `DELETE FROM users`.
+// 두 번째가 실패하면 실측으로 이렇게 됐다 — 500 이 나가고, 세대는 이미 올라가 **사용자는
+// 그 자리에서 로그아웃되며**, users·books·friendships·invite_codes 는 **전부 남는다.**
+// 그래서 "계정을 지우지 못했어요"를 본 사람의 별명과 단어 개수가 **친구에게 계속 보였다.**
+// 다시 로그인하지 않으면 재시도할 방법조차 없었다.
+//
+// 고친 방향(사용자 결정 A): 한 문장이면 원자적이다. `users` 를 지우면 CASCADE 가 나머지를
+// 지우고, `whoAmI` 가 `users` 를 JOIN 하므로 행이 사라지는 순간 모든 세션이 죽는다 —
+// `killSessions` 는 삭제 경로에서 애초에 필요 없는 일이었다(로그아웃에서는 계속 쓴다).
+{
+  const env = makeEnv();
+  const A = await signUp(env, "kakao", "delA"), B = await signUp(env, "kakao", "delB");
+  const A2 = await another(env, A.uid);                    // 같은 계정의 다른 기기
+  await call(env, A.token, "/book", "PUT", { words: ["사랑"], name: "가", version: 0 });
+  const code = (await call(env, A.token, "/friends")).body.code;
+  await call(env, B.token, "/friends", "POST", { code });
+  await call(env, A.token, "/friends/" + B.uid, "PUT");
+  const n = (sql, ...a) => env.DB._db.prepare(`SELECT COUNT(*) n FROM ${sql}`).get(...a).n;
+  const leftovers = () => ({
+    users: n("users WHERE id=?", A.uid), sessions: n("sessions WHERE user_id=?", A.uid),
+    books: n("books WHERE user_id=?", A.uid),
+    friendships: n("friendships WHERE requester_id=?1 OR addressee_id=?1", A.uid),
+    invite: n("invite_codes WHERE user_id=?", A.uid),
+  });
+
+  // `DELETE FROM users` 만 실패시킨다. 다른 문장은 그대로 돈다.
+  const real = env.DB.prepare.bind(env.DB);
+  env.DB.prepare = (sql) => sql.includes("DELETE FROM users")
+    ? { bind: () => ({ run: async () => { throw new Error("D1_ERROR: simulated"); } }) }
+    : real(sql);
+  const failed = await call(env, A.token, "/me", "DELETE");
+  env.DB.prepare = real;
+
+  // 124. 실패는 실패라고 말한다 — 쿠키를 지우면 화면은 "지워졌다"로 읽는다.
+  assert.equal(failed.status, 500, "삭제가 실패했는데 실패로 안 나갔다");
+  assert.ok(!/shh_s=;/.test(failed.headers.get("Set-Cookie") || ""), "DB 삭제가 실패했는데 쿠키를 지웠다");
+
+  // 125. ★ **아무것도 안 지워진다.** 반쯤 지워진 계정이 남지 않는다.
+  assert.deepEqual(leftovers(), { users: 1, sessions: 2, books: 1, friendships: 1, invite: 1 },
+    "삭제가 실패했는데 일부만 지워졌다 — 중간 상태가 생겼다");
+
+  // 126. ★ **세션이 살아 있어 그 자리에서 다시 누를 수 있다.** 전에는 세대가 이미 올라가
+  //      사용자가 로그아웃돼서, 다시 로그인하기 전에는 재시도조차 못 했다.
+  assert.equal((await call(env, A.token, "/book")).status, 200,
+    "삭제에 실패했을 뿐인데 로그인이 풀렸다 — 사용자가 재시도할 방법이 없다");
+  assert.equal((await call(env, A2, "/book")).status, 200, "다른 기기의 로그인까지 풀렸다");
+
+  // 127. 재시도하면 끝난다. 그리고 **모든 연결 테이블**에서 사라진다.
+  assert.equal((await call(env, A.token, "/me", "DELETE")).status, 200, "재시도가 안 된다");
+  assert.deepEqual(leftovers(), { users: 0, sessions: 0, books: 0, friendships: 0, invite: 0 },
+    "삭제했는데 어딘가 남았다");
+  assert.deepEqual((await call(env, B.token, "/friends")).body.friends, [], "탈퇴한 사람이 친구 목록에 남았다");
+  assert.equal((await call(env, A2, "/book")).status, 401, "탈퇴했는데 다른 기기 세션이 살아 있다");
+}
+{
+  // 128. 삭제 요청이 **동시에 두 번** 와도 모순이 없다. 둘 다 성공으로 수렴한다 —
+  //      두 번째가 "없는 계정"이라 실패하면 사용자는 지워진 계정에 대해 오류를 본다.
+  const env = makeEnv();
+  env.DB = withLatency(env.DB);
+  const A = await signUp(env, "kakao", "delTwice");
+  const A2 = await another(env, A.uid);
+  const [d1, d2] = await Promise.all([call(env, A.token, "/me", "DELETE"), call(env, A2, "/me", "DELETE")]);
+  assert.ok(d1.status < 400 && d2.status < 400, `동시 삭제가 ${d1.status}/${d2.status} 로 갈렸다`);
+  assert.equal(env.DB._db.prepare("SELECT COUNT(*) n FROM users").get().n, 0, "동시 삭제 뒤 계정이 남았다");
+}
+{
+  // 129. **삭제 중에 다른 탭이 보낸 요청**은 401 로 끝난다. 500 이면 화면은 "잠시 문제가
+  //      생겼어요"를 띄우고 사용자는 계정이 지워졌는지 아닌지 모른다.
+  const env = makeEnv();
+  const A = await signUp(env, "kakao", "delRace");
+  const A2 = await another(env, A.uid);
+  await call(env, A.token, "/me", "DELETE");
+  for (const [p, m, b] of [["/book", "GET"], ["/friends", "GET"],
+                           ["/book", "PUT", { words: [], version: 0 }], ["/friends/code", "POST"]]) {
+    assert.equal((await call(env, A2, p, m, b)).status, 401, `삭제 뒤 ${m} ${p} 가 401 이 아니다`);
+  }
+}
+
+// ══ 25. 초대 코드 — 살아 있는 코드는 사람당 하나다 ════════════════════════
+// `GET /friends` 는 코드가 없으면 만든다. 그래서 **읽기가 쓰기를 유발하고**, 두 탭이 동시에
+// 열리면 둘 다 "없다"를 읽고 각자 만든다 — 나중 것이 앞 것을 폐기하므로 먼저 응답을 받은 탭은
+// **이미 죽은 코드**를 손에 쥔다. 그 링크를 보낸 상대는 「만료됐거나 잘못됐어요」만 본다.
+//
+// 고친 방향(사용자 결정 B): GET 의 자동 생성은 그대로 두고, **DB 가 활성 코드 하나를 강제**하게 해
+// 충돌을 "누가 이미 만들었다"로 읽는다. 진 쪽은 이긴 쪽의 코드를 그대로 쓴다(internalUid 와 같은 무늬).
+{
+  const env = makeEnv();
+  const A = await signUp(env, "kakao", "codeA"), B = await signUp(env, "kakao", "codeB");
+  const rows = (uid) => env.DB._db.prepare("SELECT code, revoked_at FROM invite_codes WHERE user_id=?").all(uid);
+  const live = (uid) => rows(uid).filter((r) => r.revoked_at === null);
+
+  // 107. ★ **DB 가 막는다.** 이게 이번 변경의 전부다 — 나머지는 이 제약을 어떻게 읽느냐일 뿐이다.
+  //      전에는 애플리케이션의 성실함이 유일한 방어였고, 실측에서 활성 행 두 개가 그냥 들어갔다.
+  await call(env, A.token, "/friends");
+  assert.throws(() => {
+    env.DB._db.prepare("INSERT INTO invite_codes (code,user_id,created_at) VALUES (?,?,?)")
+      .run("직접넣은코드", A.uid, Date.now());
+  }, /UNIQUE/, "활성 초대 코드가 사람당 둘이 될 수 있다 — 제약이 안 걸렸다");
+
+  // 108. 폐기된 행은 **여럿이어도 된다.** 부분 인덱스가 아니면 회전 자체가 막힌다.
+  env.DB._db.prepare("INSERT INTO invite_codes (code,user_id,created_at,revoked_at) VALUES (?,?,?,?)")
+    .run("죽은코드1", A.uid, 1, 1);
+  env.DB._db.prepare("INSERT INTO invite_codes (code,user_id,created_at,revoked_at) VALUES (?,?,?,?)")
+    .run("죽은코드2", A.uid, 2, 2);
+  assert.equal(live(A.uid).length, 1, "폐기 행이 활성으로 세어졌다");
+  env.DB._db.prepare("DELETE FROM invite_codes WHERE code LIKE '죽은코드%'").run();
+}
+{
+  // ── 동시 요청 ──
+  // 셰임은 동기라 "읽고 나서 쓰는" 창이 0 에 가깝다. 실제 D1 은 요청마다 네트워크 왕복이라
+  // 그 창이 밀리초 단위로 벌어진다 — 그래서 이 블록에서만 왕복 지연을 씌운다.
+  // 지연이 없으면 이 테스트는 **경합을 안 겪고 그냥 통과한다**(재는 게 없다).
+  const env = makeEnv();
+  env.DB = withLatency(env.DB);
+  const A = await signUp(env, "kakao", "raceA"), B = await signUp(env, "kakao", "raceB");
+  const live = () => env.DB._db.prepare(
+    "SELECT code FROM invite_codes WHERE user_id=? AND revoked_at IS NULL").all(A.uid).map((r) => r.code);
+
+  // 109. ★ 코드가 없는 새 계정의 친구 화면을 **두 탭이 동시에** 연다.
+  const [t1, t2] = await Promise.all([call(env, A.token, "/friends"), call(env, A.token, "/friends")]);
+  assert.equal(t1.status, 200); assert.equal(t2.status, 200);
+  assert.equal(t1.body.code, t2.body.code, "두 탭이 서로 다른 초대 코드를 받았다 — 한쪽은 곧 죽는다");
+  assert.deepEqual(live(), [t1.body.code], "응답으로 준 코드가 지금 살아 있는 코드가 아니다");
+
+  // 110. **받은 코드가 실제로 통해야 한다.** 위 단언은 문자열 비교일 뿐이고,
+  //      사용자가 겪는 것은 "보낸 링크가 열리나"다.
+  const used = await call(env, B.token, "/friends", "POST", { code: t2.body.code });
+  assert.equal(used.status, 200, `탭이 받은 코드로 친구 요청이 안 된다(${used.status}) — 죽은 링크를 쥐여줬다`);
+
+  // 110b. ★ **읽기는 이미 나간 링크를 죽이지 않는다.** 목록 조회가 회전을 대신 부르면,
+  //      화면을 여는 것만으로 폐기 행이 생긴다 — 즉 **누군가에게 이미 보낸 링크가 조회 하나로
+  //      죽을 수 있다.** 언제 죽일지는 사람이 정하는 것이지 화면을 여는 일이 정하는 게 아니다.
+  //      (행 개수로 잰다: 회전을 지났다면 폐기 행이 남는다.)
+  for (let i = 0; i < 5; i++) await call(env, A.token, "/friends");
+  const all = env.DB._db.prepare("SELECT revoked_at FROM invite_codes WHERE user_id=?").all(A.uid);
+  assert.equal(all.length, 1,
+    `친구 목록을 읽었을 뿐인데 invite_codes 가 ${all.length}행이다 — 읽기가 코드를 폐기하고 있다`);
+  assert.equal(all[0].revoked_at, null, "읽기가 내 코드를 폐기했다");
+}
+{
+  // 111. ★ 회전을 **두 기기에서 동시에** 누른다. 응답이 갈리면 늦게 도착한 쪽이
+  //      localStorage 에 죽은 코드를 적고, 사용자는 그 링크를 보낸다(js/friends.js 의 잠금은
+  //      한 탭 안에서만 듣는다 — 두 기기·두 탭은 못 막는다).
+  const env = makeEnv();
+  env.DB = withLatency(env.DB);
+  const A = await signUp(env, "kakao", "rotA"), B = await signUp(env, "kakao", "rotB");
+  await call(env, A.token, "/friends");
+  const [x, y] = await Promise.all([
+    call(env, A.token, "/friends/code", "POST"),
+    call(env, A.token, "/friends/code", "POST"),
+  ]);
+  const live = env.DB._db.prepare(
+    "SELECT code FROM invite_codes WHERE user_id=? AND revoked_at IS NULL").all(A.uid).map((r) => r.code);
+  assert.equal(live.length, 1, `회전 뒤 활성 코드가 ${live.length}개다`);
+  assert.equal(x.body.code, y.body.code, "동시 회전이 서로 다른 코드를 돌려줬다 — 한쪽은 죽은 코드다");
+  assert.deepEqual(live, [x.body.code], "회전이 돌려준 코드가 지금 살아 있는 코드가 아니다");
+  assert.equal((await call(env, B.token, "/friends", "POST", { code: x.body.code })).status, 200,
+    "회전이 돌려준 코드로 친구 요청이 안 된다");
+}
+{
+  // ── 회전의 대가를 묶는다(사용자 결정 ②) ──
+  const env = makeEnv();
+  const A = await signUp(env, "kakao", "rotLimit"), B = await signUp(env, "kakao", "rotOther");
+  const codeRows = () => env.DB._db.prepare("SELECT COUNT(*) n FROM invite_codes WHERE user_id=?").get(A.uid).n;
+  await call(env, A.token, "/friends");
+
+  // 112. ★ 회전은 **자기 버킷**으로 좁게 센다. 전에는 넉넉한 `write`(분당 120)만 걸려서,
+  //      로그인한 계정 **하나**가 분당 240 D1 쓰기 = 하루 34만(무료 한도 10만)을 태울 수 있었다.
+  //      그게 바닥나면 **정상 사용자의 단어장 저장이 먼저 죽는다.**
+  let ok = 0, blocked = 0;
+  for (let i = 0; i < 30; i++) {
+    const r = await call(env, A.token, "/friends/code", "POST");
+    r.status === 429 ? blocked++ : ok++;
+  }
+  assert.ok(blocked > 0, "초대 링크 회전을 분당 30번 넘게 눌러도 안 막힌다");
+  assert.ok(ok <= 8, `회전이 분당 ${ok}회까지 통과한다 — write 한도(120)에 묶여 있다`);
+
+  // 113. ★ **폐기 행이 쌓이지 않는다.** 지우는 곳이 없어서 회전할 때마다 영구히 늘어났다
+  //      (실측: 분당 120행). 계정 삭제 전에는 아무도 안 지운다.
+  assert.ok(codeRows() <= 3, `회전 ${ok}회에 invite_codes 가 ${codeRows()}행 남았다 — 폐기 행이 안 치워진다`);
+
+  // 114. **회전이 막혀도 단어장 저장은 안 막힌다.** 버킷이 갈렸다는 뜻이고,
+  //      안 갈리면 남용 방어가 정상 사용을 죽인다.
+  assert.equal((await call(env, A.token, "/book", "PUT", { words: ["사랑"], name: "", version: 0 })).status, 200,
+    "회전이 막혔다고 단어장 저장까지 막혔다");
+  // 115. 남이 회전을 두드렸다고 이 사람까지 막히지 않는다.
+  assert.notEqual((await call(env, B.token, "/friends/code", "POST")).status, 429,
+    "남이 회전을 두드렸다고 이 사람까지 막혔다");
+}
+
+// ══ 26. RL_KEY — 리미터 키는 **비밀키 HMAC** 이다 ═════════════════════════
+// 전에는 `SHA-256(용도|IP|창)` 평문 해시였다. IP 는 경우의 수가 43억뿐이라 전부 넣어 보면
+// 풀린다 — 실측에서 `/24` 대역만 대입해 **43회 만에** 원본 IP 가 나왔다.
+// 그래서 `privacy.html` 의 "되돌릴 수 없는 요약값" 은 IP 에 대해 사실이 아니었다.
+// 키를 모르면 넣어 볼 값 자체를 만들 수 없다.
+{
+  const ENC = new TextEncoder();
+  const b64u = (b) => btoa(String.fromCharCode(...new Uint8Array(b)))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const plain = async (s) => b64u(await crypto.subtle.digest("SHA-256", ENC.encode(s)));
+  const hit = async (env, ip = "203.0.113.42") =>
+    worker.fetch(new Request("https://api.test/cb/kakao?code=x&state=y", { headers: { "CF-Connecting-IP": ip } }), env);
+  const buckets = (env) => env.DB._db.prepare("SELECT bucket FROM rate_limits").all().map((r) => r.bucket);
+
+  // 116. ★ 저장된 키가 **평문 해시가 아니다.** 이 단언이 곧 "대입으로 못 푼다"의 실질이다.
+  const env = makeEnv({ KAKAO_ID: "id" });
+  await hit(env);
+  const win = Math.floor(Date.now() / 60_000);
+  const got = buckets(env);
+  assert.equal(got.length, 1, "카운터가 하나가 아니다 — 이 검사의 전제가 깨졌다");
+  const guesses = await Promise.all([win - 1, win, win + 1].map((w) => plain(`login|203.0.113.42|${w}`)));
+  assert.ok(!guesses.includes(got[0]),
+    "리미터 키가 평문 SHA-256 이다 — IP 를 전부 넣어 보면 누가 언제 왔는지 복원된다");
+
+  // 117. **키가 다르면 버킷도 다르다.** 같으면 키가 실제로 안 섞이고 있다는 뜻이다.
+  const env2 = makeEnv({ KAKAO_ID: "id", RL_KEY: "완전히-다른-키" });
+  await hit(env2);
+  assert.notDeepEqual(buckets(env2), got, "RL_KEY 를 바꿔도 버킷이 같다 — 키가 안 쓰이고 있다");
+
+  // 118. 원문 IP·uid 는 여전히 안 남는다(88 과 같은 불변식, 키가 바뀌어도 지켜져야 한다).
+  assert.ok(!got[0].includes("203.0.113.42"), "버킷 키에 IP 원문이 남았다");
+
+  // 119. ★ **RL_KEY 가 없으면 준비된 것이 아니다.** 조용히 약한 쪽으로 도는 것이 가장 나쁘다 —
+  //      그래서 평문 해시로 **되돌아가지 않고**, readiness 가 시끄럽게 말한다.
+  const noKey = makeEnv({ KAKAO_ID: "id", RL_KEY: undefined });
+  const rd = await (await worker.fetch(new Request("https://api.test/ready"), noKey)).json();
+  assert.equal(rd.configReady, false, "RL_KEY 가 없는데 configReady 가 true 다");
+  assert.equal(rd.ready, false, "RL_KEY 가 없는데 ready 다");
+  assert.equal(rd.db, true, "DB 는 멀쩡한데 db:false 라고 말한다");
+  assert.ok(!JSON.stringify(rd).includes("RL_KEY"), "응답이 비밀값 이름을 말한다");
+
+  // 120. 키가 없으면 **세지 않는다**(fail-open). 남용 방어가 서비스를 멈추는 쪽이 더 나쁘고,
+  //      약한 해시로 계속 세는 쪽은 방침을 거짓말로 만든다. 둘 다 안 하고 /ready 가 말한다.
+  for (let i = 0; i < 15; i++) assert.notEqual((await hit(noKey)).status, 429, "키가 없는데 막았다");
+  assert.equal(buckets(noKey).length, 0, "RL_KEY 가 없는데 카운터를 쌓고 있다 — 약한 해시로 세고 있다");
+}
+
+// ══ 27. 로그인 한도는 **세션을 만드는 자리**에만 건다 ══════════════════════
+// 전에는 `/login`(시작)·`/cb`·`/exchange` 셋이 같은 `login` 버킷을 썼다. 한 번의 로그인이
+// 두 자리를 지나므로 **한도 10 이 실제로는 완전한 로그인 5회**였다(실측). 문서는 10 이라 적혀 있었다.
+// 막으려는 것은 "세션을 무한히 찍어내는 것"인데 `/login` 은 세션을 안 만든다 — 302 하나와 서명 하나다.
+{
+  const env = makeEnv({ KAKAO_ID: "id" });
+  const ip = { "CF-Connecting-IP": "198.51.100.77" };
+  const counters = () => env.DB._db.prepare("SELECT COUNT(*) n FROM rate_limits").get().n;
+
+  // 121. ★ 로그인 **시작**은 세지 않는다. 세면 D1 쓰기가 두 배인데 막는 것은 없다.
+  for (let i = 0; i < 20; i++) {
+    const r = await worker.fetch(new Request(
+      "https://api.test/login/kakao?return=" + encodeURIComponent(ORIGIN), { headers: ip }), env);
+    assert.equal(r.status, 302, `로그인 시작 ${i + 1}번째가 ${r.status} 로 막혔다`);
+  }
+  assert.equal(counters(), 0, "로그인 시작이 카운터 행을 만들었다 — 세션도 안 만드는 자리다");
+
+  // 122. ★ **완전한 로그인 10회**가 통과한다. 이게 문서에 적힌 숫자이고, 전에는 5회였다.
+  const env2 = makeEnv({ KAKAO_ID: "id" });
+  let done = 0;
+  for (let i = 0; i < 12; i++) {
+    const s = await worker.fetch(new Request(
+      "https://api.test/login/kakao?return=" + encodeURIComponent(ORIGIN), { headers: ip }), env2);
+    const st = new URL(s.headers.get("Location")).searchParams.get("state");
+    const cb = await worker.fetch(new Request(
+      "https://api.test/cb/kakao?code=x&state=" + encodeURIComponent(st), { headers: ip }), env2);
+    if (cb.status === 429) break;
+    done++;
+  }
+  assert.equal(done, 10, `분당 10회라고 적어 두고 실제로는 완전한 로그인 ${done}회만 된다`);
+
+  // 123. 그래도 **막히기는 한다.** 세션을 만드는 자리의 상한이 사라지면 그건 방어가 아니다.
+  const cb = await worker.fetch(new Request("https://api.test/cb/kakao?code=x&state=y", { headers: ip }), env2);
+  assert.equal(cb.status, 429, "세션을 만드는 자리가 안 막힌다");
+}
+
+console.log("test-friends: 156개 통과 — 로그인 왕복 표(브라우저 결속) · 친구 쌍 유일성 · 친구 권한(행 하나) · 쿠키 세션 · 세대 무효화 · CSRF(Origin 필수) · 제공자ID 비공개 "
+  + "· 버전 충돌 · 수락 트랜잭션(상한 포함) · 무관계 DELETE · 마스터 · 복귀 주소 · 본문 한도 · state 서명 · 코드 회전 · 상한 · 헤더 · readiness(스키마 실질의) · 세션 청소 · 레이트리밋(RL_KEY HMAC · 버킷 분리) · 제공자 응답 상한 · 계정 삭제 원자성 · 활성 초대 코드 1개");

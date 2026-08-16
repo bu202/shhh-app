@@ -35,22 +35,53 @@ export function makeD1() {
   const db = new DatabaseSync(":memory:");
   db.exec("PRAGMA foreign_keys = ON");   // ⚠️ 켜지 않으면 CASCADE 가 조용히 안 돈다
   db.exec(SCHEMA);
+  // ⚠️ **쓰기를 한 줄로 세운다.** SQLite 도 D1 도 쓰기 트랜잭션은 한 번에 하나다.
+  //    전에는 이게 없어서 요청 두 개가 겹치면 `batch` 안에서 `batch` 가 시작돼
+  //    "cannot start a transaction within a transaction" 으로 죽었다 — 그래서 **동시 요청을
+  //    재는 테스트를 아예 쓸 수 없었고**, 초대 코드 경합 같은 것이 테스트 밖에 남았다.
+  //    이건 흉내가 아니라 D1 의 실제 성질(단일 라이터)을 셰임에 들여온 것이다.
+  let queue = Promise.resolve();
   return {
     prepare: (sql) => new Stmt(db, sql),
     // D1 의 batch 는 **하나의 트랜잭션**이다. 중간에 실패하면 앞의 것도 되돌아간다 —
     // 이 성질을 재는 테스트가 있으므로 흉내가 아니라 실제 트랜잭션으로 돌린다.
-    batch: async (stmts) => {
-      db.exec("BEGIN");
-      try {
-        const out = [];
-        for (const s of stmts) out.push(await s.run());
-        db.exec("COMMIT");
-        return out;
-      } catch (e) {
-        db.exec("ROLLBACK");
-        throw e;
-      }
+    batch: (stmts) => {
+      const run = queue.then(async () => {
+        db.exec("BEGIN");
+        try {
+          const out = [];
+          for (const s of stmts) out.push(await s.run());
+          db.exec("COMMIT");
+          return out;
+        } catch (e) {
+          db.exec("ROLLBACK");
+          throw e;
+        }
+      });
+      queue = run.then(() => {}, () => {});   // 실패해도 뒤 차례는 돈다
+      return run;
     },
     _db: db,
+  };
+}
+
+// 요청마다 네트워크 왕복이 있는 D1 을 흉내낸다. 셰임은 동기라 "읽고 나서 쓰는" 창이 **0 에 가깝고**,
+// 그래서 동시 요청 두 개가 실제로는 겹치는데 테스트에서는 안 겹친다.
+// 경합을 재는 블록에서만 씌운다 — 전부에 씌우면 테스트가 느려지기만 한다.
+export function withLatency(d1, ms = 3) {
+  const tick = () => new Promise((r) => setTimeout(r, ms));
+  const wrap = (s) => ({
+    _stmt: s,
+    bind: (...a) => { s.bind(...a); return wrap(s); },
+    first: async (c) => { await tick(); return s.first(c); },
+    all: async () => { await tick(); return s.all(); },
+    run: async () => { await tick(); return s.run(); },
+  });
+  return {
+    _db: d1._db,
+    prepare: (sql) => wrap(d1.prepare(sql)),
+    // 지연은 트랜잭션 **앞**에만 넣는다. 안에 넣으면 열린 트랜잭션이 매크로태스크 동안
+    // 붙들려서, 재는 것이 경합이 아니라 셰임의 잠금이 된다.
+    batch: async (stmts) => { await tick(); return d1.batch(stmts.map((s) => s._stmt || s)); },
   };
 }

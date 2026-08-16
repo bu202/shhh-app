@@ -131,7 +131,10 @@ const health = (env) => {
   const providers = readyProviders(env);
   // DB 바인딩이 없으면 로그인도 단어장도 못 한다 — ready 가 아니다.
   // ⚠️ KV 는 더 이상 안 본다. 바인딩은 **롤백용으로 남겨 두지만** 새 코드는 쓰지 않는다.
-  return { ok: true, ready: !!(env.STATE_KEY && env.APP_ORIGIN && env.DB && providers.length), providers };
+  // ⚠️ RL_KEY 도 **있어야 하는 값**이다. 없으면 리미터가 세지 않는데(rlBucket 참조),
+  //    그건 화면 어디에도 안 보이는 종류의 결함이라 여기서 말하지 않으면 아무도 모른다.
+  //    계정 기능을 여는 날 시크릿을 빠뜨리면 /ready 가 503 으로 먼저 알려준다.
+  return { ok: true, ready: !!(env.STATE_KEY && env.APP_ORIGIN && env.DB && env.RL_KEY && providers.length), providers };
 };
 
 // /ready 전용. 바인딩이 **있다**와 DB 가 **답한다**는 다른 말이다 — 잘못된 database_id 로 배포하면
@@ -310,10 +313,36 @@ async function killSessions(env, uid) {
 //   friends POST /friends — **초대 코드 무차별 대입**을 막는다. 이게 유일한 열거 공격면이다
 //   write   그 밖의 상태 변경 — 넉넉하게. 정상 사용이 먼저 걸리면 방어가 아니라 고장이다
 const RL_WINDOW = 60_000;
-const RL_MAX = { login: 10, friends: 20, write: 120 };
+// ⚠️ `login` 은 **세션을 만드는 자리**(`/cb`·`/exchange`)에만 건다. 예전엔 `/login`(시작)까지
+//    같은 버킷으로 세어서, 한 번의 로그인이 두 자리를 지나 **한도 10 이 실제로는 완전한 로그인
+//    5회**였다(실측). 문서에는 10 이라 적혀 있었고, 공유 IP(회사·학교·CGNAT)에서는 그 5회를
+//    건물 하나가 나눠 썼다. `/login` 은 302 하나와 서명 하나뿐이고 세션도 DB 행도 안 만든다 —
+//    거기를 세면 D1 쓰기가 두 배인데 막는 것은 없다.
+// `rotate` 는 초대 링크 새로 만들기. 넉넉한 `write`(120)에만 묶여 있어서, 로그인한 계정
+//    **하나**가 분당 240 D1 쓰기 = 하루 34만(무료 한도 10만)을 태울 수 있었다 — 그게 바닥나면
+//    정상 사용자의 단어장 저장이 먼저 죽는다. 링크를 새로 만드는 것은 몇 달에 한 번 하는 일이다.
+const RL_MAX = { login: 10, friends: 20, rotate: 5, write: 120 };
 // 상태를 바꾸는 **실제 라우트**만. 여기 없는 경로는 세지 않고 그냥 404 로 보낸다 —
 // 없는 자리를 두드리는 것으로 우리 DB 쓰기를 유발할 수 있으면 리미터가 공격 도구가 된다.
 const WRITE_ROUTES = /^\/(session|book|me|friends)(\/|$)/;
+
+// 버킷 이름을 만든다. **평문 SHA-256 이 아니라 비밀키 HMAC 이다.**
+// 왜 바꿨나: IPv4 는 경우의 수가 43억뿐이라 평문 해시는 전부 넣어 보면 풀린다 — 실측에서
+// `/24` 대역만 대입해 **43회 만에** 원본 IP 가 나왔다. 그러면 이 표를 읽을 수 있는 사람은
+// "누가 언제 우리 서비스에 왔나"를 복원할 수 있고, privacy.html 의 "되돌릴 수 없는 요약값"이
+// 거짓말이 된다. 키를 모르면 **넣어 볼 값 자체를 만들 수 없다.**
+//
+// ⚠️ RL_KEY 가 없으면 **평문 해시로 되돌아가지 않는다.** 조용히 약한 쪽으로 도는 것이 가장
+//    나쁘다 — 아무도 못 알아채고 방침만 거짓말이 된다. 대신 세지 않고(fail-open) readiness 가
+//    시끄럽게 말한다(health 의 RL_KEY 조건). 남용 방어가 서비스를 멈추는 쪽보다는
+//    "지금 안 세고 있다"를 /ready 로 드러내는 쪽이 낫다.
+// ⚠️ STATE_KEY·OAuth secret 을 대신 쓰지 않는다. 용도가 다른 비밀값을 겸용하면 하나를 돌릴 때
+//    다른 하나가 같이 무너진다.
+const rlBucket = async (env, msg) => {
+  if (!env.RL_KEY) return null;
+  const k = await crypto.subtle.importKey("raw", ENC.encode(env.RL_KEY), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return b64u(await crypto.subtle.sign("HMAC", k, ENC.encode(msg)));
+};
 
 // 고정 창. **세는 것과 판정이 UPSERT 한 문장 안에서 끝난다** — 읽고 나서 쓰면 동시 요청이
 // 창 하나를 여러 번 통과한다(친구 상한이 겪은 것과 같은 종류의 경합이다).
@@ -336,12 +365,11 @@ async function limited(env, req, uid, bucket) {
   const now = Date.now();
   // ⚠️ 키에 uid·IP **원문을 넣지 않는다.** 남용을 세려고 개인정보를 쌓는 건 목적에 비해 과하다.
   //    (로그에도 남기지 않는다 — 아래 어디에서도 console.log 하지 않는다.)
-  //    ⚠️ 다만 이 해시는 **되돌릴 수 없다는 뜻이 아니다.** IP 는 값의 범위가 좁아서
-  //       사전 공격이 성립한다. 진짜로 되돌릴 수 없게 하려면 비밀키 HMAC(RL_KEY)이 필요하다 —
-  //       docs/SECURITY_RELEASE_CHECKLIST.md 의 결정 항목이다.
   const who = uid || req.headers.get("CF-Connecting-IP") || "anon";
   const max = RL_MAX[bucket] ?? RL_MAX.write;
-  const key = await sha256(`${bucket}|${who}|${Math.floor(now / RL_WINDOW)}`);
+  const key = await rlBucket(env, `${bucket}|${who}|${Math.floor(now / RL_WINDOW)}`);
+  // 키를 못 만들었다 = RL_KEY 가 없다. **평문 해시로 되돌아가지 않고** 세지 않는다(위 rlBucket).
+  if (!key) return false;
   try {
     // ⚠️ **막기로 정한 뒤에는 더 세지 않는다.** 전에는 한도를 넘긴 뒤에도 UPSERT 가 계속
     //    n+1 을 썼다 — 공격자는 429 를 받으면서 우리 D1 쓰기 할당량(하루 10만)을 태울 수 있었고,
@@ -369,22 +397,38 @@ const tooMany = (env, req) =>
 // **Content-Length 만 보면 방어가 안 된다** — 공격자는 그 헤더 없이(chunked) 보내면 그만이다.
 // 그래서 스트림을 읽으면서 한도를 넘는 순간 끊는다. 헤더가 있으면 읽기도 전에 자르는 지름길로만 쓴다.
 const MAX_BODY = 8192;
-async function readBody(req) {
-  if (!(req.headers.get("Content-Type") || "").includes("application/json")) return null;
-  const len = Number(req.headers.get("Content-Length"));
-  if (Number.isFinite(len) && len > MAX_BODY) return null;
-  const reader = req.body && req.body.getReader();
+
+// 스트림을 한도까지만 읽는다. 넘으면 그 자리에서 끊고 null 을 준다(자른 앞부분을 쓰지 않는다 —
+// 잘린 JSON 은 어차피 못 읽고, 읽히기라도 하면 그게 더 나쁘다).
+// **요청 본문과 제공자 응답이 같은 함수를 쓴다.** 둘 다 우리가 만들지 않은 바이트이고,
+// 막는 이유도 같다: 한 번의 응답으로 128MB Worker 를 밀어붙일 수 있으면 안 된다.
+async function readCapped(body, max) {
+  const reader = body && body.getReader();
   if (!reader) return null;
-  const buf = new Uint8Array(MAX_BODY);
+  const buf = new Uint8Array(max);
   let n = 0;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    if (n + value.length > MAX_BODY) { await reader.cancel(); return null; }
+    if (n + value.length > max) { await reader.cancel(); return null; }
     buf.set(value, n);
     n += value.length;
   }
-  try { return JSON.parse(new TextDecoder().decode(buf.subarray(0, n))); } catch { return null; }
+  return new TextDecoder().decode(buf.subarray(0, n));
+}
+
+// Content-Length 는 **지름길로만** 쓴다. 없으면(chunked) 위 스트림이 막는다.
+const tooBig = (headers, max) => {
+  const len = Number(headers.get("Content-Length"));
+  return Number.isFinite(len) && len > max;
+};
+
+async function readBody(req) {
+  if (!(req.headers.get("Content-Type") || "").includes("application/json")) return null;
+  if (tooBig(req.headers, MAX_BODY)) return null;
+  const text = await readCapped(req.body, MAX_BODY);
+  if (text === null) return null;
+  try { return JSON.parse(text); } catch { return null; }
 }
 
 // 제공자가 code 를 어디로 돌려보내는가. 여기서 만든 값과 **똑같은 문자열**을 토큰 교환에도 보내야
@@ -397,10 +441,22 @@ const redirectUri = (env, origin, name) =>
 // 남의 서버를 부르는 자리. **응답이 JSON 이라고 믿지 않는다** — 제공자가 점검 중이면 HTML
 // 오류 페이지가 오고, `.json()` 이 그대로 던져 500 이 나간다. 타임아웃도 여기 있다: 없으면
 // 제공자가 늘어질 때 우리 요청이 같이 매달린다.
+//
+// ⚠️ **크기 상한이 없으면 `text()` 는 오는 대로 다 받는다.** 무료 Worker 는 메모리가 128MB 인데
+//    이 함수는 로그인 한 번에 두 번 불린다 — 상한이 없으면 남의 서버가 우리 메모리를 정한다.
+//    실제 정상 응답은 구글 토큰(id_token 포함)이 가장 크고 2~4KB, 나머지는 1KB 미만이다
+//    (scope 가 openid·없음뿐이라 프로필 필드가 안 온다). 64KB 는 그 16배 이상이라
+//    제공자가 필드를 늘려도 안 걸리고, 걸리는 응답은 정상 응답이 아니다.
+// ⚠️ Content-Type 은 **일부러 안 본다.** 실제 판정은 JSON.parse 가 하고 그건 속일 수 없다.
+//    허용 목록을 두면 제공자가 `text/plain` 으로 바꾸는 날 로그인이 통째로 죽는다 —
+//    막는 것은 없고 잃는 것만 있는 검사다(scripts/test-friends.mjs 104 가 이 판단을 잠근다).
+const MAX_PROVIDER_BODY = 65536;
 const jsonFetch = async (url, init) => {
   try {
     const r = await fetch(url, { ...init, signal: AbortSignal.timeout(10000) });
-    return JSON.parse(await r.text());
+    if (tooBig(r.headers, MAX_PROVIDER_BODY)) { await r.body?.cancel(); return null; }
+    const text = await readCapped(r.body, MAX_PROVIDER_BODY);
+    return text === null ? null : JSON.parse(text);
   } catch {
     return null;
   }
@@ -420,14 +476,17 @@ async function exchange(env, origin, name, code, state) {
   });
   // 로그에는 **제공자가 준 오류 코드까지만** 남긴다. 응답 본문을 통째로 찍으면 토큰·회원번호가
   // 운영 로그로 새는데, 고치는 데 필요한 건 어느 제공자가 무슨 코드로 거절했나뿐이다.
+  // ⚠️ 오류 코드도 **제공자가 쓴 문자열**이다. 길이를 우리가 정하지 않으면 남의 서버가
+  //    우리 로그 한 줄의 크기를 정한다 — 고치는 데 필요한 건 앞부분뿐이다.
+  const why = (o, ...keys) => String(keys.map((k) => o && o[k]).find(Boolean) || "no-json").slice(0, 80);
   if (!tr || !tr.access_token) {
-    console.log("[exchange] token fail", name, (tr && (tr.error || tr.error_code)) || "no-json");
+    console.log("[exchange] token fail", name, why(tr, "error", "error_code"));
     return null;
   }
   const me = await jsonFetch(p.me, { headers: { Authorization: "Bearer " + tr.access_token } });
   const who = me && p.uid(me);
   if (!who) {
-    console.log("[exchange] me fail", name, (me && (me.error || me.message)) || "no-json");
+    console.log("[exchange] me fail", name, why(me, "error", "message"));
     return null;
   }
   const uid = await internalUid(env, name, who);
@@ -523,25 +582,46 @@ function briefRow(row, uid, withCount) {
   return out;
 }
 
+const newCode = () => crypto.randomUUID().replace(/-/g, "").slice(0, 12); // 48비트 — 찍어서 못 맞힌다
+// 지금 살아 있는 코드. 사람당 하나라는 것은 **DB 가 강제한다**(0004 의 부분 유니크 인덱스).
+const liveCode = (env, uid) => env.DB.prepare(
+  "SELECT code FROM invite_codes WHERE user_id = ? AND revoked_at IS NULL").bind(uid).first();
+
 // 내 초대 코드. 없으면 만들어 둔다 — 같은 사람에게 늘 같은 링크가 나가야
 // 예전에 보낸 링크가 죽지 않는다. 회전(`POST /friends/code`)은 옛 행에 revoked_at 을 적는다.
+//
+// ⚠️ **읽고 나서 쓰는 사이가 열려 있었다.** 두 탭이 동시에 친구 화면을 열면 둘 다 "없다"를
+//    읽고 각자 만들었고, 나중 것이 앞 것을 폐기하므로 **먼저 응답을 받은 탭은 이미 죽은 코드를
+//    손에 쥐었다** — 그 링크를 받은 사람은 「만료됐거나 잘못됐어요」만 본다.
+//    이제 그 경합은 UNIQUE 충돌이 되고, 충돌은 곧 "누가 이미 만들었다"는 신호다.
+//    진 쪽은 이긴 쪽의 코드를 그대로 쓴다 — internalUid 가 첫 로그인 경합에 쓰는 것과 같은 무늬다.
 async function myCode(env, uid) {
-  const had = await env.DB.prepare(
-    "SELECT code FROM invite_codes WHERE user_id = ? AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1")
-    .bind(uid).first();
+  const had = await liveCode(env, uid);
   if (had) return had.code;
-  return await rotateCode(env, uid);
+  await env.DB.prepare(
+    "INSERT INTO invite_codes (code, user_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING")
+    .bind(newCode(), uid, Date.now()).run();
+  // **DB 에 다시 묻는다.** 내가 넣었는지 남이 넣었는지 가릴 이유가 없다 — 답은 하나뿐이다.
+  return (await liveCode(env, uid)).code;
 }
 
 async function rotateCode(env, uid) {
-  const code = crypto.randomUUID().replace(/-/g, "").slice(0, 12); // 48비트 — 찍어서 못 맞힌다
+  const now = Date.now();
   await env.DB.batch([
+    // ⚠️ **지난 회전의 찌꺼기를 여기서 치운다.** 폐기 행을 지우는 자리가 어디에도 없어서
+    //    회전할 때마다 영구히 쌓였다(실측: 분당 120행까지). 폐기된 코드로 할 수 있는 일은
+    //    아무것도 없다 — 조회가 전부 `revoked_at IS NULL` 이라 있으나 없으나 404 다.
+    env.DB.prepare("DELETE FROM invite_codes WHERE user_id = ? AND revoked_at IS NOT NULL").bind(uid),
     env.DB.prepare("UPDATE invite_codes SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL")
-      .bind(Date.now(), uid),
+      .bind(now, uid),
     env.DB.prepare("INSERT INTO invite_codes (code, user_id, created_at) VALUES (?, ?, ?)")
-      .bind(code, uid, Date.now()),
+      .bind(newCode(), uid, now),
   ]);
-  return code;
+  // ⚠️ **내가 만든 코드가 아니라 지금 살아 있는 코드를 돌려준다.** 두 기기에서 동시에 회전을
+  //    누르면 나중 문장이 앞 문장의 코드를 폐기하는데, 그때 각자 자기 코드를 답하면
+  //    한쪽은 죽은 코드를 localStorage 에 적고 그 링크를 남에게 보낸다.
+  //    (js/friends.js 의 버튼 잠금은 한 탭 안에서만 듣는다 — 두 기기는 못 막는다.)
+  return (await liveCode(env, uid)).code;
 }
 
 // ── 마스터 계정 ──────────────────────────────────────────────────────────
@@ -630,10 +710,12 @@ async function route(req, env) {
       // 설정이 덜 된 채로 **조용히 돌지 않는다.** STATE_KEY 가 없으면 state 서명이 아무나
       // 만들 수 있는 값이 되므로 로그인 자체를 열지 않는다(sign 이 던지는 것의 앞단 방어).
       if (!id || !env.STATE_KEY) return new Response(m[1] + " 로그인이 아직 설정되지 않았어요", { status: 503 });
-      // 세션을 찍어내는 왕복의 시작점이다. `/exchange`·`/cb` 와 **같은 `login` 버킷**으로 센다 —
-      // 셋이 한 번의 로그인을 이루므로 버킷이 갈리면 한도가 셋으로 늘어난 것과 같다.
-      // (설정이 안 된 제공자는 위에서 이미 돌아갔다 — 없는 자리를 두드리는 건 세지 않는다.)
-      if (await limited(env, req, null, "login")) return tooMany(env, req);
+      // ⚠️ **여기서는 세지 않는다.** 예전엔 `/cb`·`/exchange` 와 같은 `login` 버킷으로 셌는데,
+      //    한 번의 로그인이 두 자리를 지나므로 **한도 10 이 실제로는 완전한 로그인 5회**였다
+      //    (실측). 공유 IP(회사·학교·모바일 CGNAT)에서는 그 5회를 건물 하나가 나눠 쓴다.
+      //    막으려는 것은 "세션을 무한히 찍어내는 것"인데 이 자리는 세션도, DB 행도 만들지
+      //    않는다 — 302 하나와 서명 하나다. 세면 D1 쓰기만 두 배가 되고 막는 것은 없다.
+      //    상한은 실제로 세션이 생기는 `/cb`·`/exchange` 가 든다.
       // state 는 CSRF 방어다. 돌아갈 주소를 **서명 안에** 넣는 이유도 같다 — 서명 없이 쿼리로
       // 실어 보내면 남이 우리 도메인을 거쳐 아무 데로나 리다이렉트시킬 수 있다.
       const back = url.searchParams.get("return") || env.APP_ORIGIN;
@@ -851,10 +933,18 @@ async function route(req, env) {
       // 외래키 CASCADE 로 같이 사라진다. KV 시절엔 6번의 개별 삭제였고 중간에 죽으면 반쯤 지워진
       // 계정이 남았다(그리고 지울 것을 하나 빠뜨리면 아무도 몰랐다).
       //
-      // 세대도 같이 올린다: 다른 기기의 세션이 **행이 지워지기 전에** 요청을 보내도
-      // 그 순간 세대가 안 맞아 죽는다.
+      // ⚠️ **여기서 killSessions 를 부르지 않는다.** 부르던 시절엔 작업이 둘이었고, 두 번째가
+      //    실패하면 실측으로 이렇게 됐다: 500 이 나가는데 세대는 이미 올라가 **사용자는 그 자리에서
+      //    로그아웃되고**, users·books·friendships·invite_codes 는 **전부 남는다.** 그래서 "지우지
+      //    못했어요"를 본 사람의 별명과 단어 개수가 친구에게 계속 보였고, 다시 로그인하기 전에는
+      //    재시도할 방법조차 없었다. 한 문장이면 그 중간 상태가 **존재할 수 없다.**
+      //    세대를 안 올려도 안전한 이유: whoAmI 가 `JOIN users` 라 행이 사라지는 순간
+      //    이 계정의 모든 세션이 그 자리에서 죽는다(세대는 로그아웃에서만 필요하다).
+      //    실패하면 아무것도 안 지워지고 세션도 살아 있어, 사용자가 **그 화면에서 다시 누르면 된다.**
+      //
+      // 지운 행이 0 이어도 성공이다 — 다른 탭이 방금 지웠다는 뜻이고, 사용자가 원한 결과는
+      // 이미 이뤄졌다(친구 끊기의 404 를 성공으로 수렴시키는 것과 같은 판단).
       if (req.method === "DELETE") {
-        await killSessions(env, uid);
         await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(uid).run();
         const r = json(env, req, { ok: true });
         r.headers.append("Set-Cookie", clearCookie());
@@ -953,8 +1043,15 @@ async function route(req, env) {
       //
       // **이미 맺어진 친구는 그대로다.** 코드는 "요청을 보낼 자격"이지 관계 자체가 아니다.
       // 아래 m2 정규식이 `/friends/code` 도 잡으므로 **이 라우트가 먼저** 와야 한다.
-      if (path === "/friends/code" && req.method === "POST")
+      //
+      // ⚠️ **자기 버킷으로 좁게 센다.** 넉넉한 `write`(분당 120)만 걸려 있을 때는 로그인한
+      //    계정 하나가 분당 240 D1 쓰기 = 하루 34만(무료 한도 10만)을 태울 수 있었다 —
+      //    그게 바닥나면 **정상 사용자의 단어장 저장이 먼저 죽는다**(리미터가 아니라 이 라우트가
+      //    증폭기였다). 링크를 새로 만드는 것은 몇 달에 한 번 하는 일이라 분당 5회면 넘친다.
+      if (path === "/friends/code" && req.method === "POST") {
+        if (await limited(env, req, uid, "rotate")) return tooMany(env, req);
         return json(env, req, { code: await rotateCode(env, uid) });
+      }
 
       const m2 = path.match(/^\/friends\/([^/]+)(\/book)?$/);
       if (m2) {

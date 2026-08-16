@@ -81,6 +81,13 @@ CREATE TABLE IF NOT EXISTS invite_codes (
 );
 -- 지금 살아 있는 코드를 사람마다 하나 찾는 쪽.
 CREATE INDEX IF NOT EXISTS invite_user ON invite_codes(user_id, revoked_at);
+-- ⚠️ **살아 있는 코드는 사람당 하나다**(0004). 전에는 이걸 애플리케이션이 SELECT 로 확인했는데,
+--    두 탭이 동시에 친구 화면을 열면 둘 다 "없다"를 읽고 각자 만들었다 — 나중 것이 앞 것을
+--    폐기하므로 **먼저 응답을 받은 탭은 이미 죽은 코드를 손에 쥐고** 그 링크를 남에게 보냈다.
+--    이제 그 경합은 UNIQUE 충돌이 되고, worker 는 그것을 "누가 이미 만들었다"로 읽어
+--    이긴 쪽의 코드를 그대로 돌려준다(worker/index.js 의 myCode).
+--    부분 인덱스인 이유: 폐기된 행은 여러 개일 수 있고, 제약은 살아 있는 것에만 걸린다.
+CREATE UNIQUE INDEX IF NOT EXISTS invite_codes_active ON invite_codes(user_id) WHERE revoked_at IS NULL;
 
 -- 레이트리밋 카운터(0003). 고정 창이고 창 하나에 행 하나다.
 -- ⚠️ **원문 IP·uid 를 넣지 않는다.** 키는 SHA-256(용도|주체|창번호) 다 — 남용을 세는 대가로

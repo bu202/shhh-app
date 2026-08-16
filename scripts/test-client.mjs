@@ -137,10 +137,14 @@ const FRIENDS_OK = {
   code: "invite000", friends: [{ uid: "u2", name: "친구1", count: 2 }],
   in: [{ uid: "u3", name: "친구2" }], out: [{ uid: "u4", name: "친구3" }],
 };
+// ⚠️ **본문을 복사해서 준다.** 안 하면 화면 코드가 손에 든 목록을 고칠 때(`DATA.code = …`,
+//    `f.count = …`) **픽스처 원본이 바뀌고**, 그 오염이 다음 테스트로 넘어간다. 실제로 겪었다 —
+//    회전 테스트가 `FRIENDS_OK.code` 를 "new111" 로 바꿔 놓아서, 뒤 테스트의 GET /friends 가
+//    그 값을 돌려줬다. 진짜 서버는 매번 새 응답을 만든다.
 const defaultRoutes = (m, p) => {
   if (p === "/health") return { status: 200, body: { ok: true, ready: true, providers: ["kakao", "naver", "google"] } };
-  if (p === "/book" && m === "GET") return { status: 200, body: BOOK_OK };
-  if (p === "/friends" && m === "GET") return { status: 200, body: FRIENDS_OK };
+  if (p === "/book" && m === "GET") return { status: 200, body: structuredClone(BOOK_OK) };
+  if (p === "/friends" && m === "GET") return { status: 200, body: structuredClone(FRIENDS_OK) };
   return { status: 200, body: { ok: true } };
 };
 
@@ -748,6 +752,27 @@ await T("친구 갈래를 떠난 뒤 늦게 온 응답이 내 단어장 화면�
     release?.();
     await tick(12);
     assert.equal(c.store["shh-invite"], "new111", "회전 결과가 화면·저장소에 안 남았다");
+  });
+
+  // 회전에 자기 레이트리밋(분당 5회)이 생겼다 — 이제 이 버튼은 **429 를 받을 수 있다.**
+  // 그때 "연결이 안 돼요"라고 말하면 사용자는 와이파이를 확인하러 간다. 원인이 다르면
+  // 할 일도 다르다: 여기서 할 일은 잠깐 기다리는 것뿐이다.
+  await T("초대 링크 회전이 한도에 걸리면 연결 탓을 하지 않는다", async () => {
+    const c = await boot();
+    const box = openFriends(c);
+    await tick(12);
+    c.setRoutes((m, p) => (m === "POST" && p === "/friends/code"
+      ? { status: 429, body: { error: "잠시 뒤에 다시 시도해 주세요" } }
+      : defaultRoutes(m, p)));
+    findText(box, "초대 링크 새로 만들기").click();
+    await tick(12);
+    assert.ok(!c.TOASTS.some((t) => t.includes("연결이 안 돼요")),
+      `한도에 걸렸는데 연결 문제라고 말한다: ${JSON.stringify(c.TOASTS)}`);
+    assert.ok(c.TOASTS.some((t) => t.includes("잠시 뒤")), `왜 안 됐는지 말하지 않는다: ${JSON.stringify(c.TOASTS)}`);
+    // 그리고 **저장소의 코드를 건드리지 않는다** — 실패했는데 링크가 바뀌면 안 된다.
+    assert.equal(c.store["shh-invite"], "invite000", "회전이 실패했는데 손에 든 초대 코드가 바뀌었다");
+    // 버튼은 다시 눌러야 하므로 풀려 있어야 한다.
+    assert.equal(findText(box, "초대 링크 새로 만들기").disabled, false, "실패했는데 버튼이 잠긴 채로 남았다");
   });
 
   await T("친구 A 단어장을 열고 B 를 열면, A 의 늦은 응답이 B 화면을 덮지 않는다", async () => {
