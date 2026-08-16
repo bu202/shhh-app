@@ -155,11 +155,43 @@ npx wrangler pages deploy dist --project-name shhh-app --branch main   # --commi
 |---|---|
 | `/api/ready` | `{"ok":true,"ready":false,"providers":[],"db":false}` — **`db` 필드가 생겼다**(새 코드) |
 | `ready:false`·`db:false` 인 이유 | OAuth 시크릿이 없어 `providers` 가 비었고, `db` 는 `ready` 뒤에만 물어본다. **의도한 값** |
-| 내부 파일 6개(`CLAUDE.md`·`worker/index.js`·`package.json`·`.git/config` …) | 전부 index.html 폴백. **상태코드 말고 Content-Type 으로 판정**(§5-4) |
+| 내부 파일 6개(`CLAUDE.md`·`worker/index.js`·`package.json`·`.git/config` …) | ~~전부 index.html 폴백~~ **이 판정은 틀렸다 — 2026-08-16 §4-5 참조** |
 | 정적 자산 | `service-worker.js` `application/javascript` (캐시 `shh-v10`) · `manifest.webmanifest` · `js/*.js` 정상 |
 | 보안 헤더 | CSP(`frame-ancestors 'none'`, `object-src 'none'`) · `nosniff` · Referrer-Policy · Permissions-Policy |
 | **Origin 없는 상태 변경** | `POST /api/friends` — Origin 없음/외부 Origin **둘 다 403**. 쿠키 없이도 인증보다 먼저 막는다 |
 | 원격 D1 | `migrations list` → 적용 대기 없음. 코드와 스키마가 같은 세대다 |
+
+### 4-5. 배포 후 스모크 (2026-08-16 실측, 배포 `fa7d8ef0`, source `468d858`)
+
+| 확인한 것 | 결과 |
+|---|---|
+| `/api/ready` | `{"ok":true,"configReady":false,"db":true,"providers":[],"ready":false}` — **`db` 가 `false`→`true`.** 새 코드가 산 증거이자, 원격 D1 스키마가 실제로 답한다는 증거 |
+| `service-worker.js` | 캐시 이름 `shhh-v10` → **`shhh-v11-4d77de307b92`**. 자산 해시가 박혔다 |
+| `js/friends.js` | `loadFriends` 5회 등장 — 새 세대가 라이브에 있다 |
+| **Origin 없는 상태 변경** | `POST /api/friends` 403 (회귀 없음) |
+| **레이트리밋이 원격 D1 에서 실제로 막는가** | `/api/exchange/naver` 14회 → 10회 400, **11회째부터 429**. `ON CONFLICT DO UPDATE … WHERE … RETURNING` 이 D1 에서 돈다 |
+| canonical vs 배포 고유 주소 | 아래 ⚠️ |
+
+> ⚠️ **내부 파일 7개가 옛 엣지 캐시로 아직 열려 있다(오리진은 깨끗하다).**
+>
+> `https://shhh-app.pages.dev/CLAUDE.md` 는 `cf-cache-status: HIT`, `age` 4일, `s-maxage=604800` 으로
+> **1,098줄짜리 옛 CLAUDE.md** 를 준다. 같은 경로가 **배포 고유 주소**(`fa7d8ef0.…`)와
+> **쿼리를 붙인 canonical**(`?x=1`) 에서는 `text/html` 폴백이다 — 즉 지금 배포에는 그 파일이 없고,
+> `pages_build_output_dir` 이 `.` 이던 시절의 응답이 엣지에 남아 있는 것이다.
+>
+> 남은 7개: `CLAUDE.md`(옛 1,098줄) · `worker/index.js`(옛 33KB) · `scripts/test-friends.mjs` ·
+> `wrangler.jsonc` · `package.json` · `package-lock.json` · `docs/API_KEY_GUIDE.md`.
+> **`.env` 와 `CLAUDE.local.md` 는 노출되지 않았다**(배포된 적이 없다).
+> 실제 비밀값·토큰은 하나도 없다(코드에 하드코딩된 적이 없고, 시크릿은 wrangler secret 이다).
+> 다만 옛 `CLAUDE.md` 에 **개인 단어장 복구 링크(`#w=`)가 5곳** 들어 있다.
+>
+> **왜 못 지우나**: `*.pages.dev` 는 Cloudflare 소유 존이라 대시보드·API 캐시 퍼지를 걸 수 없다.
+> `s-maxage` 만료로 **약 52시간 뒤 자동으로 사라진다**(그 뒤에는 폴백으로 대체된다).
+> 커스텀 도메인을 붙여도 그 도메인은 새 캐시라, **이 주소의 옛 캐시는 앞당겨 지울 수 없다.**
+>
+> **왜 2026-08-14 에는 못 봤나**: 그때 판정 근거가 "Content-Type 이 html 이면 폴백"이었는데,
+> 그 측정이 **배포 고유 주소**에서 이뤄졌다. 거기는 엣지 캐시 이력이 없어 언제나 깨끗하다.
+> → §5-4 의 규칙에 한 줄 붙는다: **canonical 주소를 쿼리 없이, `cf-cache-status` 와 `age` 까지 본다.**
 
 ⚠️ **프로덕션 별칭은 배포 직후 1분 정도 옛 응답을 준다.** 한 번 보고 "배포가 안 됐다"고 판단하지
 말 것 — 배포 고유 주소(`https://<id>.shhh-app.pages.dev`)로 먼저 확인하면 구분된다.
