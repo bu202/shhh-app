@@ -106,6 +106,15 @@ if (typeof document !== "undefined") {
     const r = await apiPutBook(words, name);
     // 성공. 다만 이 요청이 날아간 뒤에 **누가(어느 탭이든) 또 고쳤다면** 서버에 있는 건 그 편집 전 상태다.
     if (r.ok) { if (rev === editRevision()) synced(); return r; }
+    // ⚠️ **계정이 바뀐 것을 기기 충돌로 오해하면 안 된다.** 둘 다 409 로 오지만 뜻이 정반대다:
+    //    기기 충돌은 "같은 사람의 다른 기기가 먼저 저장했다"라 합치는 게 맞고,
+    //    계정 변경은 "지금 쿠키의 주인이 다른 사람이다"라 **합치면 남의 단어장에 내 것을 섞는다.**
+    //    dirty 는 그대로 둔다 — 이 단어들은 아직 원래 계정에 저장되지 않았다.
+    if (r.data && r.data.accountChanged) {
+      markMoved();
+      toast("다른 계정으로 로그인돼 있어요. 앱을 새로고침한 뒤 다시 담아주세요.");
+      return r;
+    }
     if (r.kind !== "conflict") return r;   // 실패 — dirty 를 그대로 둬야 다음에 다시 올라간다
     const server = (r.data && r.data.words) || [];
     const mine = BOOK.slice();
@@ -123,10 +132,45 @@ if (typeof document !== "undefined") {
     return again;
   }
 
+  // ── 이 탭이 어느 계정인지 확실한가 ──
+  // 쿠키는 탭이 아니라 **브라우저 전체**가 공유한다. 그래서 다른 탭에서 계정을 바꾸면 이 탭의
+  // 요청도 그 순간부터 새 계정의 쿠키로 나간다 — 이 탭은 그걸 모른 채 손에 든 앞 계정 단어장을
+  // 저장하고, 그러면 남의 계정에 내 단어장이 쌓인다.
+  //
+  // 문지기를 둘 둔다. 서버가 `me` 를 대조하는 것이 진짜 방어이고(worker/index.js), 아래 둘은
+  // 그 전에 **애초에 잘못된 요청을 안 만드는** 쪽이다:
+  //   ① 서버가 누구라고 말해 준 적이 없으면(`authUid()` 가 빔) 보내지 않는다. 계정 전환 직후
+  //      `GET /book` 이 오프라인·timeout·500 이면 정확히 이 상태가 되는데, 그때 보내면
+  //      **틀렸는지 맞았는지 서버조차 가릴 수 없다**(대조할 값을 안 실었으므로).
+  //   ② 다른 탭이 계정을 바꾼 것을 알면 그 자리에서 멈춘다.
+  // 어느 쪽이든 dirty 는 그대로 남으므로 **담은 단어를 잃지 않는다** — 다음 동기화에 올라간다.
+  let accountMoved = false;
+  // 이 탭이 마지막으로 **서버에게 확인받은** 계정. sync() 가 대답을 받은 뒤에만 갱신한다.
+  let myAccount = authUid();
+  const canPush = () => !!authToken() && !!authUid() && !accountMoved;
+  // 계정이 옮겨간 것을 알게 된 순간. 다시 켜는 길은 새로고침뿐이다 —
+  // 이 탭의 메모리에 있는 BOOK 이 앞 계정 것이라, 여기서 조용히 이어붙이면 그게 곧 사고다.
+  const markMoved = () => { accountMoved = true; clearTimeout(putTimer); };
+
+  // 다른 탭이 로그인·로그아웃·계정 변경을 하면 localStorage 가 바뀌고 이 이벤트가 난다.
+  // (같은 탭에서 난 변경에는 안 뜬다 — 그건 이 탭이 이미 아는 일이다.)
+  addEventListener("storage", (e) => {
+    if (e.key !== UID_KEY && e.key !== ME_KEY && e.key !== VIA_KEY) return;
+    // ⚠️ 계정을 가리키는 값이 **둘**이라 둘 다 본다(`shh-me` = 서버가 말해 준 id,
+    //    `shh-uid` = 마지막으로 맞춰 둔 id). 로그인은 둘을 잇달아 쓰므로 **하나만 바뀐 순간**이
+    //    반드시 존재하고, storage 이벤트는 그 순간에 먼저 온다. 한쪽만 보면 그 창을 놓친다 —
+    //    실브라우저에서 `shh-uid` 만 바꿔 보고 찾은 구멍이다(둘 다 바꾸는 테스트는 통과했었다).
+    // 로그아웃(표시가 사라짐)도 여기 걸린다 — 다른 탭이 로그아웃했는데 이 탭이 계속 올리면 안 된다.
+    const moved = (authUid() || "") !== myAccount
+               || (localStorage.getItem(UID_KEY) || "") !== myAccount;
+    if (authToken() && !moved) return;
+    markMoved();
+  });
+
   // 단어를 담거나 뺄 때마다 불린다(app.js 의 saveBook). 서버 저장은 몰아서 한 번.
   onBookChanged((words) => {
     touch();
-    if (!authToken()) return;
+    if (!canPush()) return;   // dirty 는 남는다 — 잃는 것이 아니라 미루는 것이다
     clearTimeout(putTimer);
     putTimer = setTimeout(() => queuePush(words, myName()), 800);
   });
@@ -157,6 +201,9 @@ if (typeof document !== "undefined") {
     // 계정이 안 바뀐 것으로 보여 앞 계정 단어장이 그대로 올라간다.
     setAuthUid(nowUid);
     localStorage.setItem(UID_KEY, nowUid);
+    // 서버가 방금 확인해 준 계정이다. 이제부터 이 탭은 이 계정이고, storage 이벤트는
+    // **이 값과 다를 때만** 경보를 울린다(우리가 방금 쓴 값에 스스로 놀라지 않게).
+    myAccount = nowUid;
     // 이제부터 손에 든 서버 버전은 방금 받은 것이다. push·merge 는 이 위에 얹는다.
     setBookVersion(remote.version);
     if (plan.action === "push") {

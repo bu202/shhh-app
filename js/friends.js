@@ -212,9 +212,15 @@ if (typeof document !== "undefined") {
     const rotate = document.createElement("button");
     rotate.className = "btn-ghost"; rotate.type = "button";
     rotate.textContent = "초대 링크 새로 만들기";
+    // ⚠️ **여기 잠금이 특히 중요하다.** 회전은 누를 때마다 새 코드를 만들고 옛 코드를 죽인다.
+    //    두 번 누르면 두 번째가 첫 번째를 죽이는데, 응답이 뒤집혀 도착하면 화면과 저장소에는
+    //    **이미 죽은 코드**가 남는다 — 그 링크를 보낸 상대는 "없는 코드"만 본다.
     rotate.addEventListener("click", async () => {
+      if (rotate.disabled) return;
       if (!confirm("새 링크를 만들면 전에 보낸 링크는 못 쓰게 돼요.\n이미 친구가 된 사람은 그대로예요. 계속할까요?")) return;
+      rotate.disabled = true;
       const r = await apiRotateCode();
+      rotate.disabled = false;
       if (!r.ok || !r.data.code) { toast("연결이 안 돼요. 잠시 뒤 다시 눌러주세요"); return; }
       localStorage.setItem(CODE_KEY, r.data.code);
       if (DATA) DATA.code = r.data.code;   // 손에 든 목록을 고친다 — KV 는 쓰고 바로 읽으면 옛 값이 온다(함정 49)
@@ -296,10 +302,18 @@ if (typeof document !== "undefined") {
     };
 
     if (kind === "in") {
-      btn("수락", "ok", async () => {
+      // 철회와 **같은 이유로** 잠근다: 도는 동안 또 누르면 두 번째 요청은 이미 맺어진 관계를
+      // 다시 수락하려 들고, 서버는 그걸 "없는 요청"이라 404 로 답한다 —
+      // 사용자는 방금 성공한 일에 대해 실패 문구를 본다.
+      btn("수락", "ok", async (b) => {
+        if (b.disabled) return;
+        b.disabled = true;
         const res = await apiAcceptFriend(f.uid);
-        if (!res.ok) return toast(res.data?.error || (res.kind === "network" || res.kind === "timeout"
-          ? "연결이 안 돼요. 잠시 뒤 다시 눌러주세요" : "수락하지 못했어요"));
+        if (!res.ok) {
+          b.disabled = false;
+          return toast(res.data?.error || (res.kind === "network" || res.kind === "timeout"
+            ? "연결이 안 돼요. 잠시 뒤 다시 눌러주세요" : "수락하지 못했어요"));
+        }
         // 개수는 서버가 방금 준 값으로 채운다 — 요청 단계에선 안 받아 온 값이라 0 으로 남는다.
         f.count = res.data.friend?.count ?? 0;
         toast(`${f.name || "친구"}님과 친구가 됐어요!`);
@@ -323,14 +337,22 @@ if (typeof document !== "undefined") {
   // 담는 버튼은 두지 않았다. 사용자가 이번엔 **보기만** 하기로 정했고, 담기까지 두면
   // 무료 벽·프로 상태가 남의 단어장 화면에서 또 갈라진다(문구가 두 곳으로 늘어난다).
   const dlg = el("fr-book");
-  el("fr-book-close").addEventListener("click", () => dlg.close());
+  // 닫으면 기다리던 응답도 버린다 — 닫힌 창에 글씨를 쓰면 다음에 열 때 옛 사람의 단어장이 먼저 보인다.
+  el("fr-book-close").addEventListener("click", () => { openFor = null; dlg.close(); });
+
+  // 지금 열려 있는 친구. 응답이 돌아왔을 때 **아직 그 사람을 보고 있는지** 가리는 표다.
+  // 없으면 A 를 열고 B 를 연 뒤 A 의 응답이 늦게 도착했을 때, B 의 제목 아래에 A 의 단어장이
+  // 그려진다 — 화면이 남의 단어장을 남의 이름으로 보여주는 셈이다.
+  let openFor = null;
 
   async function openFriendBook(f) {
+    openFor = f.uid;
     el("fr-book-title").textContent = `${f.name || "이 친구"}님의 단어장이에요!`;
     const body = el("fr-book-body");
     body.innerHTML = '<p class="hint">불러오는 중이에요…</p>';
     dlg.showModal();
     const res = await apiFriendBook(f.uid);
+    if (openFor !== f.uid) return;   // 그 사이 다른 친구를 열었다 — 이 답은 이제 남의 화면이다
     body.innerHTML = "";
     if (!res.ok) { body.innerHTML = '<p class="hint">단어장을 불러오지 못했어요.</p>'; return; }
     const r = res.data;

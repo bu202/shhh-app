@@ -935,5 +935,46 @@ function befriend(env, a, b, status = "accepted") {
   }
 }
 
-console.log("test-friends: 115개 통과 — 로그인 왕복 표(브라우저 결속) · 친구 쌍 유일성 · 친구 권한(행 하나) · 쿠키 세션 · 세대 무효화 · CSRF(Origin 필수) · 제공자ID 비공개 "
+// ══ 23. 저장 요청은 **자기가 누구라고 믿는지**를 같이 말한다 ══════════════
+// 한 브라우저의 탭 두 개. 탭 A 는 계정 A 로 열려 있고, 탭 B 에서 계정 B 로 로그인한다.
+// 쿠키는 브라우저 전체가 공유하므로 그 순간부터 **탭 A 의 요청도 계정 B 의 쿠키로 나간다.**
+// 탭 A 는 그걸 모른 채 손에 든 A 의 단어장을 저장하고, 그러면 A 의 단어장이 B 계정에 쌓인다.
+// 서버는 지금까지 "쿠키가 맞으면 그 사람"만 봤으므로 이걸 가려낼 근거가 아예 없었다.
+// → 요청이 **자기가 믿는 계정**을 같이 말하게 하고, 세션의 주인과 다르면 거절한다.
+{
+  const env = makeEnv();
+  const A = await signUp(env, "kakao", "tabA"), B = await signUp(env, "kakao", "tabB");
+
+  // B 계정에 원래 단어장이 있다. 이게 A 의 것으로 덮이면 안 된다.
+  assert.equal((await call(env, B.token, "/book", "PUT", { words: ["비밀"], name: "B", version: 0 })).status, 200);
+
+  // 96. **남의 계정이라고 믿으면서 보낸 저장은 거절한다.** 탭 A 가 계정 A 라 믿는데
+  //     쿠키는 B 인 상황이 정확히 이것이다.
+  const cross = await call(env, B.token, "/book", "PUT", { words: ["A의단어"], name: "A", version: 1, me: A.uid });
+  assert.equal(cross.status, 409, "다른 계정이라 믿고 보낸 저장이 통과했다 — 남의 계정에 내 단어장이 쌓인다");
+  assert.equal(cross.body.accountChanged, true, "계정이 바뀌었다는 것을 앱이 알아볼 표시가 없다");
+  assert.ok(!JSON.stringify(cross.body).includes(A.uid) && !JSON.stringify(cross.body).includes(B.uid),
+    "거절 응답에 계정 id 가 실려 나갔다");
+
+  // 97. B 의 단어장은 **손도 안 탄다.**
+  const still = await call(env, B.token, "/book");
+  assert.deepEqual(still.body.words, ["비밀"], "거절했는데 남의 단어장이 바뀌었다");
+
+  // 98. 자기 계정이라고 바르게 말하면 그대로 통과한다. 막기만 하고 통과를 안 재면
+  //     "저장이 아예 안 되는" 회귀를 못 잡는다.
+  const okPut = await call(env, B.token, "/book", "PUT", { words: ["비밀", "하나더"], name: "B", version: 1, me: B.uid });
+  assert.equal(okPut.status, 200, "자기 계정인데 저장이 막혔다");
+
+  // 99. `me` 를 아예 안 보낸 요청은 그대로 받는다. 새 서비스워커가 아직 안 붙은 옛 화면이
+  //     이 값을 모르는 채로 저장하는데, 그걸 막으면 **업데이트 전 사용자의 저장이 통째로 죽는다.**
+  //     이 자리를 지키는 것은 탭 감지(클라이언트)이고, 서버는 **말한 것이 틀렸을 때만** 막는다.
+  assert.equal((await call(env, B.token, "/book", "PUT", { words: ["비밀"], name: "B", version: 2 })).status, 200,
+    "me 를 안 보낸 옛 화면의 저장까지 막았다");
+
+  // 100. 계정 삭제·로그아웃 뒤 남은 탭이 옛 uid 를 들고 저장해도 세션이 없으면 401 이 먼저다.
+  assert.equal((await call(env, null, "/book", "PUT", { words: ["x"], version: 0, me: A.uid })).status, 401,
+    "세션 없이 uid 만으로 저장이 됐다");
+}
+
+console.log("test-friends: 120개 통과 — 로그인 왕복 표(브라우저 결속) · 친구 쌍 유일성 · 친구 권한(행 하나) · 쿠키 세션 · 세대 무효화 · CSRF(Origin 필수) · 제공자ID 비공개 "
   + "· 버전 충돌 · 수락 트랜잭션(상한 포함) · 무관계 DELETE · 마스터 · 복귀 주소 · 본문 한도 · state 서명 · 코드 회전 · 상한 · 헤더 · readiness(스키마 실질의) · 세션 청소 · 레이트리밋");

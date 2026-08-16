@@ -167,8 +167,14 @@ const advanceBookVersion = (v) => {
 const apiGetBook = () => request("/book");
 // 결과를 그대로 돌려준다 — 충돌(kind:"conflict")이면 r.data 에 서버 레코드가 있고,
 // 부르는 쪽(js/auth.js)이 합친다. **충돌은 저장 성공이 아니다.**
+// `me` 를 같이 보낸다 — **이 탭이 자기를 누구라고 믿는지**다. 쿠키는 브라우저 전체가 공유하므로
+// 다른 탭이 계정을 바꾸면 이 요청도 새 계정의 쿠키로 나가는데, 그때 서버가 대조해 거절한다
+// (worker/index.js 의 PUT /book). 값이 빈 탭은 애초에 저장을 보내지 않는다(js/auth.js).
 const apiPutBook = async (words, name) => {
-  const r = await request("/book", { method: "PUT", body: JSON.stringify({ words, name, version: bookVersion() }) });
+  const r = await request("/book", {
+    method: "PUT",
+    body: JSON.stringify({ words, name, version: bookVersion(), me: authUid() }),
+  });
   // 성공이든 충돌이든 서버가 말한 번호는 사실이다. 낡은 요청의 응답이어도 받아 적는다 —
   // 버리면 다음 저장이 옛 번호로 나가 불필요한 충돌을 만든다. 되돌리지만 않으면 된다.
   advanceBookVersion(r.data && r.data.version);

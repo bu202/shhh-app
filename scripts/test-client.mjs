@@ -111,13 +111,19 @@ function loadClient({ store = {}, routes, loc = {} } = {}) {
   const src = preamble + read("js/authApi.js") + "\n" + read("js/auth.js") + "\n" + read("js/friends.js")
     + "\n; return { HOOKS, TOASTS, getBook: () => BOOK, setBook: (v) => { BOOK = v.slice(); } };";
 
+  // window 이벤트를 붙잡아 둔다. `storage` 는 **다른 탭이 localStorage 를 고쳤을 때만** 나는
+  // 이벤트라, 이 하니스처럼 인스턴스 둘이 한 store 를 공유할 때 그 상황을 그대로 만들 수 있다.
+  const winHandlers = {};
+  const addEventListener = (n, fn) => { (winHandlers[n] ||= []).push(fn); };
+
   const inner = new Function(
     "localStorage", "location", "history", "crypto", "fetch", "document", "confirm", "addEventListener",
     src,
-  )(localStorage, location, history, crypto, fetch, document, () => confirmAnswer, () => {});
+  )(localStorage, location, history, crypto, fetch, document, () => confirmAnswer, addEventListener);
 
   return {
     ...inner, store, calls, document, segs, location,
+    fireStorage: (key, newValue) => { for (const fn of winHandlers.storage || []) fn({ key, newValue }); },
     setRoutes: (fn) => { route = fn; },
     setConfirm: (v) => { confirmAnswer = v; },
     deletes: (path) => calls.filter((c) => c.method === "DELETE" && c.path === path).length,
@@ -395,6 +401,92 @@ for (const [label, resp] of [["연결 실패", { throw: true }], ["시간 초과
   });
 }
 
+// ══ P0-4 · 탭 두 개에서 계정을 바꿔도 단어장이 안 섞인다 ═════════════════
+// 쿠키는 탭이 아니라 브라우저 전체가 공유한다. 그래서 탭 B 에서 계정을 바꾸면 탭 A 의 요청도
+// 새 계정의 쿠키로 나간다 — 탭 A 는 그걸 모른 채 앞 계정 단어장을 저장한다.
+// 문지기를 둘 둔다: ① 저장 요청이 **자기가 믿는 계정**을 말하고 서버가 대조한다(test-friends 96~100)
+//                  ② 탭이 다른 탭의 계정 변경을 storage 로 알아채고 자동 저장을 멈춘다
+{
+  // 두 인스턴스가 같은 store 를 쓴다 = 한 브라우저의 탭 두 개.
+  const twoTabs = async (routesA, routesB, store) => {
+    const a = loadClient({ store, routes: routesA });
+    for (const fn of a.HOOKS.ready) await fn();
+    const b = loadClient({ store, routes: routesB });
+    for (const fn of b.HOOKS.ready) await fn();
+    await tick(12);
+    return { a, b };
+  };
+
+  await T("탭 A 는 자기가 믿는 계정을 저장 요청에 실어 보낸다", async () => {
+    const puts = [];
+    const c = await boot({
+      routes: (m, p, opt) => {
+        if (m === "PUT" && p === "/book") { puts.push(JSON.parse(opt.body)); return { status: 200, body: { ok: true, version: 4 } }; }
+        return defaultRoutes(m, p);
+      },
+    });
+    c.setBook(["가"]); c.HOOKS.bookChanged(["가"]);
+    await sleep(900); await tick(12);
+    assert.equal(puts.length, 1, "저장이 안 나갔다 — 이 테스트의 전제가 깨졌다");
+    assert.equal(puts[0].me, "u1", "저장 요청이 자기가 누구라고 믿는지 말하지 않는다 — 서버가 대조할 근거가 없다");
+  });
+
+  await T("계정이 확인되지 않은 탭은 자동 저장을 아예 안 보낸다", async () => {
+    // 로그인 표시는 있는데 서버가 누구인지 아직 말해준 적이 없다(shh-me 없음).
+    // 이 상태로 저장하면 **틀렸는지 맞았는지 서버도 못 가린다** — 그러면 보내지 않는 쪽이 맞다.
+    const store = { "shh-via": "kakao", "shh-uid": "", "shh-dirty": "0" };
+    const c = await boot({ store, routes: (m, p) => (m === "GET" && p === "/book" ? { throw: true } : defaultRoutes(m, p)) });
+    c.setBook(["가"]); c.HOOKS.bookChanged(["가"]);
+    await sleep(900); await tick(12);
+    assert.equal(c.calls.filter((x) => x.method === "PUT" && x.path === "/book").length, 0,
+      "내가 누구인지도 모르는 채로 저장을 보냈다 — 남의 계정에 쌓일 수 있다");
+    assert.equal(c.store["shh-dirty"], "1", "안 보냈으면 '아직 저장 안 됨'으로 남아야 다음에 올라간다");
+  });
+
+  // 계정을 가리키는 값이 **둘**이다(`shh-me` = 서버가 말해 준 id, `shh-uid` = 마지막으로 맞춰 둔 id).
+  // 실제 로그인은 둘을 잇달아 쓰지만, 그 사이에는 **하나만 바뀐 순간**이 있고 storage 이벤트는
+  // 그 순간마다 따로 난다. 한쪽만 보면 그 창을 통째로 놓친다 —
+  // 실제로 브라우저에서 `shh-uid` 만 바꿔 보고 이 구멍을 찾았다(단위 테스트는 둘 다 바꿔서 통과했다).
+  for (const [label, keys] of [
+    ["둘 다 바뀜", { "shh-uid": "u9", "shh-me": "u9" }],
+    ["shh-uid 만 먼저 바뀜", { "shh-uid": "u9" }],
+    ["shh-me 만 먼저 바뀜", { "shh-me": "u9" }],
+    ["다른 탭이 로그아웃함", { "shh-via": null, "shh-me": null }],
+  ]) {
+    await T(`다른 탭의 계정 변경(${label}) — 이 탭은 자동 저장을 멈춘다`, async () => {
+      const store = { ...LOGGED_IN(), "shh-dirty": "0" };
+      const { a } = await twoTabs(defaultRoutes, defaultRoutes, store);
+      for (const [k, v] of Object.entries(keys)) {
+        if (v === null) delete store[k]; else store[k] = v;
+        a.fireStorage(k, v);
+      }
+      await tick(4);
+      const before = a.calls.filter((x) => x.method === "PUT" && x.path === "/book").length;
+      a.setBook(["가"]); a.HOOKS.bookChanged(["가"]);
+      await sleep(900); await tick(12);
+      assert.equal(a.calls.filter((x) => x.method === "PUT" && x.path === "/book").length, before,
+        "다른 탭이 계정을 바꿨는데 앞 계정 단어장을 그대로 올렸다");
+      assert.equal(store["shh-dirty"], "1", "안 보냈으면 '아직 저장 안 됨'으로 남아야 한다");
+    });
+  }
+
+  await T("서버가 '계정이 바뀌었다'고 하면 합치지 않고 저장 실패로 남긴다", async () => {
+    const store = { ...LOGGED_IN(), "shh-dirty": "1" };
+    const c = await boot({
+      store,
+      routes: (m, p) => (m === "PUT" && p === "/book"
+        ? { status: 409, body: { error: "다른 계정으로 로그인돼 있어요", accountChanged: true } }
+        : defaultRoutes(m, p)),
+    });
+    c.setBook(["가"]); c.HOOKS.bookChanged(["가"]);
+    await sleep(900); await tick(12);
+    assert.equal(c.store["shh-dirty"], "1", "저장이 거절됐는데 '저장 끝'으로 표시했다");
+    assert.ok(!c.TOASTS.includes("다른 기기에서 담은 단어와 합쳤어요"),
+      "계정이 바뀐 것을 기기 충돌로 오해해 **남의 단어장과 합쳤다**");
+    assert.ok(c.TOASTS.some((t) => t.includes("계정")), "왜 저장이 안 됐는지 말하지 않는다");
+  });
+}
+
 // ══ P1-3 · 로그인 왕복 요청도 언젠가 끝난다 ═══════════════════════════════
 // apiExchange 와 apiLogoutRaw 만 공통 request() 를 안 거친다(아직 로그인 표시가 없는 자리라서).
 // 그래서 이 둘만 **시간 제한이 없었다.** 응답이 영원히 안 오면 onAppReady 가 끝나지 않고,
@@ -619,6 +711,71 @@ await T("친구 갈래를 떠난 뒤 늦게 온 응답이 내 단어장 화면�
   assert.ok(c.document.getElementById("friends").hidden, "떠났는데 늦게 온 응답이 친구 화면을 다시 열었다");
   assert.ok(!c.document.getElementById("wordbook").hidden, "늦게 온 응답이 내 단어장을 가렸다");
 });
+
+// ══ P1-2 · 두 번 눌러도 한 번, 늦게 온 답이 지금 화면을 덮지 않는다 ══════
+// 철회(거절·취소·끊기)에는 이미 잠금이 있었지만 **수락과 링크 회전에는 없었다.**
+// 둘 다 두 번 누르면 두 번째 요청이 이미 없어진 것을 건드린다 — 수락은 404, 회전은
+// **방금 만든 코드를 그 자리에서 폐기하고 화면에는 죽은 코드를 남긴다.**
+{
+  await T("수락 중복 클릭 — 요청은 한 번만", async () => {
+    let release;
+    const c = await boot();
+    const box = openFriends(c);
+    c.setRoutes((m, p) => (m === "PUT" && p === "/friends/u3"
+      ? new Promise((r) => { release = () => r({ status: 200, body: { ok: true, friend: { count: 1 } } }); })
+      : defaultRoutes(m, p)));
+    const b = findText(box, "수락");
+    b.click(); b.click();
+    await tick();
+    assert.equal(c.calls.filter((x) => x.method === "PUT" && x.path === "/friends/u3").length, 1,
+      "중복 클릭이 수락을 두 번 보냈다 — 두 번째는 이미 친구인 관계를 건드린다");
+    release?.();
+    await tick(12);
+  });
+
+  await T("초대 링크 회전 중복 클릭 — 요청은 한 번만", async () => {
+    let release;
+    const c = await boot();
+    const box = openFriends(c);
+    c.setRoutes((m, p) => (m === "POST" && p === "/friends/code"
+      ? new Promise((r) => { release = () => r({ status: 200, body: { code: "new111" } }); })
+      : defaultRoutes(m, p)));
+    const b = findText(box, "초대 링크 새로 만들기");
+    b.click(); b.click();
+    await tick();
+    assert.equal(c.calls.filter((x) => x.method === "POST" && x.path === "/friends/code").length, 1,
+      "회전을 두 번 보냈다 — 두 번째가 첫 번째 코드를 죽이고 화면엔 죽은 코드가 남는다");
+    release?.();
+    await tick(12);
+    assert.equal(c.store["shh-invite"], "new111", "회전 결과가 화면·저장소에 안 남았다");
+  });
+
+  await T("친구 A 단어장을 열고 B 를 열면, A 의 늦은 응답이 B 화면을 덮지 않는다", async () => {
+    const TWO = { code: "invite000", in: [], out: [],
+                  friends: [{ uid: "uA", name: "에이", count: 1 }, { uid: "uB", name: "비이", count: 1 }] };
+    let releaseA;
+    const c = await boot({ routes: (m, p) => (m === "GET" && p === "/friends" ? { status: 200, body: TWO } : defaultRoutes(m, p)) });
+    const box = openFriends(c);
+    await tick(12);
+    c.setRoutes((m, p) => {
+      if (p === "/friends/uA/book") return new Promise((r) => { releaseA = () => r({ status: 200, body: { words: [] } }); });
+      if (p === "/friends/uB/book") return { status: 200, body: { words: ["가"] } };
+      return defaultRoutes(m, p);
+    });
+    const [openA, openB] = walk(box).filter((e) => e._text === "단어장 보기");
+    openA.click();
+    await tick();
+    openB.click();
+    await tick(12);
+    releaseA();                      // A 의 응답이 뒤늦게 도착한다
+    await tick(12);
+    const body = c.document.getElementById("fr-book-body");
+    assert.ok(!allText(body).includes("아직 담은 단어가 없어요"),
+      "A 의 늦은 응답이 지금 열려 있는 B 의 단어장 화면을 덮었다 — 남의 단어장을 보고 있게 된다");
+    assert.equal(c.document.getElementById("fr-book-title")._text, "비이님의 단어장이에요!",
+      "제목과 내용이 다른 사람을 가리킨다");
+  });
+}
 
 const failed = RESULTS.filter((r) => !r[0]);
 for (const [pass, name, why] of RESULTS) if (!pass) console.log(`  ✗ ${name}\n      ${why}`);
