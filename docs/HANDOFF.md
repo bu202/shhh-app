@@ -193,6 +193,28 @@ npx wrangler pages deploy dist --project-name shhh-app --branch main   # --commi
 > 그 측정이 **배포 고유 주소**에서 이뤄졌다. 거기는 엣지 캐시 이력이 없어 언제나 깨끗하다.
 > → §5-4 의 규칙에 한 줄 붙는다: **canonical 주소를 쿼리 없이, `cf-cache-status` 와 `age` 까지 본다.**
 
+### 4-6. 배포 후 스모크 (2026-08-16 실측, 배포 `acdecfa2`, source `586cc86`)
+
+다중 탭 계정 보호(P0-4)와 친구 UI 경합(P1-2)이 들어간 배포다. 롤백 대상은 `fa7d8ef0`.
+
+| 확인한 것 | 결과 |
+|---|---|
+| 배포 목록 | `acdecfa2` · Production · main · source `586cc86` |
+| `/api/ready` | `{"ok":true,"configReady":false,"db":true,"providers":[],"ready":false}` — 안 바뀌는 것이 정상 |
+| 서비스워커 | `shhh-v11-4d77de307b92` → **`shhh-v11-1e4ce4092d0d`**. 자산이 바뀌었으니 세대도 갈렸다 |
+| `js/auth.js` | `accountMoved` 3회 — 탭 감지가 라이브 |
+| `js/authApi.js` | `me: authUid()` 1회 — 저장이 자기 계정을 싣는다 |
+| **세션 없이 `me` 만 실은 `PUT /book`** | **401.** 계정 대조보다 인증이 먼저다 — `me` 만으로는 아무것도 안 된다 |
+| Origin 없는 `POST /friends` | 403 (회귀 없음) |
+| canonical vs 배포 고유 주소 | 둘 다 같은 값 (이번엔 별칭 지연 없음) |
+
+> ⚠️ **`me` 불일치 거절(409 `accountChanged`)은 라이브에서 블랙박스로 재지 못했다.** 그 자리에
+> 닿으려면 세션이 있어야 하는데 OAuth 가 꺼져 있어 계정을 만들 수 없다. 서버 쪽 근거는
+> `test-friends` 96~100 이고, 라이브에서 확인한 것은 **그 앞의 인증 순서(401)** 까지다.
+> OAuth 를 켜는 날 실제 두 계정으로 다시 재고 이 줄을 지운다.
+>
+> ⚠️ §4-5 의 옛 엣지 캐시는 이 배포로 달라지지 않는다 — **오리진 문제가 아니다.** 만료를 기다린다.
+
 ⚠️ **프로덕션 별칭은 배포 직후 1분 정도 옛 응답을 준다.** 한 번 보고 "배포가 안 됐다"고 판단하지
 말 것 — 배포 고유 주소(`https://<id>.shhh-app.pages.dev`)로 먼저 확인하면 구분된다.
 
