@@ -55,9 +55,14 @@ self.addEventListener("activate", (e) => {
   e.waitUntil((async () => {
     // 우리 이름표가 붙은 것만 지운다. github.io 프로젝트 사이트는 **origin 을 다른 프로젝트와 공유**해서,
     // 이름표를 안 보면 bu202.github.io 의 다른 앱 캐시까지 이 SW 가 지워버린다.
+    // ⚠️ **allSettled 다.** `Promise.all` 이면 옛 캐시 하나를 못 지웠을 때 그 거절이
+    //    아래 claim 까지 통째로 건너뛴다 — 새 세대가 활성인데 **떠 있는 탭은 계속 옛 세대**가
+    //    되고, 그게 정확히 우리가 이미 겪은 「세대 혼합」 증상이다. 못 지운 캐시는 이름이
+    //    달라 어차피 안 읽히지만, 제어권을 못 넘겨받는 것은 바로 화면에 나타난다.
+    //    청소 실패보다 세대 혼합이 무겁다.
     const keys = await caches.keys();
-    await Promise.all(keys.filter((k) => k !== CACHE && (k.startsWith(PREFIX) || k.startsWith("sueo-")))
-                          .map((k) => caches.delete(k)));
+    await Promise.allSettled(keys.filter((k) => k !== CACHE && (k.startsWith(PREFIX) || k.startsWith("sueo-")))
+                                 .map((k) => caches.delete(k)));
     await self.clients.claim();
   })());
 });

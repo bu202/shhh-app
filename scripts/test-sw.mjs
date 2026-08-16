@@ -70,18 +70,29 @@ assert.ok(ver && Number(ver.slice(1)) >= 10, `캐시 버전이 안 올라갔다(
 // Playwright 를 넣지 않은 이유: 여기서 재려는 것은 브라우저의 렌더링이 아니라 **이 파일의
 // 생명주기 로직**이다. 실기기 확인(설치형 PWA 새로고침·오프라인)은 자동화가 대신할 수 없는
 // 별개의 항목이라 사용자 체크리스트로 남긴다(.claude/rules/frontend-pwa.md).
-function runSW({ existing = [] } = {}) {
+function runSW({ existing = [], failAddAll = false, failDelete = null } = {}) {
   const store = new Map(existing.map((k) => [k, new Map()]));
   const log = [];
   const caches = {
     open: async (k) => {
       if (!store.has(k)) store.set(k, new Map());
       const m = store.get(k);
-      return { addAll: async (list) => { for (const u of list) m.set(u, "ok"); },
-               put: async (req, res) => { m.set(req.url ?? String(req), res); } };
+      return {
+        // 진짜 Cache.addAll 은 **원자적**이다 — 하나라도 못 받으면 아무것도 안 넣고 거절한다.
+        // 반쪽 세대가 생기지 않는 이유가 그것이라 셰임도 그렇게 둔다.
+        addAll: async (list) => {
+          if (failAddAll) { store.delete(k); throw new TypeError("Failed to fetch"); }
+          for (const u of list) m.set(u, "ok");
+        },
+        put: async (req, res) => { m.set(req.url ?? String(req), res); },
+      };
     },
     keys: async () => [...store.keys()],
-    delete: async (k) => { log.push("delete:" + k); return store.delete(k); },
+    delete: async (k) => {
+      if (failDelete === k) { log.push("delete-fail:" + k); throw new DOMException("QuotaExceeded"); }
+      log.push("delete:" + k);
+      return store.delete(k);
+    },
     match: async () => undefined,
   };
   const handlers = {};
@@ -94,10 +105,13 @@ function runSW({ existing = [] } = {}) {
   new Function("self", "caches", "fetch", src)(selfStub, caches, async () => ({ ok: true, type: "basic" }));
   return { handlers, store, log };
 }
+// 브라우저는 waitUntil 이 거절해도 **예외를 이벤트 밖으로 던지지 않는다**(콘솔에 적고 넘어간다).
+// 셰임이 여기서 throw 하면 아래 검사가 "브라우저가 안 하는 일"을 재게 된다.
 const fire = async (fn) => {
   const waits = [];
   fn({ waitUntil: (p) => waits.push(p), request: null, respondWith: () => {} });
-  await Promise.all(waits);
+  const rs = await Promise.allSettled(waits);
+  return rs.every((r) => r.status === "fulfilled");
 };
 
 {
@@ -125,4 +139,32 @@ const fire = async (fn) => {
     assert.ok(sw.store.get(CACHE).has(js), `${js} 가 이 세대 캐시에 없다 — 세대가 섞일 수 있다`);
 }
 
-console.log(`test-sw: 통과 — 로그인 왕복·API·실패 응답 미캐시, 정적 자산 ${assets.length}개 선캐시, 캐시 ${ver}, install→activate 세대 교체`);
+// ── 11. 선캐시가 실패하면 이 세대는 **아예 안 선다** ─────────────────────
+// 자산 하나를 못 받았는데 install 이 성공하면 반쪽 세대가 캐시에 앉는다 — 그러면 오프라인에서
+// 어떤 화면은 열리고 어떤 화면은 안 열린다. 그럴 바엔 **옛 세대가 그대로 도는 쪽**이 낫다
+// (사용자는 옛 앱을 쓰지, 반쯤 깨진 앱을 쓰지 않는다).
+{
+  const sw = runSW({ existing: ["shhh-v10"], failAddAll: true });
+  const okInstall = await fire(sw.handlers.install);
+  assert.equal(okInstall, false, "선캐시가 실패했는데 install 이 성공했다 — 반쪽 세대가 선다");
+  assert.ok(sw.store.has("shhh-v10"), "install 이 실패했는데 옛 세대 캐시가 사라졌다");
+  assert.ok(!sw.store.has("shhh-" + ver), "실패한 install 이 반쪽 캐시를 남겼다");
+}
+
+// ── 12. 옛 캐시 하나를 못 지워도 **제어권은 넘겨받는다** ─────────────────
+// 왜 이걸 재는가: 전에는 `Promise.all` 이었다. 지우기 하나가 거절하면 그 거절이 claim 까지
+// 건너뛰어, **새 세대가 활성인데 떠 있는 탭은 계속 옛 세대**로 남는다 — 우리가 이미 겪은
+// 「세대 혼합」이 이 경로로 그대로 재발한다. 못 지운 캐시는 이름이 달라 어차피 안 읽히지만,
+// 제어권을 못 넘겨받는 것은 바로 화면에 나타난다.
+{
+  const CACHE = "shhh-" + ver;
+  const sw = runSW({ existing: ["shhh-v10", "sueo-v3"], failDelete: "shhh-v10" });
+  await fire(sw.handlers.install);
+  await fire(sw.handlers.activate);
+  assert.ok(sw.log.includes("delete-fail:shhh-v10"), "테스트가 지우기 실패를 못 일으켰다");
+  assert.ok(sw.log.includes("claim"), "옛 캐시 하나를 못 지웠다고 제어권을 안 넘겨받았다 — 세대가 섞인다");
+  assert.ok(!sw.store.has("sueo-v3"), "한 번 실패했다고 나머지 청소를 멈췄다");
+  assert.ok(sw.store.has(CACHE), "새 세대 캐시가 없다");
+}
+
+console.log(`test-sw: 통과 — 로그인 왕복·API·실패 응답 미캐시, 정적 자산 ${assets.length}개 선캐시, 캐시 ${ver}, install→activate 세대 교체 · 선캐시 실패 · 청소 실패에도 claim`);
