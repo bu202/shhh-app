@@ -1,6 +1,16 @@
 # 3단계 상세 설계 — 회원가입 · 정책 기록 · 삭제 복원 안전성
 
-**작성 2026-08-17 · 기준 커밋 `8d8842d` · 브랜치 `cf-pages` · 상태: 설계만. 코드 0줄**
+**작성 2026-08-17 · 개정 2026-08-17(2판) · 기준 커밋 `8d8842d` · 브랜치 `cf-pages`
+· 상태: 설계 보완 완료. 법률 결정·구현 대기. 코드 0줄**
+
+## 개정 이력
+
+| 판 | 무엇이 바뀌었나 |
+|---|---|
+| 1판 | 최초 설계 제출 |
+| **2판** | 사용자 검토에서 지적된 **설계 결함 9건**을 고쳤다. 목록은 §0-2. **결정 1·2·5·6 은 확정**(§17)되었고 3·4 는 법률 검토 대기로 남았다 |
+
+**3단계는 아직 「완료」가 아니다.** 설계 보완이 끝났을 뿐이고, 법률 결정과 구현이 남아 있다.
 
 이 문서는 **설계와 결정 요청**이다. 애플리케이션 코드·migration·정적 정책 파일·원격 리소스는
 이번 단계에서 하나도 만들지 않았다. 2단계 결정서(`docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md`)를
@@ -19,6 +29,25 @@
 | 3 | `HANDOFF.md` §2 · 2단계 §13 | D1 조회 `7403` 을 "간헐적 실패"로 단정 | "한 실행은 7403 권한 오류였고 이후 실행은 성공했다. 인증 컨텍스트·권한·Cloudflare 측 상태 중 무엇이 원인인지는 확인되지 않았다. 0명은 성공한 실행의 값이다" |
 
 `CLAUDE.md` 에는 같은 단정이 없었다(검색으로 확인). 문서 지도에 이 문서와 법률 자료를 더했다.
+
+---
+
+## 0-2. 2판에서 고친 설계 결함 9건
+
+1판은 **설계 자체에 결함이 있었다.** 사실 오류(§0)와 달리 이것들은 그대로 구현했으면
+실제로 데이터가 사라지거나 되살아났을 항목이다.
+
+| # | 결함 | 어디를 고쳤나 |
+|---|---|---|
+| 1 | **삭제 표식 DB 자체의 Time Travel 위험을 안 봤다.** 표식 DB 를 과거로 되돌리면 옛 표식이 부활할 뿐 아니라 **그 시점 이후의 표식이 사라진다** — 확정된 삭제가 통째로 증발한다 | §10-1 규칙 · §10-6 · 위협 26 · 테스트 |
+| 2 | **reconciliation 경합.** 살아 있는 계정을 보고 pending 을 지운 **직후** 그 계정의 삭제가 성공하면 **표식 없는 삭제**가 된다 | §10-4 · 위협 27 · 테스트 |
+| 3 | **유지보수 모드를 HTTP 메서드로 막으려 했다.** `GET /cb`·`GET /exchange`·`GET /friends`(myCode)·`limited()` 가 전부 GET 인데 DB 를 쓴다 | §10-7 전수 표 · 위협 28 |
+| 4 | **`expires_at = pending_at + 30일` 은 틀렸다.** pending 정리 기한과 confirmed 보존 기한은 성격이 다르다. 「정리한다」만 적고 **실행 시점을 안 적었다.** `attempts` 는 갱신 자리가 없는 죽은 컬럼이었다 | §10-1 · §10-5 |
+| 5 | **`GET /friends` 를 읽기로 분류했다.** 초대 코드가 없으면 **INSERT 한다** | §1 · §10-7 · §14 |
+| 6 | **정책 행위 시각을 한 값으로 뭉갰다.** 체크한 시각과 DB 기록 시각은 OAuth 왕복만큼 벌어진다 | §7-4 · 법률 자료 L11 |
+| 7 | **state 재사용 설명이 틀렸다.** 같은 `code` 재교환은 막히지만 **같은 authorize URL 을 다시 실행해 새 `code` 를 받으면** 같은 state 가 10분 안에 다시 쓰인다 | §4-A · 위협 2 · 테스트 |
+| 8 | **`RL_MAX.signup` 추가로 끝내려 했다.** fallback 이 남아 있으면 **다음 버킷에서 같은 사고가 또 난다** | §12 |
+| 9 | **표현 과장 5건** — KV 쓰기 확인 · 배포 세대 · manifest 증명력 · `verifyProvider` 부작용 없음 · 별도 D1 장점 | §1 · §7-2 · §9 · §5-2 · §13 |
 
 ---
 
@@ -56,11 +85,30 @@ GET  /api/exchange/:provider       :744-768   (네이버 — 콜백이 앱 도�
 | 상태 변경 요청의 Origin 검사는 **모든 non-GET** 에 이미 걸린다 | `:830-839` — 새 POST 라우트는 자동으로 보호된다 |
 | 계정 삭제는 `DELETE FROM users` **한 문장** + CASCADE | `:948` |
 | `users` 를 참조하는 **모든** 테이블은 CASCADE 여야 한다 — 테스트가 강제한다 | `scripts/test-migrations.mjs:96-103` |
-| 정적 자산과 Functions 는 **같은 Pages 배포 단위**로 나간다 | `wrangler.jsonc` 의 `pages_build_output_dir: "dist"` + 루트 `functions/` |
+| **GET 인데 DB 를 쓰는 라우트가 있다** — 메서드로 쓰기를 판정할 수 없다 | 아래 별도 표 |
+| 정적 자산과 Functions 는 **보통** 같은 Pages 배포 단위로 나간다 | `wrangler.jsonc` 의 `pages_build_output_dir: "dist"` + 루트 `functions/` |
 | 서비스워커는 `privacy.html` 을 **선캐시**한다 | `service-worker.js` ASSETS 목록 |
 
-마지막 두 줄이 §8(정책 문서 무결성)의 출발점이다. 서버 상수와 정적 파일은 **같은 배포에 실려**
-세대가 갈리지 않지만, **서비스워커 캐시는 그 배포와 무관하게 옛 파일을 줄 수 있다.**
+### 1-1. **GET 인데 DB 를 쓰는 자리** (2판에서 추가 — 유지보수 모드 설계의 근거)
+
+| 라우트 | 무엇을 쓰나 | 근거 |
+|---|---|---|
+| `GET /api/cb/:provider` | `rate_limits`(limited) · `users`(internalUid) · `sessions`(newSession) · 청소 `DELETE`×2 | `:772`·`:492`·`:244-263` |
+| `GET /api/exchange/:provider` | 위와 같음 | `:747`·`:492` |
+| **`GET /api/friends`** | **`invite_codes` INSERT** — 코드가 없으면 그 자리에서 만든다 | `:963` → `myCode()` `:598-606` |
+| (모든 `limited()` 호출) | `rate_limits` UPSERT | `:379-383` |
+
+`GET /api/book`·`/api/me`·`/api/friends/:id/book`·`/api/ready`·`/api/health` 는 읽기 전용이다.
+`GET /api/login/:provider` 는 DB 를 만지지 않는다(302 와 서명뿐).
+
+> **이것이 §10-7 의 출발점이다.** 유지보수 모드를 `req.method !== "GET"` 으로 만들면
+> 복원 중에 OAuth 콜백이 계정을 만들고 친구 화면이 초대 코드를 만든다.
+
+마지막 두 줄이 §7(정책 문서 무결성)의 출발점이다. 서버 상수와 정적 파일은 보통 같은 배포에
+실리지만 **"절대 갈릴 수 없다"고 말하지 않는다** — 별칭 전파 지연(`HANDOFF.md` §4-6: 프로덕션
+별칭이 배포 직후 1분 정도 옛 응답을 준다)과 부분 롤백이 실재한다. 그리고 **서비스워커 캐시는
+그 배포와 무관하게 옛 파일을 줄 수 있다.** 그래서 세대 일치를 **배포 구조에 기대지 않고
+런타임에 해시로 대조한다**(§7-2 Q5·Q6).
 
 ---
 
@@ -78,8 +126,11 @@ GET  /api/exchange/:provider       :744-768   (네이버 — 콜백이 앱 도�
 | I8 | 가입 값 재생으로 기존 계정 세션을 발급하지 않는다 | 재생해도 `code` 가 1회용이라 제공자가 거부 |
 | I9 | 탈퇴 후 재가입은 **새 내부 UID** 다 | 행이 사라져 `SELECT` 가 비고 새 UUID |
 | I10 | `UNIQUE(provider, provider_subject)` 유지 | `worker/schema.sql:23` |
-| I11 | 사용자가 본 문서와 서버가 기록한 해시가 같다 | 양쪽 대조 (§8) |
-| I12 | 확정(`confirmed`)된 삭제는 복원 뒤에도 유지된다 | 삭제 표식 + 재적용 (§10·§11) |
+| I11 | 사용자가 본 문서와 서버가 기록한 해시가 같다 | 양쪽 대조 (§7) |
+| I12 | 확정(`confirmed`)된 삭제는 복원 뒤에도 유지된다 | 삭제 표식 + 재적용 (§10) |
+| **I13** | **유지보수 모드에서는 DB 를 쓰는 라우트가 하나도 안 돈다** — 메서드가 아니라 **라우트 목록**으로 막는다 | §10-7 전수 표 |
+| **I14** | **삭제 표식 DB 는 과거로 복원하지 않는다.** 불가피하면 **현재 내보내기 → 복원 → 합집합 병합 → 대조** 없이 재개하지 않는다 | §10-6 |
+| **I15** | **표식 없이 계정이 삭제되는 창이 없다** — reconciliation 은 쓰기가 멈춘 상태에서만 돈다 | §10-4 |
 
 ---
 
@@ -164,6 +215,30 @@ anonymous → login_started (GET /api/login/:provider, pv 없음)
 - **임시 저장소가 필요 없다.** pending 테이블도, 암호화 쿠키도, 제공자 회원번호 보관도 없다.
 - 문제: **기존 사용자도 가입 화면을 보게 된다.** 진입점이 하나면 피할 수 없다.
 
+#### ⚠️ state 는 1회용이 아니다 — 2판 정정
+
+1판은 "재생해도 `code` 가 1회용이라 제공자가 거부한다"고 적었다. **절반만 맞다.**
+
+| 경우 | 결과 |
+|---|---|
+| 같은 `state` + **같은 `code`** 를 두 번 제출 | 두 번째는 제공자가 `code` 를 거부 → 로그인 실패. **막힌다** |
+| 같은 `state` + **새 `code`** (같은 authorize URL 을 다시 실행해 새로 받은 code) | `takeState()` 는 서명과 만료만 본다 → **10분 안에는 같은 state 가 다시 통과한다** |
+
+두 번째 경우가 가입에서 뜻하는 것: **같은 `pv`(정책 수락)로 여러 번 가입 시도가 가능하다.**
+실제 피해가 되려면 공격자가 `shh_t` 쿠키까지 가진 그 브라우저여야 한다(`bound()`).
+
+**이 설계의 선택**: 브라우저 결속(`shh_t`) + 10분 만료로 **감수한다.** 근거 —
+
+- 그 창 안에서 같은 브라우저가 여러 번 시도해도 결과는 **같은 계정 하나**다(`UNIQUE`).
+- 진짜 1회용을 만들려면 **인증 없는 자리에 서버 쓰기**가 필요하다. 그건 2026-08-11 에 일부러
+  없앤 것이고(`worker/index.js:25-26`: `curl` 반복만으로 무료 한도를 태울 수 있다), 되살리면
+  가입 경로가 곧 DoS 표면이 된다.
+- 감수하지 않기로 바꾼다면 **선택지는 하나뿐이다**: `state` 에 담은 nonce 를 소비 기록하는
+  서버 상태(D1 한 테이블) — 즉 B안이 지불하는 값을 여기서 대신 내게 된다.
+
+**테스트는 두 경우를 구분해서 잰다**(§13 test-signup 9a·9b). 1판처럼 "state 재사용 → 실패"
+하나로 적으면 **막히지 않는 경우를 막힌다고 적는 것**이 된다.
+
 ### B안 — OAuth 후 가입 화면
 
 OAuth 로 `provider_subject` 를 얻은 뒤 계정을 만들지 않고 가입 화면을 띄운다. 그 사이
@@ -229,7 +304,9 @@ OAuth 로 `provider_subject` 를 얻은 뒤 계정을 만들지 않고 가입 �
 
 ③ 제출           POST /api/signup/start   { provider, terms:true, age14:true, pv }
                  서버: Origin 검사(기존 :830-839) · signup 버킷 · pv == 현재 번들 · 두 값 모두 true
-                 → Set-Cookie shh_t · state = sign([provider, back, exp, nonce, sha256(txn), pv])
+                 → occurredAt = Date.now()                        ← 행위 시각(§7-4)
+                 → Set-Cookie shh_t
+                 → state = sign([provider, back, exp, nonce, sha256(txn), pv, occurredAt])
                  → { url: "<제공자 authorize URL>" }   앱이 그 주소로 이동
 
 ④ 복귀           /api/cb/:provider  또는  /api/exchange/:provider   (지금 코드 그대로)
@@ -256,8 +333,10 @@ VALUES (?myId, ?provider, ?subject, 0, ?now)
 ON CONFLICT (provider, provider_subject) DO NOTHING;
 
 -- ② 이벤트는 **내가 실제로 이겼을 때만** 들어간다.
-INSERT INTO policy_events (user_id, kind, action, document_version, recorded_at)
-SELECT ?myId, 'terms', 'accepted', ?termsHash, ?now
+--    occurred_at 은 /signup/start 가 찍어 서명된 state 로 돌아온 서버 시각(§7-4),
+--    recorded_at 은 지금 이 INSERT 의 서버 시각이다. 둘 다 서버가 만든다.
+INSERT INTO policy_events (user_id, kind, action, document_version, occurred_at, recorded_at)
+SELECT ?myId, 'terms', 'accepted', ?termsHash, ?occurredAt, ?now
  WHERE EXISTS (SELECT 1 FROM users WHERE id = ?myId);
 -- (privacy / age14 도 같은 모양으로 2행 더)
 ```
@@ -280,8 +359,8 @@ SELECT ?myId, 'terms', 'accepted', ?termsHash, ?now
 
 | 역할 | 새 이름(안) | 하는 일 | 부작용 |
 |---|---|---|---|
-| 제공자 확인 | `verifyProvider(env, name, code, state)` | 토큰 교환 → `/me` → `{name, subject}` | **없음** |
-| 기존 사용자 조회 | `findUser(env, name, subject)` | `SELECT id` | 없음 |
+| 제공자 확인 | `verifyProvider(env, name, code, state)` | 토큰 교환 → `/me` → `{name, subject}` | **로컬 DB 쓰기 없음. 다만 외부 OAuth 네트워크 호출 2회가 나가고 `code` 를 소비한다** — 되돌릴 수 없고 재시도하면 제공자가 거부한다 |
+| 기존 사용자 조회 | `findUser(env, name, subject)` | `SELECT id` | 없음(읽기) |
 | 계정+정책 생성 | `createAccountWithPolicy(env, name, subject, bundle)` | 위 batch → 재조회 → `id` | `users`·`policy_events` |
 | 세션 발급 | `newSession(env, uid)` | 지금 그대로 | `sessions` |
 | 정책 번들 조회 | `policyBundle(env)` | 서버 상수 반환 | 없음 |
@@ -357,10 +436,17 @@ policies/
 | 2 | 전문을 안 열고 체크만 해도 수락으로 기록할 수 있나 | **법률 검토 필요**(L8 — `docs/PRIVACY_LEGAL_REVIEW_PACKET.md`). 설계는 두 경우를 다 지원한다 — 강제 열람이 필요하면 [전문] 클릭을 체크박스 활성 조건으로 두면 된다. Claude 가 판정하지 않는다 |
 | 3 | 연령 진술 문구도 불변 파일인가 | **그렇다.** 화면에 뜨는 그 한 문장이 곧 진술 대상이라, 문장이 바뀌면 진술의 뜻이 바뀐다 |
 | 4 | manifest 를 클라이언트가 위조할 수 없나 | **위조는 가능하지만 소용이 없다.** 기록되는 값은 언제나 서버 상수이고, 클라이언트가 보내는 `pv` 는 **일치할 때만 통과하는 문지기**로만 쓰인다. 클라이언트가 `document_version` 이나 `recorded_at` 을 지정하는 자리는 없다(2단계 §5 요구 5·6 유지) |
-| 5 | 서버 코드와 정적 파일이 다른 배포 세대가 되면 | **될 수 없다.** 한 Pages 프로젝트라 `dist/` 와 `functions/` 가 같은 배포 단위로 나간다. 그래도 `scripts/test-policies.mjs` 가 배포 전에 서버 상수 == manifest == 실제 파일 해시를 대조한다 |
+| 5 | 서버 코드와 정적 파일이 다른 배포 세대가 되면 | **가능성이 낮을 뿐 "될 수 없다"고 말하지 않는다**(2판 정정). 한 Pages 프로젝트라 보통 같은 배포 단위로 나가지만, 프로덕션 별칭 전파 지연이 실측됐고(`HANDOFF.md` §4-6) 옛 엣지 캐시가 며칠 살아남은 사례도 있다(§4-5). 그래서 **배포 구조에 기대지 않는다**: 배포 전에는 `test-policies` 가 서버 상수 == manifest == 파일 해시를 대조하고, **런타임에는 Q6 의 두 겹이 실제 바이트를 대조한다** |
 | 6 | 서비스워커가 옛 정책을 캐시한 상태로 가입할 수 있나 | **두 겹으로 막는다.** ① 클라이언트가 자기가 렌더할 파일을 fetch 해 **직접 해시**하고 `GET /api/policies` 값과 다르면 가입 버튼을 안 그린다(fail-closed) ② 그래도 뚫리면 서버가 `pv` 불일치로 409. 화면이 옛 문서를 보여주고 서버가 새 해시를 기록하는 상태는 **어느 한쪽만 뚫려도 생기지 않는다** |
 | 7 | 옛 버전 파일을 빌드 allowlist 에 어떻게 넣나 | `scripts/build.mjs` 의 `INCLUDE` 에 `"policies"` 폴더를 통째로 넣는다. 폴더 통째로는 원래 위험하지만 이 폴더는 **공개 목적의 불변 문서 전용**이다. 대신 `test-dist` 가 `policies/` 안에 `.html/.txt/.json` 외 확장자가 있으면 실패시킨다. 그리고 SW `ASSETS` 에는 **현재 번들 파일만** 넣는다(옛 버전까지 선캐시하면 캐시가 계속 자란다) |
 | 8 | 문서가 바뀌었는데 서버 상수가 그대로면 어떤 테스트가 실패하나 | `scripts/test-policies.mjs` 의 "서버 상수 == manifest == 파일 해시" 대조. 하나라도 어긋나면 실패. 추가로 `test-dist` 가 SW 선캐시 목록과 현재 번들 파일이 같은지 본다 |
+
+> **manifest 테스트가 증명하지 못하는 것**(2판 추가). 이 테스트는 **지금 저장소 안에서**
+> 내용·파일명·manifest 항목이 서로 맞는지를 잰다. 그러나 **과거 항목을 파일과 manifest 에서
+> 함께 지우는 의도적 삭제는 독립적으로 증명하지 못한다** — 둘 다 사라지면 남은 것끼리는
+> 여전히 일관되기 때문이다. 그 삭제를 잡는 것은 테스트가 아니라 **Git 이력과 코드 리뷰**이고,
+> 저장소 이력을 통제하는 사람에게는 그것도 방어가 아니다. 「불변」은 **자동으로 강제되는
+> 성질이 아니라 운영 규칙**이며, 테스트는 실수를 잡을 뿐 고의를 막지 못한다.
 
 ### 7-3. `privacy.html` 과 `policies/privacy-<hash>.html` 의 관계
 
@@ -373,11 +459,48 @@ policies/
   실제로 본 바이트를 재현할 수 없다** — Git 이 없는 사람에게 보여줄 수 없고, 우리 기록의
   검증 가능성이 저장소 이력에 묶인다. 두 벌을 유지하되 **테스트가 어긋남을 막는 쪽**을 택한다.
 
+### 7-4. 정책 행위의 **시각** — 두 개를 구분한다 (2판 추가)
+
+1판은 시각을 `recorded_at` 하나로 뭉갰다. 그런데 C안에서 두 시점은 **OAuth 왕복만큼 벌어진다**:
+
+```
+사용자가 체크하고 [가입하기] 를 누른 순간        ← 행위가 실제로 일어난 시각
+  ↓ POST /signup/start
+  ↓ 제공자 동의 화면 (사용자가 얼마나 머물지 우리가 모른다. state 만료 10분)
+  ↓ /cb 또는 /exchange
+계정과 정책 이벤트가 DB 에 들어간 순간            ← 기록 시각
+```
+
+정상 흐름에서도 **수 초~수 분**, 사용자가 제공자 화면에서 머뭇거리면 **최대 10분**이다.
+그리고 **가입에 실패하면 기록 자체가 없다** — 즉 "체크했지만 기록되지 않은" 행위가 존재한다.
+
+| 방식 | 무엇 | 위조 가능성 | 대가 |
+|---|---|---|---|
+| **A. `recorded_at` 하나** (1판) | DB 삽입 시각만 | 없음(서버 시계) | 사용자가 실제로 동의한 시각을 **모른다.** 최대 10분 늦은 시각이 기록된다 |
+| **B. `occurred_at` + `recorded_at`** (권고) | `occurred_at` = `/signup/start` 가 요청을 받은 **서버 시각**을 **서명된 `state` 에 담아** 왕복시킨다. `recorded_at` = DB 삽입 시각 | **없음** — 둘 다 서버가 만들고, `occurred_at` 은 우리 HMAC 서명 안에 있어 클라이언트가 못 고친다 | `policy_events` 컬럼 하나 · `state` 에 정수 하나(약 13자) |
+
+**권고 — B.** 이유:
+
+- `occurred_at` 은 **클라이언트가 보낸 시각이 아니다.** 서버가 `/signup/start` 에서 `Date.now()`
+  로 찍어 자기 서명 안에 넣고, 콜백에서 서명을 검증한 뒤 꺼낸다. 2단계 §5 요구 6
+  (「`recorded_at` 은 서버 시각」)을 깨지 않는다 — **두 값 모두 서버 시각**이다.
+- 두 값의 간격 자체가 진단 정보다. 10분을 넘는 값이 들어오면 state 만료 검사가 이미 막았어야
+  하므로 **버그 신호**다.
+- 비용이 컬럼 하나다. 나중에 붙이려면 `policy_events` 재생성 migration 이 필요하다
+  (SQLite 의 `CHECK`·`NOT NULL` 제약 때문에 — 2단계 §4 와 같은 이유).
+
+> **어느 시각을 법적 증거로 보아야 하는지는 Claude 가 판정하지 않는다.**
+> 「동의·수락·진술이 있었던 시점」이 체크한 때인지 기록된 때인지, 가입이 중간에 실패해
+> **기록이 남지 않은 체크**를 어떻게 보아야 하는지는 **L11** 로 법률 검토에 넘겼다
+> (`docs/PRIVACY_LEGAL_REVIEW_PACKET.md`). 설계는 **두 값을 모두 남겨** 어느 쪽이 답으로
+> 나오든 대응할 수 있게 한다 — 하나만 남기면 나중에 복원할 수 없다.
+
 ---
 
 ## 8. `policy_events` 법률 분기
 
-**아직 migration 을 만들지 않았다.** 두 분기를 나란히 둔다.
+**아직 migration 을 만들지 않았다**(결정 4에서 **생성 금지**로 확정됐다).
+두 분기를 나란히 둔다. 두 분기 모두 `occurred_at`·`recorded_at` 두 컬럼을 갖는다(§7-4).
 
 ### 분기 ①: 계약 이행(제15조 제1항 제4호)이 인정되는 경우
 
@@ -444,23 +567,35 @@ legacy KV 는 후보가 아니다(2단계 §11 에서 폐기하기로 한 자원
 
 | 기준 | 별도 D1 | 새 전용 KV | R2 최소 로그 | Durable Object | 저장소 없음(복원 금지) |
 |---|---|---|---|---|---|
-| 일관성 | 강함 | **최종 일관성**(list 60초) | 강함(read-after-write) | 강함 | — |
-| 쓰기 성공 확인 | SQL 결과로 확실 | put 성공 ≠ 즉시 조회 가능 | 확실 | 확실 | — |
-| 목록·조회·정리 | SQL 한 줄 | `list()` 훑기 | `list()` + 객체 읽기 | 코드로 직접 | — |
+| 읽기 일관성 | **강함** | **읽기 전파가 eventual consistency** — `put` 이 성공해도 다른 위치의 읽기·`list()` 는 한동안 옛 값을 줄 수 있다 | 강함(read-after-write) | 강함 | — |
+| 쓰기 결과 | SQL 결과(`changes`)로 즉시 확인 | `put` 자체의 성공·실패는 알 수 있다. **읽어서 확인하는 것이 늦다** | 확인 가능 | 확인 가능 | — |
+| 목록·조회·정리 | **SQL 한 줄**(`WHERE`·`JOIN`·집계) | `list()` 훑기 + 키 설계로만 필터 | `list()` + 객체 읽기 | 코드로 직접 | — |
 | 비용 | [?] 플랜별 DB 개수·쓰기 한도 **미확인** | [?] 미확인 | [?] 미확인 | [?] 미확인 | 0 |
 | 운영 복잡도 | 낮음(`wrangler d1 execute`) | 중간 | 중간 | 높음 | **가장 낮음** |
 | 주 D1 복원과 독립 | ○ | ○ | ○ | ○ | — |
-| 표식 자체의 복원 위험 | Time Travel 이 **표식도** 되살린다(그러나 표식이 되살아나는 것은 안전한 방향) | 없음 | 없음 | — | — |
+| **표식 저장소 자체의 복원 위험** | **있다. 2판에서 심각도를 올렸다** — D1 이므로 이 DB 에도 Time Travel 이 켜져 있고, 과거로 되돌리면 **그 시점 이후의 표식이 통째로 사라진다**(확정된 삭제가 증발). §10-6 이 그래서 있다 | 없음(시점 복원 기능이 없다) | 없음 | — | — |
 | 보유기간 삭제 | `DELETE … WHERE expires_at < ?` | TTL 로 자동 | 수동 | 코드 | — |
 | 개인정보 최소화 | HMAC 값 하나 | 같음 | 같음 | 같음 | 최소 |
-| 재식별 위험 | **있다**(복원된 DB 와 대조하면 특정 가능 — §11) | 같음 | 같음 | 같음 | — |
+| 재식별 위험 | **있다**(복원된 DB 와 대조하면 특정 가능 — §10-8) | 같음 | 같음 | 같음 | — |
 | 복원 시 전체 대조 비용 | `users` 를 페이지로 읽어 HMAC — 사용자 수에 비례 | 같음 | 같음 | 같음 | — |
 | 현재 규모(0명)에 적합 | ○ | △ | △ | ✗ | ○ |
 
-### 권고 — **별도 D1** (단, "복원 금지" 절차와 **함께**)
+### 권고 — **별도 D1** (조건부. §10-6 의 restore 금지 규정과 **함께**)
 
-- SQL 이라 조회·정리·대조가 전부 한 줄이고, `wrangler d1 execute` 로 운영자가 직접 볼 수 있다.
-- KV 는 **쓰기 성공 확인이 약하다.** saga 의 1단계가 "확실히 적혔나"에 달려 있는데 그 확신을 못 준다.
+**별도 D1 의 장점은 셋이다** (2판에서 정확하게 다시 적었다):
+
+1. **강한 읽기 일관성** — 방금 적은 표식을 그 자리에서 다시 읽어 확인할 수 있다.
+   saga 3단계(부재 확인)와 reconciliation 대조가 그 성질에 기대고 있다.
+2. **SQL 조회** — `confirmed_at IS NULL`, `expires_at < ?`, 개수 세기, 집합 대조가 전부 한 줄이다.
+   KV·R2 는 키를 훑어 코드로 걸러야 한다.
+3. **운영 편의** — `wrangler d1 execute` 로 운영자가 직접 보고 고칠 수 있다. 복원 절차(§10-8)가
+   사람 손으로 도는 절차라 이 점이 실질적이다.
+
+**KV 를 고르지 않는 이유는 "쓰기 성공을 확인할 수 없어서"가 아니다**(1판의 과장 — 삭제했다).
+`put` 의 성공·실패 자체는 알 수 있다. 정확한 한계는 **읽기 전파가 eventual consistency** 라는
+것이다 — 방금 적은 표식을 다른 위치에서 읽거나 `list()` 로 훑으면 한동안 옛 상태가 보일 수 있고,
+saga 3단계와 reconciliation 은 **적은 직후에 다시 읽어 판정**하므로 그 지연이 곧 오판이 된다.
+
 - **[?] 비용과 플랜 조건은 확인하지 않았다.** 저장소를 실제로 만들기 **전에** Cloudflare 대시보드에서
   현재 플랜의 D1 개수 한도·쓰기 한도, Durable Objects 사용 조건을 확인한다. D1 플랜(Time Travel
   7일/30일)이 아직 미확인인 것과 같은 항목이라 **한 번에 같이 확인한다**(2단계 §12).
@@ -481,35 +616,57 @@ legacy KV 는 후보가 아니다(2단계 §11 에서 폐기하기로 한 자원
 
 ```sql
 CREATE TABLE deletions (
-  mark         TEXT PRIMARY KEY,      -- HMAC(DELETION_KEY_v<n>, internal_uid)
-  key_version  INTEGER NOT NULL,
-  pending_at   INTEGER NOT NULL,
-  confirmed_at INTEGER,
-  attempts     INTEGER NOT NULL DEFAULT 0,
-  expires_at   INTEGER NOT NULL       -- pending_at + 30일 (2단계 §9-14)
+  mark            TEXT PRIMARY KEY,   -- HMAC(DELETION_KEY_v<n>, internal_uid)
+  key_version     INTEGER NOT NULL,
+  pending_at      INTEGER NOT NULL,
+  confirmed_at    INTEGER,            -- NULL 이면 아직 삭제가 확정되지 않았다
+  -- pending 이 이 시각을 넘도록 확정되지 않으면 **경보 대상**이다.
+  -- ⚠️ 이 값이 지났다고 행을 지우지 않는다 — 지우면 "삭제는 됐는데 확정 기록만 실패한"
+  --    표식이 사라져 복원 때 그 계정이 되살아난다. 정리는 reconciliation 판정 뒤에만.
+  pending_alert_at INTEGER NOT NULL,  -- pending_at + PENDING_ALERT (24시간)
+  -- 이 표식이 쓸모를 잃는 시각. **confirmed 가 되는 순간 다시 계산해 늘린다**(§10-5).
+  expires_at      INTEGER NOT NULL
 );
 CREATE INDEX deletions_expires ON deletions(expires_at);
-CREATE INDEX deletions_open    ON deletions(confirmed_at, pending_at);
+CREATE INDEX deletions_open    ON deletions(confirmed_at, pending_alert_at);
 ```
 
 원본 제공자 ID·이메일·별명·단어장·세션을 **저장하지 않는다.** 저장하는 것은 HMAC 값 하나다.
+
+> **`attempts` 컬럼은 삭제했다**(2판). 1판에 `attempts INTEGER NOT NULL DEFAULT 0` 이 있었는데
+> **어디서도 갱신하지 않았다** — 값이 영원히 0인 컬럼이다. 재시도 횟수가 필요해지면
+> 그때 갱신 자리와 함께 넣는다. 갱신되지 않는 컬럼은 나중에 읽는 사람에게 **거짓말을 한다**
+> ("0회 재시도했다"로 읽힌다).
 
 | 규칙 | 내용 |
 |---|---|
 | 키 | 전용 `DELETION_KEY`. `RL_KEY`·`STATE_KEY`·OAuth secret **재사용 금지** |
 | 키 버전 | `key_version` 컬럼. 회전하면 새 표식만 새 키로 만든다 |
-| 회전 중 조회 | **보유기간(30일) 동안 옛 키를 지우지 않는다.** 대조할 때 `key_version` 에 맞는 키를 쓴다 |
-| 만료 | `expires_at` 지난 행은 정리. 최대 복원 가능 기간(30일)을 넘긴 표식은 쓸모가 없다 |
+| 회전 중 조회 | **보유기간 동안 옛 키를 지우지 않는다.** 대조할 때 `key_version` 에 맞는 키를 쓴다 |
+| 만료 | pending 과 confirmed 를 **다르게** 다룬다 — §10-5 |
+| **복원** | **이 DB 는 과거로 복원하지 않는다** — §10-6 |
 | 백업 | 표식 저장소보다 **오래된 주 D1 백업을 만들지 않는다**(2단계 §10) |
 
 ### 10-2. saga 순서
 
 ```
-1. pending 기록      INSERT INTO deletions (mark, key_version, pending_at, expires_at) …
+0. 유지보수 검사     MAINTENANCE=1 이면 여기서 503 (§10-7). 아래로 내려가지 않는다.
+1. pending 기록      INSERT INTO deletions (mark, key_version, pending_at,
+                                            pending_alert_at, expires_at)
+                     VALUES (…, now, now + 24시간, now + 37일)
+                     ON CONFLICT (mark) DO NOTHING          ← 중복 삭제 요청에 안전
 2. 주 D1 삭제        DELETE FROM users WHERE id = ?          (한 문장 + CASCADE)
 3. 부재 확인         SELECT 1 FROM users WHERE id = ?        → 없어야 한다
-4. confirmed 기록    UPDATE deletions SET confirmed_at = ? WHERE mark = ?
+4. confirmed 기록    UPDATE deletions SET confirmed_at = ?1,
+                            expires_at = ?1 + 37일          ← 확정 시점 기준으로 재계산(§10-5)
+                      WHERE mark = ?
+5. 만료 정리(부수)   DELETE FROM deletions
+                      WHERE confirmed_at IS NOT NULL AND expires_at < now
+                     ⚠️ try/catch 로 삼킨다 — 정리 실패가 삭제를 실패시키면 안 된다
 ```
+
+1번의 `expires_at` 은 **임시값**이다. 4번이 성공하면 확정 시점 기준으로 다시 계산되고,
+4번이 실패하면 reconciliation 이 승격하면서 계산한다(§10-4).
 
 ### 10-3. 실패 매트릭스
 
@@ -517,6 +674,7 @@ CREATE INDEX deletions_open    ON deletions(confirmed_at, pending_at);
 
 | pending 기록 | 주 D1 삭제 | 부재 확인 | confirmed 기록 | 사용자 응답 | 다음 조치 |
 |---|---|---|---|---|---|
+| **(유지보수 모드)** — | — | — | — | **503 "잠시 점검 중이에요"** | 아무것도 안 쓴다. 점검이 끝나면 재시도 (§10-7) |
 | 실패 | — | — | — | **"지우지 못했어요"** (세션 유지) | 그 화면에서 재시도. 주 D1 은 손대지 않았다 |
 | 성공 | 실패 | — | — | **"지우지 못했어요"** (세션 유지) | 재시도. pending 은 남되 **복원 시 삭제에 쓰지 않는다**(confirmed 만 쓴다) |
 | 성공 | 성공(0행) | 부재 | 성공 | **"계정을 지웠어요"** | 다른 탭이 먼저 지웠다. 사용자가 원한 결과는 이뤄졌다 |
@@ -527,7 +685,7 @@ CREATE INDEX deletions_open    ON deletions(confirmed_at, pending_at);
 | 성공(이미 있음) | — | — | — | 중복 삭제 요청 | `INSERT … ON CONFLICT DO NOTHING` → 같은 saga 를 이어서 진행 |
 | — | — | — | — | 재가입자 | **새 UID → 새 HMAC.** 옛 표식과 절대 안 부딪힌다(§2 I9) |
 
-### 10-4. reconciliation
+### 10-4. reconciliation — **유지보수 모드 안에서만 실행한다**
 
 **무엇을 하나**: `confirmed_at IS NULL` 인 표식마다, 주 D1 에 대응 계정이 아직 있는지 본다.
 
@@ -537,32 +695,178 @@ CREATE INDEX deletions_open    ON deletions(confirmed_at, pending_at);
 | pending 표식이 | 뜻 | 조치 |
 |---|---|---|
 | 살아 있는 계정과 **일치** | 2단계(주 D1 삭제)가 실패했다 | 표식을 **삭제**한다. 계정은 살아 있고 사용자는 그것을 안다 |
-| 어느 계정과도 **불일치** | 삭제는 됐고 4단계만 실패했다 | `confirmed_at` 을 기록(승격) |
+| 어느 계정과도 **불일치** | 삭제는 됐고 4단계만 실패했다 | `confirmed_at` 을 기록(승격) + `expires_at` 재계산(§10-5) |
 
-- **실행 조건**: ① **모든 복원 직전에 필수** ② 삭제 응답에서 4단계 실패를 감지한 뒤 다음 기회
-  ③ 운영자가 수동으로. 크론이 없으므로 자동 주기 실행은 없다.
+#### ⚠️ 경합 — 2판에서 찾은 결함
+
+1판은 reconciliation 을 "복원 직전 + 수동"으로만 적고 **동시에 서비스가 돌고 있는 경우를
+보지 않았다.** 실제로는 이 순서가 성립한다:
+
+```
+t0  reconciliation: users 를 훑는다 → 계정 X 가 살아 있다
+t1  사용자 X 가 [계정 삭제] 를 누른다 → pending 은 이미 있다 → 주 D1 삭제 성공
+t2  reconciliation: "X 는 살아 있었으니 pending 은 실패한 삭제다" → **표식을 지운다**
+────
+결과: 계정은 삭제됐는데 표식이 없다.  복원하면 그 사람이 되살아나고,
+      아무도 그것을 알아챌 수 없다(표식이 없으므로 대조에 안 걸린다).
+```
+
+**이것이 「표식 없는 삭제」다.** 삭제 saga 전체가 막으려던 바로 그 상태를, reconciliation 이
+만들어낸다. `t0`~`t2` 사이에 삭제가 하나만 성공하면 성립하므로 **확률이 낮은 사고가 아니다** —
+reconciliation 은 사용자 전체를 훑느라 오래 걸린다.
+
+**규정** (사용자 결정 6에서 확정):
+
+> **reconciliation 은 유지보수 모드에서, 가입·삭제·세션 생성을 포함한 모든 쓰기가 중단된
+> 상태에서만 실행한다.** 서비스가 도는 동안에는 어떤 이유로도 실행하지 않는다.
+
+- 유지보수 모드가 무엇을 막는지는 **§10-7 의 전수 표**가 정한다. 메서드로 막지 않는다.
+- 진입 → `/api/ready` 가 `maintenance:true`·`ready:false`·503 인 것을 **확인한 뒤에** 시작한다.
+- **실행 조건**: ① 모든 복원 직전에 **필수** ② `pending_alert_at` 을 넘긴 표식이 있을 때
+  ③ 운영자가 수동으로. 크론이 없으므로 자동 주기 실행은 **없다**(있는 척하지 않는다).
 - 재가입자의 새 UID 는 HMAC 이 다르므로 위 대조에 **원리적으로 걸리지 않는다.**
-- **`pending` 은 어떤 경우에도 복원 후 삭제에 쓰지 않는다.** 2단계 §9-7 이 그 규칙이고,
-  이유는 위 표 두 번째 줄이다 — 삭제가 실패해 계정을 계속 쓰고 있는 사람을 지워 버린다.
+- **`pending` 은 어떤 경우에도 복원 후 삭제에 쓰지 않는다**(2단계 §9-7). 이유는 위 표 두 번째
+  줄이다 — 삭제가 실패해 계정을 계속 쓰고 있는 사람을 지워 버린다.
 
-### 10-5. 복원 절차 (Time Travel · 수동 백업 공통)
+### 10-5. 만료 기준과 **정리 실행 시점** (2판 재설계)
+
+1판의 `expires_at = pending_at + 30일` 은 틀렸다. **pending 과 confirmed 는 성격이 다르다.**
+
+| | pending (`confirmed_at IS NULL`) | confirmed |
+|---|---|---|
+| 뜻 | 삭제를 시도했다. 성공했는지 **모른다** | 삭제가 확정됐다. 복원 때 **반드시 다시 지워야 한다** |
+| 시간이 지나면 | 아무것도 저절로 해결되지 않는다 | 복원 가능 기간이 지나면 쓸모가 없어진다 |
+| **자동 삭제** | **금지.** 시간으로 지우면 "삭제는 됐는데 확정만 실패한" 표식이 사라진다 | 허용 |
+| 기준 값 | `pending_alert_at = pending_at + 24시간` → **경보 임계값일 뿐** | `expires_at` |
+| 정리 조건 | **reconciliation 이 판정한 뒤에만**(§10-4) | `expires_at < now` |
+
+**confirmed 의 보존 기한** — 확정되는 순간 다시 계산한다:
+
+```
+expires_at = confirmed_at + MAX_RESTORE_WINDOW + SAFETY_MARGIN
+           = confirmed_at + 30일 + 7일 = 37일
+```
+
+- `MAX_RESTORE_WINDOW` **30일** — D1 플랜이 미확인이라 긴 쪽(유료 30일)을 쓴다(2단계 §12).
+  플랜이 확인되면 **줄일 수 있고, 늘릴 필요는 없다.**
+- `SAFETY_MARGIN` **7일** — 복원 결정과 실행 사이의 시간, 시계 오차, 운영자가 주말에 알아채는
+  경우를 덮는다. 수동 백업 상한이 7일(2단계 §10)인 것과 같은 값이다.
+- **`pending_at` 기준이 아니라 `confirmed_at` 기준인 이유**: 되살릴 수 있는 시점은 삭제가
+  **실제로 일어난** 때부터 세어야 한다. pending 이 오래 걸렸다고 보존 기한이 먼저 닳으면
+  정확히 그만큼 보호가 짧아진다.
+
+#### 정리를 **언제 실제로 실행하나** (1판이 안 적었던 것)
+
+크론이 없다. 그러므로 아래 셋 말고는 정리가 **돌지 않는다.**
+
+| # | 실행 시점 | 무엇을 지우나 | 실패하면 |
+|---|---|---|---|
+| ① | **삭제 saga 가 끝난 직후**(`DELETE /me` 성공 경로) — `newSession()` 이 세션 청소를 붙인 것과 같은 무늬(`worker/index.js:256-261`) | `DELETE FROM deletions WHERE confirmed_at IS NOT NULL AND expires_at < ?` **한 문장** | **삼킨다.** 정리 실패가 사용자의 계정 삭제를 실패시키면 안 된다 |
+| ② | **reconciliation 실행 시**(유지보수 모드) | 위 + pending 판정 결과 | 절차가 멈춘다(운영자가 본다) |
+| ③ | 운영자 수동 | 임의 | — |
+
+①이 주력이다 — 삭제가 일어날 때마다 조금씩 치우므로 표가 자라지 않는다.
+**삭제가 한 번도 안 일어나면 정리도 안 돈다.** 그 경우 표는 그대로 남는데, 남아 있는 것은
+만료된 HMAC 값이라 위험이 커지지 않는다(다만 ②·③으로 언젠가 치운다).
+
+### 10-6. **삭제 표식 DB 자체는 과거로 복원하지 않는다** (2판 신설)
+
+1판의 가장 큰 구멍이다. 표식 DB 도 D1 이므로 **여기에도 Time Travel 이 항상 켜져 있다.**
+그런데 이 DB 의 복원은 주 D1 의 복원과 **위험의 방향이 반대**다.
+
+| 복원 대상 | 무슨 일이 나나 |
+|---|---|
+| 주 D1 | 삭제된 **계정이 되살아난다** → 표식으로 다시 지운다(§10-8) |
+| **표식 DB** | ① 그 시점 이후에 확정된 **표식이 통째로 사라진다** — 그 사람들은 복원 때 **영영 되살아난다.** 대조에 안 걸리니 **아무도 알아챌 수 없다** ② 그 시점에 pending 이었다가 이후 지워진 표식이 **부활**해, 살아 있는 계정을 지울 후보로 돌아온다 |
+
+②는 `pending` 을 재삭제에 쓰지 않는 규칙이 막는다. **①은 아무것도 막지 못한다** — 없는 표식은
+없다는 사실조차 남기지 않는다.
+
+**규정:**
+
+> **삭제 표식 DB 는 원칙적으로 `restore` 금지다.** 주 D1 을 복원하는 절차(§10-8)는 표식 DB 를
+> 건드리지 않는다. 표식 DB 의 손상은 **복원이 아니라 재작성**으로 다룬다.
+
+불가피하게 복원해야 한다면(예: 표식 DB 스키마가 깨졌다) **아래를 전부 마치기 전에는
+서비스를 재개하지 않는다.** 하나라도 건너뛰면 확정된 삭제가 사라진다.
 
 | # | 단계 | 확인 |
 |---|---|---|
-| 1 | **유지보수 모드** 진입 — `MAINTENANCE=1` 이면 모든 상태 변경이 503 | `/api/ready` 로 확인 |
-| 2 | 복원 **전** bookmark 기록(`wrangler d1 time-travel info`) 또는 현재 상태 백업 | 되돌릴 수단 확보 |
-| 3 | **reconciliation 실행** — pending 정리·승격 (§10-4) | pending 0건이 목표 |
-| 4 | 복원 실행 | — |
-| 5 | 복원된 `users.id` 를 **페이지 단위**(예: 500행)로 읽어 HMAC → **confirmed 표식과 대조** | 일치 목록 확보 |
-| 6 | 일치 계정 `DELETE FROM users WHERE id IN (…)` → CASCADE | **지운 행 수 == 일치 수** |
-| 7 | 잔여 검사 — `books`·`friendships`·`invite_codes`·`sessions` 에 그 uid 가 0건 | 0이 아니면 재개 금지 |
-| 8 | 서비스 재개 | — |
+| 1 | 유지보수 모드 진입(§10-7) | `/api/ready` → `maintenance:true`·503 |
+| 2 | **현재 ledger 를 통째로 내보낸다** (`wrangler d1 export`) — 복원으로 잃을 것이 여기 다 있다 | 행 수 `N_now` 기록 |
+| 3 | 내보낸 파일의 해시를 기록한다 | 저장소 밖·암호화 볼륨 |
+| 4 | 복원 실행 | 행 수 `N_old` 기록 |
+| 5 | **합집합 병합** — 내보낸 것을 되넣는다. `mark` 가 PK 이므로 `INSERT … ON CONFLICT(mark) DO UPDATE` 로, **`confirmed_at` 은 둘 중 NULL 이 아닌 쪽**, `expires_at` 은 **둘 중 큰 쪽**을 남긴다 | — |
+| 6 | **행 수 대조** — 병합 결과가 `N_now` 이상이어야 한다. 미만이면 **병합이 잃은 것이다** | 미만이면 중단 |
+| 7 | **해시 대조** — 3번 파일의 모든 `mark` 가 병합 결과에 있는지 전수 확인 | 하나라도 없으면 중단 |
+| 8 | confirmed 개수가 복원 전보다 줄지 않았는지 확인 | 줄면 중단 |
+| 9 | 서비스 재개 | — |
+
+5번에서 **`confirmed_at` 은 NULL 이 아닌 쪽을 남긴다**는 규칙이 핵심이다. 반대로 하면 확정을
+pending 으로 되돌리게 되고, `pending` 은 재삭제에 안 쓰이므로 **그 삭제가 무효가 된다.**
+`expires_at` 이 큰 쪽인 이유도 같다 — 보존을 짧게 하는 방향은 언제나 위험한 쪽이다.
+
+### 10-7. 유지보수 모드 — **메서드가 아니라 라우트로 막는다** (2판 신설)
+
+`MAINTENANCE=1` 은 **DB 를 쓰는 모든 라우트를 503 으로 막는다.** 1판처럼
+`req.method !== "GET"` 으로 만들면 아래 표의 ⚠️ 세 줄이 그대로 뚫린다.
+
+| 라우트 | 메서드 | DB 쓰기 | 유지보수 중 | 왜 |
+|---|---|---|---|---|
+| `/api/health` | GET | 없음 | **허용** | DB 를 안 만진다 |
+| `/api/ready` | GET | 없음(SELECT) | **허용 + `maintenance:true`** | 상태를 알려야 한다 |
+| `/api/login/:provider` | GET | 없음 | **차단** | 통과시키면 사용자가 제공자까지 갔다가 콜백에서 막힌다. 앞에서 끊는다 |
+| ⚠️ `/api/cb/:provider` | **GET** | `rate_limits`·`users`·`sessions`+청소 | **차단** | **여기가 계정을 만든다**(`:492`) |
+| ⚠️ `/api/exchange/:provider` | **GET** | 위와 같음 | **차단** | 같음(`:747`) |
+| ⚠️ **`/api/friends`** | **GET** | **`invite_codes` INSERT**(`myCode()`) | **차단** | 초대 코드가 없으면 그 자리에서 만든다(`:963`·`:598-606`) |
+| `/api/signup/start` | POST | `rate_limits` | 차단 | |
+| `/api/policies` | GET | 없음 | 허용 | 정적 상수 |
+| `/api/book` · `/api/me` | GET | 없음 | 허용(읽기) | |
+| `/api/book` | PUT | `books` | 차단 | |
+| `/api/me` | DELETE | `users` + ledger | 차단 | **복원 중 삭제가 곧 §10-4 의 경합이다** |
+| `/api/session` | DELETE | `users`·`sessions` | 차단 | |
+| `/api/friends` | POST | `rate_limits`·`friendships` | 차단 | |
+| `/api/friends/code` | POST | `rate_limits`·`invite_codes` | 차단 | |
+| `/api/friends/:id` | PUT · DELETE | `friendships` | 차단 | |
+| `/api/friends/:id/book` | GET | 없음 | 허용(읽기) | |
+
+**구현 요구사항** (구현 단계에서 지킬 것):
+
+1. 검사는 **`limited()` 보다 먼저** 온다. 뒤에 두면 리미터가 `rate_limits` 에 쓴다.
+2. 판정은 **허용 목록**으로 한다 — 위 표의 「허용」만 통과시키고 나머지는 전부 503.
+   차단 목록으로 만들면 **새 라우트의 기본값이 「통과」**가 되어 다음 사고가 예약된다
+   (`scripts/build.mjs` 의 allowlist 와 같은 판단).
+3. 응답은 503 + `Retry-After` + 사람이 읽을 한 줄. 오류 내용·복원 사실을 밖으로 말하지 않는다.
+4. `/api/ready` 는 `maintenance:true`, `ready:false`, **HTTP 503** 을 돌려준다:
+
+```json
+{ "ok": true, "maintenance": true, "configReady": true, "db": true,
+  "providers": ["kakao","naver","google"], "ready": false }
+```
+
+`ready` 가 `false` 인 이유가 **설정 미비인지 유지보수인지** 한 값으로 구분되어야 한다 —
+2026-08-16 에 `configReady`/`db` 를 가른 것과 같은 이유다(한 값이 두 가지를 말하면
+진짜 장애를 아무도 못 알아챈다).
+
+### 10-8. 주 D1 복원 절차 (Time Travel · 수동 백업 공통)
+
+| # | 단계 | 확인 |
+|---|---|---|
+| 1 | **유지보수 모드** 진입(§10-7) | `/api/ready` → `maintenance:true`·`ready:false`·**503** |
+| 2 | 쓰기가 실제로 멈췄는지 확인 — `/api/cb`·`GET /api/friends` 를 직접 찔러 503 을 본다 | **표를 믿지 말고 찔러 본다** |
+| 3 | 복원 **전** bookmark 기록(`wrangler d1 time-travel info`) 또는 현재 상태 백업 | 되돌릴 수단 확보 |
+| 4 | **reconciliation 실행**(§10-4) — 쓰기가 멈춘 지금만 안전하다 | pending 0건이 목표 |
+| 5 | 복원 실행 — **주 D1 만.** 표식 DB 는 건드리지 않는다(§10-6) | — |
+| 6 | 복원된 `users.id` 를 **페이지 단위**(예: 500행)로 읽어 HMAC → **confirmed 표식과 대조** | 일치 목록 확보 |
+| 7 | 일치 계정 `DELETE FROM users WHERE id IN (…)` → CASCADE | **지운 행 수 == 일치 수** |
+| 8 | 잔여 검사 — `books`·`friendships`·`invite_codes`·`sessions` 에 그 uid 가 0건 | 0이 아니면 재개 금지 |
+| 9 | 유지보수 모드 해제 후 `/api/ready` 가 200 인지 확인 | — |
 
 **감사 로그에 남기는 것**: 시각 · 복원 대상 시점 · 대조한 계정 수 · 일치 수 · 삭제 행 수 ·
 키 버전 · 실행자. **남기지 않는 것**: 실제 `uid` · `provider_subject` · `mark` 원문 · 별명 · 단어.
 
 > **표식을 「익명정보」라고 부르지 않는다.** 복원된 DB 와 대조하면 특정 개인을 가릴 수 있으므로
-> **가명·최소 식별값**으로 취급한다. 법률 검토 자료에 이 성질을 그대로 적었다.
+> **가명·최소 식별값**으로 취급한다. 법률 검토 자료에 이 성질을 그대로 적었다(L9).
 
 ---
 
@@ -573,7 +877,7 @@ CREATE INDEX deletions_open    ON deletions(confirmed_at, pending_at);
 | # | 위협 | 심 | 공격·실패 순서 | 막는 설계 | 필요한 회귀 테스트 | 남는 위험 |
 |---|---|---|---|---|---|---|
 | 1 | 공격자가 만든 OAuth callback 링크 | C | 공격자가 자기 `code&state` 링크를 피해자에게 보냄 | `bound()` — `shh_t` 쿠키 대조를 **code 교환 전에**(`:751`·`:781`). **이미 있다** | `test-friends` 76~84 유지 | 없음 |
-| 2 | OAuth state 재사용 | M | 같은 state 를 두 번 제출 | `code` 가 1회용이라 제공자가 거부 | `test-signup`: 같은 state 2회 → 두 번째 실패 | state 자체는 1회용이 아니다(의도된 선택) |
+| 2 | **OAuth state 재사용 — 2판 정정** | M | ⓐ 같은 state + **같은 code** → 제공자가 거부 ⓑ 같은 state + **새 code**(authorize URL 재실행) → **10분 안에는 통과한다** | ⓐ `code` 1회용 ⓑ **막지 않는다** — 브라우저 결속(`shh_t`) + 10분 만료로 **감수**(§4-A). 결과는 같은 계정 하나(`UNIQUE`) | `test-signup` **9a**(같은 code → 실패) · **9b**(새 code → 통과함을 확인) — 둘을 **구분해서** 잰다 | **ⓑ 는 남는 위험이다.** 같은 `pv` 로 10분 안에 여러 번 시도 가능. 없애려면 인증 없는 자리에 서버 쓰기가 필요하다(2026-08-11 에 일부러 없앤 것) |
 | 3 | 브라우저 결속 쿠키 탈취 | C | `shh_t` 를 훔쳐 다른 브라우저에서 사용 | `HttpOnly`·`Secure`·10분 만료·`Path=/api` | 기존 | 기기 전체가 털린 경우는 못 막는다 |
 | 4 | 가입 대기 토큰 탈취/재사용/만료 | C | — | **C안에는 그런 토큰이 없다** | — | B안을 고르면 §6 의 항목이 전부 살아난다 |
 | 5 | 두 탭 동시 가입 | H | 두 탭이 같은 제공자 계정으로 동시 제출 | `UNIQUE(provider,provider_subject)` + `ON CONFLICT DO NOTHING` + `WHERE EXISTS` (§5-1) | `test-signup`: 동시 2건 → `users` 1행, `policy_events` 3행 | 없음 |
@@ -592,11 +896,17 @@ CREATE INDEX deletions_open    ON deletions(confirmed_at, pending_at);
 | 18 | 제공자 회원번호 로그 노출 | H | 오류 로그에 subject | 지금도 안 찍는다(`:481` `why()` 80자·`pathTemplate`) | `test-friends` 로그 검사 무늬 유지 | 없음 |
 | 19 | 삭제 표식으로 계정 삭제 DoS | H | 남의 `mark` 를 위조해 삽입 | `mark` = HMAC(전용키, uid). 키도 uid 도 모른다. ledger 쓰기는 worker 만 | `test-deletion-ledger`: 임의 mark 는 대조에 안 걸림 | ledger 키가 새면 성립 → 키 회전 절차 |
 | 20 | pending 을 confirmed 로 위조 | H | ledger 직접 조작 | ledger 접근 권한 = 운영자. 복원 절차가 **6단계에서 삭제 행 수를 검증** | `test-deletion-ledger`: pending 은 재삭제에 안 쓰임 | 운영자 권한 탈취는 못 막는다 |
-| 21 | 복원 후 삭제 계정 부활 | C | 복원 실행 | §10-5 절차 전체 | `test-deletion-ledger`: 복원 시뮬레이션 → CASCADE 확인 | **절차를 안 지키면 그대로 성립한다**(도구가 아니라 절차다) |
+| 21 | 복원 후 삭제 계정 부활 | C | 복원 실행 | §10-8 절차 전체(유지보수 → 쓰기 정지 확인 → reconciliation → 복원 → 대조 → 재삭제 → 잔여 검사) | `test-deletion-ledger` 7: 복원 시뮬레이션 → CASCADE 확인 | **절차를 안 지키면 그대로 성립한다**(도구가 아니라 절차다) |
 | 22 | 키 교체 후 과거 표식 무효화 | H | 옛 키를 지움 | `key_version` + **보유기간 중 옛 키 삭제 금지** | `test-deletion-ledger`: 두 버전 혼재 대조 | 키를 실수로 잃으면 그 표식은 영구 무효 |
 | 23 | 오래된 수동 백업 복원 | H | 30일보다 오래된 백업 | 2단계 §10 — 표식 보유기간보다 오래된 백업을 **만들지 않는다** | 자동 검사 불가(절차) | 절차 위반 시 성립 |
 | 24 | 기존 앱 버전이 새 가입 API 를 잘못 호출 | M | 옛 PWA 가 `GET /login` 만 안다 | 신규면 `signup_required` 로 되돌림. **계정을 만들지 않는다** | `test-signup`: `pv` 없는 신규 → 계정 0행 | 옛 앱 사용자는 새로고침 전까지 가입 불가(안전한 실패) |
 | 25 | OAuth 비활성 상태에서 신규 경로가 열림 | H | 시크릿 없이 배포 | `/login` 이 `id`·`STATE_KEY` 없으면 503(`:712`). `/signup/start` 도 같은 검사 | `test-signup`: 제공자 미설정 → 503 | 없음 |
+| **26** | **삭제 표식 DB 를 과거로 복원** | **C** | 표식 DB 가 손상 → 운영자가 `restore` → **그 시점 이후의 confirmed 표식이 전부 사라진다** → 나중에 주 D1 을 복원하면 **그 사람들이 영영 되살아나고, 대조에 안 걸리므로 아무도 모른다** | **원칙적으로 restore 금지**(§10-6). 불가피하면 **현재 내보내기 → 복원 → 합집합 병합(`confirmed_at` 은 NULL 아닌 쪽, `expires_at` 은 큰 쪽) → 행 수·해시 전수 대조** 뒤에만 재개 | `test-deletion-ledger` **11**(복원 시뮬레이션 → 병합 후 confirmed 개수가 줄지 않음) · **12**(병합이 `confirmed_at` 을 pending 으로 되돌리지 않음) | **절차다.** 운영자가 표식 DB 를 그냥 되돌리면 그대로 성립한다 |
+| **27** | **reconciliation 경합 — 표식 없는 삭제** | **C** | reconciliation 이 "계정 X 살아 있음"을 읽는다 → 그 사이 X 가 삭제된다 → reconciliation 이 "실패한 삭제"라 보고 **표식을 지운다** → 계정은 없는데 표식도 없다 | **reconciliation 은 유지보수 모드 안에서만**(§10-4). 쓰기가 전부 멈춘 상태라 `t0`~`t2` 창이 존재하지 않는다 | `test-deletion-ledger` **13**(쓰기가 도는 중 reconciliation → **거부되어야 한다**) · **14**(유지보수 중에는 삭제 요청이 503) | 유지보수 모드를 안 켜고 돌리면 그대로 성립 |
+| **28** | **유지보수 모드를 메서드로 판정** | **C** | `req.method !== "GET"` 으로 막는다 → 복원 중에 `GET /cb` 가 **계정을 만들고**, `GET /friends` 가 **초대 코드를 INSERT** 한다 | **허용 목록 기반 라우트 표**(§10-7). 검사는 `limited()` 보다 **앞**에 둔다 | `test-friends` 신규 블록: 유지보수 중 `GET /cb`·`GET /exchange`·`GET /friends` → **503 이고 DB 행 수 무변화** | 새 라우트를 표에 안 넣으면? → **허용 목록이라 기본값이 차단**이다 |
+| **29** | **`RL_MAX` fallback 재발** | H | 새 버킷 이름을 오타내거나 등록을 잊는다 → `?? RL_MAX.write` 로 **조용히 120/분** | **fallback 자체를 제거**하고 미등록 버킷은 던지게 한다(§12) | `test-friends`: 미등록 버킷으로 `limited()` 호출 → **테스트 실패** | 없음 |
+| **30** | **정책 행위 시각 왜곡** | M | OAuth 왕복이 최대 10분이라 기록 시각이 실제 행위보다 늦다 | `occurred_at`(서명된 state 안의 서버 시각) + `recorded_at`(삽입 시각) **둘 다 기록**(§7-4) | `test-signup` **19**: `occurred_at ≤ recorded_at` 이고 간격이 state 만료(10분) 이내 | **어느 쪽이 법적 증거인지는 미확정**(L11) |
+| **31** | **`pending` 을 시간으로 자동 삭제** | **C** | `expires_at` 기반 정리가 pending 까지 지운다 → "삭제는 됐고 확정만 실패한" 표식이 사라져 **복원 때 부활** | pending 은 **reconciliation 판정 뒤에만** 삭제. 시간 기준은 `pending_alert_at`(경보)뿐(§10-5) | `test-deletion-ledger` **9**: `pending_alert_at` 이 지난 pending 은 **여전히 남아 있어야 한다** | 없음 |
 
 ---
 
@@ -613,8 +923,33 @@ CREATE INDEX deletions_open    ON deletions(confirmed_at, pending_at);
 
 - **`/signup` 을 `WRITE_ROUTES` 에 넣지 않는다.** 넣으면 `write`(120) 와 `signup` 이 같은 요청을
   두 번 센다 — 2026-08-16 에 `auth`/`login` 이중 계수로 이미 겪은 실수다(`:700-703`).
-- **`RL_MAX` 에 `signup: 10` 을 반드시 추가한다.** 안 넣으면 `?? RL_MAX.write` 로 조용히 120 이 된다.
-- 응답: 형식 오류 400 · 정책 구식 409 `policyStale` · 한도 초과 429 · 제공자 미설정 503.
+- 응답: 형식 오류 400 · 정책 구식 409 `policyStale` · 한도 초과 429 · 제공자 미설정 503 ·
+  유지보수 중 503(§10-7).
+
+### 12-1. `RL_MAX` fallback 제거 — 구현 단계 필수 요구사항 (2판)
+
+1판은 "`RL_MAX` 에 `signup: 10` 을 추가한다"로 끝냈다. **그것으로는 재발을 못 막는다.**
+
+```js
+const max = RL_MAX[bucket] ?? RL_MAX.write;   // worker/index.js:369 — 현재 코드
+```
+
+이 한 줄 때문에 **버킷 이름을 오타 내거나 등록을 잊으면 조용히 120/분**이 된다. 그리고 그것은
+정확히 2026-08-16 에 이미 일어난 사고다 — `auth` 버킷이 `RL_MAX` 에 없어서 write 기본값 120 이
+적용됐고, 한도 10 인 `login` 보다 훨씬 느슨해 **한 번도 먼저 막은 적이 없었다**(`:700-703`).
+같은 코드가 그대로 남아 있으므로 **다음 버킷에서 같은 일이 난다.**
+
+| # | 구현 단계에서 반드시 할 것 |
+|---|---|
+| 1 | `?? RL_MAX.write` **fallback 을 제거한다** |
+| 2 | 등록되지 않은 버킷 이름으로 `limited()` 를 부르면 **던진다**(조용히 통과시키지 않는다) |
+| 3 | 던진 것을 라우트가 삼키지 않는지 확인한다 — 전역 예외 그물(`:657-667`)이 500 으로 바꾸는데, **개발·테스트에서 즉시 드러나면 목적은 달성**된다. 운영에서 500 이 나는 것보다 조용히 120 인 것이 나쁘다 |
+| 4 | `test-friends` 에 **미등록 버킷 호출 → 실패**를 박는다. 이 검사가 곧 "새 버킷을 등록하게 만드는 장치"다 |
+| 5 | `RL_MAX` 에 `signup: 10` 추가 |
+
+**왜 fallback 을 없애는 것이 더 안전한가**: fallback 이 있으면 실수가 **동작하는 코드**가 되어
+아무도 못 알아챈다. 없애면 실수가 **실패하는 테스트**가 된다. 잊을 수 있는 자리를 없애는 것이
+잊지 말자고 적는 것보다 싸다 — 서비스워커 캐시 이름을 빌드가 박게 만든 것과 같은 판단이다.
 - **로그에 남길 수 있는 값**: 제공자 이름 · 실패 종류 · 경로 템플릿(`pathTemplate`).
 - **로그 금지**: 가입 대기 토큰(있다면) · `provider_subject` · `pv` 나 문서 해시 **전체** ·
   `state` · `code` · `mark` · 별명 · IP 원문.
@@ -637,7 +972,8 @@ CREATE INDEX deletions_open    ON deletions(confirmed_at, pending_at);
 | 6 | 방침 `presented` 기록 | 분기 ① 기준 `action='presented'` 로 기록 |
 | 7 | 잘못된 조합(`age14/accepted`) | `CHECK` 위반으로 INSERT 실패 → batch 롤백 |
 | 8 | `state` 만료 | 400, DB 무변화 |
-| 9 | `state` 재사용 | 두 번째 실패(교환 거부) |
+| **9a** | `state` 재사용 — **같은 `code`** | 두 번째는 제공자가 `code` 를 거부 → 실패 |
+| **9b** | `state` 재사용 — **새 `code`**(authorize URL 재실행) | **통과한다.** 이것이 현재 설계의 감수 사항임을 테스트가 **명시적으로 고정**한다(§4-A). 결과 계정은 **하나**여야 하고 `policy_events` 도 **3행 그대로**여야 한다 |
 | 10 | 두 탭 동시 가입 | `withLatency` 로 경합 재현 → `users` 1행·`policy_events` 3행 |
 | 11 | 세션 고정 | `shh_t` 없는 콜백 → code 교환 **전** 400 |
 | 12 | 가입 완료 후 새 세션 | 가입 전 쿠키로는 아무것도 안 된다 |
@@ -647,6 +983,8 @@ CREATE INDEX deletions_open    ON deletions(confirmed_at, pending_at);
 | 16 | 제공자 ID 비노출 | 응답 본문·로그에 `provider_subject` 0회 |
 | 17 | 위조 `pv` | 409, DB 무변화 |
 | 18 | 탈퇴 후 재가입 | 새 `users.id` != 옛 id |
+| **19** | **행위 시각** | `occurred_at ≤ recorded_at`, 간격이 state 만료(10분) 이내. 클라이언트가 보낸 시각 필드는 **무시**된다 |
+| **20** | **유지보수 중 가입** | `MAINTENANCE=1` 에서 `POST /signup/start`·`GET /cb` → **503, `users`·`rate_limits` 행 수 무변화** |
 
 ### `scripts/test-policies.mjs` (신규)
 
@@ -661,6 +999,11 @@ CREATE INDEX deletions_open    ON deletions(confirmed_at, pending_at);
 | 7 | 미등록 `document_version` 제출 | 서버가 거부 |
 | 8 | `pv` 계산이 파일 내용에만 의존 | 파일 한 글자 변경 → `pv` 변경 |
 
+> **이 테스트가 증명하지 못하는 것**(2판): 과거 항목을 **파일과 manifest 에서 함께** 지우는
+> 의도적 삭제는 잡지 못한다 — 둘 다 사라지면 남은 것끼리는 여전히 일관되기 때문이다.
+> 「불변」은 테스트가 아니라 **Git 이력과 리뷰**로 지켜지는 운영 규칙이다(§7-2 Q8).
+> 테스트는 **실수를 잡을 뿐 고의를 막지 못한다.** 문서에 그렇게 적는다.
+
 ### `scripts/test-deletion-ledger.mjs` (신규)
 
 | # | 시나리오 | 기대 |
@@ -673,24 +1016,50 @@ CREATE INDEX deletions_open    ON deletions(confirmed_at, pending_at);
 | 6 | pending 오삭제 방지 | 복원 후 재삭제에 pending 이 **안 쓰임** |
 | 7 | confirmed 재삭제 | 복원 후 일치 계정 삭제 + CASCADE 0건 잔여 |
 | 8 | 키 버전 | v1·v2 혼재 상태에서 둘 다 대조됨 |
-| 9 | 만료 정리 | `expires_at` 지난 행 제거, confirmed 유효기간 내 보존 |
+| **9** | **만료 정리 — pending 과 confirmed 분리** | `pending_alert_at` 이 지난 **pending 은 여전히 남아 있다**(자동 삭제 금지). `expires_at` 이 지난 **confirmed 만** 제거된다 |
 | 10 | 실제 UID 로그 비노출 | 로그 문자열에 uid 0회 |
+| **11** | **ledger 복원 + 합집합 병합** | 현재 ledger 내보내기 → 과거 스냅샷으로 교체 → 병합. **병합 후 confirmed 개수가 복원 전보다 줄지 않는다.** 내보낸 모든 `mark` 가 결과에 있다 |
+| **12** | **병합이 확정을 되돌리지 않는다** | 같은 `mark` 가 옛 스냅샷에서 pending, 현재에서 confirmed → 병합 결과는 **confirmed**. `expires_at` 은 **큰 쪽** |
+| **13** | **reconciliation 경합 거부** | `MAINTENANCE` 가 아닌 상태에서 reconciliation 호출 → **거부**(실행되지 않는다). 이것이 위협 27 의 유일한 방어다 |
+| **14** | **유지보수 중 삭제 차단** | `MAINTENANCE=1` 에서 `DELETE /me` → 503, `users`·`deletions` 행 수 **무변화** |
+| **15** | **확정 시 `expires_at` 재계산** | `confirmed_at` 이 기록되는 순간 `expires_at == confirmed_at + 37일`. pending 시절의 임시값이 그대로 남아 있지 않다 |
+| **16** | **정리가 삭제를 실패시키지 않는다** | 5번 정리 문장에 실패를 주입해도 `DELETE /me` 는 **성공 응답** |
 
-**중간 상태를 실제로 만들 수 있는가**: 1·2·3은 ledger 핸들을 **주입 가능한 인자**로 두면
-실패를 실제로 일으킬 수 있다. 7은 "복원"을 sqlite 두 인스턴스(삭제 전 스냅샷 / 현재)로
-재현한다 — 진짜 Time Travel 은 못 부르지만 **재적용 로직 자체는 실제로 돈다**.
-1·2·3을 정규식 소스 검사로 대신하지 않는다.
+**중간 상태를 실제로 만들 수 있는가**: 1·2·3·16 은 ledger 핸들을 **주입 가능한 인자**로 두면
+실패를 실제로 일으킬 수 있다. 7·11·12 는 "복원"을 sqlite 두 인스턴스(스냅샷 / 현재)로 재현한다 —
+진짜 Time Travel 은 못 부르지만 **재적용·병합 로직 자체는 실제로 돈다**.
+13 은 `MAINTENANCE` 플래그를 끈 채 부르면 되므로 그대로 잴 수 있다.
+**1·2·3·13 을 정규식 소스 검사로 대신하지 않는다.**
+
+> **못 재는 것도 적어 둔다**: 진짜 `wrangler d1 time-travel restore` 는 테스트에서 부를 수 없다.
+> 11·12 가 재는 것은 **병합 규칙**이지 Cloudflare 의 복원 동작이 아니다. 복원 자체는
+> §10-6·§10-8 의 **절차**가 담당하고, 절차는 자동 검사가 없다.
+
+### `scripts/test-friends.mjs` 에 추가할 블록 (유지보수 모드)
+
+워커 라우트 검사는 이 파일에 산다. 새 파일을 만들지 않는다.
+
+| # | 시나리오 | 기대 |
+|---|---|---|
+| M1 | `MAINTENANCE=1` · `GET /api/cb/:provider` | **503**, `users`·`sessions`·`rate_limits` 행 수 무변화 |
+| M2 | `MAINTENANCE=1` · `GET /api/exchange/:provider` | 같음 |
+| M3 | `MAINTENANCE=1` · **`GET /api/friends`** | **503**, `invite_codes` 행 수 **무변화**(myCode 가 INSERT 하지 못한다) |
+| M4 | `MAINTENANCE=1` · `PUT /book` · `POST /friends` · `DELETE /session` · `DELETE /me` | 전부 503, 행 수 무변화 |
+| M5 | `MAINTENANCE=1` · `GET /api/health` · `GET /api/book` · `GET /api/friends/:id/book` | **통과**(읽기는 열려 있다) |
+| M6 | `MAINTENANCE=1` · `GET /api/ready` | **503** + `maintenance:true` · `ready:false` |
+| M7 | 유지보수 해제 후 같은 요청들 | 정상 동작(회귀 없음) |
+| M8 | **미등록 rate limit 버킷** | `limited()` 가 **던진다**(120 으로 조용히 통과하지 않는다) — §12-1 |
 
 ### 기존 테스트 중 손댈 것
 
 | 파일 | 무엇 |
 |---|---|
-| `test-friends.mjs` | `signUp()` 헬퍼가 `internalUid()` 를 직접 쓴다 → `createAccountWithPolicy()` 로 교체. 156개 단언의 **의도는 그대로** 둔다 |
+| `test-friends.mjs` | `signUp()` 헬퍼가 `internalUid()` 를 직접 쓴다 → `createAccountWithPolicy()` 로 교체. 156개 단언의 **의도는 그대로** 둔다. **+ 유지보수 모드 블록 M1~M8**(위) |
 | `test-client.mjs` | 게이트에 가입/로그인 두 버튼 · 정책 해시 불일치 시 버튼 미표시 · `signup_required` 응답 처리 |
 | `test-migrations.mjs` | `policy_events` 의 CASCADE(§8 의 분기에 따라 달라진다) · 새 `CHECK` 조합 검사 |
 | `test-sw.mjs` | 정책 파일이 선캐시 목록에 있는지 |
 | `test-dist.mjs` | `policies/` 가 `dist` 에 나가는지 · 그 안에 허용 확장자만 있는지 |
-| `_d1.mjs` | ledger 용 두 번째 DB 핸들 지원(현재는 `makeD1()` 하나) |
+| `_d1.mjs` | ledger 용 **두 번째 DB 핸들** 지원(현재는 `makeD1()` 하나). 두 DB 사이에 **공통 트랜잭션이 없다는 사실**이 셰임에서도 성립해야 한다 — 하나로 합치면 saga 가 트랜잭션처럼 보여 §10-3 의 실패를 아예 못 잰다 |
 
 ---
 
@@ -698,23 +1067,75 @@ CREATE INDEX deletions_open    ON deletions(confirmed_at, pending_at);
 
 **현재 0명이다. 구현 직전에 반드시 다시 조회한다**(2026-08-17 값은 그날의 사실일 뿐이다).
 
-### 경우 A — 구현 직전에도 0명
+### 14-0. **권고 — release gate 하나로 끝낸다** (2판)
+
+1판은 "0명이면 A, 1명 이상이면 B" 라고 두 설계를 나란히 두었다. 그건 **아직 존재하지 않는
+사용자를 위한 전환 코드를 미리 쓰는 일**이고, 이 저장소가 이미 배운 것과 정반대다
+(쓰지도 않는 테이블에 재생성 migration 을 쓰지 않는다 — 2단계 §4).
+
+> **배포 순서 9번(원격 사용자 수 재확인)에서 `user_count > 0` 이면 배포를 중단하고
+> 별도 전환 설계로 돌아간다.** 전환 로직을 미리 만들지 않는다.
+
+| | 값 | 조치 |
+|---|---|---|
+| `SELECT COUNT(*) FROM users` | **0** | 그대로 진행. 전환 migration·전환 UI·전환 API **없음** |
+| | **1 이상** | **배포 중단.** §14-2 를 설계로 승격시키고 결정을 다시 받는다 |
+
+**왜 이 gate 가 성립하나**: OAuth 가 꺼져 있어 **아무도 계정을 만들 수 없다.** OAuth 를 켜는
+것과 이 배포는 §15 에서 같은 창에 묶여 있으므로, 배포 직전의 0명은 **배포 순간까지 0명**이다.
+gate 가 깨지는 유일한 경로는 "누군가 먼저 OAuth 를 켠 경우"이고, 그건 승인 사항이라
+사용자만 할 수 있다.
+
+**이 gate 의 비용**: 만약 1명이 있으면 그날 배포가 무산된다. 그 대가로 **쓰이지 않을 전환
+코드와 그 테스트를 안 쓴다.** 사용자 0명인 지금 그 거래는 명백히 유리하다.
+
+### 14-1. 경우 A — 구현 직전에도 0명 (**예상 경로**)
 
 - 전환 migration 없음. 첫 사용자부터 새 정책이 적용된다.
 - 스키마와 코드를 **같은 배포에** 반영하고, 그 배포 **전까지** OAuth 를 켜지 않는다.
 
-### 경우 B — 구현 직전에 1명 이상
+### 14-2. 경우 B — 구현 직전에 1명 이상 (**배포 중단 후 별도 설계**)
 
-| 항목 | 설계 |
+아래는 그때 출발점으로 쓸 요구사항이지 **지금 만들 것이 아니다.** 그리고 이 목록이
+**완전하지 않다는 것**이 §14-0 을 권고하는 이유이기도 하다 — 완전하게 만들려면 아래
+전부를 설계하고 테스트해야 한다.
+
+| 항목 | 요구사항 |
 |---|---|
 | 흐름 | 기존 사용자 로그인 성공 → 세션은 발급 → **정책 화면**을 앱이 띄운다 |
-| 정책 확인 전 허용 | 사전·연습·단어장 **읽기**, 로그아웃, 계정 삭제 |
-| 정책 확인 전 차단 | `PUT /book` · `POST /friends` · `PUT /friends/:id` · `POST /friends/code` (모든 상태 변경) |
+| **정책 수락 API** | `POST /api/policies/accept { pv }` — 인증 필요 · Origin 검사 · `signup` 버킷 · `pv` 현재 번들 대조 · `occurred_at`/`recorded_at` 둘 다 기록(§7-4) |
+| **DB 기록** | 기존 `user_id` 에 `policy_events` 3행. 가입과 달리 **계정 생성이 없으므로 batch 는 이벤트만** |
+| **서버 측 write 차단 조건** | 아래 §14-3 표. **클라이언트가 화면을 띄우는 것만으로는 방어가 아니다** — 구버전 PWA 는 그 화면을 모른다 |
+| 정책 확인 전 허용 | 사전·연습·단어장 **읽기**(`GET /book`·`/me`·`/friends/:id/book`), 로그아웃, **계정 삭제** |
 | 거부 시 | 로그아웃 또는 계정 삭제를 고르게 한다. 조용히 계속 쓰게 두지 않는다 |
 | 기존 세션 | 유지한다. `session_version` 을 올리면 전원이 이유 없이 튕긴다 |
-| 구버전 PWA | 새 API 를 모른다 → 서버가 차단하고 "앱을 새로고침해 주세요"로 답한다 |
+| 구버전 PWA | 새 API 를 모른다 → **서버가** 차단하고 "앱을 새로고침해 주세요"로 답한다 |
 | 서비스워커 세대 | 자산 해시가 캐시 이름에 박혀 있어(`shhh-v11-<해시>`) 배포와 함께 갈린다 |
-| **"이벤트 없음"을 정상으로 오인하지 않는 법** | `users.created_at` 과 정책 도입 시각을 비교한다. 도입 **후**에 만들어진 계정에 이벤트가 없으면 **버그**이고, 도입 **전** 계정은 전환 대상이다. `policy_events` 유무만으로는 이 둘을 구분할 수 없다 |
+| **"이벤트 없음"을 정상으로 오인하지 않는 법** | `users.created_at` 과 정책 도입 시각을 비교한다. 도입 **후** 계정에 이벤트가 없으면 **버그**이고, 도입 **전** 계정은 전환 대상이다. `policy_events` 유무만으로는 못 가른다 |
+
+### 14-3. 경우 B 의 서버 측 write 차단 표 — **`GET /friends` 를 빠뜨리지 않는다**
+
+1판은 차단 목록을 `PUT /book`·`POST /friends`·`PUT /friends/:id`·`POST /friends/code`
+넷으로 적었다. **`GET /api/friends` 가 빠져 있었고, 그것은 초대 코드를 INSERT 한다**(§1-1).
+
+| 라우트 | 정책 미수락 계정에게 | 왜 |
+|---|---|---|
+| `GET /api/book` · `/api/me` | **허용** | 읽기. 자기 데이터를 못 보게 할 이유가 없다 |
+| `GET /api/friends/:id/book` | 허용 | 읽기 |
+| **`GET /api/friends`** | **차단(409 `policyRequired`)** | **`myCode()` 가 `invite_codes` 를 INSERT 한다.** 정책 미수락 계정에 새 데이터를 만들면 안 된다 |
+| `PUT /api/book` | 차단 | 쓰기 |
+| `POST /api/friends` · `POST /api/friends/code` | 차단 | 쓰기 |
+| `PUT · DELETE /api/friends/:id` | 차단 | 쓰기 |
+| `DELETE /api/session` (로그아웃) | **허용** | 나갈 길은 항상 열어 둔다 |
+| `DELETE /api/me` (계정 삭제) | **허용** | 거부한 사람이 고를 수 있어야 하는 선택지다 |
+
+> `GET /api/friends` 를 차단하면 친구 화면이 아예 안 뜬다. **그것이 의도다** — 정책을 수락하기
+> 전에는 그 화면이 새 초대 코드를 만들지 않아야 한다. 화면에는 "먼저 확인해 주세요"를 띄운다.
+> 대안(코드 생성만 막고 목록은 보여주기)은 `myCode()` 를 조건부로 만드는 일이라
+> **읽기 경로에 분기를 하나 더 넣는다** — 경우 B 가 실제로 오면 그때 저울질한다.
+
+**필요한 테스트**(경우 B 가 현실이 될 때): 위 표 전 행 × (수락 전/후) 왕복 · 구버전 PWA 가
+`POST /policies/accept` 를 모르는 상태에서 쓰기를 시도 → 409 · 수락 후 즉시 쓰기 성공.
 
 ---
 
@@ -734,10 +1155,12 @@ KV 바인딩 제거 · KV 삭제 · 시크릿 등록 · OAuth 활성화 · 배�
 | 6 | `privacy.html`·이용약관·`brand/NAVER-REVIEW.md` 를 **같은 변경 단위**로 수정 | — |
 | 7 | 전체 `npm test` + `npm audit` | — |
 | 8 | **사용자 승인** | ✅ |
-| 9 | 원격 사용자 수 재확인 | ✅ |
+| 9 | **원격 사용자 수 재확인 → release gate**(§14-0). **`user_count > 0` 이면 여기서 중단** | ✅ |
 | 10 | 백업(저장소 밖·암호화 볼륨·24시간 뒤 삭제) | ✅ |
 | 11 | 원격 migration (`0004` 포함 — 아직 원격에 없다) | ✅ |
+| 11b | **삭제 표식 D1 생성 + 스키마** — §10-6 의 restore 금지를 **운영 문서에 먼저 적고** 만든다 | ✅ |
 | 12 | 시크릿 등록 — `RL_KEY` · `DELETION_KEY` · OAuth 8개 | ✅ |
+| 12b | **유지보수 모드 실동작 확인** — `MAINTENANCE=1` 로 한 번 켜고 `GET /cb`·`GET /friends` 가 503 인지 **찔러 본다**. 끄고 `/api/ready` 가 200 인지 확인 | ✅ |
 | 13 | 배포 | ✅ |
 | 14 | **배포 고유 주소**로 검증 | — |
 | 15 | **canonical 주소**로 검증(`cf-cache-status`·`age` 까지 본다) | — |
@@ -760,7 +1183,7 @@ KV 바인딩 제거 · KV 삭제 · 시크릿 등록 · OAuth 활성화 · 배�
 |---|---|---|---|
 | `js/auth.js` | 입력·화면 | 게이트에 「가입하기/로그인」 분리 · 정책 화면 렌더 · 체크박스 · `signup_required` 처리 · 정책 해시 대조 결과에 따른 fail-closed | 기존 |
 | `js/authApi.js` | 데이터·외부 접근 | `apiPolicies()` · `apiSignupStart()` 추가. **`fetch` 는 계속 이 파일에만** | 기존 |
-| `worker/index.js` | 서버 경계 | `POST /signup/start` · `GET /policies` · `verifyProvider`/`findUser`/`createAccountWithPolicy` 분해 · `RL_MAX.signup` · 정책 상수 · 삭제 saga | 기존 |
+| `worker/index.js` | 서버 경계 | `POST /signup/start` · `GET /policies` · `verifyProvider`/`findUser`/`createAccountWithPolicy` 분해 · **`RL_MAX` fallback 제거 + `signup` 등록**(§12-1) · **유지보수 모드 허용 목록**(§10-7) · 정책 상수 · 삭제 saga | 기존 |
 | `worker/schema.sql` | DB | `policy_events` (분기 확정 후) | 기존 |
 | `migrations/0005_*.sql` | DB | 같은 내용의 버전형 migration | **신규** |
 | `policies/` | 정적 | 불변 정책 문서 + manifest | **신규** |
@@ -775,9 +1198,20 @@ KV 바인딩 제거 · KV 삭제 · 시크릿 등록 · OAuth 활성화 · 배�
 
 ---
 
-## 17. 사용자 결정 요청 (6건)
+## 17. 사용자 결정 — 확정 현황 (2026-08-17)
 
-### 결정 1 — 가입 흐름
+| # | 결정 | 상태 |
+|---|---|---|
+| 1 | 가입 흐름 | ✅ **C안(로그인·가입 분리) 승인** |
+| 2 | 임시 가입 상태 | ✅ **제거 승인** (방식 3) |
+| 3 | 정책 이벤트 법적 분기 | ⏸ **외부 법률 검토까지 보류** |
+| 4 | `policy_events` CASCADE | ⏸ **법률 검토 전까지 CASCADE 임시 유지 · migration 생성 금지** |
+| 5 | 삭제 표식 저장소 | ⚠️ **별도 D1 조건부 승인** — 아래 결함 수정 **전에는 생성·구현 금지**. 2판이 그 수정이다(§10-1·§10-4·§10-5·§10-6·§10-7) |
+| 6 | 삭제 실패 응답 | ✅ **pending 실패=X · 주 D1 삭제 실패=X · confirmed 실패=Y 승인.** 단 **reconciliation 은 유지보수 모드 안에서만**(§10-4) |
+
+아래는 각 결정의 근거 표다. **확정된 것은 다시 묻지 않는다** — 근거 기록으로만 남긴다.
+
+### 결정 1 — 가입 흐름 ✅ **C안 확정**
 
 | | A: OAuth 전 가입 화면 | B: OAuth 후 가입 화면 | **C: 로그인·가입 완전 분리** |
 |---|---|---|---|
@@ -791,9 +1225,9 @@ KV 바인딩 제거 · KV 삭제 · 시크릿 등록 · OAuth 활성화 · 배�
 막고 있는 그 자물쇠)에 실어 보내면 새 테이블도 새 비밀값도 필요 없다. 대가는 신규 사용자의
 왕복 1회이고, 사용자 0명인 지금 그 비용은 사실상 0이다.
 
-**결정하지 않으면 막히는 것**: `worker/index.js` 라우트 설계, `js/auth.js` 게이트, `test-signup` 전부.
+**결정 결과**: C안 확정. §5 의 흐름이 구현 대상이다.
 
-### 결정 2 — 임시 가입 상태 (결정 1이 B일 때만 의미가 있다)
+### 결정 2 — 임시 가입 상태 ✅ **제거 확정**
 
 | | 1: 암호화 쿠키 | 2: 서버 `pending_signups` | **3: 임시 상태 제거** |
 |---|---|---|---|
@@ -801,9 +1235,11 @@ KV 바인딩 제거 · KV 삭제 · 시크릿 등록 · OAuth 활성화 · 배�
 | 보안 | 복사본 재사용을 완전히 막지 못함 | 1회용 보장 가능, 대신 상태가 는다 | 공격면 없음 |
 | 개인정보 | 회원번호를 암호화해 보관 | 회원번호를 DB 에 보관 | **보관 없음** |
 | 복원 영향 | 없음 | **Time Travel 이 pending 도 되살린다** | 없음 |
-| **Claude 권고** | | | ✅ **3** (결정 1 = C 이면 자동) |
+| **확정** | | | ✅ **3 — 임시 상태 없음** |
 
-### 결정 3 — 정책 이벤트의 법적 분기 — **사용자가 추측해서 고르지 않는다**
+§6 의 방식 1·2 는 **구현하지 않는다.** 참고 기록으로만 남긴다.
+
+### 결정 3 — 정책 이벤트의 법적 분기 ⏸ **법률 검토까지 보류**
 
 `privacy/presented`(계약 이행) 인가 `privacy/accepted`(동의) 인가, 국외 이전 별도 동의가
 필요한가. **외부 법률 검토 전에는 구현을 보류한다**는 것이 Claude 의 권고다.
@@ -812,40 +1248,52 @@ KV 바인딩 제거 · KV 삭제 · 시크릿 등록 · OAuth 활성화 · 배�
 **결정하지 않으면 막히는 것**: `policy_events` 의 `CHECK`, migration, 가입 화면 체크박스 수,
 `privacy.html` §14 의 5·6번 문장.
 
-### 결정 4 — `policy_events` 의 계정 삭제 시 처리 — **법률 검토 필요**
+### 결정 4 — `policy_events` 의 계정 삭제 시 처리 ⏸ **CASCADE 임시 유지 · migration 생성 금지**
 
 | | CASCADE(계정과 함께 삭제) | 보존(기간 확인 필요) |
 |---|---|---|
 | 개인정보 | 최소수집에 부합 | 탈퇴자 기록이 남는다 |
 | 기술적 사실 | 지금 스키마 그대로 가능 | **`users` 외래키를 쓸 수 없다**(`test-migrations.mjs:96-103` 이 CASCADE 를 전수 강제). 가명 키로 바꾸거나 ledger 로 옮겨야 한다 |
-| **Claude 권고** | 법률 검토 전까지 **CASCADE 유지**(2단계 §4 의 승인 상태) | — |
+| **확정** | ✅ **법률 검토 전까지 CASCADE 임시 유지. `policy_events` migration 생성 금지** | — |
 
 법률 검토 결과가 "보존"이면 **스키마가 통째로 달라진다.** 이것이 지금 migration 을 만들지 않는
-가장 큰 이유다.
+가장 큰 이유다. **「임시 유지」이지 「확정」이 아니다** — 검토 결과가 나오면 다시 결정한다.
 
-### 결정 5 — 삭제 표식 저장소
+### 결정 5 — 삭제 표식 저장소 ⚠️ **별도 D1 조건부 승인 — 아래 수정 전 생성·구현 금지**
 
 | | **별도 D1** | 새 전용 KV | R2 | 저장소 없이 복원 금지만 |
 |---|---|---|---|---|
 | 쉬운 예시 | 옆에 둔 작은 장부 | 포스트잇 벽(붙인 게 바로 안 보임) | 창고에 파일 하나씩 | 장부 없이 "복원 안 하기"로 약속 |
-| 쓰기 확인 | **확실** | 최종 일관성 | 확실 | — |
-| 운영 | `wrangler d1 execute` 한 줄 | 훑기 | 목록+읽기 | 없음 |
-| 위험 | saga 관리 필요 | 위 + 확인 약함 | 위 | **복원이 꼭 필요한 사고에서 무력** |
-| **Claude 권고** | ✅ **별도 D1 + 복원 금지 절차 병행** | | | |
+| 읽기 일관성 | **강함** | **읽기 전파가 eventual** | 강함 | — |
+| SQL 조회 | ○ | ✗ | ✗ | — |
+| 운영 편의 | `wrangler d1 execute` 한 줄 | 훑기 | 목록+읽기 | 없음 |
+| 위험 | saga 관리 · **이 DB 자체의 Time Travel** | 위 + 조회 지연 | 위 | **복원이 꼭 필요한 사고에서 무력** |
+| **확정** | ⚠️ **조건부 승인** | | | |
 
-**권고 이유**: saga 의 1단계가 "확실히 적혔나"에 달려 있는데 KV 는 그 확신을 못 준다.
-"복원 금지"만으로도 지금은 실효가 있지만, 데이터 손상 사고가 나면 복원 없이 고칠 수 없다.
+**승인 조건 — 아래가 문서에 반영되기 전에는 D1 생성도 구현도 하지 않는다**
+(2판에서 전부 반영했다):
 
-### 결정 6 — 삭제 saga 실패 시 사용자 응답과 reconciliation
+| # | 조건 | 반영된 곳 |
+|---|---|---|
+| C1 | 표식 DB 의 **restore 원칙 금지** 규정 | §10-6 |
+| C2 | 불가피한 복원의 **내보내기 → 복원 → 합집합 병합 → 행 수·해시 대조** 절차 | §10-6 |
+| C3 | reconciliation 을 **유지보수 모드 전용**으로 | §10-4 |
+| C4 | 유지보수 모드를 **메서드가 아닌 라우트 허용 목록**으로 | §10-7 |
+| C5 | pending/confirmed **만료 기준 분리 + 정리 실행 시점** | §10-5 |
+| C6 | `attempts` **삭제** | §10-1 |
+| C7 | 위 전부에 대한 **위협 항목과 회귀 테스트** | 위협 26·27·28·31 · 테스트 9·11~16 · M1~M8 |
 
-| 실패 지점 | 선택지 X (보수적) | 선택지 Y (낙관적) | Claude 권고 |
+### 결정 6 — 삭제 saga 실패 시 사용자 응답 ✅ **확정**
+
+| 실패 지점 | 선택지 X (보수적) | 선택지 Y (낙관적) | 확정 |
 |---|---|---|---|
-| pending 기록 실패 | "지우지 못했어요" | 그냥 진행 | ✅ X — 표식 없이 지우면 복원 때 되살아난다 |
-| 주 D1 삭제 실패 | "지우지 못했어요" · 세션 유지 | "지웠어요" | ✅ X — 2026-08-16 에 닫은 P0 와 같은 판단 |
+| pending 기록 실패 | "지우지 못했어요" | 그냥 진행 | ✅ **X** — 표식 없이 지우면 복원 때 되살아난다 |
+| 주 D1 삭제 실패 | "지우지 못했어요" · 세션 유지 | "지웠어요" | ✅ **X** — 2026-08-16 에 닫은 P0 와 같은 판단 |
 | confirmed 기록 실패 | "지우지 못했어요" | **"계정을 지웠어요"** + reconciliation | ✅ **Y** — 계정은 **실제로 없다.** 여기서 실패라고 말하면 사용자가 재시도하는데 지울 것이 이미 없다 |
-| reconciliation 실행 | 자동 주기 | **복원 직전 필수 + 수동** | ✅ 후자 — 크론이 없다. 자동인 척하지 않는다 |
+| reconciliation 실행 | 자동 주기 | 복원 직전 + 수동 | ✅ **유지보수 모드 안에서만.** 서비스가 도는 동안에는 어떤 이유로도 실행하지 않는다(위협 27) |
 
-**결정하지 않으면 막히는 것**: `worker/index.js` 의 `DELETE /me` 재작성, `test-deletion-ledger`.
+**마지막 줄이 2판에서 강화된 부분이다.** 1판의 "복원 직전 + 수동"은 **동시에 서비스가 도는
+경우를 막지 못했다** — 그 창에서 삭제가 하나만 성공하면 표식 없는 삭제가 된다.
 
 ---
 
@@ -853,9 +1301,12 @@ KV 바인딩 제거 · KV 삭제 · 시크릿 등록 · OAuth 활성화 · 배�
 
 `worker/index.js`·`worker/schema.sql`·`js/*.js`·`privacy.html` 수정 · 이용약관 작성 ·
 policy manifest·정책 버전 파일 생성 · migration 생성 · 테스트 파일 생성 ·
+**삭제 표식 D1 생성** · **유지보수 모드 구현** · **`RL_MAX` fallback 제거 구현** ·
 별도 D1/KV/R2 생성 · 원격 D1 쓰기 · KV 값 조회·삭제 · 시크릿 변경 · OAuth 활성화 ·
 배포 · `push` · 캐시 퍼지 · Time Travel restore · 백업 생성·복원 ·
 `네이버검수-캡처/` 접근 · **법률 결론 단정**.
+
+2판에서 한 일은 **문서 수정뿐**이다. `git diff --name-only` 가 그 사실을 증명한다.
 
 ---
 
@@ -872,8 +1323,34 @@ policy manifest·정책 버전 파일 생성 · migration 생성 · 테스트 �
 
 ---
 
-## 20. 최종 판정
+## 20. 4단계(구현) 착수 조건
 
-> **3단계 상세 설계안은 제출했다.** 아직 사용자 결정과 외부 법률 검토가 남아 있으므로 회원가입
-> 코드·DB·개인정보처리방침·원격 환경은 변경하지 않았다. 결정이 확정되기 전까지 공개 OAuth 와
-> 계정 출시는 **No-Go** 다.
+**전부 충족되기 전에는 코드를 한 줄도 쓰지 않는다.**
+
+| # | 조건 | 상태 |
+|---|---|---|
+| 1 | 설계 결함 9건 수정 | ✅ **완료(2판)** |
+| 2 | 결정 1·2·6 확정 | ✅ **완료** |
+| 3 | 결정 5 의 승인 조건 C1~C7 반영 | ✅ **완료(2판)** — 다만 **D1 생성은 여전히 별도 승인** |
+| 4 | **외부 법률 검토 — L1~L11** | ❌ **대기.** 자료는 `docs/PRIVACY_LEGAL_REVIEW_PACKET.md` |
+| 5 | 결정 3(법적 분기) 확정 | ❌ 4번에 종속 |
+| 6 | 결정 4(CASCADE·보존) 확정 | ❌ 4번에 종속 |
+| 7 | 플랜 확인 — D1 개수·쓰기 한도·Time Travel 7/30일 | ❌ 대시보드에서 |
+| 8 | 구현 직전 `SELECT COUNT(*) FROM users` == 0 (§14-0 release gate) | ⏳ 구현 직전에 |
+
+**4·5·6 이 3단계와 4단계를 가르는 선이다.** 그전에 만들 수 있는 것은 없다 —
+`policy_events` 의 `CHECK` 가 정해지지 않으면 스키마도, 가입 화면 체크박스도, 테스트도
+확정할 수 없고, 먼저 만들면 **쓰지도 않은 테이블에 재생성 migration 을 쓰게 된다**(2단계 §4).
+
+---
+
+## 21. 최종 판정
+
+> **3단계는 「설계 보완 완료 · 법률 결정과 구현 대기」다. 「3단계 완료」가 아니다.**
+>
+> 2판에서 설계 결함 9건을 고쳤고 결정 1·2·5(조건부)·6 이 확정됐다. 결정 3·4 는 외부 법률
+> 검토에 종속되어 있고, 회원가입 코드·DB·migration·정책 파일·개인정보처리방침·원격 환경은
+> **하나도 변경하지 않았다.** 삭제 표식 D1 은 승인 조건이 문서에 반영됐을 뿐이며
+> **생성과 구현은 여전히 별도 승인 사항**이다.
+>
+> 공개 OAuth 활성화와 계정 출시는 **No-Go** 다.
