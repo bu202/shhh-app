@@ -23,8 +23,10 @@
 > 로그인 한도 표기 불일치 · OAuth 응답 무제한 적재. **전부 아직 배포 전이다**(§4-2b).
 > 남은 것은 **① 개인정보 법률 검토 ② 실기기 확인 ③ `RL_KEY` 등록 + `0004` 적용 + 배포** 셋이다.
 >
-> **2026-08-17: 2단계(회원가입·개인정보·계정 정책) 정책 설계를 끝냈다** —
-> `docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md`. **다음 작업은 3단계 상세 설계**다.
+> **2026-08-17: 2단계(정책 설계)와 3단계(상세 설계)를 끝냈다** —
+> `docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md` · `docs/STAGE3_SIGNUP_SECURITY_DESIGN.md`.
+> **다음 작업은 3단계 설계서 §17 의 사용자 결정 6건**이고, 그중 둘(법적 근거·정책 이벤트 보존)은
+> 외부 법률 검토가 먼저다 — 전달 자료는 `docs/PRIVACY_LEGAL_REVIEW_PACKET.md`.
 > 회원가입 **구현**은 개인정보 처리의 법적 근거가 확정된 뒤에 시작한다. 공개 OAuth 활성화와
 > 배포는 계속 **No-Go** 다. 정책 설계 완료는 법률 검토 완료도, 출시 준비 완료도 아니다.
 
@@ -60,10 +62,10 @@
 | 배포본 | `dist/` 51개 파일, 내부 파일 0개, 선캐시 17개 |
 | OAuth | **비활성.** 시크릿 8개(`KAKAO_ID`·`KAKAO_SECRET`·`NAVER_*`·`GOOGLE_*`·`STATE_KEY`·`MASTER_UIDS`) 미투입. **`RL_KEY` 도 미등록**(9번째) |
 | 원격 D1 | **`0001`·`0002`·`0003` 적용 완료(2026-08-14).** **`0004` 는 아직 원격에 없다.** 적용 전 실측 전 테이블 0행 |
-| 원격 D1 사용자 수 | **0명** (2026-08-17 읽기 전용 `SELECT COUNT(*)` 재조회 성공). 같은 날 Codex 의 조회는 Cloudflare API `7403` 으로 실패했다 — **간헐적**이다 |
+| 원격 D1 사용자 수 | **0명** (2026-08-17 읽기 전용 `SELECT COUNT(*)` 재조회 성공). 같은 날 다른 실행 하나는 Cloudflare API `7403` 권한 오류였다. **원인은 확인되지 않았다** — 인증 컨텍스트·권한·Cloudflare 측 상태 중 무엇인지 모른다. "간헐적 장애"라고 단정하지 않는다. 값 0명은 **성공한 실행**에서 나온 것이다 |
 | legacy KV | **아직 살아 있다.** 5개(`b:1 c:1 s:2 u:1`, 접두사 개수만 확인). 새 코드는 쓰지 않는다. 폐기 방향은 승인, **실행은 별도 승인** |
 | 2단계(회원가입·개인정보) | **정책 설계 완료 2026-08-17.** 법률 검토·구현·출시는 각각 별개다 → `docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md` |
-| 라이브 | ⚠️ **배포본이 이 코드보다 오래됐다.** `/api/ready` 응답에 `db` 항목이 없다 — 현재 코드는 반드시 넣는다 |
+| 라이브 | ⚠️ **배포본이 이 코드보다 오래됐다**(1단계 2026-08-16 작업분이 아직 안 나갔다). 다만 `/api/ready` 응답에는 `db` 항목이 **이미 있다** — 2026-08-17 실측: HTTP **503** · `{"ok":true,"configReady":false,"db":true,"providers":[],"ready":false}`. OAuth 와 `RL_KEY` 가 준비되지 않았으므로 이 503 은 **의도된 fail-closed** 다(`configReady:false`). `db:true` 는 원격 D1 스키마가 실제로 답한다는 뜻이다 |
 | wrangler | `4.123.0` 을 devDependency 로 **고정**(예전엔 아예 설치돼 있지 않았다). OAuth 토큰은 살아 있음 |
 | 추적 안 된 파일 | `네이버검수-캡처/` — 사용자 파일. **건드리지 않는다** |
 
@@ -137,8 +139,10 @@
 | **1단계 작업분 배포** | 아래 §4-2b 의 세 가지를 **같은 창에서** | 사용자 승인 대기. 셋 중 하나만 하면 라이브가 더 나빠진다 |
 | 실기기 확인 | 설치된 PWA 에서 OAuth 복귀 · iOS/Android · 느린 회선에서 12초 타임아웃 | 기기가 필요하다. Node·헤드리스로 못 잰다 |
 | ~~개인정보 정책 설계~~ ✅ | **완료 2026-08-17** → `docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md` | — |
-| **개인정보 법률 검토** | 처리 근거(제15조 제1항 제1호 vs 제4호) · 국외 이전(제28조의8 제1호 vs 제3호) · 만 14세 · 정책 이벤트 보존 | **법률 판단은 AI 가 하지 않는다.** 질문 7개는 위 문서 §6. 사용자 몫 |
-| **3단계 회원가입 구현** | 가입 UI·API·`policy_events`·`scripts/test-policies.mjs` | 위 법률 근거 확정. **먼저 만들면 재생성 migration 을 쓰게 된다**(SQLite 는 `CHECK` 를 `ALTER` 로 못 바꾼다) |
+| **개인정보 법률 검토** | 처리 근거(제15조 제1항 제1호 vs 제4호) · 국외 이전(제28조의8 제1호 vs 제3호) · 만 14세 · 정책 이벤트 보존 · 삭제 표식의 성격 | **법률 판단은 AI 가 하지 않는다.** 전달 자료는 `docs/PRIVACY_LEGAL_REVIEW_PACKET.md`(L1~L10). 사용자 몫 |
+| ~~3단계 상세 설계~~ ✅ | **완료 2026-08-17** → `docs/STAGE3_SIGNUP_SECURITY_DESIGN.md` | — |
+| **3단계 결정 6건** | 가입 흐름 · 임시 상태 · 법적 분기 · 이벤트 CASCADE · 삭제 표식 저장소 · saga 실패 응답 | 사용자 결정. 설계서 §17 |
+| **3단계 회원가입 구현** | 가입 UI·API·`policy_events`·`test-signup`·`test-policies`·`test-deletion-ledger` | 위 결정 + 법률 근거 확정. **먼저 만들면 재생성 migration 을 쓰게 된다**(SQLite 는 `CHECK` 를 `ALTER` 로 못 바꾼다) |
 | **`privacy.html` 불일치 7건** | 목록은 위 문서 §14 | 법률 근거가 정해져야 어떤 문장으로 고칠지가 정해진다. 가입 화면 구현과 **같은 변경 단위**로 고친다 |
 | OAuth 활성화 | P0 완료(됨) + 사용자 승인 + **`RL_KEY` 동시 등록** | 승인 대기. **공개 OAuth 는 계속 No-Go** |
 
@@ -198,7 +202,8 @@ npx wrangler pages deployment list --project-name shhh-app
 > 사람만 보호한다.
 >
 > 필요한 것은 **주 D1 밖의 삭제 표식을 복원 전후에 재적용하는 절차**다 —
-> `docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md` §9. **설계만 있고 구현이 없다.**
+> 요구사항은 `docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md` §9, saga·실패 매트릭스·복원 8단계는
+> `docs/STAGE3_SIGNUP_SECURITY_DESIGN.md` §10. **설계만 있고 구현이 없다.**
 > 그 전까지 `time-travel restore` 와 백업 복원은 실행하지 않는다.
 >
 > 백업 규칙(migration 직전에만·저장소 밖·암호화 볼륨·24시간 뒤 삭제·7일 상한)은 같은 문서 §10.
