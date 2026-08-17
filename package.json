@@ -5,7 +5,7 @@
   "description": "shhh! — 개발용 스크립트 전용. 배포되는 앱(index.html/js/css)은 의존성 0.",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "for t in auth client book fingers compounds match assemble knn screen home meaning friends migrations hash sw dist; do node scripts/test-$t.mjs || exit 1; done"
+    "test": "for t in auth client book fingers compounds match assemble knn screen home meaning friends migrations hash sw dist docs; do node scripts/test-$t.mjs || exit 1; done"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
