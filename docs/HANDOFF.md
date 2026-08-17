@@ -5,6 +5,64 @@
 
 ---
 
+
+## 2026-08-17 운영 반영 기록 (1단계)
+
+**배포 `f72f5225`** — Production / branch `main` / source **`cba3d3a`** (HEAD 와 일치).
+`--commit-dirty=true` 를 쓰지 않았다. 직전 프로덕션은 `acdecfa2`(source `586cc86`) — **롤백 대상**.
+
+| # | 한 일 | 결과 |
+|---|---|---|
+| 1 | 원격 D1 읽기 전용 사전 점검 | `users`·`sessions`·`books`·`friendships`·`invite_codes` **전부 0행** · `rate_limits` **4행** · migration `0001`~`0003` · `invite_codes_active` 인덱스 **없음** |
+| 2 | 저장소 밖 백업 | `~/shhh-d1-backups/shhh-db-20260817-184520.sql` · 3,637B · SHA-256 `79514461…` · 66줄 · CREATE TABLE 7 · INSERT 8 |
+| 3 | **백업 복원 시험** | 로컬 SQLite 로 실제 복원 성공. tables 8 · indexes 6 · users 0 · rate_limits 4 · migrations 3 — **원격과 일치** |
+| 4 | `RL_KEY` 생성·등록 | production 환경. **값을 출력하지 않았다.** 시크릿 이름 목록: `RL_KEY` · `STATE_KEY` |
+| 5 | 원격 D1 `0004` 적용 | ✅ 3 commands. 적용 후 `invite_codes_active` **존재**, 중복 활성 코드 **0건**, `users` **0명 무변화** |
+| 6 | 빌드·배포 | `npm test` 17개 스위트 통과 · `npm audit` 0건 · `test-dist` 통과(dist 51개, 내부 파일 0개) |
+| 7 | 배포 후 검증 | 아래 |
+
+### 배포 후 실측
+
+| 항목 | 결과 |
+|---|---|
+| `/api/ready` | `{"ok":true,"configReady":false,"db":true,"providers":[],"ready":false}` · **HTTP 503** |
+| `ready:false` 의 원인 | **`providers: []`**(OAuth 미설정). ⚠️ `RL_KEY` 미등록도 DB 오류도 **아니다** — `db:true` 가 스키마 접근을 증명하고, 시크릿 목록에 `RL_KEY` 가 있다 |
+| Origin 없는 `POST /friends` | **403** |
+| Origin 없는 `DELETE /session` | **403** |
+| 외부 Origin `POST /friends` | **403** |
+| 세션 없는 `GET /book` | **401** |
+| 없는 경로 `POST` | **404** (리미터를 안 탄다) |
+| **레이트리밋** | `/api/cb/kakao` 12회 → **1~10 은 400, 11~12 는 429.** `RL_KEY` 가 실제로 센다 |
+| **리미터 증폭 방어** | 12회 요청인데 카운터는 **11 에서 멈췄다**. 한도 초과 후 D1 쓰기가 없다 |
+
+### ⛔ 아직 안 끝난 것 — 옛 엣지 캐시
+
+**배포 뒤에도 내부 파일 7개가 canonical 에서 원문 200 이다.** 실측(GET):
+
+`/CLAUDE.md` 106,598B · `/worker/index.js` 33,307B · `/scripts/test-friends.mjs` 23,749B ·
+`/wrangler.jsonc` 1,256B · `/package.json` 403B · `/package-lock.json` 3,085B ·
+`/docs/API_KEY_GUIDE.md` 3,002B — 전부 `cf-cache-status: HIT`, `age≈518,800`, `s-maxage 604800`
+→ **남은 수명 약 24시간**.
+
+- **오리진은 깨끗하다.** 쿼리를 붙이면 전부 `index.html` 폴백(9,994B)이고 `dist/` 에도 내부 파일이 0개다.
+- **배포로는 안 지워진다 — 이번이 세 번째 확인**(08-14 · 08-16 · 08-17). `age` 가 계속 08-11 을 가리킨다.
+- `*.pages.dev` 는 우리 존이 아니라 **퍼지 API 를 쓸 수 없다.**
+- ⚠️ 그 `CLAUDE.md` 안에 **개인 복구 링크 5건**이 들어 있다.
+- **이것이 1단계 운영 마감의 유일한 외부 대기 조건이다.** 자동 만료 예상 시각을 완료 근거로 쓰지 않는다 —
+  **7개 경로를 다시 측정해 폴백이 나와야** 닫는다.
+
+### 부수 발견 — 만료된 `rate_limits` 4행이 그대로 남아 있다
+
+08-16 14:10~14:29 에 만들어진 행 4개(`n` = 63 · 67 · 11 · 1)가 **전부 만료됐는데 삭제되지 않았다.**
+정리가 `newSession()`(= 로그인) 에만 붙어 있는데(`worker/index.js:256-261`) **아무도 로그인하지 않기 때문**이다.
+
+- 이 4행은 **당시 라이브 코드(`586cc86`)가 키 없는 `sha256()` 로 만든 값**이다 — 2026-08-16 재감사가
+  **실측 43회 대입으로 원본 IP 를 복원**한 바로 그 종류다.
+- 오늘 만든 5번째 행은 새 `RL_KEY` HMAC 이라 그 문제가 없다.
+- **설계서 위협 38 의 라이브 증거다** — 「보유기간을 약속했는데 지우는 사람이 없다」.
+  4단계의 정리 Worker(설계서 §10-5-2)가 이것을 닫는다.
+- ⚠️ **이 4행의 삭제는 승인 범위 밖이라 실행하지 않았다.** 원격 D1 쓰기이므로 별도 승인이 필요하다.
+
 ## 0. 30초 요약
 
 연인·친구가 **실제 한국수어 단어**를 함께 배우는 PWA. Vanilla JS + Cloudflare Pages Functions + D1.
