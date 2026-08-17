@@ -30,5 +30,11 @@
   }
   // 비밀값은 여기 적지 않는다 — `wrangler pages secret put <이름>` 으로 넣는다.
   // KAKAO_ID · KAKAO_SECRET · NAVER_ID · NAVER_SECRET · GOOGLE_ID · GOOGLE_SECRET
-  // · STATE_KEY · MASTER_UIDS  (8개)
+  // · STATE_KEY · MASTER_UIDS · **RL_KEY**  (9개)
+  //
+  // ⚠️ **RL_KEY 를 빠뜨리지 않는다.** 2026-08-16 에 필수값이 됐는데 이 줄은 8개인 채로 남아
+  //    있었다 — 이 목록만 보고 배포하면 그대로 빠진다. 없으면 레이트리밋이 **세지 않고**
+  //    `/api/ready` 가 503 이다(worker/index.js 의 health · rlBucket).
+  //    STATE_KEY·OAuth secret 을 돌려 쓰지 않는다. 용도가 다른 비밀값을 겸용하면
+  //    하나를 교체할 때 다른 하나가 같이 무너진다.
 }
