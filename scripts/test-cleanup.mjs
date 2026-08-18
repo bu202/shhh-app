@@ -332,10 +332,120 @@ function seed(env, now) {
           first: async () => { throw new Error("boom"); } } } };
   const w2 = [];
   await cleanup.scheduled({}, bad, { waitUntil: (p) => w2.push(p) });
-  await Promise.all(w2);
+  // ⚠️ `Promise.all` 이 아니다 — 이제 실패한 회차는 **의도적으로 거부된다**(T49). `all` 로 받으면
+  //    그 거부가 여기서 테스트를 통째로 끝내 아래 상태 검사가 실행되지 않는다.
+  await Promise.allSettled(w2);
   const run2 = env.LEDGER._db.prepare("SELECT * FROM cleanup_runs WHERE id = 1").get();
   assert.equal(run2.fail_streak, 1, t("실패했는데 연속 실패가 안 올랐다"));
   assert.ok(run2.last_error && run2.last_error.length <= 120, t("오류 문자열을 안 자르거나 안 적었다"));
+}
+
+// ══ T49. 실패는 실패로 끝나고, 밖으로 나가는 신호는 boolean 하나다 ═══════
+// 재현(2026-08-18): `tick()` 이 실패를 잡아 `cleanup_runs` 에 적은 뒤 **예외를 삼켰다.**
+//   3회 연속 실패를 주입해도 `ctx.waitUntil()` 의 Promise 는 셋 다 `fulfilled` 였다 —
+//   Cloudflare 는 그 Promise 의 거부로 Cron Trigger 실패를 적으므로, 대시보드의 Past Events 에는
+//   실패가 **성공 세 줄**로 남는다. 그리고 `/api/ready` 는 `fail_streak`·`open_pending` 을
+//   읽고도 버려서, D1 을 직접 조회하지 않는 한 아무 데서도 보이지 않았다.
+//   즉 C6 의 「지우지 않는다. 세어서 알린다」 중 **「센다」만** 구현된 상태였다.
+{
+  const { default: worker } = await import("../worker/index.js");
+  const { default: cleanup } = await import("../worker/cleanup/index.js");
+  const ORIGIN = "https://app.test";
+  const ready = async (env) => await (await worker.fetch(
+    new Request("https://api.test/ready", { headers: { Origin: ORIGIN } }),
+    { APP_ORIGIN: ORIGIN, ...env })).json();
+  // 크론 한 회차. **결과를 삼키지 않고 돌려준다** — 재려는 것이 바로 그 Promise 의 상태다.
+  const run = async (env) => {
+    const w = [];
+    await cleanup.scheduled({}, env, { waitUntil: (p) => w.push(p) });
+    assert.equal(w.length, 1, t("T49: scheduled 가 ctx.waitUntil 로 추적하는 Promise 가 하나가 아니다"));
+    return (await Promise.allSettled(w))[0];
+  };
+  const row = (env) => env.LEDGER._db.prepare("SELECT * FROM cleanup_runs WHERE id = 1").get();
+  // `cleanup_runs` 만 답하고 나머지는 터지는 ledger = 「정리가 실패했다」. 기록은 되어야
+  // fail_streak 을 잴 수 있다(기록조차 못 하는 경우는 아래에서 따로 잰다).
+  const boom = () => { throw new Error("boom: no such table deletions"); };
+  const failing = (env) => ({ DB: env.DB, LEDGER: { ...env.LEDGER, _db: env.LEDGER._db,
+    prepare: (sql) => sql.includes("cleanup_runs") ? env.LEDGER.prepare(sql)
+      : { bind: () => ({ run: boom, first: boom }), first: boom } } });
+
+  // ① 정상. **pending 을 심지 않는다** — 심으면 경보가 켜져서 아래 임계값 검사가 가려진다.
+  const env = env0();
+  assert.equal((await run(env)).status, "fulfilled", t("T49: 정상 실행인데 Cron Promise 가 거부됐다"));
+  {
+    const r = await ready(env);
+    assert.equal(r.cleanupStale, false, t("T49: 방금 성공했는데 cleanupStale 이다"));
+    assert.equal(r.cleanupAlert, false, t("T49: 정상인데 경보가 켜져 있다 — 경보가 늘 켜져 있으면 아무도 안 본다"));
+  }
+
+  // ② 1·2·3회 연속 실패. **임계값은 3이다** — 1~2회는 D1 의 일시 오류로도 난다.
+  const f = failing(env);
+  for (const k of [1, 2, 3]) {
+    const res = await run(f);
+    assert.equal(res.status, "rejected",
+      t(`T49: ★ ${k}회째 실패인데 Cron Promise 가 성공으로 끝났다 — 대시보드에 실패가 안 남는다`));
+    const why = String(res.reason && res.reason.message);
+    for (const leak of ["boom", "no such table", "SELECT", "deletions", "cleanup_runs"])
+      assert.ok(!why.includes(leak), t(`T49: 밖으로 던진 오류에 '${leak}' 가 실렸다`));
+    assert.equal(row(env).fail_streak, k, t(`T49: ${k}회 실패인데 연속 실패가 ${row(env).fail_streak} 이다`));
+    assert.ok(row(env).last_error.length <= 120, t("T49: 기록한 오류 문자열을 안 잘랐다"));
+    // ★ off-by-one. 2회에서 켜지면 임계값이 2고, 3회에서 안 켜지면 4다.
+    assert.equal((await ready(env)).cleanupAlert, k >= 3,
+      t(`T49: 연속 실패 ${k}회의 경보가 틀렸다 — 임계값이 3이 아니다`));
+  }
+
+  // ③ 기록조차 못 해도 **실행은 실패로 끝난다.** 기록 실패를 이유로 성공 처리하면
+  //    ledger 가 통째로 죽은 날 크론은 계속 「성공」이라고 답한다.
+  {
+    const dead = { DB: env.DB, LEDGER: { prepare: () => ({ bind: () => ({ run: boom, first: boom }), first: boom }) } };
+    assert.equal((await run(dead)).status, "rejected",
+      t("T49: 기록에 실패하니 실행이 성공으로 끝났다 — ledger 가 죽은 날 크론이 정상으로 보인다"));
+  }
+
+  // ④ **성공이 pending 문제를 덮지 않는다.** 크론은 성공했고, 표식은 그대로 있고, 경보는 켜진다.
+  const env2 = env0(), now2 = Date.now();
+  seed(env2, now2);
+  assert.equal((await run(env2)).status, "fulfilled", t("T49: pending 이 있다고 실행이 실패했다"));
+  assert.equal(row(env2).fail_streak, 0, t("T49: 성공했는데 연속 실패가 0이 아니다"));
+  assert.equal(row(env2).open_pending, 1, t("T49: 확정 안 된 표식을 안 셌다"));
+  assert.equal(lc(env2, "WHERE mark = 'pend-old'"), 1, t("T49: 확정 안 된 표식을 지웠다"));
+  {
+    const r = await ready(env2);
+    assert.equal(r.cleanupStale, false, t("T49: 방금 성공했는데 cleanupStale 이다"));
+    assert.equal(r.cleanupAlert, true,
+      t("T49: ★ 확정 안 된 표식이 있는데 경보가 없다 — 「센다」만 하고 「알린다」가 빠졌다"));
+    // ⛔ 공개 응답에 운영 정보가 실리지 않는다. 이 응답은 인증 없이 열려 있다.
+    const txt = JSON.stringify(r);
+    for (const leak of ["open_pending", "fail_streak", "last_error", "last_counts",
+                        "pend-old", "deletions", "cleanup_runs", "boom", "SELECT"])
+      assert.ok(!txt.includes(leak), t(`T49: /ready 응답에 '${leak}' 가 새어 나왔다`));
+  }
+  // 다시 성공해도 그대로 켜져 있다 — 사람이 판정할 때까지 꺼지지 않는다.
+  assert.equal((await run(env2)).status, "fulfilled", t("T49: 두 번째 정상 실행이 실패했다"));
+  assert.equal((await ready(env2)).cleanupAlert, true,
+    t("T49: 성공 한 번에 pending 경보가 꺼졌다 — 크론 성공이 삭제 문제 해결로 읽힌다"));
+
+  // ⑤ 복구. 실패가 멈추고 pending 이 없으면 경보도 꺼진다(안 꺼지면 아무도 안 본다).
+  assert.equal((await run(env)).status, "fulfilled", t("T49: 복구 실행이 실패했다"));
+  assert.equal(row(env).fail_streak, 0, t("T49: 복구했는데 연속 실패가 안 내려갔다"));
+  assert.equal(row(env).last_error, null, t("T49: 복구했는데 마지막 오류가 남아 있다"));
+  assert.equal((await ready(env)).cleanupAlert, false, t("T49: 복구했는데 경보가 안 꺼진다"));
+
+  // ⑥ **「모른다」를 「괜찮다」로 읽지 않는다.** ledger 는 붙어 있는데 상태를 못 읽으면 경보다.
+  const env3 = env0();
+  const blind = { ...env3, LEDGER: { ...env3.LEDGER, _db: env3.LEDGER._db,
+    prepare: (sql) => /FROM cleanup_runs/.test(sql)
+      ? { bind: () => ({ first: boom }), first: boom } : env3.LEDGER.prepare(sql) } };
+  assert.equal((await ready(blind)).cleanupAlert, true,
+    t("T49: 정리 상태를 못 읽는데 경보가 꺼져 있다 — 표가 깨진 배포가 정상으로 보인다"));
+  const env4 = env0();
+  env4.LEDGER._db.exec("DELETE FROM cleanup_runs");
+  assert.equal((await ready(env4)).cleanupAlert, true,
+    t("T49: 실행 기록 행이 아예 없는데 경보가 꺼져 있다 — 한 번도 안 돈 크론이 정상으로 보인다"));
+  // ledger 바인딩 자체가 없으면 말할 것이 없다(`cleanupStale` 과 같은 규칙).
+  const noLedger = await ready({ ...env0(), LEDGER: undefined });
+  assert.equal(noLedger.cleanupAlert, false, t("T49: ledger 바인딩이 없는데 정리 경보를 낸다"));
+  assert.equal(noLedger.cleanupStale, false, t("T49: ledger 바인딩이 없는데 cleanupStale 이다"));
 }
 
 // ══ 정리 Worker 는 인터넷에 아무것도 열지 않는다 ══════════════════════════
@@ -362,4 +472,6 @@ console.log(`test-cleanup: ${n}개 통과 — confirmed 만 삭제(pending 보�
   + `안 풀린 lease 보존 · 재실행 안전 · maintenance/restore_closed 즉시 종료 · `
   + `크론도 임차증(주 D1 첫 접근 전 획득 · 도는 중 drained:false · 끝난 뒤에만 0) · `
   + `허용 모드 분리(요청/크론) · ledger 오류 시 주 D1 접근 0건 · `
-  + `LIMIT·조건 전수 · 실행 기록과 연속 실패 · HTTP 미공개(fetch 핸들러·workers_dev·route 없음)`);
+  + `LIMIT·조건 전수 · 실행 기록과 연속 실패 · HTTP 미공개(fetch 핸들러·workers_dev·route 없음) · `
+  + `실패한 회차의 Cron Promise 거부 · 연속 실패 3회 경보 · pending 경보는 성공이 안 덮음 · `
+  + `정리 상태를 못 읽으면 fail-closed · /ready 는 boolean 만(개수·오류 비공개)`);

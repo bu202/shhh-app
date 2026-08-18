@@ -130,6 +130,13 @@ async function tick(env) {
         `UPDATE cleanup_runs SET last_try_at = ?, fail_streak = fail_streak + 1, last_error = ?
           WHERE id = 1`).bind(now, why).run();
     } catch { /* 기록조차 못 하면 다음 회차의 last_ok_at 간격이 대신 말한다 */ }
+    // ⚠️ **기록했다는 이유로 성공으로 끝내지 않는다.** `ctx.waitUntil()` 에 넘긴 Promise 가
+    //    거부돼야 Cloudflare 가 이 실행을 Cron Trigger 의 실패로 적는다(공식 문서 scheduled 핸들러).
+    //    삼키면 세 번 연속 실패해도 대시보드에는 「성공」 세 줄이 남는다 — 조용히 멈춘 크론이
+    //    없는 크론보다 나쁜 바로 그 상태다. 기록 자체가 실패해도 마찬가지로 던진다.
+    // ⚠️ 원인은 **밖으로 내보내지 않는다** — D1 오류에는 표·컬럼 이름이 섞여 나온다.
+    //    이유는 `cleanup_runs.last_error` 와 observability 로그에만 남는다.
+    throw new Error("cleanup failed");
   }
 }
 

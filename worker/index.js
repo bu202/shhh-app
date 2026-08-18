@@ -876,6 +876,11 @@ export const pathTemplate = (p) =>
 //    자동으로 함께 추적된다. 굳이 빼서 「추적 안 되는 쓰기」를 하나 만들 이유가 없다.
 const LEASE_FREE = [/^\/health$/, /^\/ready$/, /^\/policies$/];
 
+// 정리 크론이 **연속 몇 번** 실패하면 경보인가. 1~2회는 D1 의 일시 오류로도 난다 —
+// 그때마다 경보하면 사람이 경보를 무시하게 되고, 그게 진짜 고장을 지나치는 길이다.
+// 3회면 한 시간 주기로 세 시간이라, 저절로 낫는 종류가 아니다(설계서 C11).
+const CLEANUP_FAIL_ALERT = 3;
+
 export default {
   // 전역 예외 그물. 아래 어디서 던져도 제공자 응답·스택이 사용자에게 새지 않고 500 한 줄로 끝난다.
   //
@@ -981,9 +986,21 @@ async function route(req, env, rc) {
       //    고치려던 것보다 큰 고장을 만든다(리미터를 fail-open 으로 둔 것과 같은 판단).
       //    대신 **응답에는 반드시 실린다** — 조용히 멈춘 크론은 없는 크론보다 나쁘고,
       //    배포 후 smoke test 와 출시 체크리스트가 이 값을 직접 본다.
+      // ⚠️ **`cleanupStale` 과 다른 질문이다.** stale = 정리가 제 시간에 성공했나.
+      //    alert = 사람이 봐야 할 것이 쌓여 있나(확정 안 된 삭제 표식 · 연속 실패).
+      //    크론이 매시 성공해도 확정되지 않은 표식은 그대로 남는다 — 그건 사람이 판정할
+      //    일이라(C6: 「지우지 않는다. 세어서 알린다」) **성공이 그 사실을 덮으면 안 된다.**
+      //    ⛔ 개수·실패 횟수·오류 문자열은 **싣지 않는다.** 참/거짓 하나만 나간다 —
+      //       이 응답은 인증 없이 열려 있고, 그 숫자들은 운영 정보다(D1 직접 조회로 본다).
+      //    ⚠️ **못 읽으면 참이다.** ledger 는 붙어 있는데 상태를 못 읽는 것을 「괜찮다」로
+      //       읽지 않는다 — 그러면 표가 깨진 배포가 조용히 정상으로 보인다.
+      const cleanupAlert = !!env.LEDGER
+        && (!cl || cl.open_pending > 0 || cl.fail_streak >= CLEANUP_FAIL_ALERT);
       const r = {
         ok: true, mode: gate.mode, configReady: h.ready, db, ledger,
-        signupReady: h.signupReady, providers: h.providers, cleanupStale,
+        signupReady: h.signupReady, providers: h.providers, cleanupStale, cleanupAlert,
+        // ⚠️ `cleanupAlert` 도 `ready` 를 내리지 않는다 — `cleanupStale` 과 같은 판단이다.
+        //    정리가 밀린 것은 보유기간 문제이지 사용자가 앱을 못 쓰는 상태가 아니다.
         ready: h.ready && db && ledger && gate.mode === "open",
       };
       return json(env, req, r, r.ready ? 200 : 503);
