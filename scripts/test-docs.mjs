@@ -43,6 +43,12 @@ const FORBIDDEN = [
   ["L1~L12", "같음"],
   ["복원 9단계", "ledger 는 제자리 복원하지 않는다 (§10-6-0)"],
 ];
+//
+// ⚠️ **이 면제는 넓다.** 실측: 이 정규식의 ±2줄 창이 문서 전체 비어 있지 않은 줄의 **47.7%**
+//    에서 참이다(3,938줄 중 1,880줄). 즉 검사 1은 「금지 문구가 문서의 조용한 절반에 새로 들어올
+//    때」만 잡는다. 그 정도로 충분한 이유는 여기 든 11종이 **설계 서술**이라 정정 맥락 밖에서
+//    쓰일 일이 드물기 때문이다. **운영 상태(등록됐나·적용됐나·무엇이 라이브인가)에는 쓰지 않는다**
+//    — 그쪽은 검사 10 이 훨씬 좁은 면제로 따로 본다.
 const CORRECTION = /틀렸|정정|판에서|판까지|⚠️|⛔|아니다|않는다|없앴|였다|있었다|예전|고친|결함|금지 문구/;
 for (const f of [...DOCS, "worker/index.js", "wrangler.jsonc"]) {
   const lines = R(f).split("\n");
@@ -151,7 +157,90 @@ for (const m of priv.matchAll(/(\d+)\s*일\s*(?:뒤|후)에?\s*(?:반드시\s*)?
 }
 ok("privacy.html — 미확정 보유기간 단정 0건");
 
+// ── 9. 스위트 개수는 package.json 에서 읽는다 ─────────────────────────────
+// 문서에 "16개 스위트" 를 손으로 적어 두면 스위트가 늘어도 아무도 안 고친다.
+// 개수의 원본은 `package.json` 의 test 스크립트 하나뿐이다.
+const testScript = JSON.parse(R("package.json")).scripts.test;
+const suiteList = /for t in ([^;]+);/.exec(testScript);
+if (!suiteList) bad("package.json 의 test 스크립트에서 스위트 목록을 못 읽었다 — 검사기가 낡았다");
+const SUITES = suiteList ? suiteList[1].trim().split(/\s+/).length : 0;
+for (const f of DOCS) {
+  for (const m of R(f).matchAll(/(\d+)\s*개\s*스위트/g)) {
+    if (+m[1] !== SUITES) bad(`${f} "${m[0]}" 라고 적혀 있는데 실제는 ${SUITES}개 (package.json)`);
+  }
+}
+ok(`스위트 개수 ${SUITES}개 — package.json 과 문서가 일치`);
+
+// ── 10. 낡은 「현재 운영 상태」가 되살아나지 않았나 ────────────────────────
+//
+// ⚠️ 검사 1의 `CORRECTION` 은 여기 쓰지 않는다. 그 정규식은 「않는다·아니다·였다」처럼
+//    흔한 낱말을 포함해서, 운영 상태 문장 근처에서는 **거의 항상 참**이 되어 다 통과시킨다.
+//    그래서 여기서는 **명시적인 역사 표식만** 면제한다 — 「당시 사실」·「역사 기록」·⛔.
+//    날짜가 있다는 이유만으로도 통과시키지 않는다(현재형 문장에도 날짜는 붙는다).
+const HIST = /당시 사실|역사 기록|⛔/;
+const OLD_DEPLOYS = "acdecfa2|fa7d8ef0|774015e9";
+const STALE_OPS = [
+  [/RL_KEY[^\n]{0,20}(도\s*)?미등록|RL_KEY[^\n]{0,20}아직 등록되지|RL_KEY[^\n]{0,20}등록 전이라/,
+   "RL_KEY 는 2026-08-17 production 에 등록됐다"],
+  [/0004[^\n]{0,20}(아직|미적용)|아직 원격에 없다/, "0004 는 2026-08-17 원격에 적용됐다"],
+  [/운영 미반영/, "1단계는 2026-08-17 배포 f72f5225 로 운영 반영됐다"],
+  [new RegExp(`현재 라이브[^\\n]*(${OLD_DEPLOYS})|(${OLD_DEPLOYS})[^\\n]*현재 라이브`),
+   "현재 라이브는 f72f5225(source cba3d3a) 다"],
+];
+// 면제는 셋뿐이고 전부 **그 줄 안에서** 판정한다 — 앞뒤 줄의 낱말로 통과시키지 않는다.
+//  ① `~~취소선~~` — 닫힌 과거 항목임을 마크다운이 이미 표시한 경우
+//  ② 문구 바로 뒤(40자 안)의 부정 — "RL_KEY 미등록도 DB 오류도 **아니다**"
+//  ③ 명시적 역사 표식 — 「당시 사실」·「역사 기록」·⛔
+const exempt = (ln, at) =>
+  /~~[^~]*~~/.test(ln) || /아니(다|었|라)/.test(ln.slice(at, at + 40)) || HIST.test(ln);
+for (const f of DOCS) {
+  const lines = R(f).split("\n");
+  for (const [re, why] of STALE_OPS) {
+    lines.forEach((ln, i) => {
+      const m = re.exec(ln);
+      if (!m) return;
+      if (exempt(ln, m.index)) return;
+      // 역사 표식은 절 전체에 걸리기도 한다(앞 2줄까지만 본다).
+      if (HIST.test(lines.slice(Math.max(0, i - 2), i).join(" "))) return;
+      bad(`${f}:${i + 1} 낡은 운영 상태 — ${why}\n      "${ln.trim().slice(0, 90)}"`);
+    });
+  }
+}
+ok(`낡은 운영 상태 ${STALE_OPS.length}종 — 역사 표식 밖 사용 0건`);
+
+// ── 11. CLAUDE.md 와 HANDOFF.md 의 단계 상태가 같은 말을 하나 ──────────────
+// 단계 정의의 원본은 CLAUDE.md §1-1 이다. HANDOFF 가 다른 말을 하면 실패시킨다.
+const STAGE_FACTS = [
+  [1, /운영 반영 완료/, /운영 미반영/, "1단계는 운영 반영 완료이고 엣지 캐시만 남았다"],
+  [2, /외부 법률 검토 미완료/, null, "2단계는 정책 결정만 완료다"],
+  [3, /5판/, /미착수/, "3단계는 5판 설계 완료다"],
+  [4, /코드 0줄/, null, "4단계는 미착수·코드 0줄이다"],
+];
+for (const [n, must, mustNot, why] of STAGE_FACTS) {
+  for (const f of ["CLAUDE.md", "docs/HANDOFF.md"]) {
+    const rows = R(f).split("\n").filter((ln) => new RegExp(`^[>\\s]*\\|\\s*${n}단계`).test(ln));
+    if (!rows.length) { bad(`${f} 에 ${n}단계 행이 없다 — 단계 현황표가 사라졌거나 모양이 바뀌었다`); continue; }
+    const row = rows.join(" ");
+    if (!must.test(row)) bad(`${f} ${n}단계 행에 ${must} 가 없다 — ${why}`);
+    if (mustNot && mustNot.test(row)) bad(`${f} ${n}단계 행에 ${mustNot} 가 남아 있다 — ${why}`);
+  }
+}
+ok("CLAUDE.md 와 HANDOFF.md 의 1~4단계 상태가 일치");
+
+// ── 12. 법률 자료가 현재 운영 사실을 담고 있나 ────────────────────────────
+// 외부 검토자에게 나가는 자료다. 낡은 사실이 남으면 검토 전제가 틀어진다.
+const PACKET_FACTS = [
+  [/RL_KEY[^\n]*production 에 등록/, "RL_KEY 가 production 에 등록되어 있다는 사실"],
+  [/providers:\s*\[\]/, "/api/ready 의 503 원인이 providers: [] 라는 사실"],
+  [/rate_limits[^\n]*저장된다/, "로그인하지 않은 요청도 rate_limits 행을 만든다는 사실"],
+];
+{
+  const t = R(PACKET);
+  for (const [re, what] of PACKET_FACTS) if (!re.test(t)) bad(`${PACKET} 에 ${what} 가 없다`);
+}
+ok("법률 자료가 현재 운영 사실 3건을 담고 있다");
+
 console.log(fails
   ? `test-docs: 실패 ${fails}건`
-  : "test-docs: 통과 — 낡은 문구 · 죽은 § 참조 · 번호 연속성 · 선언된 개수 · 판 번호 · 필수 절 · 완료 범위 · 보유기간 단정");
+  : "test-docs: 통과 — 낡은 문구 · 죽은 § 참조 · 번호 연속성 · 선언된 개수 · 판 번호 · 필수 절 · 완료 범위 · 보유기간 단정 · 스위트 수 · 낡은 운영 상태 · 단계 상태 일치 · 법률 자료 현재 사실");
 process.exit(fails ? 1 : 0);
