@@ -26,6 +26,21 @@ for (const need of ["index.html", "privacy.html", "manifest.webmanifest", "servi
                     "data/ksl-daily.json", "icons/icon-192.png", "icons/icon-512.png"])
   assert.ok(files.includes(need), `dist/ 에 ${need} 가 없다 — 앱이 안 선다`);
 
+// 3b. 정책 문서. **폴더를 통째로 넣는 유일한 자리**라 안에 무엇이 들었는지 따로 본다.
+//     허용 확장자를 좁혀 두지 않으면 누가 `.md` 나 `.sql` 을 여기 두는 순간 조용히 공개된다.
+const pol = files.filter((f) => f.startsWith("policies/"));
+for (const f of pol)
+  assert.ok(/\.(html|txt|json)$/.test(f), `policies/ 에 허용되지 않은 파일이 있다: ${f}`);
+assert.ok(files.includes("policies/manifest.json"), "policies/manifest.json 이 없다");
+// 서버 상수가 가리키는 **현재 번들 파일이 실제로 나갔는지.** 하나라도 없으면 가입 화면이
+// 자기가 렌더할 바이트를 해시할 수 없어 가입 버튼을 못 그린다(fail-closed 라 조용히 막힌다).
+const { POLICY_BUNDLE } = await import("../worker/policies.js");
+for (const k of Object.keys(POLICY_BUNDLE.docs))
+  assert.ok(files.includes(POLICY_BUNDLE.docs[k].path),
+    `현재 정책 번들의 ${k} 파일이 dist 에 없다: ${POLICY_BUNDLE.docs[k].path}`);
+// 원본(살아 있는 파일)은 나가지 않는다.
+assert.ok(!files.some((f) => f.startsWith("policies-src/")), "dist/ 에 policies-src/ 가 있다");
+
 // 4. 지화 그림 32장. 한 장이라도 빠지면 그 자모만 조용히 안 뜬다.
 assert.equal(files.filter((f) => f.startsWith("assets/fingerspelling/")).length, 32, "지화 그림 수가 32장이 아니다");
 
@@ -62,4 +77,16 @@ assert.equal(cacheName, await swCacheName(), "캐시 이름이 지금 dist 자�
   assert.notEqual(after, before, "자산을 바꿨는데 캐시 이름이 그대로다 — 세대가 안 갈린다");
 }
 
-console.log(`test-dist: 통과 — dist/ ${files.length}개, 내부 파일 0개, 선캐시 ${assets.length}개 전부 존재, 캐시 ${cacheName}`);
+// 8. **서비스워커가 선캐시하는 정책 파일이 정확히 지금 번들인지.** 지난 판까지 선캐시하면
+//    캐시가 계속 자라고, 더 나쁘게는 옛 문서를 렌더하면서 서버는 새 해시를 기록하게 된다.
+{
+  const { currentAssets } = await import("./policies.mjs");
+  const { readManifest } = await import("./policies.mjs");
+  const want = currentAssets({ bundle: POLICY_BUNDLE, versions: (await readManifest()).versions }).sort();
+  const got = assets.filter((a) => a.startsWith("policies/")).sort();
+  assert.deepEqual(got, want,
+    "서비스워커의 정책 선캐시 목록이 지금 번들과 다르다 — `node scripts/policies.mjs` 를 다시 돌려라");
+}
+
+console.log(`test-dist: 통과 — dist/ ${files.length}개, 내부 파일 0개, 선캐시 ${assets.length}개 전부 존재, `
+  + `정책 ${pol.length}개(pv ${POLICY_BUNDLE.pv}), 캐시 ${cacheName}`);

@@ -41,6 +41,17 @@ const ASSETS = [
   "icons/icon-192.png",
   "icons/icon-512.png",
   "manifest.webmanifest",
+  // 정책 문서 번들. **지금 번들만** 넣는다 — 지난 판까지 선캐시하면 캐시가 계속 자라고,
+  // 가입 화면이 옛 문서를 렌더하면서 서버는 새 해시를 기록하는 상태가 생긴다.
+  // 이 사이의 줄은 `scripts/policies.mjs` 가 다시 쓴다. 손으로 고치지 않는다.
+  // policies:begin — scripts/policies.mjs 가 다시 쓴다
+  "policies/manifest.json",
+  "policies/index.html",
+  "policies/age14-2303810b39a1.txt",
+  "policies/privacy-c77d72a0ea60.html",
+  "policies/summary-d474a58df31c.txt",
+  "policies/terms-245e3ae48884.html",
+  // policies:end
 ];
 
 self.addEventListener("install", (e) => {

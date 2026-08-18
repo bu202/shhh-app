@@ -24,6 +24,11 @@ export const DIST = path.join(ROOT, "dist");
 export const INCLUDE = [
   "index.html",
   "privacy.html",
+  // 정책 문서. **폴더 통째로** 넣는 유일한 예외다 — 이 폴더는 공개 목적의 불변 문서 전용이고,
+  // 지난 판까지 함께 나가야 「그때 그 문서」를 나중에도 보여줄 수 있다.
+  // 대신 test-dist 가 `.html/.txt/.json` 외 확장자가 하나라도 있으면 실패시킨다.
+  // ⚠️ 원본(`policies-src/`)은 여기 없다. 살아 있는 파일이 배포에 섞이면 불변이 깨진다.
+  "policies",
   "manifest.webmanifest",
   "service-worker.js",
   "_headers",                 // 보안 헤더. 빠지면 CSP 가 통째로 사라진다
@@ -54,6 +59,8 @@ export const FORBIDDEN = [
   /(^|\/)design(\/|$)/, /(^|\/)brand(\/|$)/, /(^|\/)node_modules(\/|$)/, /(^|\/)\.git(\/|$)/,
   /(^|\/)\.wrangler(\/|$)/, /\.md$/i, /wrangler\.jsonc?$/, /package(-lock)?\.json$/,
   /^\.env/, /\/\.env/, /\.mjs$/, /\.py$/, /\.DS_Store$/, /검수/, /캡처/,
+  // 정책 문서의 **살아 있는 원본**. 배포되는 것은 `policies/` 의 불변 사본뿐이다.
+  /(^|\/)policies-src(\/|$)/, /(^|\/)migrations(-ledger)?(\/|$)/, /\.sql$/,
 ];
 
 export async function build() {
