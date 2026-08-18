@@ -188,11 +188,21 @@ const STALE_OPS = [
    "현재 라이브는 f72f5225(source cba3d3a) 다"],
 ];
 // 면제는 셋뿐이고 전부 **그 줄 안에서** 판정한다 — 앞뒤 줄의 낱말로 통과시키지 않는다.
-//  ① `~~취소선~~` — 닫힌 과거 항목임을 마크다운이 이미 표시한 경우
+//  ① **일치한 문구 자체가** `~~취소선~~` 안에 있음 — 닫힌 과거 항목인 경우
 //  ② 문구 바로 뒤(40자 안)의 부정 — "RL_KEY 미등록도 DB 오류도 **아니다**"
 //  ③ 명시적 역사 표식 — 「당시 사실」·「역사 기록」·⛔
+const struckAt = (ln, at) => {
+  for (const m of ln.matchAll(/~~[^~]*~~/g)) {
+    if (at >= m.index && at < m.index + m[0].length) return true;
+  }
+  return false;
+};
+if (!struckAt("~~RL_KEY 미등록~~", 2) ||
+    struckAt("~~닫힌 옛 항목~~ · RL_KEY 미등록", "~~닫힌 옛 항목~~ · ".length)) {
+  bad("취소선 면제가 일치한 문구 바깥까지 번진다 — 낡은 운영 상태를 숨길 수 있다");
+}
 const exempt = (ln, at) =>
-  /~~[^~]*~~/.test(ln) || /아니(다|었|라)/.test(ln.slice(at, at + 40)) || HIST.test(ln);
+  struckAt(ln, at) || /아니(다|었|라)/.test(ln.slice(at, at + 40)) || HIST.test(ln);
 for (const f of DOCS) {
   const lines = R(f).split("\n");
   for (const [re, why] of STALE_OPS) {
@@ -211,18 +221,20 @@ ok(`낡은 운영 상태 ${STALE_OPS.length}종 — 역사 표식 밖 사용 0�
 // ── 11. CLAUDE.md 와 HANDOFF.md 의 단계 상태가 같은 말을 하나 ──────────────
 // 단계 정의의 원본은 CLAUDE.md §1-1 이다. HANDOFF 가 다른 말을 하면 실패시킨다.
 const STAGE_FACTS = [
-  [1, /운영 반영 완료/, /운영 미반영/, "1단계는 운영 반영 완료이고 엣지 캐시만 남았다"],
-  [2, /외부 법률 검토 미완료/, null, "2단계는 정책 결정만 완료다"],
-  [3, /5판/, /미착수/, "3단계는 5판 설계 완료다"],
-  [4, /코드 0줄/, null, "4단계는 미착수·코드 0줄이다"],
+  [1, [/운영 반영 완료/, /엣지 캐시/], [/운영 미반영/, /1단계[^|]*최종 완료/],
+   "1단계는 운영 반영 완료이고 엣지 캐시 때문에 최종 미완료다"],
+  [2, [/정책 결정|결정 완료/, /외부 법률 검토 미완료/],
+   [/외부 법률 검토 완료/, /4단계[^|]*구현 완료/], "2단계는 내부 정책 결정만 완료다"],
+  [3, [/5판/, /완료/], [/3단계[^|]*미착수/], "3단계는 5판 설계 완료다"],
+  [4, [/미착수/, /코드 0줄/], [/4단계[^|]*구현 완료/], "4단계는 미착수·코드 0줄이다"],
 ];
 for (const [n, must, mustNot, why] of STAGE_FACTS) {
   for (const f of ["CLAUDE.md", "docs/HANDOFF.md"]) {
     const rows = R(f).split("\n").filter((ln) => new RegExp(`^[>\\s]*\\|\\s*${n}단계`).test(ln));
     if (!rows.length) { bad(`${f} 에 ${n}단계 행이 없다 — 단계 현황표가 사라졌거나 모양이 바뀌었다`); continue; }
     const row = rows.join(" ");
-    if (!must.test(row)) bad(`${f} ${n}단계 행에 ${must} 가 없다 — ${why}`);
-    if (mustNot && mustNot.test(row)) bad(`${f} ${n}단계 행에 ${mustNot} 가 남아 있다 — ${why}`);
+    for (const re of must) if (!re.test(row)) bad(`${f} ${n}단계 행에 ${re} 가 없다 — ${why}`);
+    for (const re of mustNot) if (re.test(row)) bad(`${f} ${n}단계 행에 ${re} 가 남아 있다 — ${why}`);
   }
 }
 ok("CLAUDE.md 와 HANDOFF.md 의 1~4단계 상태가 일치");
@@ -240,7 +252,20 @@ const PACKET_FACTS = [
 }
 ok("법률 자료가 현재 운영 사실 3건을 담고 있다");
 
+// ── 13. 인수인계·법률 자료의 현재형 문구가 다시 낡지 않았나 ──────────────
+const handoff = R("docs/HANDOFF.md");
+if (/^# 인수인계[^\n]*\(\d{4}-\d{2}-\d{2} 기준\)/m.test(handoff)) {
+  bad("HANDOFF 제목에 고정된 기준일이 남아 있다 — 본문 최신 실측과 다시 충돌한다");
+}
+if (/^프로덕션 재배포는 2026-08-14 에 끝났다/m.test(handoff)) {
+  bad("HANDOFF 가 2026-08-17 배포 뒤에도 08-14 재배포를 현재 완료 상태로 말한다");
+}
+if (/자동 삭제 수단이 없다/.test(R(PACKET))) {
+  bad(`${PACKET} 가 다음 로그인 삭제를 설명하면서 자동 삭제 수단이 전혀 없다고 단정한다`);
+}
+ok("인수인계 기준일 · 배포 시점 · 정리 수단 표현이 현재 사실과 일치");
+
 console.log(fails
   ? `test-docs: 실패 ${fails}건`
-  : "test-docs: 통과 — 낡은 문구 · 죽은 § 참조 · 번호 연속성 · 선언된 개수 · 판 번호 · 필수 절 · 완료 범위 · 보유기간 단정 · 스위트 수 · 낡은 운영 상태 · 단계 상태 일치 · 법률 자료 현재 사실");
+  : "test-docs: 통과 — 낡은 문구 · 죽은 § 참조 · 번호 연속성 · 선언된 개수 · 판 번호 · 필수 절 · 완료 범위 · 보유기간 단정 · 스위트 수 · 낡은 운영 상태 · 단계 상태 일치 · 법률 자료 현재 사실 · 인수인계 현재성");
 process.exit(fails ? 1 : 0);
