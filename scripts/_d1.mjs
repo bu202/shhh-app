@@ -8,6 +8,10 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 
 const SCHEMA = readFileSync(new URL("../worker/schema.sql", import.meta.url), "utf8");
+// 삭제 표식 저장소는 **다른 데이터베이스**다. 셰임에서도 인스턴스를 갈라 둔다 —
+// 같은 sqlite 에 두면 「주 D1 을 되돌려도 표식은 남는다」가 테스트에서 저절로 참이 되어,
+// 재려던 성질을 아무것도 재지 못한다.
+const LEDGER_SCHEMA = readFileSync(new URL("../worker/ledger-schema.sql", import.meta.url), "utf8");
 
 // D1 은 `?` 와 `?1` 을 둘 다 받는다. node:sqlite 도 그렇지만, 이름 있는 자리와 익명 자리를
 // 섞으면 바인딩 규칙이 갈린다 — worker 코드가 쓰는 두 형태를 그대로 통과시키는지 여기서 확인된다.
@@ -31,10 +35,14 @@ class Stmt {
   }
 }
 
-export function makeD1() {
+export const makeD1 = () => makeDb(SCHEMA);
+// 주 D1 과 **완전히 분리된** 두 번째 인스턴스.
+export const makeLedger = () => makeDb(LEDGER_SCHEMA);
+
+function makeDb(schema) {
   const db = new DatabaseSync(":memory:");
   db.exec("PRAGMA foreign_keys = ON");   // ⚠️ 켜지 않으면 CASCADE 가 조용히 안 돈다
-  db.exec(SCHEMA);
+  db.exec(schema);
   // ⚠️ **쓰기를 한 줄로 세운다.** SQLite 도 D1 도 쓰기 트랜잭션은 한 번에 하나다.
   //    전에는 이게 없어서 요청 두 개가 겹치면 `batch` 안에서 `batch` 가 시작돼
   //    "cannot start a transaction within a transaction" 으로 죽었다 — 그래서 **동시 요청을

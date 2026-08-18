@@ -21,14 +21,31 @@ const tick = async (n = 6) => { for (let i = 0; i < n; i++) await Promise.resolv
 function makeEl(tag = "div") {
   return {
     tagName: tag, className: "", type: "", id: "", hidden: false, value: "", maxLength: 0,
+    // 가입 화면이 쓰는 것들. 없으면 "함수가 아니다"로 죽는데, 그건 화면이 아니라
+    // **스텁이 모자란 것**이라 진짜 결함을 가린다.
+    href: "", target: "", rel: "", checked: false, disabled: false, parentNode: null,
     dataset: {}, children: [], handlers: {}, attrs: {}, _text: "", _html: "",
     classList: { toggle() {}, add() {}, remove() {} },
     get textContent() { return this._text; },
     set textContent(v) { this._text = String(v); this.children = []; },
     get innerHTML() { return this._html; },
     set innerHTML(v) { this._html = String(v); this.children = []; },
-    appendChild(c) { this.children.push(c); return c; },
-    append(...cs) { this.children.push(...cs); },
+    get firstChild() { return this.children[0] || null; },
+    appendChild(c) { this.children.push(c); c.parentNode = this; return c; },
+    append(...cs) { for (const c of cs) { this.children.push(c); if (c) c.parentNode = this; } },
+    insertBefore(c, ref) {
+      const i = this.children.indexOf(ref);
+      this.children.splice(i < 0 ? this.children.length : i, 0, c);
+      c.parentNode = this;
+      return c;
+    },
+    remove() {
+      const p = this.parentNode;
+      if (!p) return;
+      const i = p.children.indexOf(this);
+      if (i >= 0) p.children.splice(i, 1);
+      this.parentNode = null;
+    },
     addEventListener(n, fn) { (this.handlers[n] ||= []).push(fn); },
     setAttribute(k, v) { this.attrs[k] = v; },
     querySelectorAll() { return []; },
@@ -54,7 +71,9 @@ function loadClient({ store = {}, routes, loc = {} } = {}) {
   // loc 으로 로그인 왕복에서 돌아온 주소(`?code=…&state=…` · `#login=ok…`)를 만들 수 있다.
   const location = { origin: "https://test", pathname: "/", search: "", hash: "", href: "", ...loc };
   const history = { replaceState() {} };
-  const crypto = { randomUUID: () => "nonce-fixed" };
+  // ⚠️ `subtle` 은 **진짜**를 준다. 가입 화면이 정책 파일 바이트를 직접 해시해 서버 값과
+  //    대조하는데, 그 해시를 흉내내면 재려던 것(해시가 다르면 가입 버튼을 안 그린다)을 못 잰다.
+  const crypto = { randomUUID: () => "nonce-fixed", subtle: globalThis.crypto.subtle };
 
   const fetch = async (url, opt = {}) => {
     const method = (opt.method || "GET").toUpperCase();
@@ -72,6 +91,8 @@ function loadClient({ store = {}, routes, loc = {} } = {}) {
       ok: r.status >= 200 && r.status < 300,
       status: r.status,
       json: async () => { if (r.badJson) throw new Error("bad json"); return r.body ?? {}; },
+      // 정책 문서는 **바이트로** 받는다 — 화면이 그것을 직접 해시하기 때문이다.
+      arrayBuffer: async () => new TextEncoder().encode(r.text ?? "").buffer,
     };
   };
 
@@ -142,7 +163,7 @@ const FRIENDS_OK = {
 //    회전 테스트가 `FRIENDS_OK.code` 를 "new111" 로 바꿔 놓아서, 뒤 테스트의 GET /friends 가
 //    그 값을 돌려줬다. 진짜 서버는 매번 새 응답을 만든다.
 const defaultRoutes = (m, p) => {
-  if (p === "/health") return { status: 200, body: { ok: true, ready: true, providers: ["kakao", "naver", "google"] } };
+  if (p === "/health") return { status: 200, body: { ok: true, ready: true, signupReady: true, providers: ["kakao", "naver", "google"] } };
   if (p === "/book" && m === "GET") return { status: 200, body: structuredClone(BOOK_OK) };
   if (p === "/friends" && m === "GET") return { status: 200, body: structuredClone(FRIENDS_OK) };
   return { status: 200, body: { ok: true } };
@@ -802,6 +823,242 @@ await T("친구 갈래를 떠난 뒤 늦게 온 응답이 내 단어장 화면�
   });
 }
 
+// ══ 회원가입 화면 ═══════════════════════════════════════════════════════
+// 왜 여기서 재나: 가입 화면은 **비동기로 여러 파일을 받아 해시까지 맞춰 보는** 화면이다.
+// 이런 화면이 실패했을 때 무슨 일이 나는지는 정규식으로 소스를 훑어서는 알 수 없다 —
+// 친구 목록이 「불러오는 중이에요…」에서 영영 멈췄던 것이 정확히 그 종류의 결함이었다.
+await T("회원가입 화면 — 정책 해시 대조 · 필수 체크 · 실패 처리 · 연타 잠금", async () => {
+  const t = (m) => m;                                  // 이 파일은 이름이 아니라 메시지로 말한다
+  // ⚠️ **`tick()` 만으로는 부족하다.** 가입 화면은 `crypto.subtle.digest` 를 기다리는데
+  //    그건 마이크로태스크가 아니라 **매크로태스크**로 풀린다 — tick 을 아무리 돌려도
+  //    「약관을 불러오고 있어요…」에서 멈춘 것처럼 보인다. 실제 화면의 결함이 아니라
+  //    기다리는 방법이 틀린 것이라, 여기서 진짜 타이머를 한 번 넘긴다.
+  const settle = async (rounds = 6) => { for (let i = 0; i < rounds; i++) { await tick(4); await sleep(1); } };
+
+  const SUMMARY = "가입하시면 이렇게 됩니다.\n요약 본문.";
+  const AGE14 = "만 14세 이상입니다.";
+  const enc = new TextEncoder();
+  const sha = async (str) => [...new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", enc.encode(str)))]
+    .map((b) => b.toString(16).padStart(2, "0")).join("");
+  const PV = "abcdef123456";
+  const docsFor = async () => ({
+    terms: { path: "policies/terms-aaa.html", hash: await sha("TERMS") },
+    privacy: { path: "policies/privacy-bbb.html", hash: await sha("PRIVACY") },
+    age14: { path: "policies/age14-ccc.txt", hash: await sha(AGE14) },
+    summary: { path: "policies/summary-ddd.txt", hash: await sha(SUMMARY) },
+  });
+  const bodies = { "policies/age14-ccc.txt": AGE14, "policies/summary-ddd.txt": SUMMARY,
+                   "policies/terms-aaa.html": "TERMS", "policies/privacy-bbb.html": "PRIVACY" };
+
+  // 로그아웃 상태로 앱을 띄우고 게이트를 연다.
+  const openApp = async (routes, store = {}) => {
+    const c = loadClient({ store, routes });
+    for (const fn of c.HOOKS.ready) await fn();
+    await settle();
+    return c;
+  };
+  const gate = (c) => c.document.getElementById("gate");
+  const btn = (c, text) => walk(gate(c)).find((e) => e._text === text);
+  const hasText = (c, needle) => allText(gate(c)).includes(needle);
+
+  const baseRoutes = (over = {}) => async (m, p) => {
+    if (p === "/health") return { status: 200, body: { ok: true, signupReady: true, providers: ["kakao", "naver", "google"] } };
+    if (p === "/policies") return over.policies ?? { status: 200, body: { pv: PV, docs: await docsFor() } };
+    if (p.startsWith("./policies/")) {
+      const key = p.slice(2);
+      if (over.docFail) return { status: 500, body: {} };
+      return { status: 200, text: over.tamper && key.includes("summary") ? "고쳐진 요약" : bodies[key] };
+    }
+    if (p === "/signup/start") return over.signup ?? { status: 200, body: { url: "https://kauth.kakao.com/go" } };
+    return { status: 200, body: { ok: true } };
+  };
+
+  // 1. **게이트의 길이 셋이다.** 예전에는 「로그인」 하나였고 그것이 곧 가입이었다.
+  {
+    const c = await openApp(baseRoutes());
+    assert.ok(btn(c, "가입하기"), t("게이트에 가입하기가 없다"));
+    assert.ok(btn(c, "이미 계정이 있어요 — 로그인"), t("게이트에 로그인이 없다"));
+    assert.ok(btn(c, "로그인 없이 둘러보기"), t("게이트에 둘러보기가 없다"));
+    // ★ **게이트 안에 방침·약관 링크가 있다.** 게이트가 화면을 완전히 덮으므로,
+    //   여기 없으면 「무엇을 받는지」에 닿을 방법이 없다.
+    const links = walk(gate(c)).filter((e) => e.attrs && e.tagName === "a");
+    const hrefs = walk(gate(c)).filter((e) => e.tagName === "a").map((e) => e.href);
+    assert.ok(hrefs.includes("privacy.html"), t("게이트에 개인정보처리방침 링크가 없다"));
+    assert.ok(hrefs.includes("policies/"), t("게이트에 이용약관 링크가 없다"));
+  }
+
+  // 2. 가입 화면이 뜨고 **체크 전에는 제공자 버튼이 눌리지 않는다.**
+  {
+    const c = await openApp(baseRoutes());
+    btn(c, "가입하기").click();
+    await settle();
+    assert.ok(hasText(c, "요약 본문"), t("요약 문서가 화면에 안 뜬다"));
+    assert.ok(hasText(c, "만 14세 이상입니다"), t("연령 진술 문구가 안 뜬다"));
+    const kakao = btn(c, "카카오로 가입하기");
+    assert.ok(kakao, t("제공자 버튼이 안 그려졌다"));
+    assert.equal(kakao.disabled, true, t("체크 전인데 가입 버튼이 눌린다"));
+    // 하나만 체크해도 안 된다.
+    const boxes = walk(gate(c)).filter((e) => e.type === "checkbox");
+    assert.equal(boxes.length, 2, t("필수 체크박스가 2개가 아니다"));
+    boxes[0].checked = true;
+    for (const fn of boxes[0].handlers.change || []) fn({});
+    assert.equal(kakao.disabled, true, t("하나만 체크했는데 가입 버튼이 열렸다"));
+    // 둘 다 체크하면 열린다.
+    boxes[1].checked = true;
+    for (const fn of boxes[1].handlers.change || []) fn({});
+    assert.equal(kakao.disabled, false, t("둘 다 체크했는데 가입 버튼이 안 열린다"));
+    // 누르면 서버가 준 주소로 간다. **체크 값을 그대로 실어 보낸다.**
+    kakao.click();
+    await settle();
+    const req = c.calls.find((x) => x.path === "/signup/start");
+    assert.ok(req, t("가입 시작 요청이 안 나갔다"));
+    assert.equal(c.location.href, "https://kauth.kakao.com/go", t("제공자 주소로 안 갔다"));
+    // ⚠️ 가입을 그만두면 체크값이 **길게 남지 않는다.**
+    assert.ok(!Object.keys(c.store).some((k) => /terms|age14|policy/i.test(k)),
+      t("체크값이 localStorage 에 남았다"));
+  }
+
+  // 3. ★ **정책을 못 받으면 가입 버튼을 안 그린다(fail-closed) + 재시도가 있다.**
+  //    무한 spinner 를 만들지 않는다.
+  for (const [label, over, msg] of [
+    ["서버 오류", { policies: { status: 500, body: {} } }, "약관을 불러오지 못했어요"],
+    ["문서 파일 오류", { docFail: true }, "약관을 불러오지 못했어요"],
+    ["해시 불일치", { tamper: true }, "옛 약관"],
+  ]) {
+    const c = await openApp(baseRoutes(over));
+    btn(c, "가입하기").click();
+    await settle();
+    assert.ok(!btn(c, "카카오로 가입하기"), t(`${label}: 정책을 못 받았는데 가입 버튼이 그려졌다`));
+    assert.ok(hasText(c, msg), t(`${label}: 이유를 말하지 않는다 — 실제 문구: ${allText(gate(c)).slice(0, 120)}`));
+    assert.ok(btn(c, "다시 시도"), t(`${label}: 재시도 버튼이 없다 — 사용자가 할 수 있는 일이 없다`));
+    assert.ok(!hasText(c, "불러오고 있어요…") || btn(c, "다시 시도"),
+      t(`${label}: 「불러오고 있어요」에서 멈췄다`));
+  }
+
+  // 3b. ★ **로그인 가능과 가입 가능은 다른 상태다.**
+  //     재현(2026-08-18): `apiHealth()` 가 `signupReady` 를 버려서, 서버가
+  //     `providers:["kakao"] · signupReady:false` 를 줘도 화면은 「카카오로 가입하기」를
+  //     그렸다. 누르면 `/signup/start` 가 503 이다 — 약관을 다 읽고 체크를 다 채운 사람에게만
+  //     실패가 보이는, 가장 나쁜 순서였다.
+  {
+    const health = (body) => async (m, p) => (p === "/health" ? { status: 200, body } : baseRoutes()(m, p));
+
+    // ① 로그인은 되는데 가입만 잠긴 상태
+    const locked = await openApp(health({ ok: true, providers: ["kakao"], signupReady: false }));
+    btn(locked, "가입하기").click();
+    await settle();
+    assert.ok(!btn(locked, "카카오로 가입하기"), t("가입이 잠겼는데 되지 않는 가입 버튼을 그렸다"));
+    assert.ok(hasText(locked, "지금은 새로 가입할 수 없어요"), t("가입이 잠긴 이유를 말하지 않는다"));
+    assert.ok(btn(locked, "이미 계정이 있어요 — 로그인"), t("가입이 잠겼는데 로그인으로 갈 길이 없다"));
+    // 같은 상태에서 **로그인은 그대로 된다** — 기존 사용자를 같이 막지 않는다.
+    btn(locked, "이미 계정이 있어요 — 로그인").click();
+    await settle();
+    assert.ok(btn(locked, "카카오로 로그인"), t("가입만 잠겼는데 로그인 버튼까지 사라졌다"));
+    // 약관을 **받아 오지도 않는다** — 되지 않을 일에 사용자를 기다리게 하지 않는다.
+    assert.ok(!locked.calls.some((x) => x.path === "/policies"), t("가입이 잠겼는데 약관을 받아 왔다"));
+
+    // ② 제공자가 아예 없다 = 로그인도 가입도 준비 중
+    const none = await openApp(health({ ok: true, providers: [], signupReady: false }));
+    btn(none, "가입하기").click();
+    await settle();
+    assert.ok(hasText(none, "지금은 새로 가입할 수 없어요"), t("제공자가 없는데 가입 안내가 없다"));
+
+    // ③ health 자체가 실패 = **「준비 중」이 아니라 「연결 안 됨」이라고 말한다.**
+    //    사용자가 할 일이 다르다(기다리기 vs 인터넷 확인).
+    const off = await openApp(async (m, p) => (p === "/health" ? { throw: true } : baseRoutes()(m, p)));
+    btn(off, "가입하기").click();
+    await settle();
+    assert.ok(hasText(off, "서버에 연결할 수 없어"), t("연결 실패인데 연결 문제라고 말하지 않는다"));
+    assert.ok(!hasText(off, "지금은 새로 가입할 수 없어요"),
+      t("연결 실패를 「준비 중」이라고 말한다 — 원인이 다른데 같은 말을 한다"));
+  }
+
+  // 4. 오프라인·시간 초과는 **연결 문제라고 말한다.** 원인이 다르면 할 일도 다르다.
+  {
+    const c = await openApp(async (m, p) => (p === "/health"
+      ? { status: 200, body: { ok: true, signupReady: true, providers: ["kakao"] } }
+      : p === "/policies" ? { throw: true } : { status: 200, body: {} }));
+    btn(c, "가입하기").click();
+    await settle();
+    assert.ok(hasText(c, "연결이 안 돼요"), t("오프라인인데 연결 문제라고 말하지 않는다"));
+    assert.ok(btn(c, "다시 시도"), t("오프라인인데 재시도가 없다"));
+  }
+
+  // 5. ★ **가입 시작이 실패하면 버튼이 다시 눌린다.** 영구 disabled 를 만들지 않는다.
+  {
+    const c = await openApp(baseRoutes({ signup: { status: 409, body: { policyStale: true, error: "x" } } }));
+    btn(c, "가입하기").click();
+    await settle();
+    for (const b of walk(gate(c)).filter((e) => e.type === "checkbox")) {
+      b.checked = true;
+      for (const fn of b.handlers.change || []) fn({});
+    }
+    const kakao = btn(c, "카카오로 가입하기");
+    kakao.click();
+    await settle();
+    assert.equal(kakao.disabled, false, t("가입 시작이 실패했는데 버튼이 영구히 잠겼다"));
+    assert.ok(hasText(c, "약관이 새로 바뀌었어요"), t("policyStale 을 사용자 말로 옮기지 않는다"));
+    assert.notEqual(c.location.href, "https://kauth.kakao.com/go", t("실패했는데 제공자로 보냈다"));
+    // 6. 두 번 눌러도 왕복이 둘로 갈라지지 않는다.
+    const before = c.calls.filter((x) => x.path === "/signup/start").length;
+    kakao.click(); kakao.click();
+    await settle();
+    assert.ok(c.calls.filter((x) => x.path === "/signup/start").length <= before + 1,
+      t("가입 버튼 연타가 왕복을 여러 개 만들었다"));
+  }
+
+  // 7. ★ **로그인으로 왔는데 계정이 없으면 가입 화면으로 안내한다.** 「실패했어요」가 아니다.
+  {
+    const c = await openApp(baseRoutes(), {});
+    // 서버가 `#login=signup_required` 로 되돌려보낸 상황을 만든다.
+    const c2 = loadClient({ store: {}, routes: baseRoutes(),
+                            loc: { hash: "#login=signup_required&via=kakao&n=nonce-fixed" } });
+    for (const fn of c2.HOOKS.ready) await fn();
+    await settle();
+    assert.ok(hasText(c2, "아직 가입하지 않으셨어요"), t("가입 안 된 사람에게 가입 화면을 안 띄운다"));
+    // ★ **이유가 맨 위에 있어야 한다.** 재현(2026-08-18 실브라우저): 안내를 먼저 붙였는데
+    //   약관 본문이 그 **위로** 삽입되면서 안내가 화면 맨 아래(974자 중 918번째)로 밀렸다 —
+    //   사용자는 왜 이 화면이 떴는지 못 읽고 긴 약관부터 만난다. Node 테스트는 「있다」만 재고
+    //   「어디 있다」를 안 재서 통과하고 있었다.
+    {
+      const txt = allText(gate(c2));
+      assert.ok(txt.indexOf("아직 가입하지 않으셨어요") < txt.indexOf("요약 본문"),
+        t("안내가 약관 본문 뒤로 밀렸다 — 사용자가 이유를 못 읽는다"));
+    }
+    assert.ok(!c2.TOASTS.some((x) => x.includes("실패")), t("가입 안 됨을 「실패」라고 말한다"));
+    assert.equal(c2.store["shh-via"], undefined, t("가입 안 됐는데 로그인 표시를 세웠다"));
+  }
+
+  // 8. 이미 쓴 가입 요청·옛 약관도 각각 다른 말을 한다.
+  for (const [hash, msg] of [["#login=used", "이미 처리된 가입 요청"], ["#login=stale", "약관이 새로 바뀌었어요"]]) {
+    const c = loadClient({ store: {}, routes: baseRoutes(), loc: { hash } });
+    for (const fn of c.HOOKS.ready) await fn();
+    await settle();
+    assert.ok(hasText(c, msg), t(`${hash} 를 사용자 말로 옮기지 않는다`));
+  }
+
+  // 9. 로그인 갈래는 그대로 남아 있다(기존 사용자를 막지 않는다).
+  {
+    const c = await openApp(baseRoutes());
+    btn(c, "이미 계정이 있어요 — 로그인").click();
+    await settle();
+    assert.ok(btn(c, "카카오로 로그인"), t("로그인 화면에 제공자 버튼이 없다"));
+    assert.ok(btn(c, "처음 오셨나요? 가입하기"), t("로그인 화면에서 가입으로 못 돌아간다"));
+    assert.ok(btn(c, "로그인 없이 둘러보기"), t("로그인 화면에 둘러보기가 없다"));
+  }
+
+  // 10. 서버에 못 물어봤으면 **가입 버튼도 안 그린다**(로그인 버튼과 같은 판단).
+  {
+    const c = await openApp(async (m, p) => (p === "/health" ? { status: 500, body: {} }
+      : p === "/policies" ? { status: 200, body: { pv: PV, docs: await docsFor() } }
+      : p.startsWith("./policies/") ? { status: 200, text: bodies[p.slice(2)] } : { status: 200, body: {} }));
+    btn(c, "가입하기").click();
+    await settle();
+    assert.ok(!btn(c, "카카오로 가입하기"), t("서버에 못 물어봤는데 가입 버튼을 그렸다"));
+    assert.ok(hasText(c, "서버에 연결할 수 없어"), t("연결 문제라고 말하지 않는다"));
+  }
+});
+
 const failed = RESULTS.filter((r) => !r[0]);
 for (const [pass, name, why] of RESULTS) if (!pass) console.log(`  ✗ ${name}\n      ${why}`);
 if (failed.length) {
@@ -809,4 +1066,5 @@ if (failed.length) {
   process.exit(1);
 }
 console.log(`test-client: ${n}개 통과 — 로그아웃·계정삭제·친구철회 실패 처리 · 저장 완료 판정`
-  + ` · 친구 목록 로딩/실패/재시도/스키마/중복요청 · 탭 간 편집 세대 · OAuth 왕복 시간 제한`);
+  + ` · 친구 목록 로딩/실패/재시도/스키마/중복요청 · 탭 간 편집 세대 · OAuth 왕복 시간 제한`
+  + ` · 가입 화면(정책 해시 대조 · 필수 체크 · 실패/재시도 · 연타 잠금 · signup_required 안내)`);

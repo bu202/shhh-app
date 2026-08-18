@@ -21,8 +21,9 @@ import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomBytes } from "node:crypto";
 import worker from "../worker/index.js";
-import { makeD1 } from "./_d1.mjs";
+import { makeD1, makeLedger } from "./_d1.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = path.join(ROOT, "dist");
@@ -55,13 +56,33 @@ globalThis.fetch = async (url, init) => {
 };
 
 const DB = makeD1();
+// 삭제 표식은 **다른 데이터베이스**다. 같은 인스턴스에 두면 "주 D1 을 되돌려도 표식은 남는다"가
+// 시뮬레이션에서 저절로 참이 되어, 재려던 성질을 아무것도 재지 못한다.
+const LEDGER = makeLedger();
+
+// 비밀값은 **프로세스가 뜰 때 새로 만든다.** 파일에 적어 두지 않는 이유는 둘이다:
+// ① 저장소에 들어간 순간 그건 더 이상 비밀이 아니고 ② 서버를 다시 띄우면 옛 가입 state 가
+// 저절로 무효가 되어, 시뮬레이션이 상태를 이어받아 헷갈리는 일이 없다.
+// SIGNUP_STATE_KEY 는 **정확히 32바이트**여야 한다(AES-256-GCM). 길이가 다르면 서버가 fail-closed 다.
+const SIM_KEYS = {
+  STATE_KEY: randomBytes(32).toString("base64url"),
+  RL_KEY: randomBytes(32).toString("base64url"),
+  SIGNUP_STATE_KEY: randomBytes(32).toString("base64"),   // 디코딩하면 정확히 32바이트
+  TOMBSTONE_KEY: randomBytes(32).toString("base64url"),
+  DELETION_KEY: randomBytes(32).toString("base64url"),
+};
+
 // APP_ORIGIN 은 요청마다 그 호스트로 맞춘다. 두 호스트를 각각 "그 사람의 앱 주소"로 세우는 것이라
 // 운영의 `allowed()` 규칙(앱 주소 하나만 허용)을 **그대로** 쓰면서 두 계정을 열 수 있다.
 const envFor = (origin) => ({
   APP_ORIGIN: origin, APP_URL: origin + "/",
-  STATE_KEY: "sim-only-signing-key", KAKAO_ID: "sim", KAKAO_SECRET: "sim",
-  DB,
+  KAKAO_ID: "sim", KAKAO_SECRET: "sim",
+  ...SIM_KEYS, DB, LEDGER,
 });
+
+const KAKAO_AUTH = "https://kauth.kakao.com/oauth/authorize";
+const toSim = (origin, u) =>
+  u.startsWith(KAKAO_AUTH) ? origin + "/__sim/authorize?" + u.split("?")[1] : u;
 
 const serve = async (res, file) => {
   try {
@@ -114,12 +135,18 @@ createServer(async (req, res) => {
       ;
     let loc = r.headers.get("Location");
     // 제공자로 나가는 리다이렉트만 가짜 동의 화면으로 돌린다. 나머지는 그대로 둔다.
-    if (loc && loc.startsWith("https://kauth.kakao.com/oauth/authorize"))
-      loc = origin + "/__sim/authorize?" + loc.split("?")[1];
+    if (loc) loc = toSim(origin, loc);
     if (loc) h.Location = loc;
     if (cookies.length) h["Set-Cookie"] = cookies;
     res.writeHead(r.status, h);
-    return res.end(Buffer.from(await r.arrayBuffer()));
+    // ⚠️ **회원가입은 302 가 아니라 JSON 으로 주소를 준다**(`POST /api/signup/start` → `{url}`).
+    //    헤더만 갈아끼우면 브라우저가 본문의 진짜 카카오 주소로 나간다.
+    //    ⚠️ 헤더 이름의 대소문자로 판정하지 않는다 — `Response.headers` 는 **소문자로** 준다.
+    //    `h["Content-Type"]` 로 봤더니 늘 undefined 라 치환이 통째로 건너뛰어졌다(실측).
+    const out = Buffer.from(await r.arrayBuffer());
+    const t = out.toString("utf8");
+    return res.end(t.includes(KAKAO_AUTH)
+      ? Buffer.from(t.replaceAll(KAKAO_AUTH, origin + "/__sim/authorize"), "utf8") : out);
   }
 
   const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1);

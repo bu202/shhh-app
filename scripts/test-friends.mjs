@@ -7,8 +7,10 @@
 //    가짜 KV(Map)는 "절대 실패하지 않고 즉시 일관적인" 저장소라 재는 게 적었다(함정 50).
 //    지금은 진짜 SQL 이라 UNIQUE 충돌·외래키 CASCADE·changes 카운트가 실제로 일어난다.
 import assert from "node:assert";
-import worker, { internalUid, newSession, pathTemplate } from "../worker/index.js";
-import { makeD1, withLatency } from "./_d1.mjs";
+import worker, { createAccountWithPolicy, findUser, newSession, pathTemplate } from "../worker/index.js";
+import { makeD1, makeLedger, withLatency } from "./_d1.mjs";
+import { drainState } from "../worker/ledger.js";
+import { beginRestore, RESTORE_STATE, drainReport } from "../worker/ops.js";
 
 const ORIGIN = "https://app.test";
 
@@ -17,13 +19,28 @@ const ORIGIN = "https://app.test";
 // 없을 때 무슨 일이 나는지는 26번 블록이 따로 잰다.
 function makeEnv(extra = {}) {
   return { APP_ORIGIN: ORIGIN, APP_URL: ORIGIN + "/", STATE_KEY: "test-signing-key",
-           RL_KEY: "test-rate-limit-key", DB: makeD1(), ...extra };
+           RL_KEY: "test-rate-limit-key", DB: makeD1(),
+           // ledger 와 삭제 키가 없으면 계정 삭제가 **503 으로 거부된다**(표식 없는 삭제를
+           // 만들지 않기 위해서다). 없을 때의 동작은 아래 별도 블록이 따로 잰다.
+           LEDGER: makeLedger(), DELETION_KEY: "test-deletion-key",
+           // 가입 전용 키. 32바이트를 base64url 로 — 길이가 다르면 서버가 fail-closed 다.
+           SIGNUP_STATE_KEY: SIGNUP_KEY_B64, TOMBSTONE_KEY: "test-tombstone-key",
+           ...extra };
 }
+// 32바이트. b64u 로 43자.
+export const SIGNUP_KEY_B64 = Buffer.from(
+  Uint8Array.from({ length: 32 }, (_, i) => i + 1)).toString("base64url");
 
 // 계정 하나 + 그 계정의 세션 하나. **진짜 코드 경로**를 쓴다 — 토큰 해시를 여기서 계산하면
 // 그 순간 로직이 두 벌이 되어, 서버가 바뀌어도 테스트는 옛 규칙을 계속 통과시킨다.
+// ⚠️ **`internalUid()` 는 없어졌다**(2026-08-18). 그 함수는 조회와 생성을 같이 해서
+//    로그인 경로가 지나가는 것만으로 계정을 만들었다. 이제 계정 생성은 정책 기록·소비 표식과
+//    **같은 트랜잭션**에서만 일어나므로, 테스트도 그 진짜 경로를 쓴다.
+let stateSeq = 0;
 async function signUp(env, provider, subject) {
-  const uid = await internalUid(env, provider, subject);
+  const uid = await createAccountWithPolicy(env, provider, subject, {
+    stateHash: `test-state-${++stateSeq}`, stateExp: Date.now() + 600e3, occurredAt: Date.now(),
+  });
   return { uid, token: await newSession(env, uid) };
 }
 const another = (env, uid) => newSession(env, uid);   // 같은 계정의 다른 기기
@@ -323,6 +340,13 @@ function befriend(env, a, b, status = "accepted") {
       { headers: { "Content-Type": "application/json" } });
     try { return await fn(); } finally { globalThis.fetch = real; }
   };
+  // ⚠️ **로그인 경로는 더 이상 계정을 만들지 않는다**(2026-08-18). 이 블록이 재려는 것은
+  //    「표(txn) 결속」이므로 계정은 **미리 있어야** 한다 — 없으면 표가 맞아도 `signup_required`
+  //    로 돌아간다. 그 성질 자체는 scripts/test-signup.mjs 가 따로 잰다.
+  for (const p of ["kakao", "naver", "google"]) {
+    await createAccountWithPolicy(env, p, "u1",
+      { stateHash: `pre-${p}`, stateExp: Date.now() + 600e3, occurredAt: Date.now() });
+  }
   const sessions = () => env.DB._db.prepare("SELECT COUNT(*) n FROM sessions").get().n;
   // ⚠️ 이 블록이 재는 것은 **표(txn) 결속**이지 레이트리밋이 아니다. 그런데 로그인 왕복이
   //    `login` 버킷 하나로 모이면서, IP 를 안 붙이면 여기 나오는 브라우저 여럿이 전부 같은
@@ -544,9 +568,17 @@ function befriend(env, a, b, status = "accepted") {
   assert.equal(env.DB._db.prepare("SELECT provider_subject FROM users WHERE id = ?").get(A.uid).provider_subject, "1234567");
 
   // 47. 같은 제공자 계정은 **늘 같은 내부 id** 다. 매번 새로 만들면 로그인할 때마다 빈 단어장이 된다.
-  assert.equal(await internalUid(env, "kakao", "1234567"), A.uid, "같은 제공자 계정이 다른 번호를 받았다");
-  // 48. 다른 사람은 다른 번호.
-  assert.notEqual(await internalUid(env, "kakao", "9999"), A.uid, "다른 계정이 같은 번호를 받았다");
+  assert.equal(await findUser(env, "kakao", "1234567"), A.uid, "같은 제공자 계정이 다른 번호를 받았다");
+  // 48. **조회는 만들지 않는다.** 예전 `internalUid()` 는 없으면 그 자리에서 계정을 만들었고,
+  //     그래서 로그인 경로가 지나가는 것만으로 가입이 됐다. 이제 없으면 null 이다.
+  const before = env.DB._db.prepare("SELECT COUNT(*) n FROM users").get().n;
+  assert.equal(await findUser(env, "kakao", "9999"), null, "없는 계정을 조회했는데 값이 나왔다");
+  assert.equal(env.DB._db.prepare("SELECT COUNT(*) n FROM users").get().n, before,
+    "조회만 했는데 계정이 늘었다 — 조회와 생성이 다시 붙었다");
+  // 49. 다른 사람은 다른 번호.
+  const other = await createAccountWithPolicy(env, "kakao", "9999",
+    { stateHash: "s-9999", stateExp: Date.now() + 600e3, occurredAt: Date.now() });
+  assert.notEqual(other, A.uid, "다른 계정이 같은 번호를 받았다");
 }
 
 // ══ 11. 레이트리밋 이음새 ═════════════════════════════════════════════════
@@ -718,6 +750,30 @@ function befriend(env, a, b, status = "accepted") {
   // 반대쪽: 설정은 됐는데 DB 만 죽은 경우와 응답이 **달라야** 한다.
   assert.notDeepEqual({ configReady: rn.configReady, db: rn.db }, { configReady: rj.configReady, db: rj.db },
     "DB 장애와 설정 미비가 같은 응답으로 보인다 — 무엇이 문제인지 구분할 수 없다");
+
+  // 69f. **신규 스키마가 빠진 배포를 여기서 잡는다.**
+  //      재현(2026-08-18): `policy_events`·`consumed_signup_states`·`deletions` 를 통째로 지워도
+  //      /ready 가 **200 · ready:true** 였다. 주 D1 질의는 옛 여섯 표만 셌고, ledger 는 게이트가
+  //      `maintenance` 한 표만 읽고 `bound:true` 라고 답했기 때문이다. 그래서 migration 을 빠뜨린
+  //      배포가 smoke test 를 멀쩡히 통과하고, **사용자의 첫 가입·첫 계정 삭제에서** 처음 500 이 났다.
+  for (const [binding, table] of [["DB", "policy_events"], ["DB", "consumed_signup_states"],
+                                  ["LEDGER", "deletions"], ["LEDGER", "write_leases"],
+                                  ["LEDGER", "cleanup_runs"], ["LEDGER", "maintenance"]]) {
+    const e = makeEnv({ KAKAO_ID: "id", GOOGLE_ID: "id", GOOGLE_SECRET: "s" });
+    assert.equal((await get("/ready", e)).status, 200, `${table} 를 지우기 전인데 /ready 가 200 이 아니다`);
+    e[binding]._db.exec(`DROP TABLE ${table}`);
+    const r = await get("/ready", e);
+    assert.equal(r.status, 503, `${table} 가 없는데 /ready 가 200 이다 — migration 을 빠뜨린 배포가 통과한다`);
+    const j = await r.json();
+    // `maintenance` 가 없으면 게이트 자체가 답을 못 하므로 mode:unknown 으로 먼저 닫힌다.
+    if (table !== "maintenance") {
+      assert.equal(binding === "DB" ? j.db : j.ledger, false,
+        `${table} 가 없는데 ${binding} 이 답한다고 말한다`);
+    }
+    const txt = JSON.stringify(j);
+    for (const leak of [table, "SELECT", "no such table", "COUNT", "D1_ERROR"])
+      assert.ok(!txt.includes(leak), `/ready 응답에 '${leak}' 가 새어 나왔다 — 스키마가 밖으로 샌다`);
+  }
 
   // 70. **비밀값도 그 이름도 새지 않는다.** (`id` 처럼 짧은 문자열은 안 쓴다 — "providers" 에 걸린다)
   const txt = JSON.stringify(h1);
@@ -1010,6 +1066,12 @@ function befriend(env, a, b, status = "accepted") {
              txn: (set.match(/shh_t=([^;]*)/) || [])[1] || "" };
   };
   const sessions = () => env.DB._db.prepare("SELECT COUNT(*) n FROM sessions").get().n;
+  // 이 블록이 재는 것은 **제공자 응답의 크기 상한**이다. 로그인 경로가 계정을 만들지 않게
+  // 바뀐 뒤로는 계정이 미리 있어야 그 지점까지 간다 — 없으면 상한 검사 앞에서 끝나 버린다.
+  for (const sub of ["u-ok", "u-odd"]) {
+    await createAccountWithPolicy(env, "kakao", sub,
+      { stateHash: `pre-${sub}`, stateExp: Date.now() + 600e3, occurredAt: Date.now() });
+  }
 
   // 제공자를 갈아끼우고 콜백을 한 번 돈다. 로그를 함께 모은다 —
   // 응답 본문·토큰이 로그로 새면 그것도 여기서 잡혀야 한다.
@@ -1364,5 +1426,222 @@ function befriend(env, a, b, status = "accepted") {
   assert.equal(cb.status, 429, "세션을 만드는 자리가 안 막힌다");
 }
 
-console.log("test-friends: 156개 통과 — 로그인 왕복 표(브라우저 결속) · 친구 쌍 유일성 · 친구 권한(행 하나) · 쿠키 세션 · 세대 무효화 · CSRF(Origin 필수) · 제공자ID 비공개 "
-  + "· 버전 충돌 · 수락 트랜잭션(상한 포함) · 무관계 DELETE · 마스터 · 복귀 주소 · 본문 한도 · state 서명 · 코드 회전 · 상한 · 헤더 · readiness(스키마 실질의) · 세션 청소 · 레이트리밋(RL_KEY HMAC · 버킷 분리) · 제공자 응답 상한 · 계정 삭제 원자성 · 활성 초대 코드 1개");
+// ══ 27. 유지보수 · 복원 게이트 (T4 · T6 · T8 · T40~T43) ═══════════════════
+// 왜 여기인가: 이것은 **HTTP 계층의 판정**이다 — 어느 라우트가 어느 상태에서 열리나.
+// ledger 쪽 규칙은 scripts/test-deletion-ledger.mjs 가 따로 잰다.
+//
+// ⚠️ 4판 설계는 유지보수 중에도 `GET /book`·`GET /me`·`GET /friends/:id/book` 을 **허용**했다.
+//    근거가 "DB 를 안 **쓴다**"였는데, **쓰기만 본 것이 잘못이다** — 주 D1 을 과거로 되돌리면
+//    탈퇴한 사람의 계정·세션·단어장이 되살아나고, 재삭제가 끝나기 전까지 그 사람은
+//    **살아 있는 계정**이다. 읽기를 막지 않으면 지웠던 단어장이 그대로 나간다.
+{
+  const env = makeEnv({ KAKAO_ID: "id", KAKAO_SECRET: "s" });
+  const A = await signUp(env, "kakao", "m1"), B = await signUp(env, "kakao", "m2");
+  await call(env, A.token, "/book", "PUT", { words: ["비밀"], name: "탈퇴자" });
+  befriend(env, A.uid, B.uid);
+  const setMode = (m) => env.LEDGER._db.exec(`UPDATE maintenance SET mode='${m}' WHERE id=1`);
+  const snapshot = () => JSON.stringify([
+    env.DB._db.prepare("SELECT COUNT(*) n FROM users").get(),
+    env.DB._db.prepare("SELECT COUNT(*) n FROM sessions").get(),
+    env.DB._db.prepare("SELECT COUNT(*) n FROM invite_codes").get(),
+    env.DB._db.prepare("SELECT COUNT(*) n FROM rate_limits").get(),
+    env.DB._db.prepare("SELECT version FROM books WHERE user_id=?").get(A.uid),
+  ]);
+
+  // ── T4. `maintenance` — **DB 를 쓰는 라우트 전부 차단.** 행 수가 하나도 안 변해야 한다.
+  setMode("maintenance");
+  const before4 = snapshot();
+  for (const [path, method] of [["/me", "DELETE"], ["/book", "PUT"], ["/session", "DELETE"],
+                                ["/friends", "POST"], ["/friends/code", "POST"],
+                                ["/friends/" + B.uid, "PUT"], ["/friends/" + B.uid, "DELETE"],
+                                // ⚠️ **GET 인데 쓴다.** 목록 조회가 초대 코드를 그 자리에서 만든다.
+                                ["/friends", "GET"],
+                                // ⚠️ 여기가 계정을 만드는 자리다. GET 이라고 통과시키면 안 된다.
+                                ["/cb/kakao?code=c&state=s", "GET"], ["/exchange/kakao?code=c&state=s", "GET"],
+                                ["/login/kakao", "GET"], ["/signup/start", "POST"]]) {
+    const r = await call(env, A.token, path, method, method === "GET" ? undefined : {});
+    assert.equal(r.status, 503, `T4: 유지보수 중인데 ${method} ${path} 가 통과했다`);
+    assert.equal(r.headers.get("Retry-After"), "60", `T4: ${method} ${path} 에 Retry-After 가 없다`);
+  }
+  assert.equal(snapshot(), before4, "T4: 유지보수 중에 행 수가 바뀌었다 — 어딘가 쓰기가 지나갔다");
+  // 읽기는 허용된다(이 상태가 `restore_closed` 와 다른 점이 그것이다).
+  assert.equal((await call(env, A.token, "/book")).status, 200, "T4: 유지보수인데 읽기까지 막혔다");
+  assert.equal((await call(env, B.token, "/friends/" + A.uid + "/book")).status, 200, "T4: 유지보수인데 친구 단어장이 막혔다");
+  // /health · /ready · /policies 는 언제나 열린다.
+  assert.equal((await call(env, null, "/health")).status, 200, "T4: /health 가 막혔다");
+  const rdy = await call(env, null, "/ready");
+  assert.equal(rdy.status, 503, "T4: 유지보수인데 /ready 가 200 이다");
+  assert.equal(rdy.body.mode, "maintenance", "T4: /ready 가 상태를 안 알려준다");
+  assert.equal(rdy.body.ready, false, "T4: 유지보수인데 ready 다");
+  assert.equal((await call(env, null, "/policies")).status, 200, "T4: /policies 가 막혔다");
+
+  // ── T40~T43. `restore_closed` — **읽기도 세션 인증도 막는다.**
+  //   되살아난 탈퇴자의 단어장이 그대로 읽히고 세션까지 부활하는 경로를 닫는다.
+  setMode("restore_closed");
+  const before40 = snapshot();
+  // T40. 되살아난 세션으로 자기 단어장을 읽으려 한다 → 503, **본문에 단어가 없다.**
+  const r40 = await call(env, A.token, "/book");
+  assert.equal(r40.status, 503, "T40: restore_closed 인데 단어장을 읽을 수 있다");
+  assert.ok(!JSON.stringify(r40.body).includes("비밀"), "T40: 503 인데 응답에 단어가 실려 나왔다");
+  // T41. 친구가 탈퇴자의 단어장·목록을 본다 → 둘 다 503.
+  assert.equal((await call(env, B.token, "/friends/" + A.uid + "/book")).status, 503,
+    "T41: restore_closed 인데 친구에게 탈퇴자의 단어장이 보인다");
+  assert.equal((await call(env, B.token, "/friends")).status, 503, "T41: restore_closed 인데 친구 목록이 열린다");
+  // T42. 계정 존재 여부조차 알려주지 않는다.
+  const r42 = await call(env, A.token, "/me");
+  assert.equal(r42.status, 503, "T42: restore_closed 인데 /me 가 열린다");
+  assert.ok(!JSON.stringify(r42.body).includes(A.uid), "T42: 503 인데 응답에 계정 id 가 실렸다");
+  // T43. **허용 목록이 정확히 넷이다.** 다섯 번째가 늘면 여기서 실패한다.
+  for (const p of ["/health", "/ready", "/policies"])
+    assert.notEqual((await call(env, A.token, p)).status, 503 - 503 + 999, `T43: ${p} 응답이 이상하다`);
+  assert.equal((await call(env, null, "/health")).status, 200, "T43: /health 가 막혔다");
+  const rd2 = await call(env, null, "/ready");
+  assert.equal(rd2.status, 503, "T43: restore_closed 인데 /ready 가 200 이다");
+  assert.equal(rd2.body.mode, "restore_closed", "T43: /ready 가 restore_closed 를 안 알려준다");
+  assert.equal((await call(env, null, "/policies")).status, 200, "T43: /policies 가 막혔다");
+  // 그 밖의 모든 경로는 **기본값이 차단**이다. 새 라우트가 생겨도 자동으로 막힌다.
+  for (const p of ["/book", "/me", "/friends", "/friends/code", "/session",
+                   "/login/kakao", "/cb/kakao", "/exchange/kakao", "/이런건없다"]) {
+    assert.equal((await call(env, A.token, p)).status, 503, `T43: restore_closed 에서 ${p} 가 허용 목록에 들었다`);
+  }
+  assert.equal(snapshot(), before40, "T40~43: restore_closed 중에 행 수가 바뀌었다");
+  // ⚠️ **세션 인증을 수행조차 하지 않는다.** 인증을 한 번이라도 시도하면 되살아난 sessions 행을
+  //    조회하게 되고, 그 결과가 타이밍·오류로 새어 나간다. 잘못된 쿠키와 맞는 쿠키의 응답이 같아야 한다.
+  const good = await call(env, A.token, "/book"), bad = await call(env, "bogus-token", "/book");
+  assert.equal(good.status, bad.status, "T40: 맞는 쿠키와 틀린 쿠키의 응답이 다르다 — 인증을 수행하고 있다");
+  assert.deepEqual(good.body, bad.body, "T40: 응답 본문이 달라 계정 존재가 드러난다");
+
+  // ── 다시 열면 원래대로. 막는 쪽만 재면 「영영 안 열리는」 회귀를 못 잡는다.
+  setMode("open");
+  assert.equal((await call(env, A.token, "/book")).status, 200, "게이트를 열었는데 여전히 막힌다");
+  assert.equal((await call(env, A.token, "/friends")).status, 200, "게이트를 열었는데 친구 목록이 막힌다");
+}
+
+// ══ 28. 전역 user-data drain (T6 · T6b) + 아직 못 막는 것(T8) ═════════════
+// **결정 A′ (2026-08-18).** 사용자 데이터를 읽거나 쓰는 HTTP 요청 하나가 LEDGER 임차증 하나를
+// 든다. 문장마다가 아니다. 세션 인증 전에 따고, 가장 바깥 `finally` 에서 푼다.
+//
+// ⚠️ **T6 의 합격 조건이 「무조건 503」이 아니다.** 지연 요청이 살아 있는 동안
+//    **활성 1 · 복원 거부**이고, 그 요청이 끝난 **뒤에만** 0 이 되는 것을 잰다.
+//    「503 이 난다」만 재면 「요청이 끝났는지」를 안 재게 된다 — 재려던 것이 그것인데도.
+{
+  const env = makeEnv({ KAKAO_ID: "id" });
+  const A = await signUp(env, "kakao", "drain1");
+  const version = () => env.DB._db.prepare("SELECT version FROM books WHERE user_id=?").get(A.uid)?.version ?? 0;
+  const drain = () => drainState(env);
+
+  await call(env, A.token, "/book", "PUT", { words: ["가"], version: 0 });
+  const v0 = version();
+  assert.equal((await drain()).open, 0, "T6: 요청이 끝났는데 임차증이 남았다 — finally 가 안 돈다");
+
+  // 게이트를 통과한 뒤 DB 쓰기 직전에 붙들었다가, 유지보수로 전환된 **뒤에** 놓아준다.
+  let release;
+  const held = new Promise((r) => { release = r; });
+  const realDb = env.DB.prepare.bind(env.DB);
+  const slowBooks = { ...env.DB, _db: env.DB._db, batch: env.DB.batch.bind(env.DB),
+    prepare: (sql) => {
+      const st = realDb(sql);
+      if (!sql.includes("INSERT INTO books")) return st;
+      return { bind: (...a) => { st.bind(...a); return { run: async () => { await held; return st.run(); },
+        first: () => st.first(), all: () => st.all() }; } };
+    } };
+  const inflight = call({ ...env, DB: slowBooks }, A.token, "/book", "PUT",
+    { words: ["가", "나"], version: v0 });
+  await new Promise((r) => setTimeout(r, 5));
+  env.LEDGER._db.exec("UPDATE maintenance SET mode='maintenance', epoch=epoch+1 WHERE id=1");
+
+  // ── T6-1. 지연 요청이 살아 있는 동안 **활성 1**.
+  const mid = await drain();
+  assert.equal(mid.open, 1, "T6: 지연된 쓰기가 진행 중인데 활성 임차증이 1이 아니다");
+  assert.equal(mid.drained, false, "T6: 요청이 아직 도는데 drained 라고 말한다");
+
+  // ── T6-2. 그 상태에서 **복원이 거부**된다.
+  const midReport = await drainReport(env, { ...RESTORE_STATE, oldDeployments: true, regressionTests: true });
+  assert.equal(midReport.state.noActiveLeases, false, "T6: 요청이 도는데 noActiveLeases 가 참이다");
+  assert.throws(() => beginRestore(midReport.state), /지금 금지/,
+    "T6: 활성 임차증이 있는데 복원 gate 가 통과시킨다");
+
+  // ── T6-3. **restore_closed 로 가면 신규 획득이 원자적으로 거부**된다(활성 수가 늘지 않는다).
+  env.LEDGER._db.exec("UPDATE maintenance SET mode='restore_closed', epoch=epoch+1 WHERE id=1");
+  assert.equal((await call(env, A.token, "/book")).status, 503, "T6: restore_closed 에서 읽기가 통과했다");
+  assert.equal((await drain()).open, 1, "T6: restore_closed 인데 새 임차증이 발급됐다");
+
+  // ── T6-4. 지연 요청이 **끝난 뒤에야** 0 이 된다.
+  release();
+  await inflight;
+  const after = await drain();
+  assert.equal(after.open, 0, "T6: 요청이 끝났는데 임차증이 안 풀렸다");
+  assert.equal(after.drained, true, "T6: 전부 끝났는데 drained 가 아니다");
+  // 쓰기 자체는 여전히 착지한다 — **A′ 는 그것을 막는 장치가 아니라 「끝났는지 아는」 장치다.**
+  // 복원은 이 요청이 끝난 뒤에 시작하므로 섞이지 않는다.
+  assert.ok(version() > v0, "T6: 전제가 바뀌었다 — 지연 쓰기가 아예 안 일어났다");
+}
+
+// ── T6b. ★ **지연된 사용자 데이터 「읽기」도 추적된다.**
+//   쓰기만 추적하면 복원 중 되살아난 탈퇴자의 단어장을 읽는 요청(위협 36)이 카운트 밖이다.
+{
+  const env = makeEnv({ KAKAO_ID: "id" });
+  const A = await signUp(env, "kakao", "drain2");
+  let release;
+  const held = new Promise((r) => { release = r; });
+  const realDb = env.DB.prepare.bind(env.DB);
+  const slowRead = { ...env.DB, _db: env.DB._db, batch: env.DB.batch.bind(env.DB),
+    prepare: (sql) => {
+      const st = realDb(sql);
+      if (!/SELECT words/.test(sql)) return st;
+      return { bind: (...a) => { st.bind(...a); return { first: async () => { await held; return st.first(); },
+        run: () => st.run(), all: () => st.all() }; } };
+    } };
+  const reading = call({ ...env, DB: slowRead }, A.token, "/book");
+  await new Promise((r) => setTimeout(r, 5));
+  env.LEDGER._db.exec("UPDATE maintenance SET mode='restore_closed', epoch=epoch+1 WHERE id=1");
+  assert.equal((await drainState(env)).open, 1, "T6b: 지연된 읽기가 추적되지 않는다");
+  release();
+  await reading;
+  assert.equal((await drainState(env)).open, 0, "T6b: 읽기가 끝났는데 임차증이 안 풀렸다");
+}
+
+// ── T6c. ★ **TTL 만료를 자동 해제로 치지 않는다.**
+//   만료로 걸러내면 「끝나지 않은 요청」이 시간만 지나면 0 으로 세어진다. 그건 모르는 것을
+//   안다고 말하는 것이다. 만료된 미해제는 `stale` 로 세고 **복원을 계속 막는다.**
+{
+  const env = makeEnv();
+  const now = Date.now();
+  env.LEDGER._db.prepare(
+    "INSERT INTO write_leases (lease_id, epoch, started_at, expires_at) VALUES (?,?,?,?)")
+    .run("stuck", 1, now - 3600e3, now - 1800e3);   // 30분 전에 만료, 해제된 적 없음
+  const d = await drainState(env, now);
+  assert.equal(d.open, 1, "T6c: 만료된 미해제 임차증을 0으로 셌다 — 만료를 해제로 친다");
+  assert.equal(d.stale, 1, "T6c: stale 로 분류하지 않는다");
+  assert.equal(d.drained, false, "T6c: stale 이 있는데 drained 라고 말한다");
+  const rep = await drainReport(env, { ...RESTORE_STATE, oldDeployments: true, regressionTests: true }, now);
+  assert.equal(rep.state.noActiveLeases, false, "T6c: stale 이 있는데 noActiveLeases 가 참이다");
+  assert.throws(() => beginRestore(rep.state), /지금 금지/, "T6c: stale 임차증이 있는데 복원을 허용한다");
+}
+
+{
+  // ── T8. ★ **게이트 로직이 없는 옛 배포 세대는 막히지 않는다.**
+  //   Cloudflare Pages 는 배포마다 영구 주소를 주고, 바인딩은 프로젝트 단위라 옛 배포에도
+  //   **같은 D1 이 붙어 있다.** 게이트는 그 코드가 실행될 때만 작동한다.
+  //   ⛔ 5판 합격 조건은 **「거부됨」만**이고 「탐지됨」은 불합격이다. 지금은 거부하지 못한다.
+  const env = makeEnv({ KAKAO_ID: "id" });
+  const A = await signUp(env, "kakao", "old1");
+  await call(env, A.token, "/book", "PUT", { words: ["옛"], version: 0 });
+  env.LEDGER._db.exec("UPDATE maintenance SET mode='restore_closed' WHERE id=1");
+  // 지금 세대는 막는다.
+  assert.equal((await call(env, A.token, "/book")).status, 503, "T8: 지금 세대가 restore_closed 를 안 지킨다");
+  // 옛 세대는 게이트를 **읽지도 않는다.** 그 상황을 「ledger 바인딩이 없는 세대」로 흉내낸다 —
+  // 옛 코드에는 LEDGER 를 읽는 줄 자체가 없으므로 결과가 같다.
+  const oldGen = { ...env, LEDGER: undefined };
+  const read = await call(oldGen, A.token, "/book");
+  const write = await call(oldGen, A.token, "/book", "PUT", { words: ["옛", "새"], version: 1 });
+  assert.equal(read.status, 200, "T8: 전제가 바뀌었다 — 옛 세대가 읽기에서 막혔다");
+  assert.deepEqual(read.body.words, ["옛"], "T8: 전제가 바뀌었다 — 옛 세대가 데이터를 안 돌려준다");
+  assert.equal(write.status, 200, "T8: 전제가 바뀌었다 — 옛 세대가 쓰기에서 막혔다");
+  // ⛔ **이 블록이 「200」인 동안 주 D1 restore 금지는 유지된다.**
+  //    거부로 바꾸는 길은 코드가 아니라 **옛 배포를 없애거나 닿지 못하게 하는 것**(D1~D12)이다.
+  //    「나중에 로그를 보면 알 수 있다」는 이미 탈퇴자의 데이터가 나간 뒤라는 뜻이라 근거가 못 된다.
+}
+
+console.log("test-friends: 통과 — 로그인 왕복 표(브라우저 결속) · 친구 쌍 유일성 · 친구 권한(행 하나) · 쿠키 세션 · 세대 무효화 · CSRF(Origin 필수) · 제공자ID 비공개 "
+  + "· 버전 충돌 · 수락 트랜잭션(상한 포함) · 무관계 DELETE · 마스터 · 복귀 주소 · 본문 한도 · state 서명 · 코드 회전 · 상한 · 헤더 · readiness(스키마 실질의) · 세션 청소 · 레이트리밋(RL_KEY HMAC · 버킷 분리) · 제공자 응답 상한 · 계정 삭제 원자성(표식·lease) · 활성 초대 코드 1개 · 유지보수/restore_closed 게이트 · 전역 user-data drain(요청당 임차증 1개 · 지연 읽기·쓰기 · TTL 만료 ≠ 해제) · 아직 못 막는 것(T8) 고정");
