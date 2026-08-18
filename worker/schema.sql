@@ -105,3 +105,38 @@ CREATE INDEX IF NOT EXISTS rate_limits_expires ON rate_limits(expires_at);
 -- ⚠️ entitlements 는 **만들지 않는다.** 지금 파는 물건이 없고(BETA_NO_WALL), 마스터는
 --    MASTER_UIDS 시크릿이 정한다. 결제를 붙이는 날 그때의 요구에 맞춰 만든다 —
 --    지금 만들면 쓰지도 않는 테이블을 마이그레이션이 계속 끌고 다닌다.
+
+-- ── 4단계에서 더한 것 (0005) ─────────────────────────────────────────────
+
+-- 가입할 때 무엇을 보여주고 무엇을 확인받았나. **행 하나 = 확인 하나.**
+-- ⚠️ `privacy` 의 action 이 `accepted` 가 아니라 **`presented`** 다 — 처리 근거를
+--    「개인정보 보호법」 제15조 제1항 제4호(계약의 이행)로 두기로 했으므로 동의를 받지 않는다.
+--    받지 않은 동의를 받았다고 기록하면 그 기록 자체가 거짓이 된다.
+-- ⚠️ CASCADE 다(프로젝트 결정 2026-08-18). 계정을 지우면 이 기록도 사라진다.
+CREATE TABLE IF NOT EXISTS policy_events (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind             TEXT NOT NULL,
+  action           TEXT NOT NULL,
+  document_version TEXT NOT NULL,   -- 그때 보여준 불변 파일 내용의 SHA-256. 서버 상수에서 꺼낸다
+  occurred_at      INTEGER NOT NULL, -- [가입하기] 를 누른 순간 **서버가** 찍은 값
+  recorded_at      INTEGER NOT NULL, -- 이 행이 실제로 들어간 순간
+  CHECK (
+    (kind = 'terms'   AND action = 'accepted') OR
+    (kind = 'privacy' AND action = 'presented') OR
+    (kind = 'age14'   AND action = 'attested')
+  )
+);
+CREATE INDEX IF NOT EXISTS policy_events_user ON policy_events(user_id);
+-- ⚠️ **UNIQUE 를 걸지 않는다.** (pv, occurred_at) 류의 전역 유니크를 걸면 같은 밀리초에 가입한
+--    두 번째 사람이 막히고, 사용자당 kind 하나 유니크를 걸면 약관 재확인을 받는 날 막힌다.
+
+-- 가입 state 1회 소비 표식. 저장하는 것은 `HMAC(TOMBSTONE_KEY, state 전체)` 하나뿐이다.
+-- raw state·provider·subject·uid·IP 를 넣지 않는다. 단순 SHA-256 도 쓰지 않는다 —
+-- 해시 함수는 공개라 state 를 관찰한 사람이 어느 행인지 그대로 지목할 수 있다.
+CREATE TABLE IF NOT EXISTS consumed_signup_states (
+  state_hash  TEXT PRIMARY KEY,
+  key_version INTEGER NOT NULL,
+  expires_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS consumed_signup_states_exp ON consumed_signup_states(expires_at);

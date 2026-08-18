@@ -456,6 +456,18 @@ if (typeof document !== "undefined") {
 
   // 서버가 실제로 로그인시킬 수 있는 제공자. null = **아직 물어보지 못했다**(연결 실패 포함).
   let PROVIDERS = null;
+  // **가입은 로그인과 따로 준비된다.** 가입 전용 키(SIGNUP_STATE_KEY·TOMBSTONE_KEY)가 빠지면
+  // 서버는 로그인은 시켜 주고 `/signup/start` 만 503 을 낸다. 그 상태를 화면이 모르면
+  // 「가입하기」 버튼을 그려 놓고 누른 사람에게만 실패를 보여준다 — 기다리게 하고 실패시키는 꼴이다.
+  // null = 아직 못 물어봤다 · false = 서버가 지금은 가입을 못 받는다 · true = 받는다.
+  let SIGNUP_READY = null;
+  // 방금 가입한 사람과 다시 온 사람에게 다른 말을 하기 위해서만 쓴다. 자격증명이 아니다.
+  let JUST_SIGNED_UP = false;
+  // ⚠️ **돌아온 자리에서 이미 화면을 정했으면 게이트가 그 위를 덮지 않는다.**
+  //    돌아온 해시가 `signup_required` 면 그 자리에서 가입 화면을 여는데, 그 뒤 onAppReady 의
+  //    기본 게이트가 같은 상자를 다시 그려서 **방금 띄운 안내가 통째로 사라졌다.**
+  //    (실측: scripts/test-client.mjs 「가입 안 된 사람에게 가입 화면을 안 띄운다」)
+  let GATE_TAKEN = false;
 
   // 로그인 버튼. 마이페이지와 게이트가 **같은 함수**를 쓴다 — 둘이 갈라지면
   // 한쪽에만 제공자를 추가하는 실수가 난다.
@@ -498,37 +510,269 @@ if (typeof document !== "undefined") {
   // ── 로그인 게이트 ──
   // 로그인이 기본이되 **둘러보기는 막지 않는다**: 수어를 알리는 게 앱의 목적이라
   // 문 앞에서 돌려보내면 목적을 스스로 깎는다. 대신 단어장에 담는 순간 로그인을 요구한다.
-  function openGate(reason) {
+  //
+  // ⚠️ **길이 셋이다**(2026-08-18). 예전에는 「로그인」 하나였고 그 버튼이 곧 가입이었다 —
+  //    누르면 약관도 연령 확인도 없이 계정이 만들어졌다. 이제 가입은 자기 화면을 가진다.
+  //
+  // ⚠️ **여기에 방침·약관 링크가 있어야 한다.** 전에는 게이트가 화면을 완전히 덮는데
+  //    (css/style.css 의 `.gate-backdrop`) 링크는 그 아래 푸터에만 있어서,
+  //    "로그인하면 동의한 것으로 본다"고 적어 놓고 **동의한다는 그 순간 문서에 닿을 수 없었다.**
+  function policyLinks(box) {
+    const p = document.createElement("p");
+    p.className = "hint gate-docs";
+    const a1 = document.createElement("a");
+    a1.href = "privacy.html"; a1.textContent = "개인정보처리방침";
+    const sep = document.createElement("span");
+    sep.textContent = " · ";
+    const a2 = document.createElement("a");
+    a2.href = "policies/"; a2.textContent = "이용약관";
+    p.append(a1, sep, a2);
+    box.appendChild(p);
+    return p;
+  }
+
+  function gateBox() {
     const box = document.getElementById("gate");
-    // 안내문을 **완전히 덮는다.** 반투명 위에 반쯤 걸치면 뒤 글자가 읽히려다 말아 방해만 된다.
-    // 안내문은 게이트를 닫은 뒤 다시 띄운다 — 순서가 로그인 → 안내문 → 앱이어야 한다.
     const intro = document.getElementById("intro");
     const introWasOpen = intro && !intro.hidden;
     if (intro) intro.hidden = true;
     box.innerHTML = "";
+    return { box, intro, introWasOpen };
+  }
+
+  function gateCard(box, title) {
     const card = document.createElement("section");
     card.className = "intro gate";
     card.setAttribute("role", "dialog");
     card.setAttribute("aria-modal", "true");
-    // 설명 두 줄(단어장이 따라온다 · 고유 번호만 받는다)은 뺐다. 첫 화면에서 읽을 것을 줄인다 —
-    // 무엇을 받는지는 푸터의 개인정보처리방침이 정식으로 말한다.
     card.innerHTML = `<svg class="mascot sm" viewBox="0 0 100 100" aria-hidden="true"><use href="#mascot"/></svg>
-      <div class="intro-h"><b>${reason || "쉿! 우리만 알 수 있는<br>언어로 얘기해요"}</b></div>`;
+      <div class="intro-h"><b>${title}</b></div>`;
+    box.appendChild(card);
     const foot = document.createElement("div");
     foot.className = "intro-foot";
-    loginButtons(foot, "btn-primary");
+    card.appendChild(foot);
+    return foot;
+  }
+
+  function peekButton(foot, intro, introWasOpen, box, label) {
     const peek = document.createElement("button");
     peek.type = "button"; peek.className = "btn-ghost";
-    peek.textContent = localStorage.getItem(PEEK_KEY) ? "닫기" : "로그인 없이 둘러보기";
+    peek.textContent = label || (localStorage.getItem(PEEK_KEY) ? "닫기" : "로그인 없이 둘러보기");
     peek.addEventListener("click", () => {
       localStorage.setItem(PEEK_KEY, "1");
       box.hidden = true;
-      if (introWasOpen) intro.hidden = false;
+      if (introWasOpen && intro) intro.hidden = false;
     });
     foot.appendChild(peek);
-    card.appendChild(foot);
-    box.appendChild(card);
+    return peek;
+  }
+
+  function openGate(reason) {
+    const { box, intro, introWasOpen } = gateBox();
+    const foot = gateCard(box, reason || "쉿! 우리만 알 수 있는<br>언어로 얘기해요");
+
+    const join = document.createElement("button");
+    join.type = "button"; join.className = "btn-primary";
+    join.textContent = "가입하기";
+    join.addEventListener("click", () => openSignup());
+    foot.appendChild(join);
+
+    const login = document.createElement("button");
+    login.type = "button"; login.className = "btn-ghost";
+    login.textContent = "이미 계정이 있어요 — 로그인";
+    login.addEventListener("click", () => openLogin());
+    foot.appendChild(login);
+
+    peekButton(foot, intro, introWasOpen, box);
+    policyLinks(foot);
     box.hidden = false;
+  }
+
+  // 기존 사용자용. **여기서는 계정이 만들어지지 않는다** — 서버가 계정이 없으면
+  // `signup_required` 로 돌려보내고, 그때 이 화면이 가입 화면을 연다.
+  function openLogin() {
+    const { box, intro, introWasOpen } = gateBox();
+    const foot = gateCard(box, "다시 오셨네요<br>어떻게 로그인하시겠어요?");
+    loginButtons(foot, "btn-primary");
+    const back = document.createElement("button");
+    back.type = "button"; back.className = "btn-ghost";
+    back.textContent = "처음 오셨나요? 가입하기";
+    back.addEventListener("click", () => openSignup());
+    foot.appendChild(back);
+    peekButton(foot, intro, introWasOpen, box);
+    policyLinks(foot);
+    box.hidden = false;
+  }
+
+  // ── 회원가입 화면 ──
+  // 비동기 화면이라 **네 가지 상태를 전부 가진다**: loading · error(+재시도) · ready · 진행 중.
+  // 무한 spinner 와 영구 disabled 버튼을 만들지 않는다 — 친구 목록이 겪은 그 증상이다.
+  let SIGNUP_BUSY = false;
+  async function openSignup(notice) {
+    const { box, intro, introWasOpen } = gateBox();
+    const foot = gateCard(box, "shhh! 시작하기");
+    box.hidden = false;
+
+    let noticeEl = null;
+    if (notice) {
+      noticeEl = document.createElement("p");
+      noticeEl.className = "hint"; noticeEl.textContent = notice;
+      foot.appendChild(noticeEl);
+    }
+    const status = document.createElement("p");
+    status.className = "hint";
+    status.textContent = "약관을 불러오고 있어요…";
+    foot.appendChild(status);
+    peekButton(foot, intro, introWasOpen, box, "나중에 할게요");
+    policyLinks(foot);
+
+    // ⓪ **되지 않는 버튼을 그리지 않는다.** 서버가 「지금 가입은 못 받는다」고 이미 말했으면
+    //    약관을 받아 오지도 않고 여기서 끝낸다 — 체크박스를 다 채운 뒤 마지막 버튼에서
+    //    503 을 만나는 것이 사용자에게 가장 나쁜 순서다. 기존 사용자는 로그인이 되므로 길을 준다.
+    //    ⚠️ null(못 물어봄)은 여기서 막지 않는다 — 아래 제공자 목록이 "연결할 수 없어요"로 답한다.
+    if (SIGNUP_READY === false) {
+      status.textContent = "지금은 새로 가입할 수 없어요. 준비가 끝나면 열릴 거예요. "
+        + "로그인 없이도 사전과 연습은 그대로 쓸 수 있어요.";
+      const go = document.createElement("button");
+      go.type = "button"; go.className = "btn-ghost";
+      go.textContent = "이미 계정이 있어요 — 로그인";
+      go.addEventListener("click", () => openLogin());
+      status.parentNode.insertBefore(go, status.nextSibling);
+      return;
+    }
+
+    // ① 서버가 말하는 현재 번들
+    const b = await apiPolicies();
+    if (!b.ok) return signupFailed(status, b.kind, notice);
+    // ② **우리가 실제로 렌더할 바이트**를 받아 직접 해시해 서버 값과 대조한다.
+    //    다르면 가입 버튼을 그리지 않는다 — 화면이 옛 문서를 보여주면서 서버가 새 해시를
+    //    기록하는 상태를 만들지 않는다.
+    const summary = await fetchPolicyDoc(b.docs.summary && b.docs.summary.path, b.docs.summary && b.docs.summary.hash);
+    const age14 = await fetchPolicyDoc(b.docs.age14 && b.docs.age14.path, b.docs.age14 && b.docs.age14.hash);
+    if (!summary.ok) return signupFailed(status, summary.kind, notice);
+    if (!age14.ok) return signupFailed(status, age14.kind, notice);
+
+    status.remove();
+    const form = document.createElement("div");
+    form.className = "signup";
+    foot.insertBefore(form, foot.firstChild);
+    // ⚠️ **왜 안내를 다시 옮기나.** 안내는 약관을 받기 전에 붙었는데, 그 뒤 약관 본문이
+    //    `foot.firstChild` 앞에 들어가면서 안내가 **화면 맨 아래로 밀려났다**(실측: 974자짜리
+    //    화면의 918번째 글자). 사용자는 「왜 이 화면이 떴는지」를 못 읽고 긴 약관부터 만난다.
+    if (noticeEl) foot.insertBefore(noticeEl, form);
+
+    const sum = document.createElement("pre");
+    sum.className = "signup-summary";
+    sum.textContent = summary.text;
+    form.appendChild(sum);
+
+    const docs = document.createElement("p");
+    docs.className = "hint";
+    const tLink = document.createElement("a");
+    tLink.href = b.docs.terms.path; tLink.target = "_blank"; tLink.rel = "noopener";
+    tLink.textContent = "이용약관 전문";
+    const pLink = document.createElement("a");
+    pLink.href = b.docs.privacy.path; pLink.target = "_blank"; pLink.rel = "noopener";
+    pLink.textContent = "개인정보처리방침 전문";
+    const dot = document.createElement("span"); dot.textContent = " · ";
+    docs.append(tLink, dot, pLink);
+    form.appendChild(docs);
+
+    // 체크박스는 **둘뿐이다.** 「개인정보 수집·이용 동의」를 만들지 않는다 —
+    // 처리 근거가 동의가 아니라 계약의 이행이라, 받지 않은 동의를 받은 척하면 기록이 거짓이 된다.
+    // 「전체 동의」 단일 체크박스도 두지 않는다.
+    const mk = (id, label) => {
+      const row = document.createElement("label");
+      row.className = "signup-check";
+      const cb = document.createElement("input");
+      cb.type = "checkbox"; cb.id = id;
+      const sp = document.createElement("span");
+      sp.textContent = label;
+      row.append(cb, sp);
+      form.appendChild(row);
+      return cb;
+    };
+    const cbTerms = mk("su-terms", "(필수) 이용약관에 동의합니다");
+    const cbAge = mk("su-age", "(필수) 만 14세 이상입니다");
+
+    const ageNote = document.createElement("pre");
+    ageNote.className = "signup-summary sm";
+    ageNote.textContent = age14.text;
+    form.appendChild(ageNote);
+
+    const why = document.createElement("p");
+    why.className = "hint";
+    why.textContent = "두 항목을 확인하셔야 가입할 수 있어요.";
+    form.appendChild(why);
+
+    const buttons = document.createElement("div");
+    buttons.className = "signup-providers";
+    form.appendChild(buttons);
+
+    const list = ["kakao", "naver", "google"].filter((k) => (PROVIDERS || []).includes(k));
+    if (!list.length) {
+      const p = document.createElement("p");
+      p.className = "hint";
+      // 서버에 못 물어봤을 때와 제공자가 없을 때를 가른다 — 사용자가 할 일이 다르다.
+      p.textContent = PROVIDERS === null
+        ? "지금은 서버에 연결할 수 없어 가입을 시작할 수 없어요. 연결된 뒤 다시 열어주세요. 사전과 연습은 그대로 쓸 수 있어요."
+        : "지금은 가입을 준비 중이에요. 로그인 없이도 사전과 연습은 그대로 쓸 수 있어요.";
+      buttons.appendChild(p);
+      return;
+    }
+    const btns = list.map((k) => {
+      const el = document.createElement("button");
+      el.type = "button"; el.className = "btn-primary login-" + k;
+      el.textContent = NAMES[k] + "로 가입하기";
+      el.addEventListener("click", () => startSignup(k, el, why, b.pv, cbTerms, cbAge));
+      buttons.appendChild(el);
+      return el;
+    });
+    const sync = () => {
+      const ok = cbTerms.checked && cbAge.checked;
+      for (const el of btns) { el.disabled = !ok || SIGNUP_BUSY; }
+      why.textContent = ok ? "가입할 방법을 골라주세요." : "두 항목을 확인하셔야 가입할 수 있어요.";
+    };
+    cbTerms.addEventListener("change", sync);
+    cbAge.addEventListener("change", sync);
+    sync();
+  }
+
+  // 실패해도 **끝이 있는 화면**을 준다. 재시도 버튼이 없으면 사용자가 할 수 있는 일이 없다.
+  function signupFailed(status, kind, notice) {
+    status.textContent = kind === "timeout" || kind === "network"
+      ? "연결이 안 돼요. 인터넷을 확인하고 다시 시도해 주세요."
+      : kind === "hash_mismatch"
+        ? "앱이 옛 약관을 들고 있어요. 새로고침한 뒤 다시 시도해 주세요."
+        : kind === "no_crypto"
+          ? "이 환경에서는 약관을 확인할 수 없어 가입을 진행하지 않아요. https 주소로 열어주세요."
+          : "약관을 불러오지 못했어요. 잠시 뒤에 다시 시도해 주세요.";
+    const retry = document.createElement("button");
+    retry.type = "button"; retry.className = "btn-ghost";
+    retry.textContent = "다시 시도";
+    retry.addEventListener("click", () => openSignup(notice));
+    status.parentNode.insertBefore(retry, status.nextSibling);
+  }
+
+  async function startSignup(provider, btn, why, pv, cbTerms, cbAge) {
+    if (SIGNUP_BUSY) return;                 // 두 번 눌러도 왕복이 둘로 갈라지지 않는다
+    SIGNUP_BUSY = true;
+    btn.disabled = true;
+    why.textContent = "가입을 시작하고 있어요…";
+    if (location.hash) localStorage.setItem(BACK_KEY, location.hash);
+    const r = await apiSignupStart(provider, {
+      terms: !!(cbTerms && cbTerms.checked), age14: !!(cbAge && cbAge.checked), pv,
+    });
+    if (r.ok) { location.href = r.url; return; }
+    SIGNUP_BUSY = false;
+    btn.disabled = false;
+    why.textContent = r.kind === "policy_stale"
+      ? "약관이 새로 바뀌었어요. 새로고침한 뒤 다시 시도해 주세요."
+      : r.kind === "rate_limited"
+        ? "잠시 뒤에 다시 시도해 주세요."
+        : r.kind === "timeout" || r.kind === "network"
+          ? "연결이 안 돼요. 인터넷을 확인하고 다시 시도해 주세요."
+          : (r.message || "가입을 시작하지 못했어요. 다시 시도해 주세요.");
   }
 
   // 담기를 막는 자리. 둘러보기 중이어도 사전·연습은 그대로 쓸 수 있다.
@@ -556,8 +800,24 @@ if (typeof document !== "undefined") {
     // safeDecode(app.js) — 반쪽 인코딩(`#login=ok&n=%E0%A4%A`)이면 decodeURIComponent 가 던진다.
     // 여기서 던지면 onAppReady 전체가 멈춰 로그인·친구가 통째로 안 붙는다.
     const n = safeDecode((location.hash.match(/[#&]n=([^&]*)/) || [])[1] || "");
+    // ⚠️ **해시를 지우기 전에** 읽는다. replaceState 뒤에는 이 값이 없다.
+    const isNew = /[#&]new=1(&|$)/.test(location.hash);
     history.replaceState(null, "", location.pathname + location.search);
     if (m[1] === "denied") { takeNonce(); toast("로그인을 취소했어요"); return false; }
+    // ⚠️ **「아직 가입 안 했다」를 「실패」로 말하지 않는다.** 사용자가 할 일이 다르다 —
+    //    다시 누르는 것이 아니라 가입 화면으로 가야 한다. 예전에는 이 갈래가 아예 없었다
+    //    (로그인이 곧 가입이었으므로).
+    const SIGNUP_BACK = {
+      signup_required: "아직 가입하지 않으셨어요. 여기서 가입하실 수 있어요.",
+      used: "이미 처리된 가입 요청이에요. 다시 시작해 주세요.",
+      stale: "약관이 새로 바뀌었어요. 새 약관을 확인하고 다시 가입해 주세요.",
+    };
+    if (SIGNUP_BACK[m[1]]) {
+      takeNonce();
+      GATE_TAKEN = true;                 // 아래 기본 게이트가 이 화면을 덮지 않게
+      openSignup(SIGNUP_BACK[m[1]]);
+      return false;
+    }
     if (m[1] !== "ok") { takeNonce(); toast("로그인에 실패했어요. 다시 시도해 주세요."); return false; }
     const mine = takeNonce();
     if (!mine || n !== mine) {
@@ -566,6 +826,7 @@ if (typeof document !== "undefined") {
       return false;
     }
     setAuth(via);
+    JUST_SIGNED_UP = isNew;   // 서버가 `&new=1` 로 알려준다. 화면 문구에만 쓴다
     return true;
   }
 
@@ -578,9 +839,20 @@ if (typeof document !== "undefined") {
     // code 가 주소창·방문기록에 남지 않게 즉시 지운다. 해시(#w= 같은)는 남긴다.
     history.replaceState(null, "", location.pathname + location.hash);
     const r = await apiExchange("naver", code, state);
-    // 원인이 다르면 할 일도 다르다 — 연결 문제는 인터넷을 확인할 일이고, 서버 거절은 다시 누를 일이다.
+    // 원인이 다르면 할 일도 다르다 — 연결 문제는 인터넷을 확인할 일이고, 서버 거절은 다시 누를 일,
+    // **가입 안 함은 가입 화면으로 갈 일**이다. 하나로 뭉개면 사용자가 헛수고를 한다.
     if (!r.ok) {
       takeNonce();
+      const BACK = {
+        signup_required: "아직 가입하지 않으셨어요. 여기서 가입하실 수 있어요.",
+        state_used: "이미 처리된 가입 요청이에요. 다시 시작해 주세요.",
+        policy_stale: "약관이 새로 바뀌었어요. 새 약관을 확인하고 다시 가입해 주세요.",
+      };
+      if (BACK[r.kind]) {
+        GATE_TAKEN = true;
+        openSignup(BACK[r.kind]);
+        return false;
+      }
       toast(r.kind === "timeout" || r.kind === "network"
         ? "연결이 안 돼요. 인터넷에 연결된 뒤 다시 로그인해 주세요."
         : "로그인에 실패했어요. 다시 시도해 주세요.");
@@ -598,6 +870,7 @@ if (typeof document !== "undefined") {
       return false;
     }
     setAuth("naver");
+    JUST_SIGNED_UP = !!r.signedUp;
     return true;
   }
 
@@ -608,9 +881,9 @@ if (typeof document !== "undefined") {
     // 어느 제공자가 실제로 설정돼 있나. **renderAll 보다 먼저** 물어야 버튼이 한 번에 맞게 그려진다.
     const h = await apiHealth();
     // 못 물어봤으면 null 로 남긴다 — loginButtons 가 그걸 보고 "연결 안 됨"이라 말한다.
-    if (h.ok) PROVIDERS = h.providers;
+    if (h.ok) { PROVIDERS = h.providers; SIGNUP_READY = h.signupReady; }
     renderAll();
-    if (fresh) toast("로그인했어요");
+    if (fresh) toast(JUST_SIGNED_UP ? "가입했어요. 환영해요!" : "로그인했어요");
     if (authToken()) {
       sync(fresh);
       // 로그인하러 떠나기 전에 맡아 둔 해시(#w=…)를 되돌린다. hashchange 가 나면서
@@ -618,8 +891,8 @@ if (typeof document !== "undefined") {
       const back = localStorage.getItem(BACK_KEY);
       localStorage.removeItem(BACK_KEY);
       if (fresh && back) location.hash = back;
-    } else if (!localStorage.getItem(PEEK_KEY)) {
-      openGate();   // 첫 화면은 로그인. 둘러보기를 한 번 고르면 다시 막지 않는다.
+    } else if (!GATE_TAKEN && !localStorage.getItem(PEEK_KEY)) {
+      openGate();   // 첫 화면은 가입/로그인. 둘러보기를 한 번 고르면 다시 막지 않는다.
     }
   });
 }

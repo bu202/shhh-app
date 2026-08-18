@@ -25,6 +25,13 @@
 // state 는 어디에도 저장하지 않는다. `/login` 은 인증이 없는 자리라 거기서 저장소를 쓰면
 // `curl` 반복만으로 무료 한도를 태울 수 있다 — 서명해서 들려 보낸다(makeState).
 
+import { POLICY_BUNDLE } from "./policies.js";
+import {
+  deletionMark, DELETION_KEY_VERSION, readMode, ledgerAnswers, drainState,
+  acquireLease, leaseAlive, releaseLease,
+  markPending, markConfirmed, sweepConfirmed, cleanupState,
+} from "./ledger.js";
+
 const P = {
   kakao: {
     auth: "https://kauth.kakao.com/oauth/authorize",
@@ -56,6 +63,13 @@ const P = {
   },
 };
 
+// ⚠️ **`P[name]` 을 직접 진리값으로 쓰지 않는다.** 객체 인덱싱은 프로토타입 체인까지 본다 —
+//    `P["__proto__"]`·`P["constructor"]` 는 **참**이라, 그 이름이 제공자 검사를 통과해 버린다.
+//    그러면 아래에서 `p.auth` 가 undefined 인 채로 흘러 「없는 제공자」가 아니라 「설정이 덜 됨」
+//    으로 답하게 되고(503), 실제로 없는 것을 있는데 고장 났다고 말하는 셈이 된다.
+//    자기 속성만 본다.
+const isProvider = (n) => typeof n === "string" && Object.prototype.hasOwnProperty.call(P, n);
+
 // 앱 주소는 env.APP_ORIGIN 하나. 로컬 개발(localhost·LAN)은 **개발용 Worker 에서만** 연다.
 //
 // ⚠️ 이 함수는 CORS 와 **로그인 복귀 주소**를 둘 다 정한다. 운영에서 LAN 을 열어 두면
@@ -81,8 +95,9 @@ const cors = (env, req) => {
     : { ...SEC };
 };
 
-const json = (env, req, body, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...cors(env, req) } });
+const json = (env, req, body, status = 200, extra) =>
+  new Response(JSON.stringify(body), {
+    status, headers: { "Content-Type": "application/json", ...cors(env, req), ...extra } });
 
 // 리다이렉트도 우리가 만든다. `Response.redirect` 는 헤더를 못 얹는데, 이 응답의 Location 에는
 // **세션 토큰이 실려 있어서** no-store 가 가장 필요한 자리다.
@@ -134,7 +149,12 @@ const health = (env) => {
   // ⚠️ RL_KEY 도 **있어야 하는 값**이다. 없으면 리미터가 세지 않는데(rlBucket 참조),
   //    그건 화면 어디에도 안 보이는 종류의 결함이라 여기서 말하지 않으면 아무도 모른다.
   //    계정 기능을 여는 날 시크릿을 빠뜨리면 /ready 가 503 으로 먼저 알려준다.
-  return { ok: true, ready: !!(env.STATE_KEY && env.APP_ORIGIN && env.DB && env.RL_KEY && providers.length), providers };
+  // ⚠️ **가입 전용 키 둘도 여기 있다**(2026-08-18). 없으면 `/signup/start` 가 503 이라
+  //    로그인은 되는데 **가입만 조용히 막히는** 상태가 된다 — 화면 어디에도 안 보이는 결함이라
+  //    여기서 말하지 않으면 아무도 모른다. `DELETION_KEY` 도 같다(없으면 계정 삭제가 503).
+  const keys = !!(env.STATE_KEY && env.RL_KEY && env.SIGNUP_STATE_KEY && env.TOMBSTONE_KEY && env.DELETION_KEY);
+  return { ok: true, ready: !!(keys && env.APP_ORIGIN && env.DB && providers.length), providers,
+           signupReady: !!(env.SIGNUP_STATE_KEY && env.TOMBSTONE_KEY) };
 };
 
 // /ready 전용. 바인딩이 **있다**와 DB 가 **답한다**는 다른 말이다 — 잘못된 database_id 로 배포하면
@@ -152,7 +172,9 @@ const dbAnswers = async (env) => {
       `SELECT (SELECT COUNT(*) FROM users) + (SELECT COUNT(*) FROM sessions)
             + (SELECT COUNT(*) FROM books) + (SELECT COUNT(*) FROM invite_codes)
             + (SELECT COUNT(*) FROM rate_limits)
-            + (SELECT COUNT(*) FROM friendships WHERE pair_key IS NOT NULL) AS n`).first();
+            + (SELECT COUNT(*) FROM friendships WHERE pair_key IS NOT NULL)
+            + (SELECT COUNT(*) FROM policy_events WHERE document_version IS NOT NULL)
+            + (SELECT COUNT(*) FROM consumed_signup_states WHERE key_version IS NOT NULL) AS n`).first();
     return typeof r?.n === "number";
   } catch {
     return false;
@@ -201,6 +223,101 @@ async function takeState(env, state) {
   if (!(Date.now() < exp)) return null;
   return { provider, back, nonce: nonce || "", txn: txn || "" };
 }
+
+// ── 정책 문서와 가입 기록 ────────────────────────────────────────────────
+// **개수를 하드코딩하지 않는다.** 집합 하나가 원본이고 나머지는 전부 이 집합을 순회한다 —
+// 숫자를 여러 곳에 적어 두면 항목이 늘어난 날 테스트가 통과하면서 하나를 빠뜨린다.
+//
+// ⚠️ `privacy` 가 `accepted` 가 아니라 **`presented`** 인 이유: 처리 근거를 「개인정보 보호법」
+//    제15조 제1항 제4호(계약의 이행)로 두기로 했으므로 **동의를 받지 않는다.** 받지 않은 동의를
+//    받았다고 기록하면 그 기록 자체가 거짓이 된다. 같은 이유로 `xborder/accepted` 도 없다
+//    (국외 처리위탁·보관은 제28조의8 제1항 제3호를 근거로 삼는다).
+//    ⚠️ 이것은 프로젝트가 공식 자료를 보고 내린 **운영 결정**이지 외부 법률 검토 결과가 아니다.
+export const requiredPolicyKinds = [
+  ["terms", "accepted"],
+  ["privacy", "presented"],
+  ["age14", "attested"],
+];
+export const REQUIRED_POLICY_EVENTS = requiredPolicyKinds.length;
+
+// 화면이 받아 갈 번들. **경로와 해시만** 준다 — 문서 내용은 정적 파일로 따로 받는다.
+const policyBundle = () => ({ pv: POLICY_BUNDLE.pv, docs: POLICY_BUNDLE.docs });
+
+// ── 가입 state — 서명이 아니라 **암호화**한다 (AES-256-GCM) ───────────────
+//
+// 로그인 state 는 지금 그대로 둔다(위 makeState). 담는 네 값이 전부 **읽혀도 되는 값**이기 때문이다.
+// 가입 state 는 다르다 — 약관 수락·연령 진술·행위 시각이 실리고, 그 값은 제공자 접근 로그·
+// 브라우저 기록·조직 프록시를 **평문으로** 지나가게 된다. 서명은 변조를 막을 뿐 열람을 막지 않는다.
+//
+// 형식:  v1.<exp>.<b64u(nonce 12B)>.<b64u(암호문‖태그)>
+//   ⚠️ **exp 를 헤더에 둔 것은 일부러다.** AAD 에 exp 를 넣으려면 복호화 **전에** 그 값을 알아야
+//      하는데, 5판 설계는 exp 를 암호문 안에만 두면서 AAD 에도 넣으라고 적어 모순이었다.
+//      exp 는 비밀이 아니므로 밖에 두고, **안쪽에도 같은 값을 넣어 대조**한다 —
+//      헤더만 고치면 복호화가 실패하고(AAD 불일치), 둘이 다르면 우리가 거부한다.
+const SIGNUP_V = "v1";
+const SIGNUP_TTL = 600e3;          // 10분. 로그인 state 와 같다
+const SIGNUP_STATE_MAX = 2048;     // URL 길이 한계와 로그 폭주를 함께 막는다
+
+// 키는 **32바이트여야 한다.** base64 로 디코딩해 길이를 확인하고, 아니면 실패-닫힘이다.
+// 짧은 키를 조용히 늘려 쓰면(패딩·해시 유도) 키 강도가 설정 실수에 좌우된다.
+async function signupKey(env) {
+  const raw = env.SIGNUP_STATE_KEY;
+  if (typeof raw !== "string" || !raw) throw new Error("SIGNUP_STATE_KEY not configured");
+  let bytes;
+  try { bytes = unb64u(raw); } catch { throw new Error("SIGNUP_STATE_KEY not base64"); }
+  if (bytes.length !== 32) throw new Error("SIGNUP_STATE_KEY must decode to 32 bytes");
+  return await crypto.subtle.importKey("raw", bytes, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+}
+// 결속. 암호문이 그대로여도 **다른 제공자·다른 목적·다른 오리진·다른 만료**에서는 복호화가 실패한다.
+const signupAad = (env, provider, exp) =>
+  ENC.encode(`${SIGNUP_V}|signup|${provider}|${env.APP_ORIGIN}|${exp}`);
+
+export async function makeSignupState(env, provider, payload) {
+  const exp = Date.now() + SIGNUP_TTL;
+  // ⚠️ nonce 는 **요청마다 CSPRNG** 다. 카운터·시각·해시에서 유도하지 않는다 —
+  //    GCM 은 같은 키로 nonce 를 두 번 쓰면 평문이 복원되고 위조까지 가능해진다.
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const plain = ENC.encode(JSON.stringify({ ...payload, provider, exp }));
+  const ct = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: nonce, additionalData: signupAad(env, provider, exp) },
+    await signupKey(env), plain);
+  const out = `${SIGNUP_V}.${exp}.${b64u(nonce)}.${b64u(ct)}`;
+  if (out.length > SIGNUP_STATE_MAX) throw new Error("signup state too long");
+  return out;
+}
+
+// 실패 사유를 **가려서 알려주지 않는다.** 만료·위조·버전 불일치를 구분해 주면 그 자체가 오라클이 된다.
+export async function takeSignupState(env, state, provider) {
+  if (typeof state !== "string" || state.length > SIGNUP_STATE_MAX) return null;
+  const parts = state.split(".");
+  if (parts.length !== 4 || parts[0] !== SIGNUP_V) return null;   // 모르는 버전은 거부
+  const exp = Number(parts[1]);
+  if (!Number.isSafeInteger(exp) || !(Date.now() < exp)) return null;
+  try {
+    const plain = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: unb64u(parts[2]), additionalData: signupAad(env, provider, exp) },
+      await signupKey(env), unb64u(parts[3]));
+    const p = JSON.parse(new TextDecoder().decode(plain));
+    // **안쪽이 진실이다.** 헤더의 exp 는 조기 거부용이고, 둘이 다르면 그 자체가 이상 신호다.
+    if (p.exp !== exp || p.provider !== provider) return null;
+    return p;
+  } catch {
+    return null;
+  }
+}
+
+// ── 가입 state 1회 소비 표식 ─────────────────────────────────────────────
+// 저장하는 값은 **전용 키 HMAC** 이다. 단순 SHA-256 이면 state 를 관찰할 수 있는 사람
+// (제공자 접근 로그·브라우저 기록·프록시)이 그 값을 그대로 해시해 **DB 의 어느 행인지 지목**한다.
+// 키를 모르면 그 계산 자체가 불가능하다.
+// 키가 없으면 **가입을 처리하지 않는다.** 평문 해시로 되돌아가지 않는다.
+export async function stateTombstone(env, state) {
+  if (!env.TOMBSTONE_KEY) throw new Error("TOMBSTONE_KEY not configured");
+  const k = await crypto.subtle.importKey("raw", ENC.encode(env.TOMBSTONE_KEY),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return b64u(await crypto.subtle.sign("HMAC", k, ENC.encode(state)));
+}
+export const TOMBSTONE_KEY_VERSION = 1;
 
 // ── 세션 ─────────────────────────────────────────────────────────────────
 // 토큰은 **완전한 무작위 32바이트**다. 예전엔 `<b64u(uid)>.<무작위>` 라 앞부분이 계정을 알려줬는데,
@@ -333,7 +450,10 @@ const RL_WINDOW = 60_000;
 // `rotate` 는 초대 링크 새로 만들기. 넉넉한 `write`(120)에만 묶여 있어서, 로그인한 계정
 //    **하나**가 분당 240 D1 쓰기 = 하루 34만(무료 한도 10만)을 태울 수 있었다 — 그게 바닥나면
 //    정상 사용자의 단어장 저장이 먼저 죽는다. 링크를 새로 만드는 것은 몇 달에 한 번 하는 일이다.
-const RL_MAX = { login: 10, friends: 20, rotate: 5, write: 120 };
+// `signup` 은 **전용 버킷**이다. `write` 에 얹으면 넉넉한 한도(120)를 그대로 물려받는데,
+//    가입 시작은 세션도 계정도 안 만들지만 **제공자 인증 주소를 찍어내는 자리**라 좁아야 한다.
+//    WRITE_ROUTES 에 `/signup` 을 넣지 않는 이유이기도 하다 — 넣으면 한 요청을 두 번 센다.
+const RL_MAX = { login: 10, signup: 10, friends: 20, rotate: 5, write: 120 };
 // 상태를 바꾸는 **실제 라우트**만. 여기 없는 경로는 세지 않고 그냥 404 로 보낸다 —
 // 없는 자리를 두드리는 것으로 우리 DB 쓰기를 유발할 수 있으면 리미터가 공격 도구가 된다.
 const WRITE_ROUTES = /^\/(session|book|me|friends)(\/|$)/;
@@ -474,7 +594,7 @@ const jsonFetch = async (url, init) => {
   }
 };
 
-async function exchange(env, origin, name, code, state) {
+async function verifyProvider(env, origin, name, code, state) {
   const p = P[name];
   const { id, secret } = creds(env, name);
   const form = new URLSearchParams({
@@ -501,8 +621,12 @@ async function exchange(env, origin, name, code, state) {
     console.log("[exchange] me fail", name, why(me, "error", "message"));
     return null;
   }
-  const uid = await internalUid(env, name, who);
-  return await newSession(env, uid);
+  // ⚠️ **여기서 계정을 만들지 않는다.** 예전에는 이 자리가 곧 가입이었다 —
+  //    로그인 버튼 한 번이 약관도 연령 확인도 없이 계정을 만들었다.
+  //    이제 판별만 하고, 계정을 만들지 말지는 부르는 쪽이 정한다(§5-2).
+  //    ⚠️ 이 함수는 로컬 DB 를 안 쓰지만 **되돌릴 수 없다** — 외부 호출 2회가 나갔고
+  //       `code` 가 소비됐다. 그래서 검사할 수 있는 것은 전부 이 함수 **앞**에서 한다.
+  return { provider: name, subject: String(who) };
 }
 
 // ── 우리 안에서 쓰는 계정 번호 ───────────────────────────────────────────
@@ -517,27 +641,71 @@ async function exchange(env, origin, name, code, state) {
 //  "다른 서비스와 대조할 수 없다"에 기대지 않고, **애초에 밖으로 내보내지 않는 것**만 근거로 삼는다.)
 //
 // 이제 제공자 번호는 **`users` 행 안에서만** 산다. 밖으로 나가는 건 우리가 만든 무작위 번호다.
-// (KV 시절엔 `p:`/`i:` 매핑 두 개가 이 일을 했다. 행 하나가 그 둘을 대신하고, 탈퇴는
-//  `DELETE FROM users` 한 문장이면 CASCADE 로 전부 사라진다 — 지울 것을 빠뜨릴 수가 없다.)
 //
-// export 하는 이유는 하나 — scripts/test-friends.mjs 가 **이 함수를 직접 불러** 잰다.
-// exchange() 를 통째로 부르려면 제공자 서버 호출을 흉내내야 하는데, 그러면 테스트가 재는 것이
-// 계정 생성이 아니라 내 가짜 제공자가 된다.
-export async function internalUid(env, provider, subject) {
-  const had = await env.DB.prepare("SELECT id FROM users WHERE provider = ? AND provider_subject = ?")
+// ⚠️ **`internalUid()` 는 없앴다**(2026-08-18). 그 함수는 「조회」와 「생성」을 같이 했고,
+//    그래서 로그인 경로가 지나가는 것만으로 계정이 생겼다 — 약관도 연령 확인도 없이.
+//    남겨 두면 누군가 다시 부른다. 아래 둘로 갈랐다: 조회는 부작용이 없고, 생성은
+//    **정책 기록과 같은 트랜잭션**에서만 일어난다.
+
+// 조회만 한다. 없으면 null — **만들지 않는다.**
+export async function findUser(env, provider, subject) {
+  const r = await env.DB.prepare("SELECT id FROM users WHERE provider = ? AND provider_subject = ?")
     .bind(provider, subject).first();
-  if (had) return had.id;
+  return r ? r.id : null;
+}
+
+// 계정 + 필수 정책 기록 + 가입 state 소비 표식을 **한 batch** 로 만든다.
+//
+// D1 의 `batch` 는 하나의 트랜잭션이고 중간 실패는 전체 롤백이다. 그래서 아래 세 가지 중
+// 하나라도 실패하면 **셋 다 없다** — 「계정은 생겼는데 약관 기록이 없다」는 상태가 존재할 수 없다.
+//
+// 문장 순서가 곧 방어다:
+//   ⓪ 소비 표식이 **맨 앞**이다. PRIMARY KEY 충돌이면 batch 전체가 롤백되므로 ①②가 실행조차
+//      안 된다. 이것이 「같은 가입 state 로 **다른 제공자 계정** 두 개를 만드는」 길을 닫는다 —
+//      ①의 UNIQUE(provider, provider_subject) 는 subject 가 다르면 아무것도 막지 못한다.
+//   ① 계정은 `DO NOTHING`. 같은 사람이 두 기기에서 동시에 눌러도 진 쪽이 예외로 죽지 않는다.
+//   ② 정책 기록은 **내가 실제로 이겼을 때만**(`WHERE EXISTS`) 들어간다 — 중복 기록이 안 생긴다.
+//
+// ⚠️ `document_version` 과 두 시각은 **전부 서버가 만든다.** 클라이언트가 보낸 해시나 시각을
+//    그대로 적는 자리는 어디에도 없다.
+export async function createAccountWithPolicy(env, provider, subject, opts) {
+  const { stateHash, stateExp, occurredAt, bundle = POLICY_BUNDLE, now = Date.now() } = opts;
   const id = crypto.randomUUID().replace(/-/g, "");
-  // ⚠️ `ON CONFLICT DO NOTHING` + 다시 조회. 같은 사람이 두 기기에서 **동시에** 첫 로그인을 하면
-  //    둘 다 "없다"를 보고 각자 INSERT 한다 — 유니크 인덱스가 막지만, 막힌 쪽이 예외로 죽으면
-  //    한 기기의 로그인이 이유 없이 실패한다. 진 쪽은 이긴 쪽의 id 를 그대로 쓴다.
-  await env.DB.prepare(
-    `INSERT INTO users (id, provider, provider_subject, session_version, created_at)
-     VALUES (?, ?, ?, 0, ?) ON CONFLICT (provider, provider_subject) DO NOTHING`)
-    .bind(id, provider, subject, Date.now()).run();
-  const row = await env.DB.prepare("SELECT id FROM users WHERE provider = ? AND provider_subject = ?")
-    .bind(provider, subject).first();
-  return row.id;
+  const stmts = [
+    env.DB.prepare("INSERT INTO consumed_signup_states (state_hash, key_version, expires_at) VALUES (?, ?, ?)")
+      .bind(stateHash, TOMBSTONE_KEY_VERSION, stateExp),
+    env.DB.prepare(
+      `INSERT INTO users (id, provider, provider_subject, session_version, created_at)
+       VALUES (?, ?, ?, 0, ?) ON CONFLICT (provider, provider_subject) DO NOTHING`)
+      .bind(id, provider, subject, now),
+  ];
+  for (const [kind, action] of requiredPolicyKinds) {
+    const doc = bundle.docs[kind];
+    // 번들에 없는 종류를 기록하지 않는다. 여기서 막지 않으면 `undefined` 가 해시 자리에 들어간다.
+    if (!doc) throw new Error("policy bundle missing kind: " + kind);
+    stmts.push(env.DB.prepare(
+      `INSERT INTO policy_events (user_id, kind, action, document_version, occurred_at, recorded_at)
+       SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM users WHERE id = ?)`)
+      .bind(id, kind, action, doc.hash, occurredAt, now, id));
+  }
+  await env.DB.batch(stmts);
+  // **DB 에 다시 묻는다.** 내가 넣었는지 동시에 온 다른 요청이 넣었는지 가릴 이유가 없다.
+  return await findUser(env, provider, subject);
+}
+
+// 이미 계정이 있는 사람이 가입 state 를 들고 왔을 때. 계정도 기록도 만들지 않지만
+// **표식은 남긴다** — 같은 state 가 두 번 통하면 안 되는 것은 이 경우에도 같다.
+export async function consumeSignupState(env, stateHash, stateExp) {
+  await env.DB.prepare("INSERT INTO consumed_signup_states (state_hash, key_version, expires_at) VALUES (?, ?, ?)")
+    .bind(stateHash, TOMBSTONE_KEY_VERSION, stateExp).run();
+}
+
+// 만료된 표식만 지운다. **만료 전에 지우면 그 순간 replay 창이 다시 열린다.**
+// 실패를 삼킨다 — 청소가 안 되는 것과 가입이 안 되는 것은 무게가 다르다.
+async function sweepSignupStates(env, now) {
+  try {
+    await env.DB.prepare("DELETE FROM consumed_signup_states WHERE expires_at < ?").bind(now).run();
+  } catch { /* 청소 실패는 가입을 막지 않는다 */ }
 }
 
 // ── 단어장 ───────────────────────────────────────────────────────────────
@@ -661,17 +829,104 @@ async function briefOne(env, other, withCount) {
   return out;
 }
 
+// ── 유지보수 게이트 ──────────────────────────────────────────────────────
+// **허용 목록으로 판정한다.** 차단 목록으로 만들면 새 라우트의 기본값이 「통과」가 되어
+// 다음 사고가 예약된다(scripts/build.mjs 의 allowlist 와 같은 판단).
+//
+// 상태가 셋인 이유는 **읽기와 쓰기를 따로 막아야 하기 때문**이다. 주 D1 을 과거로 되돌리면
+// 탈퇴한 사람의 `users`·`sessions`·`books`·`friendships` 가 전부 되살아나고, 재삭제가 끝나기
+// 전까지 그 사람은 **살아 있는 계정**이다. 그러면 되살아난 세션으로 로그인 상태가 부활하고
+// `GET /book` 이 지웠던 단어장을 그대로 돌려준다 — **쓰기를 막는 것만으로는 하나도 못 막는다.**
+//
+//   maintenance     DB 를 **쓰는** 라우트 전부 차단. 읽기는 허용
+//   restore_closed  **넷만 허용**: /health · /ready · /policies · (정적 정책 파일은 Worker 를 안 지난다)
+//
+// ⚠️ `GET /friends` 가 `maintenance` 에서도 차단인 이유: 목록 조회가 초대 코드가 없으면
+//    **그 자리에서 만든다**(myCode). GET 이라고 읽기인 것이 아니다.
+const MAINT_READS = [
+  [/^\/book$/, "GET"], [/^\/me$/, "GET"], [/^\/friends\/[^/]+\/book$/, "GET"],
+];
+const ALWAYS_OPEN = [/^\/health$/, /^\/ready$/, /^\/policies$/];
+
+export function maintenanceAllows(mode, path, method) {
+  if (mode === "open") return true;
+  if (ALWAYS_OPEN.some((re) => re.test(path))) return true;
+  if (mode === "restore_closed") return false;             // 허용 목록은 위 셋뿐이다
+  return MAINT_READS.some(([re, m]) => m === method && re.test(path));
+}
+
 // 로그에 남길 경로. **id 자리를 지운다.** `/friends/<uid>` 를 그대로 찍으면 운영 로그가
 // "누가 누구와 친구인가"의 기록이 된다 — 우리가 안 받기로 한 정보를 로그가 대신 모으는 꼴이다.
 // export 하는 이유는 테스트가 이 규칙을 직접 재기 위해서다.
 export const pathTemplate = (p) =>
   p.replace(/^\/api/, "").replace(/^\/friends\/(?!code$)[^/]+/, "/friends/:id");
 
+// 임차증을 **따지 않는** 경로. 여기 넣는 근거는 셋을 다 만족해야 한다:
+//   ① 사용자 데이터를 읽지도 쓰지도 않는다(행 내용을 만지지 않는다)
+//   ② 복원 중에도 답해야 한다 — 운영자가 상태를 볼 수단이 이것뿐이다
+//   ③ 읽기 전용이라 복원본을 오염시킬 수 없다
+//
+//   /health    설정이 있나 없나만. DB 를 아예 안 본다
+//   /ready     `COUNT(*)` 집계만 본다. **행 내용을 읽지 않는다.** 여기서 임차증을 따면
+//              `restore_closed` 에서 획득이 거부돼 운영자가 상태를 못 보게 된다
+//   /policies  우리가 빌드에 박은 상수. DB 를 안 본다
+//
+// ⚠️ `rate_limits` 는 사용자 데이터가 아니라 **운영 메타데이터**지만 제외 목록에 넣지 않았다.
+//    `limited()` 는 위 셋 말고는 모든 경로에서 불리므로, 임차증을 게이트 **바로 뒤**에 두면
+//    자동으로 함께 추적된다. 굳이 빼서 「추적 안 되는 쓰기」를 하나 만들 이유가 없다.
+const LEASE_FREE = [/^\/health$/, /^\/ready$/, /^\/policies$/];
+
 export default {
   // 전역 예외 그물. 아래 어디서 던져도 제공자 응답·스택이 사용자에게 새지 않고 500 한 줄로 끝난다.
+  //
+  // **요청 임차증의 수명이 여기 있다**(결정 A′, 2026-08-18). 라우트 안이 아니라 여기인 이유:
+  // 라우트에는 `return` 이 수십 개고, 그중 하나라도 해제를 빠뜨리면 활성 수가 영원히 0 이 안 된다.
+  // 가장 바깥 `finally` 하나면 던져서 나가든 일찍 돌아가든 반드시 지나간다.
   async fetch(req, env) {
+    const url = new URL(req.url);
+    // Pages Functions 아래에선 주소가 `/api/book` 으로 온다. **접두어만 여기서 벗기고**
+    // 라우트 문자열은 `/book` 그대로 둔다 — scripts/test-friends.mjs 가 그 이름으로 부른다.
+    const path = url.pathname.replace(/^\/api/, "").replace(/\/$/, "");
+    if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors(env, req) });
+
+    // ── 0-1. 유지보수 게이트 ──
+    // **`limited()` 보다 먼저** 온다. 뒤에 두면 리미터가 rate_limits 에 쓴다.
+    // **세션 인증(`whoAmI`)보다도 먼저** 온다 — `restore_closed` 에서 인증을 한 번이라도
+    // 시도하면 되살아난 `sessions` 행을 조회하게 되고, 그 결과가 타이밍·오류로 새어 나간다.
+    // ⚠️ ledger 질의가 **실패하면 막는다.** 그건 「열려 있다」가 아니라 「모른다」이고,
+    //    모를 때 게이트를 여는 것은 게이트가 없는 것과 같다.
+    let gate;
     try {
-      return await route(req, env);
+      gate = await readMode(env);
+    } catch {
+      return json(env, req, { error: "잠시 점검 중이에요", mode: "unknown" }, 503,
+        { "Retry-After": "60" });
+    }
+    if (!maintenanceAllows(gate.mode, path, req.method)) {
+      // 무엇을·왜 복원하는지는 말하지 않는다. 「지금 안 된다」와 「언제 다시 와라」만 말한다.
+      return json(env, req, { error: "잠시 점검 중이에요. 조금 뒤에 다시 열어주세요", mode: gate.mode },
+        503, { "Retry-After": "60" });
+    }
+
+    // ── 0-1-1. 요청 임차증 ──
+    // 세션 인증보다 **먼저** 딴다. 인증이 먼저 지나가면 `sessions`·`users` 조회가 추적 밖이다.
+    // ledger 바인딩이 없으면 딸 수 없다 — 그때는 `/api/ready` 가 `ledger:false` 로 시끄럽게 말하고,
+    // 복원은 어차피 금지다(`restoreGate`). 없는 것을 있는 척하지 않는다.
+    let lease = null;
+    if (env.LEDGER && !LEASE_FREE.some((re) => re.test(path))) {
+      try {
+        lease = await acquireLease(env);
+      } catch {
+        return json(env, req, { error: "잠시 점검 중이에요", mode: "unknown" }, 503,
+          { "Retry-After": "60" });
+      }
+      if (!lease)
+        return json(env, req, { error: "잠시 점검 중이에요. 조금 뒤에 다시 열어주세요", mode: gate.mode },
+          503, { "Retry-After": "60" });
+    }
+
+    try {
+      return await route(req, env, { url, path, gate, lease });
     } catch (e) {
       // ⚠️ **경로를 그대로 찍지 않는다.** `/friends/<uid>` 에는 계정 id 가 들어 있어서
       //    운영 로그가 곧 "누가 누구와 친구인가"의 기록이 된다. 고치는 데 필요한 건 어느 **종류**의
@@ -679,23 +934,23 @@ export default {
       //    (제공자 응답이 통째로 실려 오는 경우가 있다).
       console.log("[error]", pathTemplate(new URL(req.url).pathname), String(e && e.message).slice(0, 200));
       return json(env, req, { error: "잠시 문제가 생겼어요" }, 500);
+    } finally {
+      // ⚠️ **여기가 유일한 해제 자리다.** 해제에 실패해도 삼킨다 — 사용자 응답을 바꿀 이유가 없고,
+      //    남은 행은 만료 뒤 `stale` 로 세어져 **복원을 계속 막는다**(그게 맞는 실패 방향이다).
+      if (lease) { try { await releaseLease(env, lease); } catch { /* stale 로 남아 복원을 막는다 */ } }
     }
   },
 };
 
-async function route(req, env) {
-    const url = new URL(req.url);
-    // Pages Functions 아래에선 주소가 `/api/book` 으로 온다. **접두어만 여기서 벗기고**
-    // 라우트 문자열은 `/book` 그대로 둔다 — scripts/test-friends.mjs 가 그 이름으로 부르기 때문에,
-    // 라우트를 `/api/book` 으로 고쳐 적으면 35개 검사를 전부 손대야 한다.
-    const path = url.pathname.replace(/^\/api/, "").replace(/\/$/, "");
-    if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors(env, req) });
+async function route(req, env, rc) {
+    const { url, path, gate, lease } = rc;
 
     // ── 0. 살아있나 · 설정이 됐나 ──
     // /health 는 **늘 200** 이다(프로세스가 도나). /ready 는 설정이 덜 됐으면 503 이다 —
     // 배포 뒤 "로그인이 503" 을 사용자가 눌러 보고서야 알게 되는 걸 막는 자리다.
     // 앱은 /health 의 providers 로 **설정 안 된 제공자의 버튼을 아예 안 그린다.**
     // ⚠️ 값도, 비밀값 이름도 내보내지 않는다. 있나 없나만.
+    // 앱이 이 응답으로 **실제로 되는 버튼만** 그린다. 값도, 비밀값 이름도 나가지 않는다.
     if (path === "/health") return json(env, req, health(env));
     if (path === "/ready") {
       const h = health(env);
@@ -706,10 +961,92 @@ async function route(req, env) {
       //    이제 바인딩이 있으면 OAuth 설정과 무관하게 스키마까지 확인한다(dbAnswers).
       //    ⚠️ 오류 문자열·테이블 이름·SQL 은 응답에 싣지 않는다 — 참/거짓만 나간다.
       const db = await dbAnswers(env);
+      // ⚠️ **ledger 도 같은 이유로 실제 질의한다.** 게이트(`readMode`)가 통과하는 것은
+      //    `maintenance` 한 표뿐이라, 나머지 표가 없어도 게이트는 멀쩡히 답한다 —
+      //    그 상태로 배포하면 **첫 계정 삭제에서만** 터진다. `db` 와 같은 규칙이다:
+      //    바인딩이 없는 것과 스키마가 없는 것을 한 값으로 말한다(둘 다 「못 쓴다」이고,
+      //    무엇이 없는지는 응답이 아니라 runbook 이 답한다 — 표 이름을 내보내지 않는다).
+      const ledger = await ledgerAnswers(env);
       // configReady = 설정이 갖춰졌나(비밀값·주소·바인딩·제공자). db = DB 가 실제로 답하나.
       // 둘을 갈라 두면 배포 뒤 "무엇이 덜 됐나"를 한 번에 읽을 수 있다.
-      const r = { ok: true, configReady: h.ready, db, providers: h.providers, ready: h.ready && db };
+      // ⚠️ **한 값이 여러 가지를 말하면 진짜 장애를 아무도 못 알아챈다.** 그래서 이유별로 가른다:
+      //    configReady 설정이 갖춰졌나 · db 주 D1 이 답하나 · ledger 삭제 표식 저장소가 붙었나
+      //    · mode 유지보수 상태 · cleanupStale 정리 크론이 제 시간에 돌고 있나
+      const cl = await cleanupState(env).catch(() => null);
+      // 마지막 성공이 **주기의 2배**보다 오래됐으면 낡은 것으로 본다. 조용히 멈춘 크론은
+      // 없는 크론보다 나쁘다 — 있다고 믿게 만들기 때문이다.
+      const cleanupStale = !!env.LEDGER && (!cl || !cl.last_ok_at || Date.now() - cl.last_ok_at > 2 * 3600e3);
+      // ⚠️ **`cleanupStale` 은 `ready` 를 내리지 않는다.** 정리가 밀린 것은 보유기간 문제이지
+      //    사용자가 앱을 못 쓰는 상태가 아니다 — 크론 하나가 멈췄다고 사이트를 503 으로 내리면
+      //    고치려던 것보다 큰 고장을 만든다(리미터를 fail-open 으로 둔 것과 같은 판단).
+      //    대신 **응답에는 반드시 실린다** — 조용히 멈춘 크론은 없는 크론보다 나쁘고,
+      //    배포 후 smoke test 와 출시 체크리스트가 이 값을 직접 본다.
+      const r = {
+        ok: true, mode: gate.mode, configReady: h.ready, db, ledger,
+        signupReady: h.signupReady, providers: h.providers, cleanupStale,
+        ready: h.ready && db && ledger && gate.mode === "open",
+      };
       return json(env, req, r, r.ready ? 200 : 503);
+    }
+
+    // ── 0-2. 지금 쓰이는 정책 문서 ──
+    // **경로와 해시만** 준다. 내용은 정적 파일로 따로 받는다 — 그래야 화면이 자기가 렌더할
+    // 바이트를 직접 해시해 대조할 수 있다(옛 서비스워커 캐시가 남아 있어도 걸린다).
+    // 로그인 없이 부를 수 있다. 사용자를 가리키는 값이 요청에도 응답에도 실리지 않는다.
+    if (path === "/policies") return json(env, req, policyBundle());
+
+    // ── 0-3. 회원가입 시작 ──
+    // **GET 링크로 대신하지 않는다.** `/login/kakao?pv=…` 같은 모양이면 남이 보낸 링크 하나가
+    // 약관 수락과 연령 진술을 만들어낸다 — 사용자는 가입 화면을 본 적이 없는데 기록에는
+    // "수락함"이 남는다. POST 는 아래 Origin 검사에 자동으로 걸린다.
+    if (path === "/signup/start") {
+      if (req.method !== "POST") return json(env, req, { error: "안 되는 요청이에요" }, 405);
+      // Origin 검사. 상태 변경 검사는 아래(3번)에 있지만 그건 세션을 읽은 뒤라 여기까지 안 온다.
+      const o = req.headers.get("Origin");
+      if (!o || !allowed(env, o)) return json(env, req, { error: "허용되지 않은 요청이에요" }, 403);
+      // 전용 버킷. `write` 와 이중으로 세지 않는다 — WRITE_ROUTES 에 `/signup` 이 없다.
+      if (await limited(env, req, null, "signup")) return tooMany(env, req);
+      const body = await readBody(req);          // Content-Type 이 JSON 이 아니면 null 이다
+      const provider = body && typeof body.provider === "string" ? body.provider : "";
+      if (!isProvider(provider)) return json(env, req, { error: "그런 로그인 방식이 없어요" }, 400);
+      const { id } = creds(env, provider);
+      // 설정이 덜 된 채로 조용히 돌지 않는다. 셋 다 없으면 가입 자체를 열지 않는다.
+      if (!id || !env.SIGNUP_STATE_KEY || !env.TOMBSTONE_KEY)
+        return json(env, req, { error: "회원가입이 아직 준비되지 않았어요" }, 503);
+      // ⚠️ **`true` 만 받는다.** 없거나 `false` 거나 `"true"` 문자열이면 거부다 —
+      //    「값이 있으면 통과」로 만들면 `age14: 0` 같은 값이 지나간다.
+      if (body.terms !== true || body.age14 !== true)
+        return json(env, req, { error: "필수 항목을 확인해 주세요", needed: ["terms", "age14"] }, 400);
+      // 화면이 본 문서와 우리가 기록할 문서가 같은가. 다르면 **여기서** 끝난다 —
+      // 제공자까지 갔다가 콜백에서 막으면 사용자가 헛걸음을 한다.
+      if (body.pv !== POLICY_BUNDLE.pv)
+        return json(env, req, { error: "약관이 새로 바뀌었어요. 앱을 새로고침해 주세요",
+                                policyStale: true, pv: POLICY_BUNDLE.pv }, 409);
+      const back = typeof body.back === "string" && body.back ? body.back : env.APP_ORIGIN;
+      let backOrigin = null;
+      try { backOrigin = new URL(back).origin; } catch { /* 아래에서 400 */ }
+      if (!allowed(env, backOrigin)) return json(env, req, { error: "허용되지 않은 주소예요" }, 400);
+      // 행위 시각. **서버가 찍는다** — 클라이언트가 보낸 시각을 쓰면 그 값이 곧 위조 가능한 증거가 된다.
+      const occurredAt = Date.now();
+      const txn = mkToken();
+      let state;
+      try {
+        state = await makeSignupState(env, provider, {
+          back, pv: POLICY_BUNDLE.pv, occurredAt, terms: true, age14: true,
+          n: String(body.n || "").slice(0, 64), txn: await sha256(txn),
+        });
+      } catch {
+        // 키 설정 문제. **사유를 밖으로 말하지 않는다.**
+        return json(env, req, { error: "회원가입이 아직 준비되지 않았어요" }, 503);
+      }
+      const q = new URLSearchParams({
+        response_type: "code", client_id: id,
+        redirect_uri: redirectUri(env, url.origin, provider), state,
+      });
+      if (P[provider].scope) q.set("scope", P[provider].scope);
+      const r = json(env, req, { url: P[provider].auth + "?" + q });
+      r.headers.append("Set-Cookie", setTxn(txn));
+      return r;
     }
 
     // ⚠️ 여기 있던 공통 `auth` 버킷을 지웠다. `/login`·`/cb`·`/exchange` 는 **각자 `login` 버킷으로**
@@ -719,7 +1056,7 @@ async function route(req, env) {
 
     // ── 1. 로그인 시작 ── /login/kakao?return=<앱 주소>
     let m = path.match(/^\/login\/(\w+)$/);
-    if (m && P[m[1]]) {
+    if (m && isProvider(m[1])) {
       const p = P[m[1]];
       const { id } = creds(env, m[1]);
       // 설정이 덜 된 채로 **조용히 돌지 않는다.** STATE_KEY 가 없으면 state 서명이 아무나
@@ -753,76 +1090,112 @@ async function route(req, env) {
       return r;
     }
 
-    // ── 2a. 앱이 code 를 넘겨 주는 자리(네이버) ── /exchange/naver?code&state
-    // 네이버는 콜백이 앱 도메인으로 가므로 정적 페이지가 code 를 받는다. 비밀키가 필요한 교환만
-    // 여기서 한다 — code 는 이 한 번의 교환에만 쓰이고 세션 토큰으로 바뀐다.
-    m = path.match(/^\/exchange\/(\w+)$/);
-    if (m && P[m[1]]) {
-      // 세션을 찍어내는 자리다. GET 이라 위 ② 에 안 걸리므로 여기서 직접 센다.
-      if (await limited(env, req, null, "login")) return tooMany(env, req);
-      const st = await takeState(env, url.searchParams.get("state"));
-      if (!st || st.provider !== m[1]) return json(env, req, { error: "로그인 요청이 만료됐어요" }, 400);
-      // **표를 먼저 본다.** 여기를 통과하기 전에는 code 를 교환하지도, 세션을 만들지도 않는다.
-      if (!(await bound(env, req, st))) {
-        const bad = json(env, req, { error: "이 기기에서 시작한 로그인이 아니에요. 앱에서 다시 로그인해 주세요." }, 400);
-        bad.headers.append("Set-Cookie", clearTxn());
-        return bad;
-      }
-      const code = url.searchParams.get("code");
-      if (!code) return json(env, req, { error: "취소됐어요" }, 400);
-      const token = await exchange(env, url.origin, m[1], code, url.searchParams.get("state"));
-      if (!token) return json(env, req, { error: "로그인에 실패했어요" }, 502);
-      // 토큰을 **본문에 싣지 않는다.** 쿠키로 심는다 — 앱이 손에 쥐지 않으면 잃어버릴 수도 없다.
-      // n 은 여전히 돌려준다: 이 갈래는 `?code=…&state=…` 링크를 남에게 보낼 수 있어서,
-      // 받은 사람의 앱이 **남의 code** 를 교환해 남의 계정 쿠키를 받게 된다(세션 고정).
-      // 앱이 자기가 보낸 n 과 대조해 다르면 그 자리에서 로그아웃한다.
-      const r = json(env, req, { ok: true, n: st.nonce });
-      r.headers.append("Set-Cookie", setCookie(token));
-      r.headers.append("Set-Cookie", clearTxn());   // 표는 한 번 쓰고 버린다
-      return r;
-    }
+    // ── 2a·2b. 돌아오는 자리 ──
+    //   /exchange/:provider  앱이 code 를 넘겨 준다(네이버). JSON 으로 답한다
+    //   /cb/:provider        제공자가 우리에게 직접 돌려보낸다(카카오·구글). 302 로 답한다
+    //
+    // **두 갈래가 같은 판정을 쓴다.** 흐름이 갈려도 「누가 왔나·계정을 만들 자격이 있나」는
+    // 한 곳이어야 한쪽만 고치는 실수가 안 난다. 아래 finishAuth() 가 그 한 곳이다.
+    //
+    // ⚠️ 검사 순서가 곧 방어다. **외부 호출(code 교환) 앞에서 할 수 있는 것은 전부 앞에서 한다** —
+    //    한도 · state 복호화/서명 · 제공자 일치 · 브라우저 결속(shh_t) · 정책 번들 일치 · 키 설정.
+    //    뒤로 미루면 위조 state 하나가 제공자 호출 두 번을 유발하고, `code` 는 되돌릴 수 없다.
+    {
+      const mx = path.match(/^\/(exchange|cb)\/(\w+)$/);
+      if (mx && isProvider(mx[2])) {
+        const viaApp = mx[1] === "exchange", name = mx[2];
+        // 응답 모양이 갈린다. /exchange 는 앱이 fetch 하므로 JSON, /cb 는 브라우저가 직접
+        // 도착하므로 사람이 읽는 글이거나 리다이렉트다.
+        const fail = (msg, status, hash) => {
+          const r = viaApp ? json(env, req, { error: msg }, status)
+                           : (hash ? redir(hash) : new Response(msg, { status, headers: { ...SEC } }));
+          r.headers.append("Set-Cookie", clearTxn());
+          return r;
+        };
+        // 세션을 찍어내는 자리다. GET 이라 아래 write 계수에 안 걸리므로 여기서 직접 센다.
+        if (await limited(env, req, null, "login")) return tooMany(env, req);
 
-    // ── 2b. 제공자가 우리에게 직접 돌려보내는 자리(카카오·구글) ── /cb/kakao?code&state
-    // /cb 도 세션을 만든다. 제공자가 부르는 자리라 사람이 직접 두드릴 수도 있다.
-    if (/^\/cb\/\w+$/.test(path) && (await limited(env, req, null, "login"))) return tooMany(env, req);
-    m = path.match(/^\/cb\/(\w+)$/);
-    if (m && P[m[1]]) {
-      const state = url.searchParams.get("state");
-      const st = await takeState(env, state);
-      if (!st || st.provider !== m[1]) return new Response("로그인 요청이 만료됐어요. 다시 눌러 주세요.", { status: 400 });
-      // **표를 먼저 본다.** 공격자가 자기 code/state 링크를 남에게 보내도 여기서 끝난다 —
-      // 그 사람 브라우저에는 우리가 심은 표가 없다. code 교환·세션 생성 **이전**이라
-      // 실패해도 남는 것이 없다(제공자 호출도 안 나간다).
-      if (!(await bound(env, req, st))) {
-        const bad = new Response("이 기기에서 시작한 로그인이 아니에요. 앱에서 다시 눌러 주세요.",
-          { status: 400, headers: { ...SEC } });
-        bad.headers.append("Set-Cookie", clearTxn());
-        return bad;
+        const raw = url.searchParams.get("state");
+        // 가입 state 는 `v1.` 로 시작한다. 로그인 state 는 b64u(JSON 배열)이라 그렇게 시작할 수
+        // 없다 — 두 형식을 **접두사 하나로** 가른다(scripts/test-signup.mjs 가 이 성질을 잠근다).
+        const isSignup = typeof raw === "string" && raw.startsWith("v1.");
+        const st = isSignup ? await takeSignupState(env, raw, name) : await takeState(env, raw);
+        if (!st || (!isSignup && st.provider !== name))
+          return fail("로그인 요청이 만료됐어요. 다시 눌러 주세요.", 400);
+        // **표를 먼저 본다.** 공격자가 자기 code/state 링크를 남에게 보내도 여기서 끝난다 —
+        // 그 사람 브라우저에는 우리가 심은 표가 없다. code 교환·세션 생성 **이전**이라
+        // 실패해도 남는 것이 없다(제공자 호출도 안 나간다).
+        if (!(await bound(env, req, st)))
+          return fail("이 기기에서 시작한 로그인이 아니에요. 앱에서 다시 로그인해 주세요.", 400);
+        // 복귀 주소는 서명·암호문 안에 있지만 **리다이렉트 목적지**라 한 번 더 본다 —
+        // allowed 가 좁아진 직후 옛 state 가 돌아오는 경우가 여기서 걸린다.
+        let backOrigin = null;
+        try { backOrigin = new URL(st.back).origin; } catch { /* 아래에서 400 */ }
+        if (!allowed(env, backOrigin)) return fail("허용되지 않은 주소예요", 400);
+
+        if (isSignup) {
+          // 화면이 본 문서와 우리가 기록할 문서가 다르면 **기록하지 않는다.**
+          if (st.pv !== POLICY_BUNDLE.pv)
+            return viaApp
+              ? json(env, req, { error: "약관이 새로 바뀌었어요. 다시 가입해 주세요", policyStale: true }, 409)
+              : fail(null, 302, st.back + "#login=stale");
+          if (!env.TOMBSTONE_KEY) return fail("회원가입이 아직 준비되지 않았어요", 503);
+        }
+
+        const code = url.searchParams.get("code");
+        if (!code) {
+          if (!viaApp) console.log("[cb] no code", name, url.searchParams.get("error"));
+          return viaApp ? fail("취소됐어요", 400) : fail(null, 302, st.back + "#login=denied");
+        }
+
+        // ── 여기서부터는 되돌릴 수 없다 — 외부 호출 2회가 나가고 code 가 소비된다 ──
+        const who = await verifyProvider(env, url.origin, name, code, raw);
+        if (!who) return viaApp ? fail("로그인에 실패했어요", 502) : fail(null, 302, st.back + "#login=fail");
+
+        const existing = await findUser(env, name, who.subject);
+        let uid = existing;
+        if (!existing && !isSignup) {
+          // **로그인 경로는 계정을 만들지 않는다.** 이것이 이번 단계의 핵심 변경이다 —
+          // 예전에는 이 자리가 곧 가입이었고, 버튼 한 번이 약관도 연령 확인도 없이 계정을 만들었다.
+          return viaApp
+            ? json(env, req, { error: "아직 가입하지 않으셨어요", signupRequired: true }, 404)
+            : fail(null, 302, st.back + "#login=signup_required");
+        }
+        if (isSignup) {
+          // 소비 표식은 **제공자 검증이 끝난 뒤에만** 쓴다 — 위조 state 반복만으로 DB 쓰기가
+          // 일어나지 않게(2026-08-11 에 없앤 「인증 없는 자리의 쓰기」를 되살리지 않는다).
+          let hash;
+          try { hash = await stateTombstone(env, raw); }
+          catch { return fail("회원가입이 아직 준비되지 않았어요", 503); }
+          try {
+            // 이미 계정이 있으면 표식만 남기고, 없으면 표식·계정·정책 기록을 **한 batch** 로.
+            uid = existing
+              ? (await consumeSignupState(env, hash, st.exp), existing)
+              : await createAccountWithPolicy(env, name, who.subject,
+                  { stateHash: hash, stateExp: st.exp, occurredAt: st.occurredAt });
+          } catch {
+            // PRIMARY KEY 충돌 = 이 state 는 이미 쓰였다. batch 전체가 롤백됐으므로
+            // 계정도 정책 기록도 **하나도 안 생겼다**. fallback 으로 통과시키지 않는다.
+            return viaApp
+              ? json(env, req, { error: "이미 처리된 가입 요청이에요. 다시 시작해 주세요", stateUsed: true }, 409)
+              : fail(null, 302, st.back + "#login=used");
+          }
+          if (!uid) return viaApp ? fail("가입에 실패했어요", 500) : fail(null, 302, st.back + "#login=fail");
+          await sweepSignupStates(env, Date.now());
+        }
+
+        // 세션은 **batch 가 성공한 뒤에만** 만든다.
+        const token = await newSession(env, uid);
+        // 토큰을 **주소에도 본문에도 싣지 않는다.** 쿠키로 심는다 — 앱이 손에 쥐지 않으면
+        // 「남에게 보낼 수 있는 로그인 링크」라는 것 자체가 만들어지지 않는다.
+        const okRes = viaApp
+          ? json(env, req, { ok: true, n: st.nonce || st.n || "", signedUp: isSignup && !existing })
+          : redir(st.back + "#login=ok&via=" + name + "&n=" + encodeURIComponent(st.nonce || st.n || "")
+                  + (isSignup && !existing ? "&new=1" : ""));
+        okRes.headers.append("Set-Cookie", setCookie(token));
+        okRes.headers.append("Set-Cookie", clearTxn());   // 표는 한 번 쓰고 버린다
+        return okRes;
       }
-      // 심층 방어: state 는 우리가 서명했지만 back 은 **리다이렉트 목적지**라 한 번 더 본다.
-      // allowed 가 좁아진 직후 옛 state 가 돌아오는 경우가 여기서 걸린다 — 서명이 유효해도
-      // 지금 규칙에서 허용되지 않으면 토큰을 실어 보내지 않는다.
-      let backOrigin = null;
-      try { backOrigin = new URL(st.back).origin; } catch { /* 아래에서 400 */ }
-      if (!allowed(env, backOrigin)) return new Response("허용되지 않은 주소예요", { status: 400 });
-      const back = st.back;
-      const code = url.searchParams.get("code");
-      if (!code) {
-        console.log("[cb] no code", m[1], url.searchParams.get("error"));
-        return redir(back + "#login=denied");
-      }
-      const token = await exchange(env, url.origin, m[1], code, state);
-      if (!token) return redir(back + "#login=fail");
-      // ── 토큰은 **주소에 싣지 않는다.** ──
-      // 예전엔 `#login=<토큰>` 이었다. 해시는 서버 로그엔 안 남지만 **링크로 만들어 남에게 보낼 수
-      // 있는 문자열**이라, 공격자가 자기 토큰 링크로 피해자를 자기 계정에 로그인시킬 수 있었다
-      // (그 뒤 피해자가 담는 단어와 별명이 공격자 계정에 쌓인다). nonce 로 막아 뒀지만,
-      // 쿠키로 심으면 **애초에 그런 링크를 만들 수 없다** — 남의 브라우저에 쿠키를 심을 방법이 없다.
-      // 그래서 해시에는 "됐다"는 사실과 어느 제공자였는지만 남는다.
-      const r = redir(back + "#login=ok&via=" + m[1] + "&n=" + encodeURIComponent(st.nonce));
-      r.headers.append("Set-Cookie", setCookie(token));
-      r.headers.append("Set-Cookie", clearTxn());   // 표는 한 번 쓰고 버린다
-      return r;
     }
 
     // ⚠️ `/master?code=…` 는 **지웠다**(2026-08-08). 로그인 없이 브라우저를 마스터로 만드는
@@ -959,8 +1332,57 @@ async function route(req, env) {
       //
       // 지운 행이 0 이어도 성공이다 — 다른 탭이 방금 지웠다는 뜻이고, 사용자가 원한 결과는
       // 이미 이뤄졌다(친구 끊기의 404 를 성공으로 수렴시키는 것과 같은 판단).
+      //
+      // ⚠️ **2026-08-18: 한 문장 앞뒤로 표식이 붙었다.** 이유는 삭제가 안전해서가 아니라
+      //    **지운 뒤에 되살아날 수 있기 때문**이다 — D1 의 Time Travel 은 끌 수 없고, 운영자가
+      //    과거 시점으로 복원하면 탈퇴한 계정·단어장·친구 관계가 그대로 돌아온다.
+      //    그때 「누구를 다시 지워야 하는지」를 아는 근거가 이 표식뿐이다.
+      //    표식은 **주 D1 이 아니라 별도 ledger** 에 남는다 — 같은 DB 에 두면 복원이 표식까지
+      //    함께 과거로 보내서, 아는 방법이 사라진다.
+      //
+      // 순서: lease → pending → (fencing 재확인) → DELETE → 부재 확인 → confirmed → lease 해제
+      //   · pending 이 실패하면 **주 D1 을 건드리지 않는다**(세션 유지 → 그 화면에서 재시도)
+      //   · confirmed 만 실패하면 사용자에게는 **성공**이다(계정은 실제로 없다). 나머지는
+      //     reconciliation 이 승격한다 — 사용자를 붙잡아 둘 이유가 없다.
       if (req.method === "DELETE") {
-        await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(uid).run();
+        // ledger 나 키가 없으면 **지우지 않는다.** 표식 없는 삭제가 이 설계가 막으려는 바로 그것이다.
+        // 「일단 지우고 표식은 나중에」로 두면 복원 한 번에 되살아나고 아무도 알아채지 못한다.
+        if (!env.LEDGER || !env.DELETION_KEY)
+          return json(env, req, { error: "지금은 계정을 지울 수 없어요. 잠시 뒤에 다시 시도해 주세요" }, 503,
+            { "Retry-After": "60" });
+        const failDelete = () =>
+          json(env, req, { error: "계정을 지우지 못했어요. 다시 시도해 주세요" }, 500);
+        // ⚠️ **여기서 임차증을 새로 따지 않는다**(결정 A′). 이 요청은 이미 하나를 들고 있다 —
+        //    두 개를 들면 요청 하나가 활성 수 2 로 세어지고, 하나만 해제돼도 drain 이 0 이 안 된다.
+        //    삭제 saga 가 필요로 하는 것은 **fencing**(`leaseAlive`)이고, 그건 어느 임차증이든 된다.
+        try {
+          const now = Date.now();
+          const mark = await deletionMark(env, uid);
+          if (!lease)
+            return json(env, req, { error: "잠시 점검 중이에요. 조금 뒤에 다시 시도해 주세요" }, 503,
+              { "Retry-After": "60" });
+          if (!(await markPending(env, lease, mark, now))) return failDelete();
+          // 주 D1 을 지우기 **직전에** 한 번 더 본다. 두 DB 사이에 공통 트랜잭션이 없어서
+          // 이 확인과 아래 DELETE 사이의 틈을 코드로 없앨 수는 없다 — 그래서 표식이
+          // 1차 방어이고(지워지지 않으므로) lease 는 2차다. 어느 하나만으로 안전하지 않다.
+          if (!(await leaseAlive(env, lease, now)))
+            return json(env, req, { error: "잠시 점검 중이에요. 조금 뒤에 다시 시도해 주세요" }, 503,
+              { "Retry-After": "60" });
+          // **한 문장.** users 를 지우면 sessions·books·friendships·invite_codes·policy_events 가
+          // 외래키 CASCADE 로 같이 사라진다 — 중간 상태가 존재할 수 없다.
+          await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(uid).run();
+          // 지운 행이 0 이어도 성공이다(다른 탭이 먼저 지웠다). 확인하는 것은 **부재**다.
+          const still = await env.DB.prepare("SELECT 1 AS x FROM users WHERE id = ?").bind(uid).first();
+          if (still) return failDelete();          // 있을 수 없는 상태. 재시도 + 조사 대상
+          // 여기부터는 **계정이 실제로 없다.** 아래가 실패해도 사용자에게는 성공이다.
+          try {
+            await markConfirmed(env, lease, mark, Date.now());
+            await sweepConfirmed(env, Date.now());
+          } catch { /* 확정 기록 실패는 reconciliation 이 승격한다 */ }
+        } catch {
+          return failDelete();
+        }
+        // 해제는 가장 바깥 `finally`(`export default.fetch`) 하나가 맡는다.
         const r = json(env, req, { ok: true });
         r.headers.append("Set-Cookie", clearCookie());
         return r;

@@ -69,6 +69,78 @@ const loginUrl = (provider) =>
   `${API}/login/${provider}?return=${encodeURIComponent(location.origin + location.pathname)}`
   + `&n=${encodeURIComponent(newNonce())}`;
 
+// ── 정책 문서 ──
+// 서버가 주는 것은 **경로와 해시**뿐이다. 내용은 정적 파일로 따로 받는다 —
+// 그래야 화면이 **자기가 실제로 렌더할 바이트**를 해시해 대조할 수 있다.
+// 이 대조가 필요한 이유: 설치형 PWA 의 서비스워커가 옛 문서를 캐시에 들고 있으면,
+// 화면은 옛 약관을 보여주는데 서버는 새 해시를 기록하는 상태가 된다.
+// 그때는 **가입 버튼을 아예 그리지 않는다**(fail-closed).
+async function apiPolicies() {
+  const t = timeoutSignal(REQUEST_TIMEOUT);
+  try {
+    const res = await fetch(API + "/policies", { signal: t.signal });
+    if (!res.ok) return { ok: false, kind: "server" };
+    const d = await res.json().catch(() => null);
+    return d && d.pv && d.docs ? { ok: true, pv: d.pv, docs: d.docs } : { ok: false, kind: "invalid_response" };
+  } catch (e) {
+    return { ok: false, kind: e && (e.name === "TimeoutError" || e.name === "AbortError") ? "timeout" : "network" };
+  } finally {
+    t.done();
+  }
+}
+
+// 파일 하나를 받아 **내용을 직접 해시**한다. `crypto.subtle` 은 보안 컨텍스트(https·localhost)
+// 에서만 있다 — 없으면 대조할 수 없으므로 통과시키지 않고 실패로 돌려준다.
+async function fetchPolicyDoc(path, expectHash) {
+  if (!(crypto && crypto.subtle)) return { ok: false, kind: "no_crypto" };
+  const t = timeoutSignal(REQUEST_TIMEOUT);
+  try {
+    // 경로는 서버가 준 값이다. 앱과 같은 origin 의 상대 경로만 받는다 —
+    // 절대 주소를 그대로 fetch 하면 서버 응답 하나로 아무 데나 부르게 된다.
+    if (typeof path !== "string" || !/^policies\/[\w.-]+$/.test(path)) return { ok: false, kind: "bad_path" };
+    const res = await fetch("./" + path, { signal: t.signal });
+    if (!res.ok) return { ok: false, kind: "server" };
+    const buf = await res.arrayBuffer();
+    const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", buf))]
+      .map((b) => b.toString(16).padStart(2, "0")).join("");
+    if (hash !== expectHash) return { ok: false, kind: "hash_mismatch" };
+    return { ok: true, text: new TextDecoder().decode(buf), hash };
+  } catch (e) {
+    return { ok: false, kind: e && (e.name === "TimeoutError" || e.name === "AbortError") ? "timeout" : "network" };
+  } finally {
+    t.done();
+  }
+}
+
+// 회원가입 시작. **POST 다** — GET 링크로 만들면 남이 보낸 주소 하나가 약관 수락과 연령
+// 진술을 만들어낸다(사용자는 가입 화면을 본 적이 없는데 기록에는 "수락함"이 남는다).
+// 로그인 표시가 없는 상태의 호출이라 request() 를 안 쓴다.
+async function apiSignupStart(provider, { terms, age14, pv }) {
+  const t = timeoutSignal(REQUEST_TIMEOUT);
+  try {
+    const res = await fetch(API + "/signup/start", {
+      method: "POST", credentials: "same-origin", signal: t.signal,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider, terms, age14, pv,
+        back: location.origin + location.pathname, n: newNonce(),
+      }),
+    });
+    const d = await res.json().catch(() => null);
+    if (res.ok && d && d.url) return { ok: true, url: d.url };
+    // 원인이 다르면 사용자가 할 일도 다르다. 서버가 준 문구를 그대로 쓰되 종류를 함께 준다.
+    const kind = d && d.policyStale ? "policy_stale"
+      : res.status === 429 ? "rate_limited"
+      : res.status === 503 ? "not_ready"
+      : res.status === 400 ? "invalid" : "server";
+    return { ok: false, kind, message: d && d.error };
+  } catch (e) {
+    return { ok: false, kind: e && (e.name === "TimeoutError" || e.name === "AbortError") ? "timeout" : "network" };
+  } finally {
+    t.done();
+  }
+}
+
 // 답이 안 오는 요청을 언제 포기하나. 예전엔 아무 데도 시간 제한이 없어서, 응답이 영원히
 // 오지 않으면 버튼이 "처리 중"에 영원히 머물렀다(거짓말은 아니지만 사용자는 끝을 못 본다).
 //
@@ -225,11 +297,17 @@ async function apiHealth() {
   const t = timeoutSignal(REQUEST_TIMEOUT);
   try {
     const res = await fetch(API + "/health", { signal: t.signal });
-    if (!res.ok) return { ok: false, providers: [] };
+    if (!res.ok) return { ok: false, providers: [], signupReady: null };
     const d = await res.json().catch(() => null);
-    return d && Array.isArray(d.providers) ? { ok: true, providers: d.providers } : { ok: false, providers: [] };
+    // ⚠️ **`signupReady` 를 버리지 않는다.** 버렸을 때 어떻게 되냐면: 서버는 제공자가 설정돼
+    //    있으니 `providers:["kakao"]` 를 주고 가입 전용 키는 없어서 `signupReady:false` 를 주는데,
+    //    화면은 앞의 것만 보고 **「카카오로 가입하기」를 그린다.** 누르면 `/signup/start` 가 503 이다.
+    //    로그인은 되는데 가입만 막힌 상태는 실제로 생길 수 있다(키가 다섯이라 하나만 빠질 수 있다).
+    return d && Array.isArray(d.providers)
+      ? { ok: true, providers: d.providers, signupReady: d.signupReady === true }
+      : { ok: false, providers: [], signupReady: null };
   } catch {
-    return { ok: false, providers: [] };
+    return { ok: false, providers: [], signupReady: null };
   } finally {
     t.done();
   }
@@ -248,9 +326,16 @@ async function apiExchange(provider, code, state) {
   const t = timeoutSignal(REQUEST_TIMEOUT);
   try {
     const res = await fetch(`${API}/exchange/${provider}?${q}`, { credentials: "same-origin", signal: t.signal });
-    if (!res.ok) return { ok: false, kind: "server" };
     const d = await res.json().catch(() => null);
-    return d && d.ok ? { ok: true, n: d.n } : { ok: false, kind: "server" };
+    // ⚠️ **실패를 한 덩어리로 뭉개지 않는다.** 「아직 가입 안 했다」와 「이미 쓴 가입 요청이다」와
+    //    「서버가 거절했다」는 사용자가 할 일이 전부 다르다 — 같은 말을 하면 헛수고를 시킨다.
+    if (!res.ok) {
+      if (d && d.signupRequired) return { ok: false, kind: "signup_required" };
+      if (d && d.stateUsed) return { ok: false, kind: "state_used" };
+      if (d && d.policyStale) return { ok: false, kind: "policy_stale" };
+      return { ok: false, kind: "server" };
+    }
+    return d && d.ok ? { ok: true, n: d.n, signedUp: !!d.signedUp } : { ok: false, kind: "server" };
   } catch (e) {
     return { ok: false, kind: e && (e.name === "TimeoutError" || e.name === "AbortError") ? "timeout" : "network" };
   } finally {
