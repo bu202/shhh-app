@@ -3,26 +3,29 @@
 // **무엇을 재는가 / 무엇을 못 재는가**를 먼저 적는다. 이 구분이 흐려지면 측정이 근거가 아니라
 // 장식이 된다.
 //
-//   잴 수 있는 것 : 요청 하나가 던지는 **SQL 문장 수**, 각 문장이 바꾼 **행 수**,
-//                   그 문장이 건드리는 **인덱스 항목 수**(스키마에서 센다)
+//   잴 수 있는 것 : 요청 하나가 던지는 **SQL 문장 수**, 각 문장이 바꾼 **기본 행 수**(`meta.changes`)
+//   계산하는 것   : 그 문장이 건드리는 **인덱스 항목 수** — 스키마에서 센 **추정치**다
 //   못 재는 것    : D1 이 돌려주는 **`meta.rows_written` 실측값**과 **실제 지연시간**.
 //                   셰임은 in-memory sqlite 라 네트워크 왕복도, D1 의 회계도 없다.
-//                   공식 문서도 `rows_written` 에 인덱스 쓰기가 포함되는지 말하지 않는다
-//                   (developers.cloudflare.com/d1/worker-api/return-object/ 확인 2026-08-18).
 //                   **그 두 값은 원격 실측이 필요하고, 원격 작업은 별도 승인 대상이다.**
 //
-// 그래서 아래 「인덱스 포함 쓰기 항목」은 **스키마에서 계산한 상한**이고 실측값이 아니다.
+// **Cloudflare 공식 문서는 인덱스 갱신이 추가 `rows_written` 으로 계산된다고 명시한다**
+// (D1 pricing — developers.cloudflare.com/d1/platform/pricing/ 확인 2026-08-18).
+// 그래서 인덱스를 세는 것 자체는 맞다. 다만 **D1 이 우리와 같은 방식으로 세는지는 확인하지
+// 않았다** — 아래 「행+인덱스」 열은 **현재 스키마 기반 추정 상한**이고 실측값이 아니다.
+// 두 숫자를 한 칸에 섞어 적지 않는다: 기본 행 변경 수와 인덱스 포함 추정치는 다른 값이다.
 import worker, { createAccountWithPolicy, newSession } from "../worker/index.js";
 import { makeD1, makeLedger } from "./_d1.mjs";
 
 const ORIGIN = "https://app.test";
 const KEY32 = Buffer.from(Uint8Array.from({ length: 32 }, (_, i) => i + 1)).toString("base64url");
 
-// 문장 하나가 쓰는 **행 + 인덱스 항목** 수. 스키마에서 센다.
-//   write_leases : PK(lease_id) + write_leases_active(released_at, expires_at)
+// 기본 행 하나를 바꿀 때 **함께 갱신되는 인덱스 항목 수**. 스키마에서 센다(추정치).
+//   write_leases : PK(lease_id) 하나뿐 — 2026-08-18 에 write_leases_active 인덱스를 없앴다
+//                  (`released_at` 이 늘 NULL 이라 고를 것이 없었고, 순수한 쓰기 비용이었다)
 //   rate_limits  : PK(bucket)
 //   books        : PK(user_id)
-const IDX = { write_leases: 2, rate_limits: 1, books: 1, sessions: 1, users: 1 };
+const IDX = { write_leases: 1, rate_limits: 1, books: 1, sessions: 1, users: 1 };
 const tableOf = (sql) => (/(?:INTO|UPDATE|FROM)\s+(\w+)/i.exec(sql) || [])[1] || "?";
 
 function counting(db) {
@@ -97,9 +100,11 @@ for (const r of [off, on]) {
 }
 console.log("");
 console.log("");
+console.log("  · 「ledger 행」은 실측(meta.changes)이고, 「행+인덱스」는 **스키마 기반 추정 상한**이다.");
 console.log("  · 주 D1 쪽 쓰기는 두 경우가 **같다** — 임차증은 ledger D1 에만 쓴다.");
 console.log("  · 「없음」은 ledger 바인딩 자체가 없어 **게이트 조회도 안 하는** 경우다.");
 console.log("    그래서 두 줄의 차이는 임차증 2문장 + 게이트 1문장을 합친 값이다.");
 console.log("  ⚠️ ms 는 in-memory sqlite 값이라 **D1 왕복 지연이 아니고, 회차 간 편차가 이 차이보다 크다.**");
 console.log("     판단에 쓸 수 있는 숫자는 **문장 수와 행+인덱스 항목 수**뿐이다.");
 console.log("     실제 지연과 meta.rows_written 은 원격 실측이 필요하고 **별도 승인 대상**이다.");
+console.log("     공식 문서는 인덱스 갱신도 rows_written 에 든다고 말한다 — 그래서 세지만, 값은 추정이다.");

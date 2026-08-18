@@ -1265,7 +1265,7 @@ Pages Functions 에서 그것을 쓸 수 있다는 공식 근거를 찾지 못�
 | 주기(안) | **1시간마다 1개**(`0 * * * *`). 5개 한도 중 1개만 쓴다 | 나머지 4개는 다른 용도로 남긴다 |
 | 배포 | Pages 프로젝트와 **별개**. 배포 승인도 별개 | |
 
-#### 무엇을 정리하나 (6가지)
+#### 무엇을 정리하나 (5가지 · C5 는 폐지)
 
 | # | 대상 | 조건 | ⚠️ 주의 |
 |---|---|---|---|
@@ -1273,7 +1273,7 @@ Pages Functions 에서 그것을 쓸 수 있다는 공식 근거를 찾지 못�
 | **C2** | confirmed 삭제 표식 | `confirmed_at IS NOT NULL AND expires_at < now` | 위 산식대로. **B1·B2 를 함께 지켜야 의미가 있다** |
 | **C3** | 만료·폐기 세션 | `expires_at < now OR revoked_at IS NOT NULL` | 지금 로그인 자리가 하는 것과 **같은 문장**. 옮기는 게 아니라 **더한다**(로그인 자리도 남긴다 — 둘 다 있어도 무해하다) |
 | **C4** | `rate_limits` | `expires_at < now` | 같음 |
-| **C5** | 만료 write lease | `expires_at < now AND released_at IS NOT NULL` | ⚠️ **released 되지 않은 lease 는 지우지 않는다** — 그것은 「진행 중이던 작업이 죽었다」는 신호이고, 지우면 그 사실이 사라진다. **경보 대상**(C6) |
+| ~~**C5**~~ | ~~만료 write lease~~ | — | ⛔ **2026-08-18 폐지.** 그때는 해제가 `released_at` 을 적는 UPDATE 라 「해제됐고 만료된」 행이 남았다. 결정 A′ 로 **해제가 행 삭제**가 되면서 표에 남은 행은 **전부** 「진행 중이거나 죽었다」가 됐다 — 지울 것이 하나도 없고, 시간으로 지우면 그 증거가 사라져 복원 금지가 저절로 풀린다 |
 | **C6** | **unresolved pending 경보** | `confirmed_at IS NULL AND pending_alert_at < now` | ⛔ **지우지 않는다. 세어서 알린다.** 아래 참조 |
 
 #### ⛔ pending 삭제 표식은 **시간만으로 지우지 않는다**
@@ -1824,7 +1824,24 @@ deletion lease 는 그중 **하나**(삭제 saga)만 추적한다. 나머지 10�
 복원 절차(§10-8)는 배포 세대 확인과 실제 찔러보기를 **계속 요구한다.** 두 대안은 배타적이지
 않고, 대안 1이 증거를 만들고 대안 2가 그 증거의 사각을 덮는다.
 
-#### 10-9-5. 설계 요구사항
+#### 10-9-5. 설계 요구사항 — **3판 당시의 안(역사 기록)**
+
+> ⚠️ **아래 SQL 과 Q1~Q12 는 「삭제 saga 에만 임차증을 붙이는」 3판 안이다.** 결정 A′(§10-9-8)와
+> 2026-08-18 의 정리 크론 수정으로 **여러 곳이 실제 코드와 다르다.** 남겨 두는 것은 그때 무엇을
+> 왜 골랐는지가 §10-8-0 의 근거이기 때문이고, **현재 규칙으로 읽으면 안 된다.**
+>
+> | 여기 적힌 것 | 현재 코드 |
+> |---|---|
+> | `mode IN ('open','closed')` | **3상태** `open`·`maintenance`·`restore_closed`(§10-7) |
+> | `released_at` 컬럼 + `write_leases_active` 인덱스 | **둘 다 없다.** 해제는 행 DELETE 이고(A′), 남은 행은 전부 「안 끝났다」 |
+> | Q1 `WHERE m.mode='open'` 고정 | 허용 모드를 **인자로 받는다** — `LEASE_MODES_REQUEST`(open·maintenance) / `LEASE_MODES_CLEANUP`(open) |
+> | Q2·Q5 의 `released_at IS NULL` | 조건 자체가 없다. `drainState()` 는 **만료로 거르지도 않는다**(만료 미해제 = `stale`) |
+> | Q5 의 `expires_at > ?` | **뺐다.** 만료를 자동 해제로 치면 「모르는 것」이 0으로 세어진다 |
+> | Q9 「해제는 `released_at` 을 적는다」 | **행을 지운다** |
+> | Q11 「다른 10개 경로에는 증거가 없다」 | 온라인 workload **전부**가 임차증을 든다(§10-9-6 A-1·A-2) |
+> | 「임차증은 삭제 saga 만 딴다」 | HTTP 요청 하나에 하나 · 정리 크론 실행 하나에 하나 |
+>
+> 현재 스키마의 원본은 `worker/ledger-schema.sql`, 현재 규칙의 원본은 §10-9-8 의 A′ 표다.
 
 ```sql
 -- ledger D1 (주 D1 아님)
@@ -1867,33 +1884,93 @@ CREATE INDEX write_leases_active ON write_leases(released_at, expires_at);
 > **어느 하나만으로 안전하다고 적지 않는다.** 그리고 **이 lease 로는 복원 안전성을 말할 수
 > 없다** — 이유는 바로 아래 §10-9-6 이다.
 
-#### 10-9-6. **deletion lease 가 포괄하지 못하는 쓰기 경로 전수** (3판 신설 · **2026-08-18 4단계 코드 기준으로 재확인**)
+#### 10-9-6. **주 D1 접근 경로 전수 분류** (3판 신설 · **2026-08-18 결정 A′ 와 정리 크론 반영으로 다시 씀**)
 
-`worker/index.js` 의 SQL 쓰기 문장을 전부 다시 세었다. **11개 경로**이고, deletion lease 는
-그중 **1개**만 추적한다. 4단계 구현으로 **1·2 의 내용이 바뀌었다** — `internalUid()` 는
-없어졌고(조회와 생성을 같이 해서 로그인만으로 계정이 생겼다), 그 자리에
-`createAccountWithPolicy()` 가 들어와 **한 batch 에서 세 표를 쓴다.**
+> **3판·4판에서 이 절의 제목은 「deletion lease 가 포괄하지 못하는 쓰기 경로 전수」였다.**
+> 그때는 임차증이 삭제 saga 하나에만 붙어 있어서, 아래 A-1 표의 ○ 가 **하나뿐**이라는 사실이
+> 곧 §10-8-0 의 근거였다. 결정 A′ 로 그 사실이 바뀌었다.
+>
+> ⚠️ **그런데 표를 `worker/index.js` 만 세는 채로 두었더니 「HTTP 11개 = 전체 workload」로
+> 읽혔다.** 실제로 그렇게 읽어서 **정리 크론이 분류 밖에 남았고**, 크론이 주 D1 을 지우는
+> 도중에 `drainState()` 가 `open:0 · drained:true` 를 답했다(2026-08-18 재현 · **T47b**).
+> 그래서 이 절은 **`worker/` 디렉터리 전체**를 세 부류로 나눈다. 새 Worker 가 생기면
+> 이 표에 행을 더한다 — `scripts/test-docs.mjs` 가 주 D1 을 만지는 파일이 여기 이름을
+> 올렸는지 대조한다(정규식이라 **완전한 증명은 아니다**. 빠뜨림을 줄이는 장치다).
 
-| # | 라우트 · 호출 경로 | 쓰는 테이블 | 유지보수 **진입** 차단 | **deletion lease 적용** | 이미 진입한 요청을 drain 할 수단 | 복원과 경쟁하면 |
+| 부류 | 무엇 | 임차증 | 무엇이 지켜주나 |
+|---|---|---|---|
+| **A. 온라인 workload** | 사람의 요청이나 cron 이 부르면 도는 것 — HTTP Worker(A-1) · Scheduled Cleanup(A-2) | **필수** | `acquireLease()` → 주 D1 첫 접근 **전** 획득 → 가장 바깥 `finally` 에서 DELETE 해제 |
+| **B. 복원·운영 명령** | `worker/ops.js`. **HTTP 라우트가 아니다** — 사람이 실행하고 사람이 판정한다 | **씌우지 않는다** | 함수 자체의 선행조건. 일반 요청 임차증을 무조건 씌우면 `restore_closed` 에서 복원 작업 자체가 자기 게이트에 막힌다 |
+| **C. 공개 상태 확인 예외** | `/health` · `/ready` · `/policies` (`LEASE_FREE`) | 없음 | 사용자 **행 내용을 응답하지 않는다**. 복원 중에도 답해야 하는 유일한 창구다 |
+
+##### A-1. HTTP Worker (`worker/index.js`) — 주 D1 쓰기 **11개**
+
+4단계 구현으로 **1·2 의 내용이 바뀌었다** — `internalUid()` 는 없어졌고(조회와 생성을 같이 해서
+로그인만으로 계정이 생겼다), 그 자리에 `createAccountWithPolicy()` 가 들어와 **한 batch 에서
+세 표를 쓴다.** 읽기 경로도 같은 임차증을 든다(아래 「읽기 전용」).
+
+| # | 라우트 · 호출 경로 | 쓰는 테이블 | 유지보수 **진입** 차단 | **요청 임차증(A′)** | 이미 진입한 요청을 drain 할 수단 | 복원과 경쟁하면 |
 |---|---|---|---|---|---|---|
-| 1 | `GET /api/cb/:provider` **가입 갈래** → `createAccountWithPolicy()` `:670` | **`users`** · `policy_events` · `consumed_signup_states` (한 batch) | ○(§10-7) | ✗ | **없다** | **외부 OAuth 응답을 기다리다가 복원 후에 계정을 만든다**(§10-9-1 의 위험 2). 복원본에는 없는 행이라 이후 상태가 갈린다 |
-| 2 | `GET /api/exchange/:provider` → 같음 · **로그인 갈래**는 `consumeSignupState()` `:697` | 위와 같음 · `consumed_signup_states` | ○ | ✗ | **없다** | 위와 같음. 소비 표식이 사라지면 **같은 state 가 다시 쓰일 수 있다** |
-| 3 | 1·2 → `newSession()` `:372` | `sessions` | ○ | ✗ | **없다** | 복원으로 사라진 세션 토큰을 사용자가 들고 있게 된다(로그인 상태가 깨진다) |
-| 4 | 1·2 → `newSession()` 의 청소 batch | `sessions`·`rate_limits` | ○ | ✗ | **없다** | 복원본의 행을 지운다 |
-| 5 | **모든 `limited()` 호출** `:482` | `rate_limits` | ○(검사가 `limited()` **앞**) | ✗ | **없다** | 한도 카운터가 뒤섞인다. 보안 영향은 낮으나 **쓰기는 쓰기다** |
-| 6 | **`GET /api/friends`** → `myCode()` `:780` | **`invite_codes`** | ○ | ✗ | **없다** | 복원 후 없는 코드가 링크로 돌아다닌다 |
-| 7 | `POST /api/friends/code` → `rotateCode()` `:790` | `invite_codes` | ○ | ✗ | **없다** | 위 + 폐기 행이 되살아난다 |
-| 8 | `PUT /api/book` `:1269` | `books` | ○ | ✗ | **없다** | **사용자 단어장이 소실되거나 옛 버전으로 되돌아간다** |
-| 9 | `POST /api/friends` `:1418` · `PUT /api/friends/:id` `:1484` · `DELETE /api/friends/:id` `:1507` | `friendships` | ○ | ✗ | **없다** | 관계가 한쪽만 남는다 |
-| 10 | `DELETE /api/session` → `killSessions()` `:411` | `users`(session_version)·`sessions` | ○ | ✗ | **없다** | 로그아웃이 무효가 된다 — **탈취된 세션이 되살아난다** |
-| 11 | **`DELETE /api/me`** → 삭제 saga `:1331` | `users`(+CASCADE) · ledger | ○ | **○ (유일)** | **있다**(§10-9 Q5) | §10-9-1 의 그 경로 |
+| 1 | `GET /api/cb/:provider` **가입 갈래** → `createAccountWithPolicy()` `:670` | **`users`** · `policy_events` · `consumed_signup_states` (한 batch) | ○(§10-7) | **○** | **있다** — `drainState()` | **외부 OAuth 응답을 기다리다가 복원 후에 계정을 만든다**(§10-9-1 의 위험 2). 복원본에는 없는 행이라 이후 상태가 갈린다 |
+| 2 | `GET /api/exchange/:provider` → 같음 · **로그인 갈래**는 `consumeSignupState()` `:697` | 위와 같음 · `consumed_signup_states` | ○ | **○** | **있다** — `drainState()` | 위와 같음. 소비 표식이 사라지면 **같은 state 가 다시 쓰일 수 있다** |
+| 3 | 1·2 → `newSession()` `:372` | `sessions` | ○ | **○** | **있다** — `drainState()` | 복원으로 사라진 세션 토큰을 사용자가 들고 있게 된다(로그인 상태가 깨진다) |
+| 4 | 1·2 → `newSession()` 의 청소 batch | `sessions`·`rate_limits` | ○ | **○** | **있다** — `drainState()` | 복원본의 행을 지운다 |
+| 5 | **모든 `limited()` 호출** `:482` | `rate_limits` | ○(검사가 `limited()` **앞**) | **○** | **있다** — `drainState()` | 한도 카운터가 뒤섞인다. 보안 영향은 낮으나 **쓰기는 쓰기다** |
+| 6 | **`GET /api/friends`** → `myCode()` `:780` | **`invite_codes`** | ○ | **○** | **있다** — `drainState()` | 복원 후 없는 코드가 링크로 돌아다닌다 |
+| 7 | `POST /api/friends/code` → `rotateCode()` `:790` | `invite_codes` | ○ | **○** | **있다** — `drainState()` | 위 + 폐기 행이 되살아난다 |
+| 8 | `PUT /api/book` `:1269` | `books` | ○ | **○** | **있다** — `drainState()` | **사용자 단어장이 소실되거나 옛 버전으로 되돌아간다** |
+| 9 | `POST /api/friends` `:1418` · `PUT /api/friends/:id` `:1484` · `DELETE /api/friends/:id` `:1507` | `friendships` | ○ | **○** | **있다** — `drainState()` | 관계가 한쪽만 남는다 |
+| 10 | `DELETE /api/session` → `killSessions()` `:411` | `users`(session_version)·`sessions` | ○ | **○** | **있다** — `drainState()` | 로그아웃이 무효가 된다 — **탈취된 세션이 되살아난다** |
+| 11 | **`DELETE /api/me`** → 삭제 saga `:1331` | `users`(+CASCADE) · ledger | ○ | **○** | **있다** — `drainState()` + saga fencing(§10-9 Q5) | §10-9-1 의 그 경로 |
 
-**읽기 전용**: `GET /api/health` · `/api/ready` · `/api/policies` · `/api/book` · `/api/me` ·
-`/api/friends/:id/book` · `GET /api/login/:provider`(302 와 서명뿐).
+**읽기 전용**: `/api/book` · `/api/me` · `/api/friends/:id/book` ·
+`GET /api/login/:provider`(302 와 서명뿐) — **전부 임차증을 든다**(T6b). 5판이 잡은 것이
+이것이다: 4판 설계는 「DB 를 안 쓴다」는 이유로 읽기를 놓아 주었고, 그러면 복원으로 되살아난
+탈퇴자의 단어장이 그대로 읽힌다(위협 36).
+**임차증 없는 것은 `/api/health` · `/api/ready` · `/api/policies` 셋뿐이다**(아래 C).
 
-> 표의 「deletion lease 적용」 열에 **○ 가 하나뿐**이라는 것이 §10-8-0 의 근거 전부다.
-> 10개 경로에 대해 우리가 가진 것은 **진입 차단**이고, 복원이 필요로 하는 것은 **완료 확인**이다.
-> 둘은 다른 말이다.
+##### A-2. Scheduled Cleanup (`worker/cleanup/index.js`) — 주 D1 쓰기 **3개**
+
+**별도 배포 Worker 이고 cron 으로만 돈다.** HTTP 핸들러가 없다고 해서 분류에서 빠지지 않는다 —
+지우는 대상이 사용자 데이터이기 때문이다.
+
+| # | 작업 | 만지는 테이블 | 유지보수 **진입** 차단 | **임차증** | 복원과 경쟁하면 |
+|---|---|---|---|---|---|
+| C1 | 만료된 소비 표식 정리 | **주 D1** `consumed_signup_states` | ○ — 획득 실패면 그 자리에서 끝 | **○** | 만료 전 표식이 사라지면 **replay 창이 다시 열린다** |
+| C3 | 만료·폐기 세션 정리 | **주 D1** `sessions` | ○ | **○** | 복원본의 세션 행을 지운다 — 로그인 상태가 깨진다 |
+| C4 | 만료 리미터 행 정리 | **주 D1** `rate_limits` | ○ | **○** | 한도 카운터가 뒤섞인다 |
+| C2 | 확정된 표식 정리 | ledger `deletions` | ○ | **○** | 표식이 사라지면 재삭제 대상을 못 고른다 |
+| — | 실행 기록 | ledger `cleanup_runs` | — | — | 운영 기록. 사용자 데이터가 아니다 |
+
+> 임차증은 **실행 하나에 하나**다(문장마다가 아니다). 획득은 `LEASE_MODES_CLEANUP = ['open']`
+> 한 문장이고, 실패하면 **주 D1 을 한 줄도 읽지 않고** 끝난다. 이미 시작한 실행은 중간에
+> 끊지 않는다 — HTTP 요청과 같다. 대신 **끝날 때까지 `drained` 가 참이 되지 않는다.**
+>
+> ⚠️ `LEASE_MODES_REQUEST` 는 `open`·`maintenance` 인데 크론은 `open` 만이다. `maintenance` 는
+> **읽기를 허용하는 상태**라 요청은 계속 추적돼야 하지만(안 그러면 허용된 읽기가 추적 밖에서
+> 돈다), 크론은 급하지 않아 **다음 시간에 돌면 된다.** 두 상수를 바꿔 넘기면 T47d 가 잡는다.
+>
+> ⛔ **`write_leases` 를 지우는 정리 대상은 없다.** 해제가 행 삭제라 표에 남은 행은 전부
+> 「아직 안 끝났다」의 증거이고, 시간으로 지우면 그 증거가 사라져 복원 금지가 저절로 풀린다.
+
+##### B. 복원·운영 명령 (`worker/ops.js`) — 주 D1 읽기 **4곳**
+
+**요청 임차증을 씌우지 않는다.** 이 명령들은 `restore_closed` 이후에 운영자가 **의도적으로**
+실행하는 것이라, 요청과 같은 규칙을 씌우면 복원 작업이 자기 게이트에 막힌다. 대신 각 함수가
+**선행조건을 스스로 검사**하고, 미달이면 `ok:false` 를 돌려준다(강제 진행 플래그가 없다).
+
+| 함수 | 주 D1 접근 | 선행조건 |
+|---|---|---|
+| `reconcile()` | `SELECT id FROM users` 페이지 스캔 | `mode ≠ open` **그리고** 활성 임차증 0건. 승격만 하고 **지우지 않는다**(§10-4) |
+| `removeStalePending()` | `SELECT id FROM users` | 위 둘 **+ 운영자 판정(`confirmedByOperator`) + 계정 존재 재확인 수단**. 다섯 조건 전부 |
+| `reopenReport()` | `sessions`·`books`·`invite_codes`·`friendships`·`users` **COUNT** | 읽기 전용. 재개 가능 판정을 위한 잔여 검사(§10-8 9~11번) |
+| `scanUserMarks()` | `SELECT id FROM users` 페이지 스캔 | 복원 **후** 재삭제 대상 산출. `restoreTargets()` 는 순수 함수다 |
+
+##### C. 공개 상태 확인 예외 (`LEASE_FREE`)
+
+`/health`(DB 를 아예 안 본다) · `/ready`(`COUNT(*)` 집계만. **행 내용을 읽지 않는다**) ·
+`/policies`(빌드에 박은 상수). 여기서 임차증을 따면 `restore_closed` 에서 획득이 거부돼
+**운영자가 상태를 볼 수단이 사라진다.**
 
 #### 10-9-7. **3단계에서 확정하는 범위 결정 8건**
 
@@ -1935,10 +2012,12 @@ D안(문장 안의 게이트)을 함께 제시했으나 **단독 채택하지 �
 
 | 규정 | 어디에 |
 |---|---|
-| 사용자 데이터를 읽거나 쓰는 **HTTP 요청 하나에 임차증 하나.** SQL 문장마다가 아니다 | `export default.fetch` |
+| 주 D1 의 사용자 데이터를 읽거나 쓰는 **작업 하나에 임차증 하나.** SQL 문장마다가 아니다 | HTTP: `export default.fetch` · 크론: `runCleanup()` |
 | **세션 인증을 포함해** 주 D1 사용자 데이터에 처음 닿기 전에 획득 | 게이트 검사 **직후**, `whoAmI` **앞** |
 | 모든 DB 작업이 끝난 뒤 **가장 바깥 `finally`** 에서 해제 | 같은 곳. 라우트 안의 `return` 수십 개를 믿지 않는다 |
-| `restore_closed` 전환 이후 신규 획득을 **원자적으로** 거부 | `acquireLease()` 의 `WHERE m.mode <> 'restore_closed'` |
+| **「작업」에는 Scheduled Cleanup 이 포함된다**(2026-08-18 추가) | `worker/cleanup/index.js` 의 `runCleanup()` — 획득 실패면 주 D1 을 **한 줄도** 안 읽고 끝낸다 |
+| 허용 모드를 **호출부가 인자로 말한다.** 요청과 크론은 같은 규칙이 아니다 | `LEASE_MODES_REQUEST`(open·maintenance) / `LEASE_MODES_CLEANUP`(open). 값은 신뢰된 상수만, SQL 에는 placeholder 로만 들어간다 |
+| `restore_closed` 전환 이후 신규 획득을 **원자적으로** 거부 | `acquireLease()` — 어느 목록에도 `restore_closed` 가 없다 |
 | 활성 임차증이 0이 아니면 drain·restore **거부** | `drainReport()` → `RESTORE_STATE.noActiveLeases` → `beginRestore()` |
 | **TTL 만료를 자동 해제로 치지 않는다.** 미해제는 `stale` 로 세고 복원을 계속 차단 | `drainState()` — `expires_at` 으로 거르지 않는다 |
 | 제외 목록: `/health` · `/ready` · `/policies` | `LEASE_FREE`. 근거는 그 상수의 주석(사용자 데이터 미접근 · 복원 중에도 답해야 함 · 읽기 전용) |
@@ -1946,23 +2025,40 @@ D안(문장 안의 게이트)을 함께 제시했으나 **단독 채택하지 �
 **해제는 행을 지운다**(UPDATE 가 아니다). 요청마다 행이 쌓이면 정리 크론(시간당 200행)보다
 빨리 자라기 때문이다. 미해제 행은 **지우지 않는다** — 그것이 `stale` 의 유일한 증거다.
 
-**실측 비용** (`node scripts/measure-lease-cost.mjs`, `PUT /book` 200회)
+**비용** (`node scripts/measure-lease-cost.mjs`, `PUT /book` 200회) — **세 숫자를 구분한다.**
 
-| | ledger 문장/요청 | ledger 행/요청 | 행+인덱스 항목(상한) |
+| | ① SQL 문장/작업 | ② 기본 행 변경/작업 | ③ 인덱스 포함 **추정** |
 |---|---|---|---|
 | 임차증 없음 | 0 | 0 | 0 |
-| **A′** | **2** | **2** | **6** |
+| **A′** | **2**(획득·해제) | **2** | **4** |
+
+| 숫자 | 어떻게 나왔나 | 무엇이 아닌가 |
+|---|---|---|
+| ① 문장 수 | 셰임이 **실제로 센다** | — |
+| ② 기본 행 변경 | 셰임이 `meta.changes` 로 **실제로 센다** — INSERT 1행 · DELETE 1행 | D1 의 회계 단위가 아니다 |
+| ③ 인덱스 포함 | **현재 스키마에서 계산한 추정치.** `write_leases` 의 인덱스는 `lease_id` PK 하나뿐이라 문장당 +1 | ⛔ **실측이 아니다** |
+
+> **Cloudflare 공식 문서는 인덱스 갱신이 추가 `rows_written` 으로 계산된다고 명시한다**
+> (D1 pricing — `developers.cloudflare.com/d1/platform/pricing/`, 2026-08-18 확인).
+> 그래서 ③을 세는 것 자체는 맞다. 다만 **행 수를 세는 방식이 우리 계산과 같은지는 확인하지
+> 않았다** — 확정 숫자는 원격에서 `meta.rows_written` 을 받아야 나오고, 원격 작업은 별도 승인
+> 대상이다. 실제 지연시간도 마찬가지다(셰임은 in-memory sqlite 라 D1 왕복이 없다).
+>
+> 2026-08-18 에 `write_leases_active(released_at, expires_at)` 인덱스를 **없앴다.** 해제가 행
+> 삭제라 `released_at` 이 항상 NULL 이었고, 조회는 `COUNT(*)` 와 PK 조회뿐이라 인덱스가 고를
+> 것이 없었다. 순수한 쓰기 비용이었고 ③이 6 에서 4 로 내려갔다.
 
 주 D1 쪽 쓰기는 늘지 않는다(임차증은 ledger D1 에만 쓴다).
 
-⚠️ **이 표는 셰임(in-memory sqlite) 값이다.** D1 이 돌려주는 **`meta.rows_written` 실측값과
-실제 지연시간은 여기 없다** — 원격 실측이 필요하고 그것은 별도 승인 대상이다. 공식 문서도
-`rows_written` 에 인덱스 쓰기가 포함되는지 말하지 않는다(2026-08-18 확인).
+⚠️ **규모 한계 — 상한을 보수적으로 잡는다.** D1 무료 한도는 하루 10만 행 쓰기다.
+**기본 행(②) 기준이면 하루 5만 작업, 인덱스 포함 추정(③) 기준이면 하루 2만 5천 작업**에서
+임차증만으로 한도를 태운다. **어느 쪽도 확정 사실이 아니다** — 실측 전에는 **더 보수적인 쪽
+(2만 5천)** 을 기준으로 본다. 지금은 사용자 0명이라 여유가 있지만 **일 활성 수백 명 규모에서
+다시 계산해야 한다** — 그때의 선택지는 유료 플랜 또는 제외 목록 재검토다.
+숫자를 재지 않고 「괜찮다」고 적지 않는다.
 
-⚠️ **규모 한계.** D1 무료 한도는 하루 10만 행 쓰기다. 요청당 +2 이므로 **하루 사용자 데이터
-요청이 5만 건에 가까워지면 임차증만으로 한도를 태운다.** 지금은 사용자 0명이라 여유가 있지만,
-**일 활성 수백 명 규모에서 다시 계산해야 한다** — 그때의 선택지는 유료 플랜 또는 제외 목록
-재검토다. 숫자를 재지 않고 「괜찮다」고 적지 않는다.
+⚠️ 여기에는 **정리 크론의 임차증 2문장**이 안 들어 있다. 크론은 시간당 1회라 하루 24회 ×
+2문장이고, 위 상한에 견주면 무시할 수 있다.
 
 **D안은 폐기가 아니라 보류다.** 필요하면 A′ **위의 보조 방어**로 다시 검토한다.
 **D안을 근거로 복원 금지를 해제하지 않는다.**

@@ -49,34 +49,54 @@ export async function readMode(env) {
   return { mode: r.mode, epoch: r.epoch, bound: true };
 }
 
-// ── 요청 임차증(lease) ───────────────────────────────────────────────────
-// **요청 하나에 임차증 하나다**(2026-08-18 결정 A′). SQL 문장마다가 아니다 —
-// 문장 단위로 따면 한 요청이 여러 개를 들고, 그중 하나만 해제돼도 drain 이 거짓으로 0 이 된다.
+// ── 작업 임차증(lease) ───────────────────────────────────────────────────
+// **주 D1 의 사용자 데이터를 만지는 작업 하나에 임차증 하나다**(2026-08-18 결정 A′).
+// SQL 문장마다가 아니다 — 문장 단위로 따면 한 작업이 여러 개를 들고, 그중 하나만 해제돼도
+// drain 이 거짓으로 0 이 된다.
+//
+// **「작업」은 HTTP 요청만이 아니다.** 2026-08-18 재현: 정리 크론(`worker/cleanup/`)이
+// `mode='open'` 을 읽은 뒤 임차증 없이 주 D1 을 지웠고, 그 사이에 `restore_closed` 로 전환하면
+// `drainState()` 가 **`open:0 · drained:true`** 라고 답했다 — 크론이 아직 지우는 중인데
+// 운영자는 「모두 멈췄다」로 읽는다. 그래서 크론도 같은 임차증을 든다.
+//
+// **허용 모드는 호출부가 인자로 말한다.** 예전에는 `mode <> 'restore_closed'` 가 여기 박혀
+// 있었고, 그래서 「HTTP 요청의 규칙」이 곧 「모든 작업의 규칙」이 됐다 — 정리 크론이 이 함수를
+// 쓰기 시작하면 유지보수 중에도 지우게 된다. 둘은 다른 규칙이므로 이름을 갈라 둔다.
+//
+//   REQUEST  `maintenance` 는 읽기를 허용하는 상태다(§10-7). 거기서 임차증을 거부하면 허용된
+//            읽기가 추적 밖에서 돌게 되어 **재려던 것을 못 잰다.** 쓰기는 라우트 허용 목록이 막는다
+//   CLEANUP  크론은 급하지 않다. 유지보수 중에는 **아예 시작하지 않는다** — 다음 시간에 돌면 된다
+//
+// ⚠️ 어느 목록에도 `restore_closed` 는 없다. 그 상태에서 신규 획득을 **원자적으로** 거부해야
+//    활성 수가 0 으로 내려간다.
+export const LEASE_MODES_REQUEST = ["open", "maintenance"];
+export const LEASE_MODES_CLEANUP = ["open"];
+const LEASABLE_MODES = new Set([...LEASE_MODES_REQUEST, ...LEASE_MODES_CLEANUP]);
+
+// 게이트 확인과 INSERT 가 **한 문장**이다. 읽고 나서 쓰면 전환 직후의 작업이 창을 빠져나간다.
+// 행이 안 생기면 = 지금 이 모드에서는 새 작업을 받지 않는다.
 //
 // 언제 딴다: **주 D1 의 사용자 데이터에 처음 닿기 전.** 세션 인증(`sessions`·`users` 조회)도
 // 그 안에 든다 — 인증이 먼저 지나가면 그 조회는 추적 밖에서 일어난다.
-// 언제 푼다: 그 요청의 **모든 DB 작업이 끝난 뒤**, 가장 바깥 `finally` 에서.
-//
-// **한 문장으로 딴다.** 읽고 나서 쓰면 전환 직후의 요청이 창을 빠져나간다.
-// 행이 안 생기면 = 지금은 새 요청을 받지 않는다.
-//
-// ⚠️ 조건이 `mode = 'open'` 이 아니라 **`mode <> 'restore_closed'`** 인 이유:
-//    `maintenance` 는 읽기를 허용하는 상태다(§10-7). 거기서 임차증을 거부하면 허용된 읽기가
-//    추적 밖에서 돌게 되어 **재려던 것을 못 잰다.** 쓰기는 라우트 허용 목록이 이미 막는다.
-//    `restore_closed` 에서만 신규 획득을 **원자적으로** 거부한다 — 그래야 활성 수가 0 으로 내려간다.
-export async function acquireLease(env, now = Date.now()) {
+// 언제 푼다: 그 작업의 **모든 DB 작업이 끝난 뒤**, 가장 바깥 `finally` 에서.
+export async function acquireLease(env, modes = LEASE_MODES_REQUEST, now = Date.now()) {
+  // ⚠️ 모드 문자열은 **신뢰된 상수만** 통과한다. 통과한 뒤에도 SQL 에 보간하지 않고
+  //    placeholder 로만 넣는다 — 검증과 파라미터화 중 하나만 믿지 않는다.
+  if (!Array.isArray(modes) || !modes.length) throw new Error("lease modes missing");
+  for (const m of modes) if (!LEASABLE_MODES.has(m)) throw new Error("unknown lease mode");
   const id = crypto.randomUUID();
+  const marks = modes.map((_, i) => `?${i + 4}`).join(",");
   const r = await env.LEDGER.prepare(
     `INSERT INTO write_leases (lease_id, epoch, started_at, expires_at)
-     SELECT ?1, m.epoch, ?2, ?3 FROM maintenance m WHERE m.mode <> 'restore_closed'`)
-    .bind(id, now, now + LEASE_TTL).run();
+     SELECT ?1, m.epoch, ?2, ?3 FROM maintenance m WHERE m.mode IN (${marks})`)
+    .bind(id, now, now + LEASE_TTL, ...modes).run();
   return r.meta && r.meta.changes ? id : null;
 }
 
 // fencing. 이 조각을 **모든 ledger 쓰기의 WHERE 에** 붙인다 — 유지보수로 전환된 뒤에도
 // 살아 있던 요청이 계속 쓰는 것을 막는다. 옛 epoch 의 lease 도 여기서 걸린다.
 const FENCE = `EXISTS (SELECT 1 FROM write_leases l JOIN maintenance m ON m.id = 1
-                        WHERE l.lease_id = ?LEASE AND l.released_at IS NULL
+                        WHERE l.lease_id = ?LEASE
                           AND l.expires_at > ?NOW AND l.epoch = m.epoch)`;
 const fenced = (sql) => sql.replace(/\?LEASE/g, "?").replace(/\?NOW/g, "?");
 
@@ -88,12 +108,12 @@ export async function leaseAlive(env, lease, now = Date.now()) {
 // 해제는 **행을 지운다.** UPDATE 로 표시만 남기지 않는 이유가 셋이다.
 //   ① 요청마다 행이 하나씩 쌓이는데, 정리 크론은 한 시간에 200행씩만 지운다 —
 //      요청이 시간당 200건을 넘으면 **표가 영원히 자란다**(A′ 로 바뀌면서 생긴 실제 위험이다).
-//   ② 남겨서 읽는 곳이 없다. `drainState`·`FENCE` 는 **미해제 행만** 본다.
+//   ② 남겨서 읽는 곳이 없다. `drainState`·`FENCE` 는 **남아 있는 행만** 본다.
 //   ③ 끝난 요청의 기록을 안 남기는 쪽이 개인정보 면에서도 낫다(요청 시각의 나열이 된다).
 // ⚠️ **미해제 행은 여전히 안 지운다** — 그게 「끝났는지 모른다」의 유일한 증거다(stale).
+//    그래서 이 표에 **남아 있다 = 아직 안 끝났다**이고, `released_at` 컬럼은 없다(2026-08-18).
 export async function releaseLease(env, lease) {
-  await env.LEDGER.prepare("DELETE FROM write_leases WHERE lease_id = ? AND released_at IS NULL")
-    .bind(lease).run();
+  await env.LEDGER.prepare("DELETE FROM write_leases WHERE lease_id = ?").bind(lease).run();
 }
 
 // drain 상태. **이것이 「모든 사용자 데이터 요청이 끝났나」의 유일한 답이다.**
@@ -106,7 +126,7 @@ export async function drainState(env, now = Date.now()) {
   const r = await env.LEDGER.prepare(
     `SELECT COUNT(*) AS open,
             COALESCE(SUM(CASE WHEN expires_at <= ? THEN 1 ELSE 0 END), 0) AS stale
-       FROM write_leases WHERE released_at IS NULL`).bind(now).first();
+       FROM write_leases`).bind(now).first();
   const open = Number(r && r.open) || 0, stale = Number(r && r.stale) || 0;
   //  live  아직 살아 있는 요청       stale  만료됐는데 해제되지 않은 것(= 죽은 요청일 수도 있다)
   //  drained  **둘 다 0** 일 때만 참이다
@@ -179,7 +199,7 @@ export async function ledgerAnswers(env) {
   try {
     const r = await env.LEDGER.prepare(
       `SELECT (SELECT COUNT(*) FROM deletions WHERE key_version IS NOT NULL)
-            + (SELECT COUNT(*) FROM write_leases WHERE released_at IS NULL)
+            + (SELECT COUNT(*) FROM write_leases WHERE expires_at IS NOT NULL)
             + (SELECT COUNT(*) FROM cleanup_runs WHERE id = 1)
             + (SELECT COUNT(*) FROM maintenance WHERE mode IS NOT NULL) AS n`).first();
     return typeof r?.n === "number";

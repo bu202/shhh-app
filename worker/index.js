@@ -28,7 +28,7 @@
 import { POLICY_BUNDLE } from "./policies.js";
 import {
   deletionMark, DELETION_KEY_VERSION, readMode, ledgerAnswers, drainState,
-  acquireLease, leaseAlive, releaseLease,
+  acquireLease, leaseAlive, releaseLease, LEASE_MODES_REQUEST,
   markPending, markConfirmed, sweepConfirmed, cleanupState,
 } from "./ledger.js";
 
@@ -915,7 +915,7 @@ export default {
     let lease = null;
     if (env.LEDGER && !LEASE_FREE.some((re) => re.test(path))) {
       try {
-        lease = await acquireLease(env);
+        lease = await acquireLease(env, LEASE_MODES_REQUEST);
       } catch {
         return json(env, req, { error: "잠시 점검 중이에요", mode: "unknown" }, 503,
           { "Retry-After": "60" });

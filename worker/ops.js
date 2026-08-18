@@ -21,9 +21,13 @@ export async function setMode(env, mode, now = Date.now()) {
 }
 
 // ── drain 확인 ───────────────────────────────────────────────────────────
-// ⚠️ **이것은 삭제 saga 의 drain 이다.** 「모든 쓰기가 멈췄다」가 아니다.
-//    주 D1 에 쓰는 경로는 11개이고 lease 가 추적하는 것은 그중 하나다.
-//    `drained_at` 을 적는다고 주 D1 복원이 허용되지 않는다 — restoreGate() 를 보라.
+// **온라인 workload 전체의 drain 이다**(2026-08-18 결정 A′ · 크론 편입). 임차증을 드는 것은
+// `worker/index.js` 의 HTTP 요청 하나하나와 `worker/cleanup/` 의 정리 크론 실행이다.
+// 분류표는 설계서 §10-9-6 이고, 거기 없는 것은 **B(운영 명령)** 와 **C(공개 상태 확인)** 뿐이다.
+//
+// ⚠️ **옛 주석은 「이것은 삭제 saga 의 drain 이다」였다.** 그때는 그게 사실이었고, 그 값을
+//    「모든 쓰기가 멈췄다」로 읽은 것이 위협 32 였다. 지금은 범위가 넓어졌지만 **결론은 같다** —
+//    `drained_at` 을 적는다고 주 D1 복원이 허용되지 않는다. restoreGate() 를 보라.
 export async function markDrained(env, now = Date.now()) {
   const n = await activeLeases(env, now);
   if (n !== 0) return { drained: false, activeLeases: n };
@@ -113,10 +117,14 @@ export async function removeStalePending(env, marks, { mark, now = Date.now(), c
 // ── 주 D1 복원 금지 gate ─────────────────────────────────────────────────
 // **문서가 아니라 실행되는 검사다.** 사람이 기억해야 도는 규칙은 언젠가 잊힌다.
 //
-// 8개 조건이 전부 참일 때만 복원 절차의 1번을 시작할 수 있다. **부분 충족은 충족이 아니다.**
-// 지금은 ①(전역 user-data drain)이 없으므로 **언제나 거부**다. 그것이 맞는 상태다.
+// **아래 9개 조건이 전부 참일 때만** 복원 절차의 1번을 시작할 수 있다. **부분 충족은 충족이
+// 아니다.** 개수를 여기 손으로 적지 않는다 — 판정은 언제나 `RESTORE_CONDITIONS` 전수다.
+//
+// 전역 user-data drain 은 2026-08-18 에 구현됐다(A′ · 정리 크론 포함). 그래도 지금은
+// **여전히 거부**다 — `noActiveLeases`(질의해야 안다) · `oldDeployments` · `regressionTests`
+// 셋이 미충족이기 때문이다. 그것이 맞는 상태다.
 export const RESTORE_CONDITIONS = [
-  ["globalDrain", "§10-9-6 의 11개 쓰기 경로를 포괄하는 전역 drain 이 구현됐다"],
+  ["globalDrain", "§10-9-6 의 온라인 workload 전부(HTTP 요청 · 정리 크론)를 포괄하는 전역 drain 이 구현됐다"],
   ["drainQueryable", "그 drain 이 질의 가능한 0/비0 값을 낸다"],
   ["restoreClosed", "restore_closed 상태가 구현됐다 — 읽기·세션 인증까지 막는다"],
   ["userDataDrain", "사용자 데이터 read/write 전체의 in-flight drain 이 0임을 질의할 수 있다"],
@@ -131,12 +139,15 @@ export const RESTORE_CONDITIONS = [
 
 // 지금 참인 것만 적는다. **참이 아닌 것을 참으로 적지 않는다.**
 export const RESTORE_STATE = {
-  // ✅ 2026-08-18 결정 A′ 로 구현됐다 — 사용자 데이터를 만지는 **HTTP 요청 하나에 임차증 하나**.
-  //    세션 인증 전에 따고 가장 바깥 finally 에서 푼다(worker/index.js).
-  globalDrain: true,
+  // ✅ 2026-08-18 결정 A′ — 주 D1 사용자 데이터를 만지는 **작업 하나에 임차증 하나**.
+  //    주 D1 첫 접근 전에 따고 가장 바깥 finally 에서 푼다.
+  //    ⚠️ **처음에는 HTTP 요청만 셌고, 그건 참이 아니었다** — 정리 크론이 게이트만 읽고
+  //       임차증 없이 주 D1 을 지워서, 지우는 도중에 drained:true 가 나왔다(재현 · T47b).
+  //       크론을 같은 임차증에 넣은 뒤에만 이 두 줄이 참이다.
+  globalDrain: true,       // worker/index.js(HTTP) + worker/cleanup/(cron) 전부
   drainQueryable: true,    // drainState() 가 {open, stale, live, drained} 를 답한다
   restoreClosed: true,     // worker/index.js 의 maintenanceAllows()
-  userDataDrain: true,     // 읽기 경로도 같은 임차증을 든다(T6b)
+  userDataDrain: true,     // 읽기 경로도 같은 임차증을 든다(T6b) · 크론의 주 D1 접근도(T47b)
   // ⛔ **기본값이 false 다. 질의 없이는 절대 참이 아니다.**
   noActiveLeases: false,
   reopenChecks: true,      // 아래 reopenReport()

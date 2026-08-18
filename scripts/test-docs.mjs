@@ -348,6 +348,42 @@ ok(`원격 반영 과장 ${REMOTE_CLAIMS.length}종 — 0건`);
 }
 ok("복원 금지 gate — 손으로 연 자리 0건 · 임차증 해제는 DELETE");
 
+// ── 11e. 주 D1 을 만지는 파일이 분류표에 다 올라와 있나 ───────────────────
+// 재현(2026-08-18): §10-9-6 이 `worker/index.js` 의 쓰기 11개만 세고 있었고, 그래서
+// **정리 크론이 분류 밖에 남았다.** 크론은 게이트만 읽고 임차증 없이 주 D1 을 지웠고,
+// 지우는 도중에 `drainState()` 가 `drained:true` 를 답했다(T47b).
+//
+// ⚠️ **이 검사는 완전한 증명이 아니다.** 정규식이 세는 것은 「파일 이름이 그 절에 적혔나」뿐이고,
+//    적어 놓고 임차증을 안 거는 것은 못 잡는다(그건 T47b·T47d 가 런타임으로 잡는다).
+//    빠뜨림을 줄이는 장치이지, 안전의 근거가 아니다.
+{
+  const { readdirSync } = await import("node:fs");
+  const files = [];
+  for (const d of ["worker", "worker/cleanup"]) {
+    for (const f of readdirSync(new URL("../" + d, import.meta.url)))
+      if (f.endsWith(".js")) files.push(`${d}/${f}`);
+  }
+  const section = (R(STAGE3).split("#### 10-9-6.")[1] || "").split("#### 10-9-7.")[0];
+  if (!section) bad(`${STAGE3} 에 §10-9-6 분류표가 없다`);
+  const touching = files.filter((f) => /env\.DB|["']DB["']/.test(R(f)));
+  for (const f of touching) {
+    if (!section.includes(f)) {
+      bad(`§10-9-6 분류표에 ${f} 가 없다 — 주 D1 을 만지는데 어느 부류인지 아무도 안 적었다`);
+    }
+  }
+  if (touching.length < 3) bad(`주 D1 접근 파일을 ${touching.length}개만 찾았다 — 검색이 틀렸다`);
+  // 낡은 현재형: 임차증이 삭제 saga 전용이라는 말은 이제 거짓이다.
+  for (const [f, re, why] of [
+    ["worker/ledger-schema.sql", /지금은 \*\*삭제 saga 만\*\* 딴다/, "임차증은 HTTP 요청과 정리 크론이 모두 딴다"],
+    ["worker/ops.js", /^\/\/ 8개 조건이/m, "조건은 9개이고, 개수를 손으로 적으면 또 낡는다"],
+    // ⚠️ 단정형만 잡는다 — "옛 주석은 「…」였다" 같은 **역사 서술은 통과**시킨다. 기록은 지우면 안 된다.
+    ["worker/ops.js", /이것은 삭제 saga 의 drain 이다\.\*\*/, "온라인 workload 전체의 drain 이다"],
+  ]) {
+    if (re.test(R(f))) bad(`${f} 가 낡은 현재형을 말한다 — ${why}`);
+  }
+}
+ok(`주 D1 접근 파일이 §10-9-6 분류표에 전부 등재 · 임차증 범위 낡은 문구 0건`);
+
 // ── 12. 법률 자료가 현재 운영 사실을 담고 있나 ────────────────────────────
 // 외부 검토자에게 나가는 자료다. 낡은 사실이 남으면 검토 전제가 틀어진다.
 const PACKET_FACTS = [
@@ -376,5 +412,5 @@ ok("인수인계 기준일 · 배포 시점 · 정리 수단 표현이 현재 �
 
 console.log(fails
   ? `test-docs: 실패 ${fails}건`
-  : "test-docs: 통과 — 낡은 문구 · 죽은 § 참조 · 번호 연속성 · 선언된 개수 · 판 번호 · 필수 절 · 완료 범위 · 보유기간 단정 · 스위트 수 · 낡은 운영 상태 · 단계 상태 일치 · 법률 자료 현재 사실 · 인수인계 현재성");
+  : "test-docs: 통과 — 낡은 문구 · 죽은 § 참조 · 번호 연속성 · 선언된 개수 · 판 번호 · 필수 절 · 완료 범위 · 보유기간 단정 · 스위트 수 · 낡은 운영 상태 · 단계 상태 일치 · 주 D1 접근 분류 등재 · 법률 자료 현재 사실 · 인수인계 현재성");
 process.exit(fails ? 1 : 0);

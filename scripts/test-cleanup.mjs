@@ -6,7 +6,9 @@
 // 설계서 §13-5 의 T44~T47 을 구현한다.
 import assert from "node:assert";
 import { runCleanup } from "../worker/cleanup/index.js";
-import { DELETIONS_SWEEP_SQL } from "../worker/ledger.js";
+import { DELETIONS_SWEEP_SQL, drainState, acquireLease, releaseLease,
+         LEASE_MODES_REQUEST, LEASE_MODES_CLEANUP } from "../worker/ledger.js";
+import { setMode, drainReport, restoreGate, beginRestore, RESTORE_STATE } from "../worker/ops.js";
 import { makeD1, makeLedger } from "./_d1.mjs";
 
 let n = 0;
@@ -24,8 +26,8 @@ function seed(env, now) {
   del("conf-old", now - 10, now - 1);            // 확정 · 만료 → 지운다
   del("conf-new", now - 10, now + 60e3);         // 확정 · 아직 → 남긴다
   del("pend-old", "NULL", now - 1);              // ⛔ 확정 안 됨 · 만료 → **남긴다**
-  L.exec(`INSERT INTO write_leases VALUES ('lease-done',1,1,${now - 1},${now - 1})`);   // 해제됨·만료 → 지운다
-  L.exec(`INSERT INTO write_leases VALUES ('lease-stuck',1,1,${now - 1},NULL)`);        // ⛔ 안 풀림 → **남긴다**
+  // ⛔ 해제되지 않은 임차증. 만료됐어도 **남긴다** — 자동으로 지우는 경로가 없어야 한다.
+  L.exec(`INSERT INTO write_leases VALUES ('lease-stuck',1,1,${now - 1})`);
   D.exec(`INSERT INTO consumed_signup_states VALUES ('css-old',1,${now - 1})`);
   D.exec(`INSERT INTO consumed_signup_states VALUES ('css-new',1,${now + 60e3})`);
   D.exec("INSERT INTO users (id,provider,provider_subject,session_version,created_at) VALUES ('u1','k','1',0,0)");
@@ -62,10 +64,12 @@ function seed(env, now) {
   assert.ok(src.includes("DELETIONS_SWEEP_SQL"), t("T44: cleanup 이 그 상수를 쓰지 않는다"));
 
   // ⛔ 안 풀린 lease 는 남긴다 — 「진행 중이던 작업이 죽었다」는 신호이고, 지우면 그 사실이 사라진다.
-  assert.equal(env.LEDGER._db.prepare("SELECT COUNT(*) n FROM write_leases WHERE lease_id='lease-stuck'").get().n, 1,
-    t("T44: 해제되지 않은 lease 를 지웠다 — 죽은 작업의 흔적이 사라진다"));
-  assert.equal(env.LEDGER._db.prepare("SELECT COUNT(*) n FROM write_leases WHERE lease_id='lease-done'").get().n, 0,
-    t("T44: 해제되고 만료된 lease 가 안 지워졌다"));
+  //    해제가 행 삭제로 바뀐 뒤(결정 A′) 이 표에 남은 행은 **전부** 그 신호라, 정리 대상이
+  //    아예 없어야 한다. 자기가 딴 임차증만 풀고 나간다.
+  assert.deepEqual(env.LEDGER._db.prepare("SELECT lease_id FROM write_leases").all(), [{ lease_id: "lease-stuck" }],
+    t("T44: 정리가 write_leases 를 건드렸다 — 남은 행은 전부 「아직 안 끝났다」의 증거다"));
+  assert.ok(!/write_leases/.test(src),
+    t("T44: cleanup 이 write_leases 를 지우는 문장을 갖고 있다 — stale 증거가 시간으로 사라진다"));
 }
 
 // ══ T45. 만료된 소비 표식만 ══════════════════════════════════════════════
@@ -127,6 +131,157 @@ function seed(env, now) {
       env.DB._db.prepare("SELECT bucket FROM rate_limits ORDER BY bucket").all(),
     ]), before, t(`T47: ${mode} 인데 상태가 바뀌었다`));
   }
+}
+
+// ══ T47b. ★ 정리 크론도 임차증을 든다 ════════════════════════════════════
+// 재현(2026-08-18, 이 블록이 처음 빨갛게 만든 것):
+//   `runCleanup()` 은 `mode='open'` 을 **읽고 나서** 주 D1 을 지웠고, 그 사이에 임차증이 없었다.
+//   ① 첫 주 D1 DELETE 직전에 세운다 ② `restore_closed` 로 전환한다 ③ `drainState()` 가
+//   `open:0 · drained:true` 라고 답한다 ④ 크론이 재개해 **restore_closed 인데도** 주 D1 행을 지운다.
+//   즉 A′ 의 「사용자 데이터를 만지는 작업은 전부 추적된다」가 **거짓이었다** — A′ 는
+//   worker/index.js 의 HTTP 요청만 봤고, Scheduled Worker 는 추적 밖에 있었다.
+//
+// 무엇이 옳은 동작인가: **중간에 끊는 것이 아니다.** HTTP 요청과 같다 — 이미 시작한 일은
+// 끝나되, 끝날 때까지 drain 이 0 이 아니어서 **복원이 시작될 수 없어야** 한다.
+{
+  const env = env0(), now = Date.now();
+  seed(env, now);
+  // ⚠️ `seed()` 가 심는 `lease-stuck` 을 걷어낸다. 남겨 두면 활성 임차증이 **처음부터 1** 이라
+  //    아래의 `open === 1` 이 크론과 무관하게 참이 되어 **아무것도 재지 못한다**(첫 작성 때 실제로
+  //    그렇게 통과했다). 재현은 0 에서 시작해야 한다.
+  env.LEDGER._db.exec("DELETE FROM write_leases");
+
+  // 첫 주 D1 DELETE 를 `hold` 가 풀릴 때까지 세운다. 셰임을 고치지 않고 바깥에서 감싼다 —
+  // 재려는 것은 sqlite 가 아니라 **runCleanup 의 순서**다.
+  let release;
+  const held = new Promise((r) => { release = r; });
+  let reached; const reachedFirst = new Promise((r) => { reached = r; });
+  const realDB = env.DB;
+  let paused = false;
+  // 주 D1 을 **처음 건드리는 순간** 임차증이 이미 있었나. 읽기·쓰기를 가리지 않고 첫 접근이다 —
+  // 그래서 「지연된 읽기」를 위한 별도 테스트가 필요 없다(정리의 주 D1 접근은 전부 이 뒤에 있다).
+  let leasesAtFirstTouch = null;
+  env.DB = {
+    ...realDB,
+    prepare(sql) {
+      if (leasesAtFirstTouch === null)
+        leasesAtFirstTouch = env.LEDGER._db.prepare("SELECT COUNT(*) n FROM write_leases").get().n;
+      const st = realDB.prepare(sql);
+      if (!paused && /^\s*DELETE/i.test(sql)) {
+        paused = true;
+        const orig = st.run.bind(st);
+        st.run = async (...a) => { reached(); await held; return orig(...a); };
+      }
+      return st;
+    },
+  };
+
+  const running = runCleanup(env, now);
+  await reachedFirst;                       // 고정 sleep 이 아니다 — 실제로 그 자리에 왔을 때만 진행한다
+
+  // ① 주 D1 **첫 접근** 시점에 임차증이 이미 있었다. 게이트만 읽고 들어간 옛 코드는 여기서 0이다.
+  assert.equal(leasesAtFirstTouch, 1,
+    t("T47b: 임차증을 따기 전에 주 D1 을 건드렸다 — 그 사이의 접근은 추적 밖이다"));
+
+  // ② 그 사이에 복원 준비로 전환한다.
+  await setMode(env, "restore_closed", now);
+
+  // ③ ★ 여기가 재현의 심장이다. 크론이 주 D1 을 만지는 **도중인데** drain 이 0 이면
+  //    운영자는 「모두 멈췄다」고 읽고 복원을 시작한다.
+  const mid = await drainState(env, now);
+  assert.equal(mid.open, 1,
+    t("T47b: ★ 정리 크론이 주 D1 을 지우는 중인데 활성 임차증이 0이다 — drain 이 거짓말을 한다"));
+  assert.equal(mid.drained, false, t("T47b: 작업이 도는 중인데 drained:true 다"));
+  const rep = await drainReport(env, RESTORE_STATE, now);
+  assert.equal(rep.state.noActiveLeases, false,
+    t("T47b: 크론이 도는 중인데 noActiveLeases 가 참이다"));
+  assert.throws(() => beginRestore(rep.state), (e) => e.code === "RESTORE_FORBIDDEN",
+    t("T47b: 크론이 도는 중인데 복원 절차가 시작됐다"));
+  assert.ok(restoreGate(rep.state).missing.some((x) => x.startsWith("noActiveLeases")),
+    t("T47b: 미충족 사유에 noActiveLeases 가 없다 — 다른 조건에 가려 이 경합이 안 보인다"));
+
+  // ④ 끝난 뒤에**만** 0 이 된다.
+  release();
+  await running;
+  assert.equal((await drainState(env, now)).open, 0,
+    t("T47b: 크론이 끝났는데 임차증이 남아 있다 — 해제가 가장 바깥 finally 에 없다"));
+
+  // ⑤ **전환 이후에 시작하는** 크론은 주 D1 을 한 줄도 만지지 않는다.
+  const before = JSON.stringify([
+    env.DB._db.prepare("SELECT bucket FROM rate_limits ORDER BY bucket").all(),
+    env.DB._db.prepare("SELECT token_hash FROM sessions ORDER BY token_hash").all(),
+  ]);
+  let touched = 0;
+  const env2 = { ...env, DB: { ...realDB, prepare(sql) { touched++; return realDB.prepare(sql); } } };
+  const out2 = await runCleanup(env2, now);
+  assert.ok(out2.skipped, t("T47b: restore_closed 인데 건너뛰지 않았다"));
+  assert.equal(touched, 0,
+    t("T47b: restore_closed 인데 주 D1 을 건드렸다 — 읽기 한 줄도 하면 안 된다"));
+  assert.equal(JSON.stringify([
+    env.DB._db.prepare("SELECT bucket FROM rate_limits ORDER BY bucket").all(),
+    env.DB._db.prepare("SELECT token_hash FROM sessions ORDER BY token_hash").all(),
+  ]), before, t("T47b: restore_closed 인데 주 D1 행이 바뀌었다"));
+  assert.equal((await drainState(env, now)).open, 0,
+    t("T47b: 임차증을 못 딴 크론이 임차증을 남겼다"));
+}
+
+// ══ T47d. HTTP 요청과 정리 크론의 허용 모드가 섞이지 않는다 ══════════════
+// 둘은 같은 임차증을 쓰지만 **같은 규칙이 아니다.** `maintenance` 는 읽기를 허용하는 상태라
+// HTTP 요청은 계속 추적돼야 하고(안 그러면 허용된 읽기가 추적 밖에서 돈다), 크론은 그때
+// **아예 시작하지 않는다**(급하지 않다. 다음 시간에 돌면 된다).
+// 한쪽 상수를 다른 쪽에 잘못 넘기면 여기서 걸린다.
+{
+  const env = env0(), now = Date.now();
+  seed(env, now);
+  env.LEDGER._db.exec("DELETE FROM write_leases");
+  env.LEDGER._db.exec("UPDATE maintenance SET mode = 'maintenance' WHERE id = 1");
+
+  const reqLease = await acquireLease(env, LEASE_MODES_REQUEST, now);
+  assert.ok(reqLease, t("T47d: maintenance 인데 HTTP 요청이 임차증을 못 딴다 — 허용된 읽기가 추적 밖에서 돈다"));
+  await releaseLease(env, reqLease);
+  assert.equal(await acquireLease(env, LEASE_MODES_CLEANUP, now), null,
+    t("T47d: maintenance 인데 정리 크론이 임차증을 땄다 — 복원 준비 중에 크론이 주 D1 을 지운다"));
+
+  // restore_closed 에서는 **둘 다** 거부된다. 그래야 활성 수가 0 으로 내려간다.
+  env.LEDGER._db.exec("UPDATE maintenance SET mode = 'restore_closed' WHERE id = 1");
+  for (const [name, modes] of [["요청", LEASE_MODES_REQUEST], ["크론", LEASE_MODES_CLEANUP]]) {
+    assert.equal(await acquireLease(env, modes, now), null,
+      t(`T47d: restore_closed 인데 ${name} 이 임차증을 땄다`));
+  }
+  assert.ok(!LEASE_MODES_REQUEST.includes("restore_closed") && !LEASE_MODES_CLEANUP.includes("restore_closed"),
+    t("T47d: 허용 모드 목록에 restore_closed 가 들어갔다"));
+
+  // 검증되지 않은 모드 문자열은 **던진다.** 조용히 통과시키면 SQL 이 아무것도 안 매치해
+  // 「그냥 임차증을 못 땄다」로 보이고, 그건 오타를 정상 동작으로 만드는 길이다.
+  for (const bad of [[], ["oepn"], "open", null]) {
+    await assert.rejects(() => acquireLease(env, bad, now), t(`T47d: 잘못된 모드(${JSON.stringify(bad)})를 통과시켰다`));
+  }
+
+  // 호출부가 서로의 상수를 집어 들지 않았나. 정규식은 완전한 증명이 아니지만, 이름을 바꿔
+  // 붙이는 실수는 위 런타임 검사 전에 여기서 먼저 걸린다.
+  const { readFileSync } = await import("node:fs");
+  const http = readFileSync(new URL("../worker/index.js", import.meta.url), "utf8");
+  const cron = readFileSync(new URL("../worker/cleanup/index.js", import.meta.url), "utf8");
+  assert.ok(http.includes("LEASE_MODES_REQUEST") && !http.includes("LEASE_MODES_CLEANUP"),
+    t("T47d: worker/index.js 가 크론 규칙을 쓴다 — maintenance 중 요청이 추적 밖으로 나간다"));
+  assert.ok(cron.includes("LEASE_MODES_CLEANUP") && !cron.includes("LEASE_MODES_REQUEST"),
+    t("T47d: 정리 크론이 요청 규칙을 쓴다 — maintenance 중에도 주 D1 을 지운다"));
+}
+
+// ══ T47c. ledger 가 대답을 못 하면 주 D1 을 만지지 않는다 ═════════════════
+// 「모른다」를 「열림」으로 읽지 않는다. 게이트를 읽을 수 없거나 임차증을 딸 수 없으면
+// 정리는 **아무것도 하지 않고** 끝난다 — 지우지 못한 것은 다음 회차에 지우면 된다.
+{
+  const env = env0(), now = Date.now();
+  seed(env, now);
+  let touched = 0;
+  const realDB = env.DB;
+  const env2 = { DB: { ...realDB, prepare(sql) { touched++; return realDB.prepare(sql); } },
+                 LEDGER: { prepare: () => ({ bind: () => ({ run: async () => { throw new Error("boom"); },
+                                                            first: async () => { throw new Error("boom"); } }),
+                                             first: async () => { throw new Error("boom"); } }) } };
+  await assert.rejects(() => runCleanup(env2, now), t("T47c: ledger 가 죽었는데 정리가 성공했다고 답한다"));
+  assert.equal(touched, 0, t("T47c: ledger 오류인데 주 D1 을 건드렸다"));
 }
 
 // ══ 관측과 안전 요구사항 ═════════════════════════════════════════════════
@@ -205,4 +360,6 @@ function seed(env, now) {
 
 console.log(`test-cleanup: ${n}개 통과 — confirmed 만 삭제(pending 보존) · 만료 전 소비 표식 보존 · `
   + `안 풀린 lease 보존 · 재실행 안전 · maintenance/restore_closed 즉시 종료 · `
+  + `크론도 임차증(주 D1 첫 접근 전 획득 · 도는 중 drained:false · 끝난 뒤에만 0) · `
+  + `허용 모드 분리(요청/크론) · ledger 오류 시 주 D1 접근 0건 · `
   + `LIMIT·조건 전수 · 실행 기록과 연속 실패 · HTTP 미공개(fetch 핸들러·workers_dev·route 없음)`);

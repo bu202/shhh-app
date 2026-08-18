@@ -49,17 +49,26 @@ CREATE TABLE IF NOT EXISTS maintenance (
 );
 INSERT OR IGNORE INTO maintenance (id, mode, epoch) VALUES (1, 'open', 1);
 
--- 진행 중인 쓰기 작업의 임차증. 지금은 **삭제 saga 만** 딴다.
--- ⚠️ 활성 lease 0건은 「삭제 saga 가 돌고 있지 않다」는 뜻이지 **「모든 쓰기가 멈췄다」가 아니다.**
---    주 D1 에 쓰는 경로는 11개이고 이 표가 추적하는 것은 그중 하나다(설계서 §10-9-6).
+-- 진행 중인 작업의 임차증.
+--
+-- **주 D1 의 사용자 데이터를 만지는 온라인 workload 는 전부 여기 잡힌다**(2026-08-18 결정 A′):
+-- `worker/index.js` 의 HTTP 요청 하나에 하나, `worker/cleanup/` 의 정리 크론 실행 하나에 하나.
+-- ⚠️ **「삭제 saga 만 딴다」는 옛 사실이다.** 그때는 활성 0건이 「삭제 saga 가 안 돈다」만
+--    뜻했고, 그것을 「모든 쓰기가 멈췄다」로 읽은 것이 위협 32 였다. 지금 추적 범위는
+--    설계서 §10-9-6 의 분류표가 말한다.
+--
+-- ⚠️ **`released_at` 컬럼이 없다.** 해제는 행을 **지운다**(ledger.js `releaseLease`) —
+--    요청마다 표시만 남기면 정리 크론(시간당 200행)보다 빨리 쌓여 표가 무한히 자란다.
+--    그래서 **여기 남아 있다 = 아직 안 끝났다**이고, 만료된 미해제는 `stale` 로 세어
+--    복원을 계속 막는다. 자동으로 지우는 경로는 **없다**.
 CREATE TABLE IF NOT EXISTS write_leases (
   lease_id    TEXT PRIMARY KEY,
   epoch       INTEGER NOT NULL,
   started_at  INTEGER NOT NULL,
-  expires_at  INTEGER NOT NULL,   -- started_at + LEASE_TTL. Worker 최대 실행시간보다 길어야 한다
-  released_at INTEGER
+  expires_at  INTEGER NOT NULL   -- started_at + LEASE_TTL. Worker 최대 실행시간보다 길어야 한다
 );
-CREATE INDEX IF NOT EXISTS write_leases_active ON write_leases(released_at, expires_at);
+-- ⛔ 인덱스를 두지 않는다. 조회는 `COUNT(*)`·PK 조회 둘뿐이라 인덱스가 고를 것이 없고,
+--    D1 은 **인덱스 갱신도 rows_written 으로 센다**(공식 요금 문서) — 요청마다 쓰기만 늘린다.
 
 -- 정리 Worker 의 기록. **행 하나.**
 -- 없으면 「안 돌았다」와 「돌았는데 지울 게 없었다」를 구분할 수 없다.
