@@ -42,6 +42,14 @@ const FORBIDDEN = [
   ["L1~L11", "같음"],
   ["L1~L12", "같음"],
   ["복원 9단계", "ledger 는 제자리 복원하지 않는다 (§10-6-0)"],
+  // 4단계가 로컬로 끝난 뒤 낡아진 문구들(2026-08-18).
+  ["CASCADE 임시 유지", "CASCADE 는 2026-08-18 에 확정됐다 (프로젝트 결정 B)"],
+  ["migration 생성 금지", "0005 를 만들었다"],
+  ["코드 0줄", "4단계는 로컬 구현이 끝났다"],
+  ["4단계 착수 조건", "착수 조건은 2026-08-18 에 해소됐다 — 남은 것은 원격 반영이다"],
+  ["법률 검토까지 보류", "법률 검토는 착수 게이트에서 제외됐다 (프로젝트 결정 E)"],
+  ["privacy/accepted", "처리 근거가 계약 이행이라 privacy 는 presented 다"],
+  ["xborder/accepted", "국외 처리위탁·보관은 제28조의8 제1항 제3호를 근거로 삼는다"],
 ];
 //
 // ⚠️ **이 면제는 넓다.** 실측: 이 정규식의 ±2줄 창이 문서 전체 비어 있지 않은 줄의 **47.7%**
@@ -141,13 +149,56 @@ for (const [f, heads] of REQUIRED) {
 }
 ok("필수 절 전부 존재");
 
-// ── 7. 「완료」와 「미완료」가 같이 서 있지 않은가 ─────────────────────────
-// 3단계가 완료라고 적으면서 4단계 착수·법률 검토·복원 금지 해제까지 완료로 읽히면 안 된다.
-const verdict = span(s3, "## 21. 최종 판정");
-for (const must of ["코드 0줄", "미검토", "restore 금지", "No-Go"]) {
-  if (!verdict.includes(must)) bad(`${STAGE3} §21 에 "${must}" 가 없다 — 완료 선언의 범위가 흐려진다`);
+// ── 7. 현재 상태와 역사 기록이 갈려 있는가 ────────────────────────────────
+//
+// 무엇이 문제였나(2026-08-18 재현): `CLAUDE.md` 는 「4단계 로컬 구현 완료」라고 적고, 같은 날
+// `SECURITY_RELEASE_CHECKLIST.md` 는 「코드 0줄」, `STAGE3 §21` 은 「4단계는 착수하지 않았다」라고
+// 적고 있었다. **셋 다 test-docs 를 통과했다** — 검사 1의 정정 문맥 면제(±2줄에 ⚠️ 하나면 통과)가
+// 너무 넓어서, 낡은 **현재 상태**까지 역사 설명으로 봐 준 것이다.
+//
+// 고친 방법: 문서마다 현재 상태를 `<!-- 현재상태:시작/끝 -->` 로 **명시적으로 묶는다.**
+// 그 안에서는 **면제가 없다.** 밖은 전부 역사 기록이라 옛 판정이 그대로 있어도 통과한다.
+const NOW0 = "<!-- 현재상태:시작 -->", NOW1 = "<!-- 현재상태:끝 -->";
+// 현재 상태 블록 안에서는 이 문구들이 곧 거짓이다.
+const STALE_NOW = [
+  [/코드 0줄/, "4단계 코드는 2026-08-18 에 로컬로 구현됐다"],
+  [/미착수|착수하지 않았다|착수 조건/, "4단계는 착수됐다"],
+  [/전부 없다/, "산출물은 저장소에 있다(설계서 §13-6)"],
+  [/설계만이고/, "같음"],
+];
+// 반대로, 「끝났다」만 적고 남은 것을 안 적으면 그것도 거짓이다.
+const NOW_MUST = [
+  [/로컬 구현 완료|구현 완료 2026-08-18|4단계 원격 반영|원격 반영/, "4단계가 어디까지 됐는지"],
+  [/원격(은 )?0건|원격 미반영|배포 0건|미실행|미등록/, "원격은 아무것도 안 했다는 사실"],
+  [/No-Go/, "출시 판정"],
+];
+const NOW_FILES = ["CLAUDE.md", "docs/HANDOFF.md", "docs/SECURITY_RELEASE_CHECKLIST.md", STAGE3];
+for (const f of NOW_FILES) {
+  const t = R(f);
+  const i = t.indexOf(NOW0), j = t.indexOf(NOW1);
+  if (i < 0 || j < i) { bad(`${f} 에 현재상태 블록이 없다 — 현재와 과거를 가를 수 없다`); continue; }
+  if (t.indexOf(NOW0, i + 1) >= 0) bad(`${f} 에 현재상태 블록이 둘 이상이다 — 원본이 하나여야 한다`);
+  const now = t.slice(i, j);
+  // ⚠️ **줄 단위로 본다.** 블록 전체에 걸면 「이후 단계는 미착수」처럼 지금도 참인 문장까지
+  //    걸린다. 잡으려는 것은 **4단계·구현을 두고 낡은 말을 하는 줄**이다.
+  for (const ln of now.split("\n")) {
+    if (!/4단계|구현/.test(ln)) continue;
+    for (const [re, why] of STALE_NOW) {
+      if (re.test(ln)) bad(`${f} 현재상태 블록에 ${re} 가 있다 — ${why}\n      "${ln.trim().slice(0, 90)}"`);
+    }
+  }
+  for (const [re, what] of NOW_MUST) {
+    if (!re.test(now)) bad(`${f} 현재상태 블록에 ${what} 가 없다 — 완료 선언의 범위가 흐려진다`);
+  }
 }
-ok("§21 이 완료의 범위를 제한하고 있다");
+// 같은 문구가 **블록 밖(역사 기록)에는** 남아 있어야 정상이다. 지워 버리면 왜 그렇게 판단했는지가
+// 사라진다 — 이 저장소가 세 판 연속으로 「완료」를 잘못 선언한 기록이 바로 거기 있다.
+{
+  const t = R(STAGE3);
+  const hist = t.slice(t.indexOf(NOW1));
+  if (!hist.includes("코드 0줄")) bad(`${STAGE3} 역사 기록에서 옛 판정이 지워졌다 — 왜 틀렸는지가 사라진다`);
+}
+ok(`현재상태 블록 ${NOW_FILES.length}개 — 낡은 현재 상태 0건 · 역사 기록 보존`);
 
 // ── 8. 방침이 아직 확정 안 된 보유기간을 단정하지 않는가 ──────────────────
 // 결정 E: 세 항이 확정되기 전에는 privacy.html 에 숫자를 적지 않는다.
@@ -226,7 +277,9 @@ const STAGE_FACTS = [
   [2, [/정책 결정|결정 완료/, /외부 법률 검토 미완료/],
    [/외부 법률 검토 완료/, /4단계[^|]*구현 완료/], "2단계는 내부 정책 결정만 완료다"],
   [3, [/5판/, /완료/], [/3단계[^|]*미착수/], "3단계는 5판 설계 완료다"],
-  [4, [/미착수/, /코드 0줄/], [/4단계[^|]*구현 완료/], "4단계는 미착수·코드 0줄이다"],
+  // 4단계는 **로컬만** 끝났다. 「구현 완료」가 「출시 가능」으로 읽히지 않게 두 사실을 함께 요구한다.
+  [4, [/로컬 구현 완료/, /원격 미반영/, /배포 0건/], [/미착수/, /코드 0줄/, /출시 완료/],
+   "4단계는 로컬 구현 완료이고 원격은 아무것도 안 했다"],
 ];
 for (const [n, must, mustNot, why] of STAGE_FACTS) {
   for (const f of ["CLAUDE.md", "docs/HANDOFF.md"]) {
@@ -238,6 +291,62 @@ for (const [n, must, mustNot, why] of STAGE_FACTS) {
   }
 }
 ok("CLAUDE.md 와 HANDOFF.md 의 1~4단계 상태가 일치");
+
+// ── 11b. 4단계 산출물이 실제로 있는가 ─────────────────────────────────────
+// 문서가 「구현 완료」라고 말하는데 파일이 없으면, 그 선언이 가장 위험한 거짓말이 된다.
+// ⚠️ **이것은 「도는가」를 재지 않는다** — 그건 런타임 테스트의 몫이다. 여기서는 존재만 본다.
+for (const f of ["worker/policies.js", "worker/ledger.js", "worker/ops.js", "worker/cleanup/index.js",
+                 "worker/ledger-schema.sql", "policies/manifest.json",
+                 "migrations/0005_policy_events_and_signup_states.sql",
+                 "migrations-ledger/0001_ledger_init.sql",
+                 "scripts/test-signup.mjs", "scripts/test-policies.mjs",
+                 "scripts/test-deletion-ledger.mjs", "scripts/test-cleanup.mjs"]) {
+  if (!existsSync(new URL("../" + f, import.meta.url))) bad(`4단계 산출물이 없는데 문서는 구현 완료라 말한다: ${f}`);
+}
+ok("4단계 산출물 12개 전부 존재");
+
+// ── 11c. 「원격에 반영했다」고 말하지 않는가 ──────────────────────────────
+// 로컬 구현과 운영 반영은 다른 말이다. 섞이면 다음 사람이 배포된 줄 알고 검증을 건너뛴다.
+const REMOTE_CLAIMS = [
+  [/ledger D1[^\n]{0,30}(생성 완료|만들었다)/, "ledger D1 은 아직 만들지 않았다"],
+  [/0005[^\n]{0,20}(원격에 )?적용 완료/, "0005 는 원격에 적용하지 않았다"],
+  [/(SIGNUP_STATE_KEY|TOMBSTONE_KEY|DELETION_KEY)[^\n]{0,20}등록 완료/, "새 시크릿은 등록하지 않았다"],
+  [/정리 (크론|Worker)[^\n]{0,20}배포 완료/, "정리 Worker 는 배포하지 않았다"],
+];
+for (const f of DOCS) {
+  const lines = R(f).split("\n");
+  for (const [re, why] of REMOTE_CLAIMS) {
+    lines.forEach((ln, i) => {
+      if (!re.test(ln)) return;
+      if (HIST.test(ln) || /아니|안 했|않았|없다|금지|대기|예정/.test(ln)) return;
+      bad(`${f}:${i + 1} 원격 반영을 완료라고 말한다 — ${why}\n      "${ln.trim().slice(0, 90)}"`);
+    });
+  }
+}
+ok(`원격 반영 과장 ${REMOTE_CLAIMS.length}종 — 0건`);
+
+// ── 11d. 복원 금지 gate 를 손으로 열지 않았나 ─────────────────────────────
+// `noActiveLeases` 는 **질의 결과여야 하는 값**이다. 코드에 `true` 로 적으면 gate 가
+// 「지금 요청이 도는가」를 안 보고 열린다 — 그게 결정 A′ 가 막으려던 바로 그것이다.
+{
+  // ⚠️ **주석을 뺀다.** 규칙을 적어 둔 문장("손으로 noActiveLeases: true 를 적지 않는다")까지
+  //    벌하면, 규칙을 문서화하는 것이 검사 실패가 된다 — 같은 함정을 이미 한 번 밟았다.
+  const strip = (t) => t.split("\n").filter((ln) => !/^\s*(\/\/|\*|\/\*)/.test(ln)).join("\n");
+  const ops = strip(R("worker/ops.js"));
+  if (/noActiveLeases:\s*true/.test(ops)) {
+    bad("worker/ops.js 가 noActiveLeases 를 손으로 true 로 적었다 — 그 값은 drainReport() 의 질의 결과여야 한다");
+  }
+  for (const k of ["oldDeployments", "regressionTests"]) {
+    if (new RegExp(k + "\\s*:\\s*true").test(ops)) {
+      bad(`worker/ops.js 가 ${k} 를 true 로 적었다 — 원격 증명 없이 복원 금지가 풀린다`);
+    }
+  }
+  // 임차증 해제가 UPDATE 로 되돌아가면 표가 무한히 자란다(정리 크론은 시간당 200행).
+  if (/UPDATE write_leases SET released_at/.test(strip(R("worker/ledger.js")))) {
+    bad("worker/ledger.js 가 임차증 해제를 UPDATE 로 되돌렸다 — 요청마다 행이 쌓여 표가 자란다");
+  }
+}
+ok("복원 금지 gate — 손으로 연 자리 0건 · 임차증 해제는 DELETE");
 
 // ── 12. 법률 자료가 현재 운영 사실을 담고 있나 ────────────────────────────
 // 외부 검토자에게 나가는 자료다. 낡은 사실이 남으면 검토 전제가 틀어진다.
