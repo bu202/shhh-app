@@ -83,12 +83,25 @@ npx wrangler pages deploy --project-name shhh-app --branch main
 | 이름 | 어디에 | 없으면 |
 |---|---|---|
 | `STATE_KEY` | 시크릿 | 로그인 전체가 503 (실패-닫힘) |
+| `RL_KEY` | 시크릿 | 레이트리밋이 **세지 않는다** → `/api/ready` 503 |
+| `SIGNUP_STATE_KEY` (32바이트 base64url) | 시크릿 | 회원가입 503 |
+| `TOMBSTONE_KEY` | 시크릿 | 회원가입 503 |
+| `DELETION_KEY` | 시크릿 | 계정 삭제 503 |
 | `KAKAO_ID` `KAKAO_SECRET` `NAVER_ID` `NAVER_SECRET` `GOOGLE_ID` `GOOGLE_SECRET` | 시크릿 | 그 제공자 버튼이 안 뜬다 |
 | `MASTER_UIDS` | 시크릿 | 아무도 마스터가 아니다 |
+| `DEV_ORIGINS` | 시크릿(**개발 Worker 에만**) | 로컬·LAN 주소로 로그인 못 한다(운영에는 넣지 않는다) |
 | `APP_ORIGIN` `APP_URL` | `wrangler.jsonc` | 복귀 주소 검증이 안 선다 |
+| **`DB`** (D1 `shhh-db`) | `wrangler.jsonc` | 전부 안 된다 |
+| **`LEDGER`** (D1 `shhh-ledger`) | `wrangler.jsonc` | **사용자 데이터 API 가 전부 503** — 표식 없는 삭제·추적 없는 쓰기를 만들지 않는다 |
+
+- **서로 겸용하지 않는다.** 용도가 다른 비밀값을 돌려 쓰면 하나를 교체할 때 다른 하나가 같이 무너진다.
+- ⚠️ **`LEDGER` 는 아직 안 붙였다**(ledger D1 미생성). 그래서 지금 배포하면 계정 기능이 열리지
+  않는다 — 그게 의도된 상태다. 만드는 절차는 [`docs/OPS_RUNBOOK.md`](docs/OPS_RUNBOOK.md).
+- 이 표는 손으로 세지 않는다. `scripts/test-config.mjs` 가 **코드에서 `env.*` 를 읽어**
+  이 표·`worker/SETUP.md`·`wrangler.jsonc`·runbook 과 대조한다.
 
 설정이 됐는지는 `curl -s https://shhh-app.pages.dev/api/health` 로 본다 — **값은 안 보이고 있나 없나만** 나온다.
-등록 절차는 [`worker/SETUP.md`](worker/SETUP.md).
+등록 절차는 [`worker/SETUP.md`](worker/SETUP.md), 원격 작업 순서는 [`docs/OPS_RUNBOOK.md`](docs/OPS_RUNBOOK.md).
 
 ## 데이터
 

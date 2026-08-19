@@ -12,17 +12,43 @@
 그래서 카카오 비즈앱 전환도, 구글 민감범위 심사도 필요 없다. 동의항목을 늘리려면
 `privacy.html` 을 **먼저** 고칠 것.
 
-## 비밀값 (8개) — Pages 프로젝트에 넣는다
+## 비밀값 — Pages 프로젝트에 넣는다
+
+> ⚠️ **개수를 여기 적지 않는다.** 예전에 「8개」라고 적어 두었고, 그 뒤 `RL_KEY` 가 필수가 됐을
+> 때도, 가입·삭제 키 셋이 필수가 됐을 때도 이 줄은 8개인 채로 남아 있었다 — 이 목록만 보고
+> 배포하면 그대로 빠진다. 지금은 `scripts/test-config.mjs` 가 **코드에서 `env.*` 를 읽어**
+> 이 문서·README·`wrangler.jsonc`·`docs/OPS_RUNBOOK.md` 와 대조한다.
 
 ```bash
 # 레포 루트에서. `cd worker` 가 아니다 — 배포 단위가 Pages 프로젝트(shhh-app)로 바뀌었다.
-printf '<값>' | npx wrangler pages secret put KAKAO_ID     --project-name shhh-app
+# ⚠️ 값을 명령줄에 두지 않는다(히스토리·프로세스 목록에 남는다). 표준입력으로 넣는다.
+npx wrangler pages secret put KAKAO_ID --project-name shhh-app
 #  KAKAO_ID · KAKAO_SECRET · NAVER_ID · NAVER_SECRET · GOOGLE_ID · GOOGLE_SECRET
-#  STATE_KEY   — state 서명 키. 아무 긴 무작위 문자열(`openssl rand -base64 32`).
-#                바꾸면 진행 중이던 로그인만 실패한다(세션은 안 끊긴다).
-#  MASTER_UIDS — 무료 벽이 없는 계정. 쉼표 구분. 비우면 아무도 마스터가 아니다.
+#  STATE_KEY        — 로그인 state **서명** 키. `openssl rand -base64 32`.
+#                     바꾸면 진행 중이던 로그인만 실패한다(세션은 안 끊긴다).
+#  RL_KEY           — 레이트리밋 버킷 HMAC. 없으면 **세지 않고** /api/ready 가 503.
+#  SIGNUP_STATE_KEY — 가입 state **암호화**(AES-256-GCM). base64 로 디코딩해 **정확히 32바이트**.
+#                     아니면 가입이 fail-closed 다(짧은 키를 조용히 늘려 쓰지 않는다).
+#  TOMBSTONE_KEY    — 가입 state 1회 소비 표식 HMAC. 없으면 가입 503.
+#  DELETION_KEY     — 삭제 표식 HMAC. 없으면 계정 삭제 503.
+#  MASTER_UIDS      — 무료 벽이 없는 계정. 쉼표 구분. 비우면 아무도 마스터가 아니다.
+#  DEV_ORIGINS      — **개발 Worker 에만.** localhost·LAN 주소를 허용한다. 운영에 넣지 않는다.
 npx wrangler pages secret list --project-name shhh-app     # 목록(값은 안 보인다)
 ```
+
+**서로 겸용하지 않는다.** 다섯 개의 키(`STATE_KEY`·`SIGNUP_STATE_KEY`·`TOMBSTONE_KEY`·
+`DELETION_KEY`·`RL_KEY`)는 용도가 다르다 — 겸용하면 하나를 교체할 때 다른 하나가 같이 무너진다.
+
+## 바인딩 — `wrangler.jsonc` 에 적는다
+
+| 바인딩 | D1 | 없으면 |
+|---|---|---|
+| `DB` | `shhh-db` | 전부 안 된다 |
+| **`LEDGER`** | `shhh-ledger` | **사용자 데이터 API 가 전부 503**(fail-closed) |
+
+⚠️ Pages 프로젝트에 Wrangler 설정 파일이 있으면 **그 파일이 원본**이고 대시보드에서 같은 항목을
+편집할 수 없다(공식 문서). 그러므로 `LEDGER` 도 `wrangler.jsonc` 에 적는다.
+ledger D1 은 **아직 만들지 않았다** — 절차는 [`../docs/OPS_RUNBOOK.md`](../docs/OPS_RUNBOOK.md).
 
 ---
 

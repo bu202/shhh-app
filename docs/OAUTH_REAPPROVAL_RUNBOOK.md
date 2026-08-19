@@ -3,7 +3,10 @@
 > **이 문서는 순서다.** 무엇을 적을지는 `brand/NAVER-REVIEW.md` · `brand/KAKAO-REVIEW.md` 가
 > 답한다. 여기서는 **어떤 순서로, 어디서 승인을 받고, 무엇을 확인하고 다음으로 넘어가는가**만 다룬다.
 >
-> **2026-08-18 기준 실행한 것: 0건.** 콘솔 변경도, 검수 요청도, 배포도 하지 않았다.
+> **2026-08-19 기준 실행한 것: 0건.** 콘솔 변경도, 검수 요청도, 배포도 하지 않았다.
+>
+> ⚠️ **1~6 의 실행 명령·중단 기준은 `docs/OPS_RUNBOOK.md` 가 원본이다**(2026-08-19 신설).
+> 여기 표는 「제공자 검수와 어떤 순서로 맞물리는가」이고, 같은 절차를 두 곳에 적지 않는다.
 
 ---
 
@@ -24,8 +27,9 @@
 
 | # | 무엇 | 승인 | 끝났다고 판정하는 근거 |
 |---|---|---|---|
-| 1 | 전역 user-data drain 방식 결정·구현 | 사용자 결정 | T6 의 기대값이 「막힌다」로 바뀌고 통과 |
-| 2 | ledger D1 생성 · `LEDGER` 바인딩 · migration | **별도 승인**(원격·되돌리기 어려움) | `/api/ready` 의 `ledger:true` |
+| 1 | ~~전역 user-data drain 방식 결정·구현~~ ✅ | 사용자 결정 | **완료 2026-08-18(결정 A′).** T6·T6b·T6c·T47b·T47d 통과 |
+| 1b | ~~4단계 재감사 결함 4건~~ ✅ | — | **완료 2026-08-19.** `LEDGER` fail-closed · 쓰기 증폭 · 리미터 버킷 · 복원 사전점검(위협 39~42) |
+| 2 | ledger D1 생성 · `LEDGER` 바인딩 · migration | **별도 승인**(원격·되돌리기 어려움) | `/api/ready` 의 `ledgerBound:true` **와** `ledger:true`(바인딩과 스키마는 다른 말이다). ⚠️ 없으면 **사용자 데이터 API 가 전부 503** 이고 `/health` 가 `providers: []` 를 준다 |
 | 3 | 새 시크릿 3개 등록 (`SIGNUP_STATE_KEY`·`TOMBSTONE_KEY`·`DELETION_KEY`) | **별도 승인** | `/api/ready` 의 `signupReady:true`. 값은 출력하지 않는다 |
 | 4 | 원격 D1 에 `0005` 적용 | **별도 승인** | 적용 후 `policy_events`·`consumed_signup_states` 존재. `/api/ready` 200 |
 | 5 | 정리 Worker 배포 (`worker/cleanup/`) | **별도 승인** | 한 주기 뒤 `/api/ready` 의 `cleanupStale:false` |
@@ -53,7 +57,7 @@ OAuth 가 꺼져 있어도 여기까지는 라이브에서 확인된다.
 3. 「가입하기」를 누르면 약관을 불러오는 동안 **로딩 문구**가 뜨고, 뜬 뒤 화면이 **맨 위에서**
    시작한다(중간부터 보이면 안 된다).
 4. 체크 전에는 제공자 버튼이 **눌리지 않는다.** 두 개를 다 켜야 열린다.
-5. `/api/ready` 가 200 이고 `db`·`ledger` 가 `true` 다.
+5. `/api/ready` 가 200 이고 `db`·`ledgerBound`·`ledger` 가 `true` 다. `cleanupStale`·`cleanupAlert` 는 `false` 다.
 6. `/privacy.html` · `/policies/` 가 열린다.
 7. 콘솔에 오류가 없다.
 
