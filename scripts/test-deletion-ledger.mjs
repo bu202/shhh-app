@@ -12,8 +12,9 @@ import assert from "node:assert";
 import worker, { createAccountWithPolicy, newSession } from "../worker/index.js";
 import {
   deletionMark, DELETION_KEY_VERSION, acquireLease, leaseAlive, releaseLease, activeLeases,
-  markPending, markConfirmed, sweepConfirmed, openPendingCount, CONFIRMED_RETENTION, PENDING_ALERT,
-  drainState,
+  markPending, markConfirmed, sweepConfirmed, pendingAlertCount, pendingTotalCount,
+  CONFIRMED_RETENTION, PENDING_ALERT,
+  drainState, rememberDeletionKey,
 } from "../worker/ledger.js";
 import {
   setMode, markDrained, reconcile, removeStalePending, mergeDeletions, restoreTargets,
@@ -153,7 +154,7 @@ const call = (env, token, path, method = "GET") => worker.fetch(new Request("htt
   assert.equal((await markDrained(env)).drained, false, t("T1: lease 가 살아 있는데 drain 됐다고 한다"));
 
   // ── T2. 그 상태에서 reconciliation 은 **거부된다.** 증거 없이는 실행하지 않는다.
-  const rec = await reconcile(env, { mark: deletionMark });
+  const rec = await reconcile(env);
   assert.equal(rec.ok, false, t("T2: 활성 lease 가 있는데 reconciliation 이 실행됐다"));
   assert.match(rec.why, /lease/, t("T2: 거부 사유가 lease 가 아니다"));
   assert.equal(lcount(env), 1, t("T2: 거부했는데 ledger 가 바뀌었다"));
@@ -176,7 +177,13 @@ const call = (env, token, path, method = "GET") => worker.fetch(new Request("htt
   // restore_closed 에서는 **원자적으로 거부**된다 — 그래야 활성 수가 0 으로 내려간다.
   await setMode(env, "restore_closed");
   assert.equal(await acquireLease(env), null, t("T5b: restore_closed 인데 새 임차증을 땄다"));
-  await setMode(env, "maintenance");
+  // ⚠️ **여기서 `setMode(env, "maintenance")` 를 부를 수 없다**(2026-08-19). `restore_closed` 에서
+  //    읽기가 열리는 모드로 가는 길에는 전부 재개방 검증이 걸리고, 지금은 임차증도 pending 도
+  //    남아 있어 정당하게 거부된다(재현 R1 · test-reaudit R1-b 가 그 전수 표를 잰다).
+  //    이 블록이 재는 것은 임차증 획득이라, 게이트만 직접 되돌린다.
+  await assert.rejects(() => setMode(env, "maintenance"), /읽기를 다시 열 수 없다/,
+    t("T5b: restore_closed 에서 검증 없이 maintenance 로 옮겨졌다"));
+  env.LEDGER._db.prepare("UPDATE maintenance SET mode = 'maintenance' WHERE id = 1").run();
 
   // ── T3. saga 를 정상 종료시킨다 → lease 해제 → reconciliation 허용.
   //   ⚠️ **T2 와 쌍으로 봐야** 「거부가 늘 거부」가 아님이 증명된다.
@@ -186,7 +193,7 @@ const call = (env, token, path, method = "GET") => worker.fetch(new Request("htt
   assert.equal(d.drained, true, t("T3: lease 0건인데 drain 이 아니라고 한다"));
   // 계정을 실제로 지운 뒤 승격이 일어나는지 본다(계정이 살아 있으면 승격하면 안 된다 — T37).
   env.DB._db.exec(`DELETE FROM users WHERE id = '${A.uid}'`);
-  const rec2 = await reconcile(env, { mark: deletionMark });
+  const rec2 = await reconcile(env);
   assert.equal(rec2.ok, true, t("T3: lease 0건인데 reconciliation 이 거부됐다"));
   assert.equal(rec2.promoted, 1, t("T3: 승격이 안 일어났다"));
   const row = lrows(env, "SELECT * FROM deletions")[0];
@@ -205,7 +212,7 @@ const call = (env, token, path, method = "GET") => worker.fetch(new Request("htt
   await releaseLease(env, lease);
   env.DB._db.exec(`DELETE FROM users WHERE id = '${A.uid}'`);
   await setMode(env, "maintenance");
-  const r = await reconcile(env, { mark: deletionMark });
+  const r = await reconcile(env);
   assert.equal(r.promoted, 1, t("T36: 계정이 없는 pending 이 승격되지 않았다"));
   const row = lrows(env, "SELECT * FROM deletions")[0];
   assert.equal(row.expires_at, row.confirmed_at + CONFIRMED_RETENTION, t("T36: expires_at 산식이 다르다"));
@@ -224,7 +231,7 @@ const call = (env, token, path, method = "GET") => worker.fetch(new Request("htt
   const before = { l: JSON.stringify(lrows(env, "SELECT * FROM deletions")), u: ucount(env),
                    b: env.DB._db.prepare("SELECT COUNT(*) n FROM books").get().n,
                    f: env.DB._db.prepare("SELECT COUNT(*) n FROM friendships").get().n };
-  const r = await reconcile(env, { mark: deletionMark });
+  const r = await reconcile(env);
   assert.equal(r.ok, true, t("T37: reconciliation 이 실행되지 않았다"));
   assert.equal(r.promoted, 0, t("T37: 살아 있는 계정의 pending 이 승격됐다"));
   assert.equal(r.kept, 1, t("T37: pending 이 그대로 남지 않았다"));
@@ -247,16 +254,21 @@ const call = (env, token, path, method = "GET") => worker.fetch(new Request("htt
   assert.equal((w.match(/DELETE FROM users/g) || []).length, 1,
     t("T38: worker/index.js 에 users 삭제 문장이 하나가 아니다"));
 
-  // T39. **계정 존재 재확인을 생략한 수동 제거는 거부된다.**
+  // T39. **조건이 빠진 수동 제거는 거부된다.**
+  //   ⚠️ 「재확인 수단(mark 함수)이 없음」은 2026-08-19 부터 **경우의 수가 아니다** — 그 함수는
+  //      이제 코드가 소유한다(호출자가 넘긴 함수가 삭제 증거를 정하던 것이 재현 R4 다).
+  //      대신 「지금 키가 표식을 만든 키와 다름」이 새 거부 사유이고 test-reaudit R4-b 가 잰다.
   const marks = lrows(env, "SELECT mark FROM deletions").map((x) => x.mark);
-  for (const opts of [{ confirmedByOperator: false, mark: deletionMark },   // 운영 판정 없음
-                      { confirmedByOperator: true }]) {                     // 재확인 수단 없음
-    const rr = await removeStalePending(env, marks, opts);
-    assert.equal(rr.ok, false, t("T39: 조건이 빠졌는데 제거가 실행됐다"));
+  for (const [why, opts, envv] of [
+    ["운영 판정 없음", { confirmedByOperator: false }, env],
+    ["키가 다름", { confirmedByOperator: true }, { ...env, DELETION_KEY: "다른키" }],
+  ]) {
+    const rr = await removeStalePending(envv, marks, opts);
+    assert.equal(rr.ok, false, t(`T39: ${why} 인데 제거가 실행됐다`));
   }
   assert.equal(lcount(env), 1, t("T39: 거부했는데 표식이 지워졌다"));
   // 조건을 다 채워도 **계정이 살아 있으면** 지운다 — 그것이 stale pending 의 정의다.
-  const okRm = await removeStalePending(env, marks, { confirmedByOperator: true, mark: deletionMark });
+  const okRm = await removeStalePending(env, marks, { confirmedByOperator: true });
   assert.equal(okRm.removed, 1, t("T39: 조건을 다 채웠는데 제거되지 않았다"));
   // 반대로 **계정이 없으면 거부한다** — 그건 승격 대상이지 제거 대상이 아니다.
   const env2 = makeEnv();
@@ -267,7 +279,7 @@ const call = (env, token, path, method = "GET") => worker.fetch(new Request("htt
   await releaseLease(env2, l2);
   env2.DB._db.exec(`DELETE FROM users WHERE id = '${C.uid}'`);
   await setMode(env2, "maintenance");
-  const rr2 = await removeStalePending(env2, [m2], { confirmedByOperator: true, mark: deletionMark });
+  const rr2 = await removeStalePending(env2, [m2], { confirmedByOperator: true });
   assert.equal(rr2.removed, 0, t("T39: 계정이 없는 pending 을 지웠다 — 표식 없는 삭제가 된다"));
   assert.equal(lcount(env2), 1, t("T39: 거부했는데 표식이 사라졌다"));
 }
@@ -452,58 +464,62 @@ const call = (env, token, path, method = "GET") => worker.fetch(new Request("htt
   env.LEDGER._db.exec(
     `INSERT INTO deletions (mark, key_version, pending_at, confirmed_at, pending_alert_at, expires_at)
      VALUES ('${mark}', 1, 1, ${Date.now() - 1000}, ${Date.now() + 1e6}, ${Date.now() + 1e6})`);
-  const markFns = [(id) => deletionMark(env, id)];
+  // 진짜 삭제 경로는 표식과 **키 검사값**을 함께 남긴다(ledger.js `markPending`). 표식만 손으로
+  // 넣으면 「지금 키가 그때 그 키인지 모른다」가 되어 정당하게 거부된다(2026-08-19 · 재현 R4).
+  await rememberDeletionKey(env);
   // 복원 중이라는 뜻의 상태. 여기서만 「다시 열어도 되나」가 뜻을 갖는다.
   await setMode(env, "restore_closed");
 
   // ── H1. 계정이 살아 있으면 열 수 없다. 대상 집합은 **보고서가 직접 만든다.**
-  let rep = await reopenReport(env, { markFns });
+  let rep = await reopenReport(env);
   assert.equal(rep.targets, 1, t("H1: 확정 표식이 있는 되살아난 계정을 재삭제 대상으로 못 찾았다"));
   assert.equal(rep.canReopen, false, t("H1: 계정이 살아 있는데 읽기를 열 수 있다고 한다"));
   assert.equal(rep.stillAlive, 1, t("H1: 살아 있는 계정을 못 셌다"));
-  await assert.rejects(() => setMode(env, "open", { markFns }), /살아 있다|잔여/,
+  await assert.rejects(() => setMode(env, "open"), /살아 있다|잔여/,
     t("H1: 재삭제가 안 끝났는데 setMode 가 읽기를 열었다"));
 
   // ── H1-b. ★ **손으로 만든 판정으로는 열 수 없다.**
   //   예전에는 `reopenReport(env, { targets: [] })` 하나면 잔여 0 · 살아 있는 계정 0 이라
   //   **canReopen: true** 가 나왔다 — 아무것도 확인하지 않고 읽기를 다시 여는 길이다.
   //   지금 `setMode` 는 보고서를 **받지 않는다**: 그 자리에서 다시 판정한다.
+  //   ⚠️ 2026-08-19 에 한 겹 더 벗겼다: `markFns` 인자도 없앴다. 남아 있던 동안에는
+  //      **상수를 돌려주는 함수 하나**로 재삭제 대상이 0 이 되어 그대로 열렸다(재현 R2 ·
+  //      test-reaudit R2 가 그 전수 표를 잰다). 여기서는 「무엇을 넘겨도 무시된다」만 고정한다.
   for (const forged of [{ canReopen: true }, { canReopen: true, epoch: rep.epoch, at: Date.now() },
-                        { reopen: { canReopen: true } }, { targets: [] }, { targets: [uid] }]) {
-    await assert.rejects(() => setMode(env, { ...forged, mode: "open" }.mode, forged),
-      /markFns|살아 있다|잔여|수단/, t("H1-b: 손으로 만든 판정·빈 목록으로 읽기가 열렸다"));
+                        { reopen: { canReopen: true } }, { targets: [] }, { targets: [uid] },
+                        { markFns: [] }, { markFns: [() => "언제나같은값"] }]) {
+    await assert.rejects(() => setMode(env, "open", forged),
+      /살아 있다|잔여/, t("H1-b: 손으로 만든 판정·빈 목록으로 읽기가 열렸다"));
+    assert.equal((await reopenReport(env, forged)).canReopen, false,
+      t("H1-b: 호출자가 넘긴 인자로 재개방 판정이 통과했다"));
   }
-  // 재확인 수단이 없으면 아예 판정하지 않는다.
-  assert.equal((await reopenReport(env)).canReopen, false, t("H1-b: markFns 없이 판정이 통과했다"));
-  assert.ok((await reopenReport(env, { markFns: [] })).why.some((w) => /markFns/.test(w)),
-    t("H1-b: markFns 가 없는데 이유를 말하지 않는다"));
 
   // ── H1-c. 미확정 표식이 남아 있으면 열 수 없다. **개수가 아니라 존재가 판정이다.**
   env.LEDGER._db.exec(
     `INSERT INTO deletions (mark, key_version, pending_at, pending_alert_at, expires_at)
      VALUES ('m-open', 1, 1, 1, ${Date.now() + 1e6})`);
   env.DB._db.exec(`DELETE FROM users WHERE id = '${uid}'`);
-  rep = await reopenReport(env, { markFns });
+  rep = await reopenReport(env);
   assert.equal(rep.openPending, 1, t("H1-c: 미확정 표식을 못 셌다"));
   assert.equal(rep.canReopen, false, t("H1-c: 미확정 표식이 남았는데 읽기를 연다"));
-  await assert.rejects(() => setMode(env, "open", { markFns }), /미확정/, t("H1-c: setMode 가 그대로 열었다"));
+  await assert.rejects(() => setMode(env, "open"), /미확정/, t("H1-c: setMode 가 그대로 열었다"));
   env.LEDGER._db.exec("DELETE FROM deletions WHERE mark = 'm-open'");
 
   // ── H1-d. stale 임차증이 있으면 열 수 없다(만료는 해제가 아니다).
   env.LEDGER._db.prepare(
     "INSERT INTO write_leases (lease_id, epoch, started_at, expires_at) VALUES (?,?,?,?)")
     .run("stale-reopen", 1, Date.now() - 3600e3, Date.now() - 1800e3);
-  rep = await reopenReport(env, { markFns });
+  rep = await reopenReport(env);
   assert.equal(rep.canReopen, false, t("H1-d: stale 임차증이 있는데 읽기를 연다"));
   assert.ok(rep.why.some((w) => /임차증/.test(w)), t("H1-d: 이유에 임차증이 없다"));
   env.LEDGER._db.exec("DELETE FROM write_leases WHERE lease_id = 'stale-reopen'");
 
   // ── H1-e. 전부 정리되면 열린다. **막는 쪽만 재면 「영영 안 열리는」 회귀를 못 잡는다.**
-  rep = await reopenReport(env, { markFns });
+  rep = await reopenReport(env);
   assert.equal(rep.canReopen, true, t("H1-e: 다 지웠는데 읽기를 못 연다: " + rep.why.join(" · ")));
   assert.deepEqual(rep.leftovers, { sessions: 0, books: 0, invite_codes: 0, friendships: 0 },
     t("H1-e: CASCADE 잔여가 남았다"));
-  assert.equal((await setMode(env, "open", { markFns })).mode, "open",
+  assert.equal((await setMode(env, "open")).mode, "open",
     t("H1-e: 사전점검을 통과했는데 setMode 가 안 열었다"));
   // ⚠️ `maintenance` → `open` 은 이 자물쇠와 무관하다. 막으려는 것은 **읽기 노출**이지
   //    유지보수 해제가 아니다.
@@ -521,7 +537,7 @@ const call = (env, token, path, method = "GET") => worker.fetch(new Request("htt
   assert.equal(removed, 1, t("H2: 만료된 confirmed 가 안 지워졌다"));
   assert.equal(lcount(env, "WHERE mark = 'm-pend'"), 1,
     t("H2: ⛔ 만료된 pending 을 지웠다 — 복원 때 그 사람이 되살아나고 아무도 모른다"));
-  assert.equal(await openPendingCount(env, now), 1, t("H2: 확정 안 된 pending 을 못 셌다"));
+  assert.equal(await pendingAlertCount(env, now), 1, t("H2: 확정 안 된 pending 을 못 셌다"));
 }
 
 console.log(`test-deletion-ledger: ${n}개 통과 — 표식 HMAC · saga 실패 매트릭스 · lease/epoch fencing · `
