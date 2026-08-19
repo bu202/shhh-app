@@ -2,7 +2,15 @@
   // Cloudflare Pages 프로젝트 설정. 앱(정적)과 API(`functions/api/*`)가 **한 프로젝트**에 산다 —
   // 그래야 같은 origin 이 되어 CSP 를 `connect-src 'self'` 로 조이고 쿠키를 쓸 수 있다.
   //
-  // worker/wrangler.jsonc 는 옛 workers.dev 배포용이다. 전환이 끝나면 그쪽은 폐기한다.
+  // ⚠️ **이 파일이 바인딩의 진실 원본이다.** Pages 프로젝트에 Wrangler 설정 파일이 있으면
+  //    공식 문서상 그 파일이 원본이 되고 **대시보드에서 같은 항목을 편집할 수 없다**
+  //    ("This file becomes the source of truth when used, meaning that you can not edit the
+  //    same fields in the dashboard"). 그러므로 **`LEDGER` 바인딩도 여기에 적어야 한다** —
+  //    「대시보드에서 붙이면 된다」는 이 프로젝트에서는 성립하지 않는다.
+  //
+  // ⚠️ 옛 주석은 worker 폴더 안의 wrangler 설정(옛 workers.dev 배포용)을 가리켰는데
+  //    **그 파일은 없다.** 없는 파일을 가리키는 설정은 다음 사람에게 「어딘가 다른 설정이
+  //    있다」는 착각을 만든다. 경로를 지운다 — `scripts/test-config.mjs` 가 이제 잰다(2026-08-19).
   "name": "shhh-app",
   "compatibility_date": "2026-08-07",
   "observability": { "enabled": true },
@@ -19,6 +27,13 @@
   // 요약하면 **친구 관계가 두 사람에 걸친 데이터라 트랜잭션이 필요했다.**
   // `database_id` 는 비밀값이 아니다(KV 네임스페이스 ID 와 같은 성격).
   "d1_databases": [{ "binding": "DB", "database_name": "shhh-db", "database_id": "c279078b-cb82-4926-a593-461993cd1f77" }],
+  // ⛔ **`LEDGER` 바인딩이 아직 없다. 그래서 이 설정으로 배포하면 계정 기능이 열리지 않는다.**
+  //    없으면 `readMode()` 가 `unbound` 를 돌려주고 사용자 데이터 라우트가 전부 503 이다
+  //    (`/health` 는 `providers: []` · `ledgerBound: false` 로 그 사실을 말한다).
+  //    **그것이 의도된 상태다** — 표식 없는 삭제와 추적 없는 쓰기를 만들지 않기 위해서다.
+  //    붙이는 절차는 `docs/OPS_RUNBOOK.md` §2(ledger D1 만들기) → §4(바인딩 추가):
+  //      { "binding": "LEDGER", "database_name": "shhh-ledger", "database_id": "<생성 결과>" }
+  //    ⚠️ id 를 **추측해서 미리 적지 않는다.** 가짜 id 는 배포를 통과하고 첫 질의에서 터진다.
   // ⚠️ **KV 는 새 코드가 쓰지 않는다.** 바인딩만 남겨 둔 이유는 롤백 때문이다 —
   //    옛 배포로 되돌리면 그 코드가 KV 를 읽어야 서비스가 선다. D1 이 자리를 잡으면
   //    바인딩과 네임스페이스를 함께 지운다(docs/D1_MIGRATION.md 5번).
@@ -30,7 +45,14 @@
   }
   // 비밀값은 여기 적지 않는다 — `wrangler pages secret put <이름>` 으로 넣는다.
   // KAKAO_ID · KAKAO_SECRET · NAVER_ID · NAVER_SECRET · GOOGLE_ID · GOOGLE_SECRET
-  // · STATE_KEY · MASTER_UIDS · **RL_KEY**  (9개)
+  // · STATE_KEY · MASTER_UIDS · **RL_KEY** · **SIGNUP_STATE_KEY** · **TOMBSTONE_KEY**
+  // · **DELETION_KEY**  (12개)
+  // 개발 Worker 에만: DEV_ORIGINS — localhost·LAN 허용. ⛔ **운영에는 넣지 않는다.**
+  //
+  // ⚠️ **목록을 손으로 세지 않는다.** 이 줄이 8개인 채로 남아 RL_KEY 를 빠뜨릴 뻔했고, 그
+  //    다음엔 9개인 채로 남아 가입·삭제 키 셋이 빠졌다. 지금은 `scripts/test-config.mjs` 가
+  //    **코드에서 `env.*` 를 읽어** 이 목록·README·worker/SETUP.md·OPS_RUNBOOK 과 대조한다 —
+  //    코드가 새 값을 요구하면 문서를 안 고친 쪽이 실패한다.
   //
   // ⚠️ **RL_KEY 를 빠뜨리지 않는다.** 2026-08-16 에 필수값이 됐는데 이 줄은 8개인 채로 남아
   //    있었다 — 이 목록만 보고 배포하면 그대로 빠진다. 없으면 레이트리밋이 **세지 않고**

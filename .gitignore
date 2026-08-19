@@ -20,3 +20,8 @@ worker/.wrangler/
 
 # 배포 산출물. `npm run build` 가 만든다 — 레포에 두면 두 벌이 어긋난다
 dist/
+
+# 정리 Worker 의 **실제** 배포 설정. 템플릿은 worker/cleanup/wrangler.example.jsonc 이고,
+# 여기에는 만들어진 ledger D1 의 database_id 가 들어간다(비밀값은 아니지만, 저장소에 두면
+# 다음 사람이 템플릿과 실제 설정을 구분하지 못한다 — docs/OPS_RUNBOOK.md §3).
+worker/cleanup/wrangler.jsonc
