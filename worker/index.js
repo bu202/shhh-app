@@ -88,6 +88,11 @@ const allowed = (env, origin) =>
 //   Vary: Origin — CORS 헤더가 Origin 마다 달라지므로, 없으면 캐시가 다른 Origin 에 재사용한다.
 const SEC = { "Cache-Control": "private, no-store", "Vary": "Origin", "X-Content-Type-Options": "nosniff" };
 
+// 로그 한 줄에 **남이 쓴 문자열**을 그대로 싣지 않는다. 제어문자를 지우는 이유는 개행 하나로
+// 로그가 여러 줄로 갈리고, 뒤 줄이 우리가 찍은 줄인 척할 수 있기 때문이다(로그 위조).
+// 길이도 우리가 정한다 — 안 정하면 남의 서버가 우리 로그 한 줄의 크기를 정한다.
+const logSafe = (v, max = 80) => String(v ?? "").replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, max);
+
 const cors = (env, req) => {
   const o = req.headers.get("Origin");
   return allowed(env, o)
@@ -143,7 +148,12 @@ const readyProviders = (env) => Object.keys(P).filter((n) => {
   return !!id && (!!secret || !!P[n].optionalSecret);
 });
 const health = (env) => {
-  const providers = readyProviders(env);
+  // ⚠️ **ledger 바인딩이 없으면 제공자를 하나도 알려주지 않는다.** 그 상태에서는 로그인 콜백이
+  //    게이트에서 503 이라(`unbound`), 버튼을 그려 봐야 누르면 실패한다. 화면이 이 목록만 보고
+  //    버튼을 그리므로(js/auth.js), 여기서 비우는 것이 「안전하지 않은 부분 구성에서는 버튼이
+  //    안 나온다」의 유일한 자리다. 되는 척하지 않는다.
+  const ledgerBound = !!env.LEDGER;
+  const providers = ledgerBound ? readyProviders(env) : [];
   // DB 바인딩이 없으면 로그인도 단어장도 못 한다 — ready 가 아니다.
   // ⚠️ KV 는 더 이상 안 본다. 바인딩은 **롤백용으로 남겨 두지만** 새 코드는 쓰지 않는다.
   // ⚠️ RL_KEY 도 **있어야 하는 값**이다. 없으면 리미터가 세지 않는데(rlBucket 참조),
@@ -153,8 +163,9 @@ const health = (env) => {
   //    로그인은 되는데 **가입만 조용히 막히는** 상태가 된다 — 화면 어디에도 안 보이는 결함이라
   //    여기서 말하지 않으면 아무도 모른다. `DELETION_KEY` 도 같다(없으면 계정 삭제가 503).
   const keys = !!(env.STATE_KEY && env.RL_KEY && env.SIGNUP_STATE_KEY && env.TOMBSTONE_KEY && env.DELETION_KEY);
-  return { ok: true, ready: !!(keys && env.APP_ORIGIN && env.DB && providers.length), providers,
-           signupReady: !!(env.SIGNUP_STATE_KEY && env.TOMBSTONE_KEY) };
+  return { ok: true, ready: !!(keys && env.APP_ORIGIN && env.DB && ledgerBound && providers.length),
+           providers, ledgerBound,
+           signupReady: !!(ledgerBound && env.SIGNUP_STATE_KEY && env.TOMBSTONE_KEY) };
 };
 
 // /ready 전용. 바인딩이 **있다**와 DB 가 **답한다**는 다른 말이다 — 잘못된 database_id 로 배포하면
@@ -454,9 +465,21 @@ const RL_WINDOW = 60_000;
 //    가입 시작은 세션도 계정도 안 만들지만 **제공자 인증 주소를 찍어내는 자리**라 좁아야 한다.
 //    WRITE_ROUTES 에 `/signup` 을 넣지 않는 이유이기도 하다 — 넣으면 한 요청을 두 번 센다.
 const RL_MAX = { login: 10, signup: 10, friends: 20, rotate: 5, write: 120 };
-// 상태를 바꾸는 **실제 라우트**만. 여기 없는 경로는 세지 않고 그냥 404 로 보낸다 —
-// 없는 자리를 두드리는 것으로 우리 DB 쓰기를 유발할 수 있으면 리미터가 공격 도구가 된다.
-const WRITE_ROUTES = /^\/(session|book|me|friends)(\/|$)/;
+// 어느 라우트가 어느 버킷을 쓰는지는 **ROUTES 표 하나**가 정한다. 없는 경로는 표에 없으므로
+// 세기 전에 404 다 — 없는 자리를 두드려 우리 DB 쓰기를 유발할 수 있으면 리미터가 공격 도구가 된다.
+//
+// ⚠️ **등록되지 않은 버킷은 조용히 넘어가지 않는다.** 예전에는 `RL_MAX[bucket] ?? RL_MAX.write`
+//    였고, 그래서 오타 하나 또는 새 버킷 하나가 **아무도 모르게 한도 120** 을 물려받았다 —
+//    실제로 `auth` 버킷이 그랬고 **한 번도 먼저 막은 적이 없었다.** 좁으라고 만든 버킷이
+//    넓어지는 방향이라, 틀리면 곧바로 터지는 쪽이 맞다.
+// ⚠️ `in`·`[]` 이 아니라 **자기 속성**만 본다. `RL_MAX["__proto__"]`·`["constructor"]` 는
+//    프로토타입 체인에서 값이 나와 검사를 통과하고, 그 값은 숫자가 아니라 비교가 늘 거짓이 된다
+//    (= 무제한). 이름 하나로 리미터를 끄는 길이다.
+export const rlMax = (bucket) => {
+  if (typeof bucket !== "string" || !Object.hasOwn(RL_MAX, bucket))
+    throw new Error("unknown rate limit bucket");
+  return RL_MAX[bucket];
+};
 
 // 버킷 이름을 만든다. **평문 SHA-256 이 아니라 비밀키 HMAC 이다.**
 // 왜 바꿨나: IPv4 는 경우의 수가 43억뿐이라 평문 해시는 전부 넣어 보면 풀린다 — 실측에서
@@ -481,6 +504,9 @@ const rlBucket = async (env, msg) => {
 // 리미터가 고장 나면 통과시킨다(fail-open): 남용 방어가 서비스를 멈추는 쪽이 더 나쁘고,
 // 진짜 방어선은 WAF 다. 이 선택을 아는 채로 한다.
 async function limited(env, req, uid, bucket) {
+  // ⚠️ **한도부터 읽는다.** 아래 어느 갈래보다 먼저다 — 모르는 버킷을 들고 온 것은 우리 쪽
+  //    버그이고, fail-open 으로 통과시키면 그 버그가 「리미터 없음」으로 조용히 산다.
+  const max = rlMax(bucket);
   // 바인딩이 생기는 날(Workers 로 돌아가는 등) 그쪽을 먼저 쓴다 — 엣지가 더 값싸다.
   // ⚠️ **여기도 fail-open 이다.** 전에는 이 갈래만 try 밖에 있어서, 바인딩이 흔들리면
   //    리미터가 요청을 통과시키는 게 아니라 **500 으로 죽였다** — 남용 방어가 서비스 거부가 된다.
@@ -498,7 +524,6 @@ async function limited(env, req, uid, bucket) {
   // ⚠️ 키에 uid·IP **원문을 넣지 않는다.** 남용을 세려고 개인정보를 쌓는 건 목적에 비해 과하다.
   //    (로그에도 남기지 않는다 — 아래 어디에서도 console.log 하지 않는다.)
   const who = uid || req.headers.get("CF-Connecting-IP") || "anon";
-  const max = RL_MAX[bucket] ?? RL_MAX.write;
   const key = await rlBucket(env, `${bucket}|${who}|${Math.floor(now / RL_WINDOW)}`);
   // 키를 못 만들었다 = RL_KEY 가 없다. **평문 해시로 되돌아가지 않고** 세지 않는다(위 rlBucket).
   if (!key) return false;
@@ -610,7 +635,7 @@ async function verifyProvider(env, origin, name, code, state) {
   // 운영 로그로 새는데, 고치는 데 필요한 건 어느 제공자가 무슨 코드로 거절했나뿐이다.
   // ⚠️ 오류 코드도 **제공자가 쓴 문자열**이다. 길이를 우리가 정하지 않으면 남의 서버가
   //    우리 로그 한 줄의 크기를 정한다 — 고치는 데 필요한 건 앞부분뿐이다.
-  const why = (o, ...keys) => String(keys.map((k) => o && o[k]).find(Boolean) || "no-json").slice(0, 80);
+  const why = (o, ...keys) => logSafe(keys.map((k) => o && o[k]).find(Boolean) || "no-json");
   if (!tr || !tr.access_token) {
     console.log("[exchange] token fail", name, why(tr, "error", "error_code"));
     return null;
@@ -848,11 +873,69 @@ const MAINT_READS = [
 ];
 const ALWAYS_OPEN = [/^\/health$/, /^\/ready$/, /^\/policies$/];
 
+// ⚠️ **모드별 허용을 전부 적는다.** 예전에는 마지막 줄이 `return MAINT_READS.some(...)` 이라
+//    **모르는 모드의 기본값이 「읽기 허용」**이었다 — `unbound`(ledger 미바인딩)가 그 자리로
+//    떨어지면 `GET /book` 이 열린다. 아는 모드만 열고 나머지는 전부 닫는다.
 export function maintenanceAllows(mode, path, method) {
-  if (mode === "open") return true;
   if (ALWAYS_OPEN.some((re) => re.test(path))) return true;
-  if (mode === "restore_closed") return false;             // 허용 목록은 위 셋뿐이다
-  return MAINT_READS.some(([re, m]) => m === method && re.test(path));
+  if (mode === "open") return true;
+  if (mode === "maintenance") return MAINT_READS.some(([re, m]) => m === method && re.test(path));
+  return false;   // restore_closed · unbound · 모르는 모드 — **기본값이 차단**이다
+}
+
+// 게이트가 막았을 때 밖으로 말하는 상태. `unbound` 를 그대로 말하면 인증 없는 응답이
+// "이 배포는 ledger 가 안 붙었다"를 알려주는 셈이 된다 — 그건 설정 정보다.
+const publicMode = (m) => (m === "open" || m === "maintenance" || m === "restore_closed" ? m : "unknown");
+
+// ── 라우트 분류 — **DB 를 만지기 전에** 판정한다 ─────────────────────────
+//
+// 왜 앞으로 왔나(2026-08-19 실측): 임차증을 게이트 바로 뒤에서 **무조건** 땄기 때문에
+// `POST /이런건없다` 하나가 ledger 에 INSERT + DELETE 를 남겼다. 인증도 필요 없었다 —
+// 아무나 없는 주소를 두드려 우리 D1 쓰기 할당량(하루 10만)을 태울 수 있었고, 그게 바닥나면
+// 정상 사용자의 저장이 먼저 죽는다. `/login/kakao` 도 같았다: 302 하나와 서명 하나뿐이라
+// 주 D1 을 한 줄도 안 만지는데 임차증 쓰기 두 번이 났다.
+//
+// 여기서 걸러진 요청은 **주 D1·ledger 어느 쪽에도 한 줄도 쓰지 않는다.**
+//
+//   lease   주 D1 을 만지나(사용자 데이터 또는 `rate_limits`) — 만지면 임차증 하나를 든다
+//   bucket  레이트리밋 버킷. **라우트 하나에 하나다** — 둘을 걸면 요청 하나가 두 번 세어져
+//           D1 쓰기가 두 배가 된다(POST /friends 가 write + friends 로 실제 그랬다)
+const PROVIDER_RE = Object.keys(P).join("|");
+const ROUTES = [
+  [/^\/health$/, ["GET"], false, null],
+  [/^\/ready$/, ["GET"], false, null],
+  [/^\/policies$/, ["GET"], false, null],
+  // 로그인 시작. **DB 를 아예 안 만진다** — 302 하나와 서명 하나다(그래서 세지도 않는다).
+  // 모르는 제공자 이름은 여기서 안 걸린다 = 알 수 없는 라우트 = 404, 쓰기 0건.
+  [new RegExp(`^/login/(?:${PROVIDER_RE})$`), ["GET"], false, null],
+  [/^\/signup\/start$/, ["POST"], true, "signup"],
+  [new RegExp(`^/(?:cb|exchange)/(?:${PROVIDER_RE})$`), ["GET"], true, "login"],
+  [/^\/session$/, ["DELETE"], true, "write"],
+  [/^\/book$/, ["GET"], true, null],
+  [/^\/book$/, ["PUT"], true, "write"],
+  [/^\/me$/, ["GET"], true, null],
+  [/^\/me$/, ["PUT", "DELETE"], true, "write"],
+  // ⚠️ `GET /friends` 는 읽기처럼 보이지만 초대 코드가 없으면 그 자리에서 만든다(myCode).
+  [/^\/friends$/, ["GET"], true, null],
+  [/^\/friends$/, ["POST"], true, "friends"],
+  [/^\/friends\/code$/, ["POST"], true, "rotate"],
+  [/^\/friends\/[^/]+\/book$/, ["GET"], true, null],
+  [/^\/friends\/[^/]+$/, ["PUT", "DELETE"], true, "write"],
+];
+
+// 표가 실제로 쓰는 버킷 전부. 테스트가 이것과 `RL_MAX` 를 대조한다 — 표에 새 버킷을 적고
+// 한도 등록을 잊으면 `rlMax()` 가 던지므로, 그 실패를 사용자가 아니라 테스트가 먼저 본다.
+export const routeBuckets = () => [...new Set(ROUTES.map(([, , , b]) => b).filter(Boolean))];
+
+// 모르는 경로·허용되지 않은 method 는 `null`. 부르는 쪽은 그때 **아무것도 하기 전에** 404 다.
+export function routeFor(method, path) {
+  // `HEAD` 는 `GET` 과 같은 라우트다. 런타임이 본문을 떼고 보내므로 판정을 갈라 둘 이유가 없고,
+  // 가르면 `curl -sI` 로 확인하라고 적어 둔 절차(worker/SETUP.md)가 404 를 받는다.
+  const m = method === "HEAD" ? "GET" : method;
+  for (const [re, methods, lease, bucket] of ROUTES) {
+    if (methods.includes(m) && re.test(path)) return { lease, bucket };
+  }
+  return null;
 }
 
 // 로그에 남길 경로. **id 자리를 지운다.** `/friends/<uid>` 를 그대로 찍으면 운영 로그가
@@ -861,20 +944,16 @@ export function maintenanceAllows(mode, path, method) {
 export const pathTemplate = (p) =>
   p.replace(/^\/api/, "").replace(/^\/friends\/(?!code$)[^/]+/, "/friends/:id");
 
-// 임차증을 **따지 않는** 경로. 여기 넣는 근거는 셋을 다 만족해야 한다:
-//   ① 사용자 데이터를 읽지도 쓰지도 않는다(행 내용을 만지지 않는다)
+// 임차증을 **따지 않는** 라우트(위 표의 `lease:false`). 그 근거는 셋을 다 만족해야 한다:
+//   ① 주 D1 을 읽지도 쓰지도 않는다(`rate_limits` 도 주 D1 이다 — 만지면 임차증을 든다)
 //   ② 복원 중에도 답해야 한다 — 운영자가 상태를 볼 수단이 이것뿐이다
 //   ③ 읽기 전용이라 복원본을 오염시킬 수 없다
 //
-//   /health    설정이 있나 없나만. DB 를 아예 안 본다
-//   /ready     `COUNT(*)` 집계만 본다. **행 내용을 읽지 않는다.** 여기서 임차증을 따면
-//              `restore_closed` 에서 획득이 거부돼 운영자가 상태를 못 보게 된다
-//   /policies  우리가 빌드에 박은 상수. DB 를 안 본다
-//
-// ⚠️ `rate_limits` 는 사용자 데이터가 아니라 **운영 메타데이터**지만 제외 목록에 넣지 않았다.
-//    `limited()` 는 위 셋 말고는 모든 경로에서 불리므로, 임차증을 게이트 **바로 뒤**에 두면
-//    자동으로 함께 추적된다. 굳이 빼서 「추적 안 되는 쓰기」를 하나 만들 이유가 없다.
-const LEASE_FREE = [/^\/health$/, /^\/ready$/, /^\/policies$/];
+//   /health         설정이 있나 없나만. DB 를 아예 안 본다
+//   /ready          `COUNT(*)` 집계만 본다. **행 내용을 읽지 않는다.** 여기서 임차증을 따면
+//                   `restore_closed` 에서 획득이 거부돼 운영자가 상태를 못 보게 된다
+//   /policies       우리가 빌드에 박은 상수. DB 를 안 본다
+//   /login/:제공자  302 와 서명 하나. **세지도 않는다**(위 표의 bucket 이 null 인 이유)
 
 // 정리 크론이 **연속 몇 번** 실패하면 경보인가. 1~2회는 D1 의 일시 오류로도 난다 —
 // 그때마다 경보하면 사람이 경보를 무시하게 되고, 그게 진짜 고장을 지나치는 길이다.
@@ -894,31 +973,44 @@ export default {
     const path = url.pathname.replace(/^\/api/, "").replace(/\/$/, "");
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors(env, req) });
 
+    // ── 0-0. 이 주소가 실제로 있나 ──
+    // **게이트·임차증·리미터보다 먼저다.** 셋 다 DB 를 쓰므로, 없는 주소가 그 앞을 지나가면
+    // 인증 없는 요청 하나가 주 D1·ledger 에 쓰기를 만든다(2026-08-19 실측 · 아래 ROUTES 주석).
+    // 여기서 돌아가는 응답은 어느 DB 도 만지지 않는다.
+    const rt = routeFor(req.method, path);
+    if (!rt) return new Response("shhh! api", { status: 404, headers: cors(env, req) });
+
     // ── 0-1. 유지보수 게이트 ──
     // **`limited()` 보다 먼저** 온다. 뒤에 두면 리미터가 rate_limits 에 쓴다.
     // **세션 인증(`whoAmI`)보다도 먼저** 온다 — `restore_closed` 에서 인증을 한 번이라도
     // 시도하면 되살아난 `sessions` 행을 조회하게 되고, 그 결과가 타이밍·오류로 새어 나간다.
     // ⚠️ ledger 질의가 **실패하면 막는다.** 그건 「열려 있다」가 아니라 「모른다」이고,
     //    모를 때 게이트를 여는 것은 게이트가 없는 것과 같다.
+    // ⚠️ 질의가 실패해도 `/health`·`/ready`·`/policies` 는 답해야 한다 — 운영자가 「무엇이
+    //    고장 났나」를 볼 수단이 그것뿐이고, 셋 다 게이트와 무관하게 늘 열린 자리다.
+    //    나머지는 아래 `maintenanceAllows` 가 `unknown` 을 막는다(모르면 닫는다).
     let gate;
     try {
       gate = await readMode(env);
     } catch {
-      return json(env, req, { error: "잠시 점검 중이에요", mode: "unknown" }, 503,
-        { "Retry-After": "60" });
+      gate = { mode: "unknown", epoch: 0, bound: !!env.LEDGER };
     }
     if (!maintenanceAllows(gate.mode, path, req.method)) {
       // 무엇을·왜 복원하는지는 말하지 않는다. 「지금 안 된다」와 「언제 다시 와라」만 말한다.
-      return json(env, req, { error: "잠시 점검 중이에요. 조금 뒤에 다시 열어주세요", mode: gate.mode },
+      return json(env, req, { error: "잠시 점검 중이에요. 조금 뒤에 다시 열어주세요", mode: publicMode(gate.mode) },
         503, { "Retry-After": "60" });
     }
 
     // ── 0-1-1. 요청 임차증 ──
     // 세션 인증보다 **먼저** 딴다. 인증이 먼저 지나가면 `sessions`·`users` 조회가 추적 밖이다.
-    // ledger 바인딩이 없으면 딸 수 없다 — 그때는 `/api/ready` 가 `ledger:false` 로 시끄럽게 말하고,
-    // 복원은 어차피 금지다(`restoreGate`). 없는 것을 있는 척하지 않는다.
+    // ⚠️ **바인딩이 없으면 여기까지 오지 못한다** — `unbound` 모드에서 `lease:true` 인 라우트는
+    //    위 게이트가 전부 503 이다. 그래도 한 번 더 본다(두 번째 자물쇠): 이 검사가 빠지면
+    //    바인딩 없는 배포가 다시 추적 밖에서 사용자 데이터를 만지게 된다.
     let lease = null;
-    if (env.LEDGER && !LEASE_FREE.some((re) => re.test(path))) {
+    if (rt.lease) {
+      if (!env.LEDGER)
+        return json(env, req, { error: "잠시 점검 중이에요. 조금 뒤에 다시 열어주세요", mode: "unknown" },
+          503, { "Retry-After": "60" });
       try {
         lease = await acquireLease(env, LEASE_MODES_REQUEST);
       } catch {
@@ -926,18 +1018,18 @@ export default {
           { "Retry-After": "60" });
       }
       if (!lease)
-        return json(env, req, { error: "잠시 점검 중이에요. 조금 뒤에 다시 열어주세요", mode: gate.mode },
+        return json(env, req, { error: "잠시 점검 중이에요. 조금 뒤에 다시 열어주세요", mode: publicMode(gate.mode) },
           503, { "Retry-After": "60" });
     }
 
     try {
-      return await route(req, env, { url, path, gate, lease });
+      return await route(req, env, { url, path, gate, lease, rt });
     } catch (e) {
       // ⚠️ **경로를 그대로 찍지 않는다.** `/friends/<uid>` 에는 계정 id 가 들어 있어서
       //    운영 로그가 곧 "누가 누구와 친구인가"의 기록이 된다. 고치는 데 필요한 건 어느 **종류**의
       //    요청이 죽었나뿐이라 id 자리를 `:id` 로 바꿔 찍는다. 예외 메시지도 200자에서 자른다
       //    (제공자 응답이 통째로 실려 오는 경우가 있다).
-      console.log("[error]", pathTemplate(new URL(req.url).pathname), String(e && e.message).slice(0, 200));
+      console.log("[error]", pathTemplate(new URL(req.url).pathname), logSafe(e && e.message, 200));
       return json(env, req, { error: "잠시 문제가 생겼어요" }, 500);
     } finally {
       // ⚠️ **여기가 유일한 해제 자리다.** 해제에 실패해도 삼킨다 — 사용자 응답을 바꿀 이유가 없고,
@@ -948,7 +1040,7 @@ export default {
 };
 
 async function route(req, env, rc) {
-    const { url, path, gate, lease } = rc;
+    const { url, path, gate, lease, rt } = rc;
 
     // ── 0. 살아있나 · 설정이 됐나 ──
     // /health 는 **늘 200** 이다(프로세스가 도나). /ready 는 설정이 덜 됐으면 503 이다 —
@@ -997,7 +1089,10 @@ async function route(req, env, rc) {
       const cleanupAlert = !!env.LEDGER
         && (!cl || cl.open_pending > 0 || cl.fail_streak >= CLEANUP_FAIL_ALERT);
       const r = {
-        ok: true, mode: gate.mode, configReady: h.ready, db, ledger,
+        ok: true, mode: publicMode(gate.mode), configReady: h.ready, db,
+        // ⚠️ **바인딩이 없다**와 **붙었는데 스키마가 없다**를 한 값으로 말하지 않는다.
+        //    둘 다 「못 쓴다」지만 고치는 방법이 다르다(바인딩 등록 vs migration).
+        ledgerBound: h.ledgerBound, ledger,
         signupReady: h.signupReady, providers: h.providers, cleanupStale, cleanupAlert,
         // ⚠️ `cleanupAlert` 도 `ready` 를 내리지 않는다 — `cleanupStale` 과 같은 판단이다.
         //    정리가 밀린 것은 보유기간 문제이지 사용자가 앱을 못 쓰는 상태가 아니다.
@@ -1161,7 +1256,8 @@ async function route(req, env, rc) {
 
         const code = url.searchParams.get("code");
         if (!code) {
-          if (!viaApp) console.log("[cb] no code", name, url.searchParams.get("error"));
+          // ⚠️ `error` 는 **제공자가 URL 에 실어 보낸 문자열**이다 — 길이도 내용도 우리 것이 아니다.
+          if (!viaApp) console.log("[cb] no code", name, logSafe(url.searchParams.get("error")));
           return viaApp ? fail("취소됐어요", 400) : fail(null, 302, st.back + "#login=denied");
         }
 
@@ -1250,7 +1346,10 @@ async function route(req, env, rc) {
     //    ⚠️ **실제로 있는 라우트에만 건다.** 전에는 인증만 통과하면 어느 경로든 셌다 —
     //       `/이런건없다` 로 POST 를 퍼부으면 404 를 받으면서 D1 쓰기를 유발할 수 있었다.
     //       리미터가 자원을 쓰는 이상, 리미터를 부를지 말지도 방어의 일부다.
-    if (req.method !== "GET" && WRITE_ROUTES.test(path) && (await limited(env, req, uid, "write")))
+    //    ⚠️ **버킷은 라우트 표가 정한다**(위 ROUTES). 예전에는 여기서 `WRITE_ROUTES` 로 한 번
+    //       세고 `POST /friends`·`POST /friends/code` 가 자기 버킷으로 **또** 셌다 —
+    //       요청 하나에 D1 쓰기 두 번이고, 막는 것은 좁은 쪽 하나뿐이라 넓은 쪽은 값만 태웠다.
+    if (rt.bucket === "write" && (await limited(env, req, uid, "write")))
       return tooMany(env, req);
 
     // 로그아웃 — 이 계정의 로그인을 **전부** 끊는다(세대를 올린다). 쿠키도 그 자리에서 지운다.

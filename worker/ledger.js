@@ -37,11 +37,16 @@ export const LEASE_TTL = 120e3;
 // ── 유지보수 게이트 ──────────────────────────────────────────────────────
 // 게이트의 진실 원본은 **이 행 하나**다. 환경변수가 아닌 이유: 환경변수는 배포 세대마다
 // 다르게 전파되고, 이 저장소는 프로덕션 별칭이 배포 직후 약 1분간 옛 응답을 주는 것을 실측했다.
+// 바인딩이 아예 없을 때 돌려주는 모드. **`open` 이 아니다.**
+// ⚠️ 2026-08-19 까지는 여기서 `open` 을 돌려줬고, 그것이 fail-open 이었다: `LEDGER` 를 빠뜨린
+//    배포가 게이트도 임차증도 없이 사용자 데이터를 읽고 썼다(재현 — `GET /book`·`PUT /book`
+//    둘 다 200). 「게이트는 복원 중에만 뜻이 있다」는 근거는 **드러난 뒤에야** 참이다:
+//    바인딩이 없으면 삭제 표식도 못 남기고 drain 도 못 세므로, 그 배포는 애초에 사용자
+//    데이터를 만지면 안 된다. 지금은 `unbound` 를 돌려주고 `maintenanceAllows()` 가 막는다.
+export const MODE_UNBOUND = "unbound";
+
 export async function readMode(env) {
-  // 바인딩이 아예 없다 = ledger 를 아직 안 붙였다. 그때는 **열림으로 본다** —
-  // 게이트가 뜻을 갖는 것은 복원 작업 중뿐이고, 복원은 지금 운영상 금지다.
-  // 대신 `/api/ready` 가 `ledger:false` 로 시끄럽게 말한다(있는 척하지 않는다).
-  if (!env.LEDGER) return { mode: "open", epoch: 0, bound: false };
+  if (!env.LEDGER) return { mode: MODE_UNBOUND, epoch: 0, bound: false };
   // ⚠️ 바인딩이 **있는데 질의가 실패**하면 열림으로 떨어지지 않는다. 그건 「모른다」이고,
   //    모를 때 게이트를 여는 것은 게이트가 없는 것과 같다.
   const r = await env.LEDGER.prepare("SELECT mode, epoch FROM maintenance WHERE id = 1").first();
