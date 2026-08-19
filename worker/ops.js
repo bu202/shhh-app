@@ -10,27 +10,47 @@ import { activeLeases, drainState, pendingTotalCount, DELETION_KEY_VERSION, CONF
 // ── 유지보수 전환 ────────────────────────────────────────────────────────
 // **epoch 를 함께 올린다.** 이 순간부터 새 lease 를 딸 수 없고, 옛 epoch 의 lease 를 든
 // 요청은 fencing 을 통과하지 못한다.
+// **사용자 데이터 읽기가 열리는 모드.** `restore_closed` 에서 이쪽으로 가는 **모든** 길에
+// 같은 재개방 검증이 걸린다.
+//
+// ⚠️ 2026-08-19 까지는 `restore_closed → open` 하나만 검사했다. 그런데 `maintenance` 도
+//    `GET /book`·`GET /me`·`GET /friends/:id/book` 을 **허용하는 상태**다(index.js 의
+//    `MAINT_READS`). 그래서 재삭제도 잔여 확인도 없이 한 칸 옆으로 옮기면 되살아난 탈퇴자의
+//    단어장이 그대로 200 으로 읽혔다 — 자물쇠를 부순 것이 아니라 **옆문으로 걸어 나간** 것이다
+//    (재현 R1 · 위협 43). 그래서 판정 기준을 「목적지가 open 인가」가 아니라
+//    **「목적지가 사용자 데이터를 읽게 하는가」**로 바꿨다.
+const READS_USER_DATA = new Set(["open", "maintenance"]);
+const MODES = ["open", "maintenance", "restore_closed"];
+
 export async function setMode(env, mode, { now = Date.now(), markFns = [] } = {}) {
-  if (!["open", "maintenance", "restore_closed"].includes(mode)) throw new Error("unknown mode: " + mode);
+  if (!MODES.includes(mode)) throw new Error("unknown mode: " + mode);
   const cur = await gateRow(env);
-  // ⚠️ **`restore_closed` 에서 `open` 으로 가는 길에만 자물쇠가 있다.** 그 전환이 곧
-  //    「되살아난 탈퇴자의 단어장을 다시 읽을 수 있게 한다」이기 때문이다(위협 36).
-  //    사전점검을 부르지 않고 이 함수만 부르면 검사를 통째로 건너뛸 수 있었다 —
-  //    그래서 여기서 **그 자리에서 만든 보고서**를 요구한다. 손으로 만든 객체는 통과하지
-  //    못한다: `reopenReport()` 가 붙여 주는 epoch·발행 시각을 지금 게이트와 대조한다.
-  if (cur && cur.mode === "restore_closed" && mode === "open") {
+  if (cur && cur.mode === "restore_closed" && READS_USER_DATA.has(mode)) {
     // ⚠️ **보고서를 받아서 믿지 않는다. 여기서 다시 돌린다.** 받아서 믿으면 `{canReopen:true}`
     //    한 줄이 곧 통과다 — 검사를 인자로 우회하는 그 무늬가 정확히 restoreGate 에서
-    //    고친 것이다(2026-08-19). 받는 것은 판정이 아니라 **키 재료**(markFns)뿐이다.
+    //    고친 것이다(2026-08-19). 이제 **인자 자체가 없다**: 키 재료도 코드가 소유한다.
     const rep = await reopenReport(env, { markFns, now });
     if (!rep.canReopen)
-      throw new Error("restore_closed 를 열 수 없다 — " + (rep.why.join(" · ") || "canReopen 이 거짓이다"));
+      throw new Error("restore_closed 에서 읽기를 다시 열 수 없다 — "
+        + (rep.why.join(" · ") || "canReopen 이 거짓이다"));
+    // ⚠️ **`maintenance` 로 곧장 가지 않는다.** 검증을 통과했다면 갈 곳은 `open` 이고,
+    //    거기서 다시 `maintenance` 로 내리면 된다. 길을 하나로 두면 「어느 길에 자물쇠가
+    //    빠졌나」를 세지 않아도 된다 — 빠뜨림이 생기는 자리가 애초에 없다.
+    if (mode !== "open")
+      throw new Error("restore_closed 에서는 open 으로만 나간다 — "
+        + `${mode} 로 가려면 open 을 거친다(읽기가 열리는 전환은 한 길뿐이다)`);
   }
-  await env.LEDGER.prepare(
+  // ⚠️ **판정에 쓴 게이트가 그 사이에 바뀌었으면 쓰지 않는다(CAS).** 재개방 판정은 질의 여러
+  //    번이라 그 동안 다른 운영자가 전환할 수 있고, 그러면 사람이 본 근거와 실제 상태가 갈린다.
+  //    `mode` 와 `epoch` 을 함께 조건에 넣어 **닫히는 쪽으로** 실패시킨다.
+  const r = await env.LEDGER.prepare(
     `UPDATE maintenance SET mode = ?, epoch = epoch + 1,
             closed_at = CASE WHEN ? = 'open' THEN NULL ELSE ? END,
             drained_at = NULL
-      WHERE id = 1`).bind(mode, mode, now).run();
+      WHERE id = 1 AND mode = ? AND epoch = ?`)
+    .bind(mode, mode, now, cur.mode, cur.epoch).run();
+  if (!(r.meta && r.meta.changes))
+    throw new Error("유지보수 전환이 경합했다 — 판정에 쓴 epoch 이 이미 바뀌었다. 다시 판정한다");
   return await gateRow(env);
 }
 
