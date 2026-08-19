@@ -91,8 +91,25 @@ const SAFE_EXT = /\.(html|css|js|json|png|jpg|jpeg|svg|webmanifest|woff2?)$/i;
 // 로그인 왕복에 쓰이는 이름들. 하나라도 있으면 그 주소는 캐시에 넣지 않는다.
 const AUTH_PARAMS = ["code", "state", "login", "n", "token", "error"];
 
+// 우리가 그림을 받아 오는 곳. **호스트 하나뿐이고 경로도 본다.**
+const IMG_ORIGIN = "https://sldict.korean.go.kr";
+const IMG_PATH = /^\/multimedia\//;
+
 function cacheable(req, res) {
-  if (!res || !res.ok || res.type === "opaqueredirect") return false;   // 실패·리다이렉트는 안 넣는다
+  if (!res) return false;
+  // ⚠️ **opaque 를 캐시하지 않는다**(2026-08-19 에 이유를 적었다). `<img src>` 로 받는 바깥
+  //    origin 응답은 no-cors 라 브라우저가 `type:"opaque"`·`ok:false`·`status:0` 으로 준다 —
+  //    **성공인지 404 인지 우리가 알 수 없다.** 넣으면 오류 페이지가 성공처럼 캐시되어,
+  //    이 파일이 이미 한 번 고친 「실패 응답이 오프라인에서 되살아난다」가 그대로 재발한다.
+  //    (`!res.ok` 만으로도 걸리지만, 그러면 **왜** 안 넣는지가 코드에 없다.)
+  // ⚠️ 그래서 **바깥 origin 의 수형 그림은 오프라인에서 안 뜬다.** 예전 주석은 반대로 적혀
+  //    있었는데, 그건 이 조건이 생기기 전의 이야기가 아니라 **한 번도 참인 적이 없었다** —
+  //    `ok:false` 는 처음부터 여기서 걸렸고, 테스트만 `{ok:true, type:"basic"}` 이라는
+  //    실제로 오지 않는 응답을 넣어 통과시키고 있었다. 고치려면 그림을 우리 origin 으로
+  //    옮기거나(같은 origin 이면 `basic` 이라 상태를 읽을 수 있다) CORS 를 요청해야 한다 —
+  //    둘 다 이번 범위 밖이라 **지금 사실을 그대로 적어 둔다**(docs/OPS_RUNBOOK.md 「남은 것」).
+  if (res.type === "opaque" || res.type === "opaqueredirect") return false;
+  if (!res.ok) return false;                                            // 실패 응답은 안 넣는다
   const u = new URL(req.url);
   if (u.origin === self.location.origin) {
     if (u.pathname.startsWith(API_PATH)) return false;                  // 개인 응답
@@ -100,9 +117,13 @@ function cacheable(req, res) {
     if (u.search) return false;                                         // 그 밖의 쿼리도 안 넣는다(캐시가 무한히 는다)
     return u.pathname === "/" || u.pathname.endsWith("/") || SAFE_EXT.test(u.pathname);
   }
-  // 수형 그림만 예외다. 이걸 빼면 **본 적 있는 손 그림이 오프라인에서 안 뜬다**(함정 58 참조).
-  // 공개된 사전 이미지라 개인정보가 아니고, 주소에 우리 사용자 정보가 실리지도 않는다.
-  return u.origin === "https://sldict.korean.go.kr" && SAFE_EXT.test(u.pathname);
+  // 수형 그림만 바깥 origin 예외다. 공개된 사전 이미지라 개인정보가 아니고, 주소에 우리
+  // 사용자 정보가 실리지도 않는다. **호스트·경로·확장자 셋 다** 봐야 통과한다 —
+  // 같은 호스트의 추적 주소(`/track?uid=…`)까지 넣지 않기 위해서다.
+  // ⚠️ 위 opaque 조건 때문에 `<img>` 로 온 응답은 여기까지 오지 않는다. 이 갈래가 살아 있는
+  //    이유는 언젠가 CORS 로 받거나 우리 origin 으로 옮겼을 때 **허용 범위가 이미 좁아야**
+  //    하기 때문이다. 그때 「일단 다 넣고 나중에 좁히자」가 되면 SW 가 남의 사이트 캐시가 된다.
+  return u.origin === IMG_ORIGIN && IMG_PATH.test(u.pathname) && SAFE_EXT.test(u.pathname);
 }
 
 self.addEventListener("fetch", (e) => {
