@@ -22,6 +22,72 @@ export async function deletionMark(env, uid) {
 // 키를 돌리면 이 숫자를 올리고 새 표식만 새 키로 만든다. 옛 표식은 보유기간 동안 그대로 둔다.
 export const DELETION_KEY_VERSION = 1;
 
+// ── 표식을 만드는 함수의 **레지스트리** ──────────────────────────────────
+//
+// ⚠️ 2026-08-19 까지는 `reopenReport(env, { markFns })`·`reconcile(env, { mark })` 가 **호출자가
+//    넘긴 임의의 실행 함수**로 삭제 증거를 만들었다. 주석에는 「틀린 함수를 주면 대상이 늘어나지
+//    줄지 않는다」고 적혀 있었는데 **정확히 반대**였다: 표식이 안 맞으면 확정 표식 집합과의
+//    교집합이 비어 재삭제 대상이 **0** 이 되고, 잔여도 0 · 살아 있는 계정도 0 이라
+//    `canReopen: true` 가 나왔다. 상수를 돌려주는 함수 하나로 되살아난 탈퇴자를 못 본 척할 수 있었다.
+//
+// 그래서 **코드가 키 재료를 소유한다.** 밖에서 받는 것은 아무것도 없다.
+// 키 회전을 미래를 위해 미리 만들지 않는다 — 지금 지원하는 버전은 **하나뿐**이고,
+// ledger 에 그 밖의 버전이 하나라도 있으면 자동 판정은 **거부**한다(아래 evidenceUsable).
+export const DELETION_MARKERS = new Map([[DELETION_KEY_VERSION, deletionMark]]);
+
+// ── 키가 그때 그 키인가 ──────────────────────────────────────────────────
+//
+// 인자를 막아도 **`env.DELETION_KEY` 자체가 다른 배포**에서는 같은 착시가 난다: 표식이 하나도
+// 안 맞아 「다 지워졌다」로 보이고, reconciliation 은 **살아 있는 계정의 pending 을 승격**한다
+// (재현 R4). HMAC 은 역산할 수 없으니 표식으로는 키를 검증할 수 없다 — 그래서 표식을 처음
+// 남길 때 **키 검사값**을 함께 적어 두고, 나중에 그것과 대조한다.
+//
+// ⚠️ 검사값은 uid 를 담지 않는다. 고정 문자열 하나의 HMAC 이라 여기서 새는 개인정보가 없다.
+const KEY_CHECK_MSG = "shhh!/deletion-key-check/v";
+const keyCheck = async (env, version = DELETION_KEY_VERSION) => {
+  if (!env.DELETION_KEY) throw new Error("DELETION_KEY not configured");
+  const k = await crypto.subtle.importKey("raw", ENC.encode(env.DELETION_KEY),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return b64u(await crypto.subtle.sign("HMAC", k, ENC.encode(KEY_CHECK_MSG + version)));
+};
+
+// 처음 쓰는 키면 적어 두고(TOFU), 이미 적혀 있으면 **같은 키인지 확인한다.**
+// 다르면 **던진다** — 옛 증거와 어긋나는 키로 새 표식을 남기면 그 두 벌은 영원히 대조되지 않는다.
+export async function rememberDeletionKey(env, now = Date.now()) {
+  const want = await keyCheck(env);
+  await env.LEDGER.prepare(
+    "INSERT OR IGNORE INTO deletion_keys (key_version, key_check, created_at) VALUES (?, ?, ?)")
+    .bind(DELETION_KEY_VERSION, want, now).run();
+  const row = await env.LEDGER.prepare(
+    "SELECT key_check FROM deletion_keys WHERE key_version = ?").bind(DELETION_KEY_VERSION).first();
+  if (!row || row.key_check !== want) throw new Error("DELETION_KEY mismatch");
+}
+
+// **자동 판정을 해도 되는 상태인가.** 셋을 본다. 하나라도 아니면 사람이 봐야 한다.
+//   ① ledger 의 key_version 이 전부 레지스트리에 있다   ② 표식이 있으면 키 검사값이 적혀 있다
+//   ③ 지금 env 의 키가 그 검사값과 같다
+// 표식이 하나도 없으면 판정할 것도 없으므로 통과다(빈 ledger 로 시작한 배포가 여기서 막히면
+// 유지보수 명령을 아예 못 쓴다).
+export async function deletionEvidenceUsable(env) {
+  const why = [];
+  const { results } = await env.LEDGER.prepare(
+    "SELECT DISTINCT key_version AS v FROM deletions").all();
+  const versions = (results || []).map((r) => r.v);
+  const unknown = versions.filter((v) => !DELETION_MARKERS.has(v));
+  if (unknown.length) why.push(`모르는 삭제 key_version ${unknown.join(",")} 이 있다 — 그 표식은 대조할 수 없다`);
+  if (versions.length) {
+    let want = null;
+    try { want = await keyCheck(env); } catch { why.push("DELETION_KEY 가 없다 — 표식을 대조할 수 없다"); }
+    if (want !== null) {
+      const row = await env.LEDGER.prepare(
+        "SELECT key_check FROM deletion_keys WHERE key_version = ?").bind(DELETION_KEY_VERSION).first();
+      if (!row) why.push("삭제 키 검사값이 기록돼 있지 않다 — 지금 키가 그때 그 키인지 알 수 없다");
+      else if (row.key_check !== want) why.push("지금 DELETION_KEY 가 표식을 만든 키와 다르다");
+    }
+  }
+  return { ok: why.length === 0, why };
+}
+
 // pending 이 이 시간을 넘도록 확정되지 않으면 **경보**다. 지우는 시각이 아니다.
 export const PENDING_ALERT = 24 * 3600e3;
 // 확정된 표식을 얼마나 들고 있나. **기술적 보수 계산값이고 법정 보유기간이 아니다** —
@@ -146,6 +212,10 @@ export async function activeLeases(env, now = Date.now()) {
 // ── 삭제 표식 ────────────────────────────────────────────────────────────
 // pending 을 남긴다. 같은 사람이 두 번 눌러도 행은 하나다.
 export async function markPending(env, lease, mark, now = Date.now()) {
+  // **키 검사값을 먼저 세운다.** 표식을 남기기 전에 「지금 키가 그때 그 키인가」를 확정해 둬야
+  // 나중에 reconciliation 이 그 표식을 믿고 판정할 수 있다. 다르면 던진다 — 어긋나는 키로
+  // 표식을 더하면 두 벌의 증거가 영원히 대조되지 않는다(위협 44).
+  await rememberDeletionKey(env, now);
   await env.LEDGER.prepare(
     `INSERT INTO deletions (mark, key_version, pending_at, pending_alert_at, expires_at)
      SELECT ?, ?, ?, ?, ? WHERE ${fenced(FENCE)}
@@ -202,7 +272,6 @@ export async function pendingAlertCount(env, now = Date.now()) {
   return r.n;
 }
 
-
 export async function cleanupState(env) {
   if (!env.LEDGER) return null;
   return await env.LEDGER.prepare(
@@ -223,7 +292,8 @@ export async function ledgerAnswers(env) {
       `SELECT (SELECT COUNT(*) FROM deletions WHERE key_version IS NOT NULL)
             + (SELECT COUNT(*) FROM write_leases WHERE expires_at IS NOT NULL)
             + (SELECT COUNT(*) FROM cleanup_runs WHERE id = 1)
-            + (SELECT COUNT(*) FROM maintenance WHERE mode IS NOT NULL) AS n`).first();
+            + (SELECT COUNT(*) FROM maintenance WHERE mode IS NOT NULL)
+            + (SELECT COUNT(*) FROM deletion_keys WHERE key_check IS NOT NULL) AS n`).first();
     return typeof r?.n === "number";
   } catch {
     return false;

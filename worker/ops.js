@@ -5,7 +5,12 @@
 //
 // ⚠️ 여기에는 **강제 진행 플래그가 없다.** `force`·`fallback`·`skipChecks` 를 만들지 않는다 —
 //    한 번 만들면 급할 때 쓰이고, 급할 때가 정확히 쓰면 안 되는 때다.
-import { activeLeases, drainState, pendingTotalCount, DELETION_KEY_VERSION, CONFIRMED_RETENTION } from "./ledger.js";
+import { activeLeases, drainState, pendingTotalCount, DELETION_KEY_VERSION, CONFIRMED_RETENTION,
+         DELETION_MARKERS, deletionEvidenceUsable } from "./ledger.js";
+
+// 표식 함수는 **여기서 만든다.** 밖에서 받지 않는다 — 받는 순간 그 인자가 곧 우회로다(위협 44).
+// 지원하는 버전이 하나뿐이라 배열도 하나지만, 형태를 유지해 두면 회전할 때 여기만 는다.
+const markerFns = (env) => [...DELETION_MARKERS.values()].map((f) => (uid) => f(env, uid));
 
 // ── 유지보수 전환 ────────────────────────────────────────────────────────
 // **epoch 를 함께 올린다.** 이 순간부터 새 lease 를 딸 수 없고, 옛 epoch 의 lease 를 든
@@ -22,14 +27,14 @@ import { activeLeases, drainState, pendingTotalCount, DELETION_KEY_VERSION, CONF
 const READS_USER_DATA = new Set(["open", "maintenance"]);
 const MODES = ["open", "maintenance", "restore_closed"];
 
-export async function setMode(env, mode, { now = Date.now(), markFns = [] } = {}) {
+export async function setMode(env, mode, { now = Date.now() } = {}) {
   if (!MODES.includes(mode)) throw new Error("unknown mode: " + mode);
   const cur = await gateRow(env);
   if (cur && cur.mode === "restore_closed" && READS_USER_DATA.has(mode)) {
     // ⚠️ **보고서를 받아서 믿지 않는다. 여기서 다시 돌린다.** 받아서 믿으면 `{canReopen:true}`
     //    한 줄이 곧 통과다 — 검사를 인자로 우회하는 그 무늬가 정확히 restoreGate 에서
     //    고친 것이다(2026-08-19). 이제 **인자 자체가 없다**: 키 재료도 코드가 소유한다.
-    const rep = await reopenReport(env, { markFns, now });
+    const rep = await reopenReport(env, { now });
     if (!rep.canReopen)
       throw new Error("restore_closed 에서 읽기를 다시 열 수 없다 — "
         + (rep.why.join(" · ") || "canReopen 이 거짓이다"));
@@ -89,11 +94,20 @@ export async function markDrained(env, now = Date.now()) {
 //
 // ⚠️ 그래도 유지보수 모드에서만 돈다. promote-only 는 판정 자체를 안전하게 만든 것이고,
 //    유지보수 요구는 그 위에 얹는 두 번째 자물쇠다. **둘 중 하나만 믿지 않는다.**
-export async function reconcile(env, { mark, now = Date.now(), pageSize = 500 } = {}) {
+// ⚠️ **`mark` 인자를 받지 않는다**(2026-08-19). 받았을 때 무슨 일이 났나(재현 R4): 상수를
+//    돌려주는 함수 하나면 살아 있는 사용자들의 표식 집합이 통째로 어긋나, **계정이 멀쩡히 있는**
+//    pending 이 「계정이 없다 → 삭제는 됐고 기록만 실패했다」로 읽혀 confirmed 로 **승격**됐다.
+//    승격은 되돌릴 수 없다 — 그 뒤로 그 사람은 「지워진 사람」이고 복원 절차는 그를 다시 지운다.
+export async function reconcile(env, { now = Date.now(), pageSize = 500 } = {}) {
   const gate = await gateRow(env);
   if (gate.mode === "open") return { ok: false, why: "maintenance 가 open 이다" };
   const n = await activeLeases(env, now);
   if (n !== 0) return { ok: false, why: `활성 deletion lease ${n}건 — drain 되지 않았다` };
+  // 인자를 막아도 **env 의 키가 다른 배포**에서는 같은 착시가 난다. 그건 표식으로 검증할 수
+  // 없으므로 삭제 때 적어 둔 검사값과 대조한다 — 안 맞으면 **아무것도 하지 않는다**.
+  const usable = await deletionEvidenceUsable(env);
+  if (!usable.ok) return { ok: false, why: usable.why.join(" · ") };
+  const mark = (e, uid) => DELETION_MARKERS.get(DELETION_KEY_VERSION)(e, uid);
 
   // `mark` 는 HMAC 이라 역산할 수 없다. 그래서 반대로 간다 — 주 D1 의 `users.id` 를
   // **페이지 단위로** 읽어 각각 HMAC 하고, 살아 있는 표식 집합을 만든다.
@@ -129,12 +143,16 @@ export async function reconcile(env, { mark, now = Date.now(), pageSize = 500 } 
 // **자동 경로가 아니다.** 시간이 지났다는 이유로는 절대 지우지 않는다.
 // 다섯 조건을 **전부** 만족해야 한다. 특히 ④ — 계정이 여전히 있는지 **그 자리에서 재확인**한다.
 // 재확인 없이 지우면 그 사이에 삭제된 계정의 표식을 지우게 되어 「표식 없는 삭제」가 된다.
-export async function removeStalePending(env, marks, { mark, now = Date.now(), confirmedByOperator = false } = {}) {
+// ⚠️ 여기도 `mark` 인자를 받지 않는다 — 판정이 「계정이 아직 있나」라서 reconcile 과 같은
+//    착시가 그대로 성립한다(재현 R4).
+export async function removeStalePending(env, marks, { now = Date.now(), confirmedByOperator = false } = {}) {
   if (!confirmedByOperator) return { ok: false, why: "운영 판정이 없다 — 자동·시간 기반 제거는 금지다" };
   const gate = await gateRow(env);
   if (gate.mode === "open") return { ok: false, why: "maintenance 가 open 이다" };
   if ((await activeLeases(env, now)) !== 0) return { ok: false, why: "활성 deletion lease 가 있다" };
-  if (typeof mark !== "function") return { ok: false, why: "계정 존재 재확인 수단이 없다" };
+  const usable = await deletionEvidenceUsable(env);
+  if (!usable.ok) return { ok: false, why: usable.why.join(" · ") };
+  const mark = (e, uid) => DELETION_MARKERS.get(DELETION_KEY_VERSION)(e, uid);
 
   // ④ 지금 이 자리에서 다시 훑는다. 위 reconcile 의 결과를 물려받지 않는다 —
   //    그 사이에 상태가 바뀌었을 수 있고, 바뀌었을 때 지우면 안 되는 것이 정확히 이 표식이다.
@@ -272,18 +290,23 @@ export function beginRestore(report) {
 //    인자를 검증하는 새 규칙을 아무리 얹어도 **결국 인자를 믿는 함수**다.
 //    그래서 인자를 없앴다: 대상 집합은 여기서 **주 D1 과 ledger 를 직접 읽어** 만든다.
 //
-// 밖에서 받는 것은 `markFns` 하나뿐이고, 그건 목록이 아니라 **키 재료**다(HMAC 함수).
-// 키는 env 에 있고 이 파일은 그것을 모르므로 받을 수밖에 없다 — 그리고 이것으로는
-// 판정을 유리하게 바꿀 수 없다: 틀린 함수를 주면 대상이 **늘어나지 줄지 않는다**
-// (표식이 안 맞으면 confirmed 집합과 대조되지 않아 잔여가 남은 채로 거부된다).
-export async function reopenReport(env, { markFns = [], now = Date.now() } = {}) {
+// ⚠️ **`markFns` 인자도 없앴다**(2026-08-19 · 재현 R2). 옛 주석은 「틀린 함수를 주면 대상이
+//    늘어나지 줄지 않는다」고 적혀 있었는데 **정확히 반대**였다: 표식이 안 맞으면
+//    `restoreTargets()` 의 교집합이 비어 `targets: 0` 이 되고, 그러면 잔여도 0 · 살아 있는
+//    계정도 0 이라 **`canReopen: true`** 였다. 상수를 돌려주는 함수 하나면 통과였고,
+//    `setMode(env, "open", { markFns })` 까지 그대로 열렸다.
+//    키 재료는 이제 **레지스트리에서 온다**(ledger.js `DELETION_MARKERS`).
+//
+// 남은 인자는 `now` 하나다. 호출자가 넘긴 것으로 판정을 바꿀 수 있는 자리는 없다.
+export async function reopenReport(env, { now = Date.now() } = {}) {
   const gate = await gateRow(env);
   const why = [];
   // ① 지금 모드가 `restore_closed` 인가. open·maintenance 에서 「다시 연다」는 말은 뜻이 없다.
   if (gate.mode !== "restore_closed") why.push(`지금 모드가 ${gate.mode} 다 — restore_closed 에서만 판정한다`);
-  // ② 계정 존재를 다시 확인할 수단이 있나. 없으면 판정하지 않는다(removeStalePending 과 같은 규칙).
-  const usable = Array.isArray(markFns) && markFns.length > 0 && markFns.every((f) => typeof f === "function");
-  if (!usable) why.push("계정 존재 재확인 수단(markFns)이 없다 — 대상 집합을 만들 수 없다");
+  // ② 삭제 증거를 대조할 수 있나. 모르는 key_version 이 있거나 지금 키가 그때 키와 다르면
+  //    표식이 통째로 안 맞아 **「다 지워졌다」로 보인다.** 그때는 판정하지 않는다.
+  const evidence = await deletionEvidenceUsable(env);
+  if (!evidence.ok) why.push(...evidence.why);
   // ③ 지금 이 순간 임차증이 0 인가. **stale 도 0 이어야 한다**(만료는 해제가 아니다).
   const drain = await drainState(env, now);
   if (!drain.drained) why.push(`임차증 ${drain.open}건(stale ${drain.stale}) — 아직 도는 작업이 있다`);
@@ -295,11 +318,13 @@ export async function reopenReport(env, { markFns = [], now = Date.now() } = {})
 
   // ⑤ 재삭제 대상. **여기서 만든다.** 확정 표식은 ledger 에서 직접 읽고, 계정은 주 D1 을
   //    페이지 단위로 훑어 키 버전마다 HMAC 해서 대조한다(restoreTargets).
+  //    ⚠️ 증거를 못 믿는 상태에서도 **대상 산출은 그대로 돌린다** — 그래야 「지금 키로 보이는
+  //       대상」이 보고서에 남고, 0 이 나와도 위 ②가 이미 거부하고 있다.
   let targets = [], scanned = 0;
-  if (usable) {
+  {
     const { results } = await env.LEDGER.prepare(
       "SELECT mark, key_version, confirmed_at FROM deletions WHERE confirmed_at IS NOT NULL").all();
-    const userMarks = await scanUserMarks(env, markFns);
+    const userMarks = await scanUserMarks(env, markerFns(env));
     scanned = userMarks.length;
     targets = restoreTargets(userMarks, results || []);
   }
