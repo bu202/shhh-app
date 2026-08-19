@@ -46,11 +46,27 @@ no(O + "/index.html", null);
 no(O + "/index.html?t=123");
 no(O + "/data/ksl-dict.json?v=2");
 
-// 6. 수형 그림만 바깥 origin 예외다. 이걸 빼면 본 적 있는 손 그림이 오프라인에서 안 뜬다(함정 58).
-yes("https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20200409/IMG000227009.jpg");
+// 6. ⚠️ **바깥 origin 의 수형 그림은 캐시되지 않는다.** `<img src>` 로 받으면 no-cors 라
+//    브라우저가 opaque(`ok:false`·`status:0`)로 주고, opaque 는 성공인지 404 인지 알 수 없다 —
+//    넣으면 오류 페이지가 성공처럼 되살아난다(이 파일이 이미 한 번 고친 결함이다).
+//    2026-08-19 까지 이 자리에는 `{ok:true, type:"basic"}` 이라는 **실제로 오지 않는 응답**을
+//    넣어 「캐시된다」고 통과시키는 단언이 있었다. 그건 오프라인 동작을 재는 것이 아니라
+//    Node 목이 우리가 바라는 답을 하도록 시킨 것이다.
+const IMG = "https://sldict.korean.go.kr/multimedia/multimedia_files/convert/20200409/IMG000227009.jpg";
+const opaque = { ok: false, status: 0, type: "opaque" };
+no(IMG, opaque);
+no(IMG, { ok: false, status: 0, type: "error" });
+// 같은 주소라도 **우리 origin 으로 옮겨 오면**(또는 CORS 로 받으면) 캐시된다 — 그때 허용
+// 범위가 이미 좁아야 하므로, 호스트·경로·확장자 셋을 다 보는지는 여기서 계속 잰다.
+yes(IMG);
+no("https://sldict.korean.go.kr/board/notice.jpg");        // 허용 경로(/multimedia/)가 아니다
+no("https://sldict.korean.go.kr/multimedia/x.php");        // 허용 확장자가 아니다
 // 7. 그 밖의 바깥 주소는 안 넣는다. 아무 origin 이나 캐시하면 SW 가 남의 사이트 캐시가 된다.
 for (const u of ["https://evil.example/x.js", "https://cdn.jsdelivr.net/npm/a.mjs",
-                 "https://sldict.korean.go.kr/track?uid=1"]) no(u);
+                 "https://sldict.korean.go.kr/track?uid=1",
+                 "https://sldict.korean.go.kr.evil.example/multimedia/a.jpg"]) no(u);
+// 우리 origin 의 정상 응답도 opaque 로 오면 안 넣는다(있을 수 없지만 규칙은 하나여야 한다).
+no(O + "/js/app.js", opaque);
 
 // 8. 선캐시 목록에 API 나 쿼리가 섞여 들어가지 않았는지. 섞이면 install 의 addAll 이
 //    통째로 실패해 SW 가 아예 안 붙는다.

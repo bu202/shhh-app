@@ -18,7 +18,7 @@ import {
 import {
   setMode, markDrained, reconcile, removeStalePending, mergeDeletions, restoreTargets,
   scanUserMarks, restoreGate, beginRestore, RESTORE_CONDITIONS, RESTORE_STATE, reopenReport,
-  drainReport,
+  drainReport, restorePreflight,
 } from "../worker/ops.js";
 import { makeD1, makeLedger } from "./_d1.mjs";
 
@@ -393,15 +393,27 @@ const call = (env, token, path, method = "GET") => worker.fetch(new Request("htt
   //   사람이 기억해야 도는 규칙은 언젠가 잊힌다.
   const g = restoreGate();
   assert.equal(g.allowed, false, t("T7: 아직 미충족이 남았는데 복원이 허용된다"));
+  assert.equal(g.restoreAllowed, false, t("T7: 앱 코드가 복원을 허용한다고 말한다"));
+  assert.match(g.why, /사전점검|막지 못한다/, t("T7: 이 검사가 무엇인지(사전점검) 말하지 않는다"));
   assert.throws(() => beginRestore(), /RESTORE_FORBIDDEN|금지/, t("T7: 복원 절차가 시작됐다"));
-  // **부분 충족은 충족이 아니다.** 하나만 빼도 여전히 거부여야 한다.
-  const almost = Object.fromEntries(RESTORE_CONDITIONS.map(([k]) => [k, true]));
-  for (const [k] of RESTORE_CONDITIONS) {
-    assert.equal(restoreGate({ ...almost, [k]: false }).allowed, false,
-      t(`T7: ${k} 하나가 미충족인데 복원이 허용된다`));
+
+  // ── T7-b. ★ **임의의 상태 객체로는 통과할 수 없다.**
+  //   2026-08-19 까지 여기에는 정반대의 단언이 있었다: 아홉을 전부 true 로 적은 객체를 넘겨
+  //   `allowed === true` 가 되는 것을 「gate 가 열린다」고 확인하고 있었다. 그건 gate 가
+  //   **인자로 우회된다**는 뜻이고, 「실행되는 검사」라는 설명과 정면으로 어긋난다.
+  //   코드가 소유한 조건은 밖에서 못 바꾼다 — 밖에서 오는 것은 질의 결과 하나뿐이다.
+  const allTrue = Object.fromEntries(RESTORE_CONDITIONS.map(([k]) => [k, true]));
+  for (const forged of [{ state: allTrue }, allTrue, { state: { ...allTrue, extra: true } },
+                        { state: allTrue, allowed: true, restoreAllowed: true }]) {
+    const r = restoreGate(forged);
+    assert.equal(r.preflightPassed, false, t("T7-b: 손으로 만든 상태 객체로 사전점검을 통과했다"));
+    assert.equal(r.restoreAllowed, false, t("T7-b: 손으로 만든 상태 객체로 복원이 허용됐다"));
+    assert.throws(() => beginRestore(forged), /RESTORE_FORBIDDEN|금지/,
+      t("T7-b: 손으로 만든 상태 객체로 복원 절차가 시작됐다"));
   }
-  assert.equal(restoreGate(almost).allowed, true,
-    t("T7: 조건을 다 채워도 허용되지 않는다 — 열 수 없는 gate 다"));
+  // 밖에서 온 값이 **덮는 것은 질의 조건 하나뿐**이고, 그것도 거짓 쪽으로만 쓰인다.
+  assert.ok(restoreGate({ state: allTrue }).missing.some((x) => x.startsWith("oldDeployments")),
+    t("T7-b: 코드가 소유한 미충족 조건이 인자로 지워졌다"));
   assert.equal(RESTORE_CONDITIONS.length, 9, t("T7: 금지 해제 조건이 9개가 아니다"));
   // 지금 상태에서 참이라고 적힌 것만 참이다. **참이 아닌 것을 참으로 적지 않는다.**
   // ✅ 결정 A′ 로 drain 3종은 구현됐다.
@@ -434,16 +446,69 @@ const call = (env, token, path, method = "GET") => worker.fetch(new Request("htt
   const env = makeEnv();
   const A = await mkUser(env, "reopen-a");
   const uid = A.uid;
-  // 되살아난 상태를 흉내낸다 — 계정과 딸린 행이 전부 있다.
+  // 되살아난 상태를 흉내낸다 — 계정과 딸린 행이 전부 있고, 그 사람의 **확정 표식**이 ledger 에 있다.
   env.DB._db.exec(`INSERT INTO books (user_id,words,nickname,version,updated_at) VALUES ('${uid}','[]','',0,0)`);
-  let rep = await reopenReport(env, { targets: [uid] });
+  const mark = await deletionMark(env, uid);
+  env.LEDGER._db.exec(
+    `INSERT INTO deletions (mark, key_version, pending_at, confirmed_at, pending_alert_at, expires_at)
+     VALUES ('${mark}', 1, 1, ${Date.now() - 1000}, ${Date.now() + 1e6}, ${Date.now() + 1e6})`);
+  const markFns = [(id) => deletionMark(env, id)];
+  // 복원 중이라는 뜻의 상태. 여기서만 「다시 열어도 되나」가 뜻을 갖는다.
+  await setMode(env, "restore_closed");
+
+  // ── H1. 계정이 살아 있으면 열 수 없다. 대상 집합은 **보고서가 직접 만든다.**
+  let rep = await reopenReport(env, { markFns });
+  assert.equal(rep.targets, 1, t("H1: 확정 표식이 있는 되살아난 계정을 재삭제 대상으로 못 찾았다"));
   assert.equal(rep.canReopen, false, t("H1: 계정이 살아 있는데 읽기를 열 수 있다고 한다"));
   assert.equal(rep.stillAlive, 1, t("H1: 살아 있는 계정을 못 셌다"));
+  await assert.rejects(() => setMode(env, "open", { markFns }), /살아 있다|잔여/,
+    t("H1: 재삭제가 안 끝났는데 setMode 가 읽기를 열었다"));
+
+  // ── H1-b. ★ **손으로 만든 판정으로는 열 수 없다.**
+  //   예전에는 `reopenReport(env, { targets: [] })` 하나면 잔여 0 · 살아 있는 계정 0 이라
+  //   **canReopen: true** 가 나왔다 — 아무것도 확인하지 않고 읽기를 다시 여는 길이다.
+  //   지금 `setMode` 는 보고서를 **받지 않는다**: 그 자리에서 다시 판정한다.
+  for (const forged of [{ canReopen: true }, { canReopen: true, epoch: rep.epoch, at: Date.now() },
+                        { reopen: { canReopen: true } }, { targets: [] }, { targets: [uid] }]) {
+    await assert.rejects(() => setMode(env, { ...forged, mode: "open" }.mode, forged),
+      /markFns|살아 있다|잔여|수단/, t("H1-b: 손으로 만든 판정·빈 목록으로 읽기가 열렸다"));
+  }
+  // 재확인 수단이 없으면 아예 판정하지 않는다.
+  assert.equal((await reopenReport(env)).canReopen, false, t("H1-b: markFns 없이 판정이 통과했다"));
+  assert.ok((await reopenReport(env, { markFns: [] })).why.some((w) => /markFns/.test(w)),
+    t("H1-b: markFns 가 없는데 이유를 말하지 않는다"));
+
+  // ── H1-c. 미확정 표식이 남아 있으면 열 수 없다. **개수가 아니라 존재가 판정이다.**
+  env.LEDGER._db.exec(
+    `INSERT INTO deletions (mark, key_version, pending_at, pending_alert_at, expires_at)
+     VALUES ('m-open', 1, 1, 1, ${Date.now() + 1e6})`);
   env.DB._db.exec(`DELETE FROM users WHERE id = '${uid}'`);
-  rep = await reopenReport(env, { targets: [uid] });
-  assert.equal(rep.canReopen, true, t("H1: 다 지웠는데 읽기를 못 연다"));
+  rep = await reopenReport(env, { markFns });
+  assert.equal(rep.openPending, 1, t("H1-c: 미확정 표식을 못 셌다"));
+  assert.equal(rep.canReopen, false, t("H1-c: 미확정 표식이 남았는데 읽기를 연다"));
+  await assert.rejects(() => setMode(env, "open", { markFns }), /미확정/, t("H1-c: setMode 가 그대로 열었다"));
+  env.LEDGER._db.exec("DELETE FROM deletions WHERE mark = 'm-open'");
+
+  // ── H1-d. stale 임차증이 있으면 열 수 없다(만료는 해제가 아니다).
+  env.LEDGER._db.prepare(
+    "INSERT INTO write_leases (lease_id, epoch, started_at, expires_at) VALUES (?,?,?,?)")
+    .run("stale-reopen", 1, Date.now() - 3600e3, Date.now() - 1800e3);
+  rep = await reopenReport(env, { markFns });
+  assert.equal(rep.canReopen, false, t("H1-d: stale 임차증이 있는데 읽기를 연다"));
+  assert.ok(rep.why.some((w) => /임차증/.test(w)), t("H1-d: 이유에 임차증이 없다"));
+  env.LEDGER._db.exec("DELETE FROM write_leases WHERE lease_id = 'stale-reopen'");
+
+  // ── H1-e. 전부 정리되면 열린다. **막는 쪽만 재면 「영영 안 열리는」 회귀를 못 잡는다.**
+  rep = await reopenReport(env, { markFns });
+  assert.equal(rep.canReopen, true, t("H1-e: 다 지웠는데 읽기를 못 연다: " + rep.why.join(" · ")));
   assert.deepEqual(rep.leftovers, { sessions: 0, books: 0, invite_codes: 0, friendships: 0 },
-    t("H1: CASCADE 잔여가 남았다"));
+    t("H1-e: CASCADE 잔여가 남았다"));
+  assert.equal((await setMode(env, "open", { markFns })).mode, "open",
+    t("H1-e: 사전점검을 통과했는데 setMode 가 안 열었다"));
+  // ⚠️ `maintenance` → `open` 은 이 자물쇠와 무관하다. 막으려는 것은 **읽기 노출**이지
+  //    유지보수 해제가 아니다.
+  await setMode(env, "maintenance");
+  assert.equal((await setMode(env, "open")).mode, "open", t("H1-e: 유지보수 해제까지 막혔다"));
 
   // 만료 정리는 **confirmed 만** 지운다. 조건이 빠지면 여기서 걸린다.
   const now = Date.now();

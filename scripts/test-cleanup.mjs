@@ -8,7 +8,7 @@ import assert from "node:assert";
 import { runCleanup } from "../worker/cleanup/index.js";
 import { DELETIONS_SWEEP_SQL, drainState, acquireLease, releaseLease,
          LEASE_MODES_REQUEST, LEASE_MODES_CLEANUP } from "../worker/ledger.js";
-import { setMode, drainReport, restoreGate, beginRestore, RESTORE_STATE } from "../worker/ops.js";
+import { setMode, drainReport, restoreGate, beginRestore } from "../worker/ops.js";
 import { makeD1, makeLedger } from "./_d1.mjs";
 
 let n = 0;
@@ -184,7 +184,7 @@ function seed(env, now) {
     t("T47b: 임차증을 따기 전에 주 D1 을 건드렸다 — 그 사이의 접근은 추적 밖이다"));
 
   // ② 그 사이에 복원 준비로 전환한다.
-  await setMode(env, "restore_closed", now);
+  await setMode(env, "restore_closed", { now });
 
   // ③ ★ 여기가 재현의 심장이다. 크론이 주 D1 을 만지는 **도중인데** drain 이 0 이면
   //    운영자는 「모두 멈췄다」고 읽고 복원을 시작한다.
@@ -192,12 +192,12 @@ function seed(env, now) {
   assert.equal(mid.open, 1,
     t("T47b: ★ 정리 크론이 주 D1 을 지우는 중인데 활성 임차증이 0이다 — drain 이 거짓말을 한다"));
   assert.equal(mid.drained, false, t("T47b: 작업이 도는 중인데 drained:true 다"));
-  const rep = await drainReport(env, RESTORE_STATE, now);
+  const rep = await drainReport(env, now);
   assert.equal(rep.state.noActiveLeases, false,
     t("T47b: 크론이 도는 중인데 noActiveLeases 가 참이다"));
-  assert.throws(() => beginRestore(rep.state), (e) => e.code === "RESTORE_FORBIDDEN",
+  assert.throws(() => beginRestore(rep), (e) => e.code === "RESTORE_FORBIDDEN",
     t("T47b: 크론이 도는 중인데 복원 절차가 시작됐다"));
-  assert.ok(restoreGate(rep.state).missing.some((x) => x.startsWith("noActiveLeases")),
+  assert.ok(restoreGate(rep).missing.some((x) => x.startsWith("noActiveLeases")),
     t("T47b: 미충족 사유에 noActiveLeases 가 없다 — 다른 조건에 가려 이 경합이 안 보인다"));
 
   // ④ 끝난 뒤에**만** 0 이 된다.
@@ -458,7 +458,7 @@ function seed(env, now) {
   assert.equal(typeof cleanup.default.fetch, "undefined",
     t("정리 Worker 에 fetch 핸들러가 생겼다 — cron 전용 Worker 는 HTTP 를 열지 않는다"));
   assert.equal(typeof cleanup.default.scheduled, "function", t("scheduled 핸들러가 없어졌다"));
-  const cfg = readFileSync(new URL("../worker/cleanup/wrangler.jsonc", import.meta.url), "utf8");
+  const cfg = readFileSync(new URL("../worker/cleanup/wrangler.example.jsonc", import.meta.url), "utf8");
   assert.match(cfg, /"workers_dev"\s*:\s*false/,
     t("wrangler 설정에 workers_dev:false 가 없다 — 기본값 true 로 workers.dev 주소가 열린다"));
   assert.ok(!/"routes?"\s*:/.test(cfg), t("정리 Worker 에 route 가 생겼다 — HTTP 를 열지 않기로 했다"));
