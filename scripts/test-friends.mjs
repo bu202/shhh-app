@@ -8,7 +8,7 @@
 //    지금은 진짜 SQL 이라 UNIQUE 충돌·외래키 CASCADE·changes 카운트가 실제로 일어난다.
 import assert from "node:assert";
 import worker, { createAccountWithPolicy, findUser, newSession, pathTemplate,
-  routeFor, rlMax, routeBuckets, maintenanceAllows } from "../worker/index.js";
+  routeFor, rlMax, routeBuckets, routeCount, maintenanceAllows } from "../worker/index.js";
 import { makeD1, makeLedger, withLatency } from "./_d1.mjs";
 import { drainState, readMode, MODE_UNBOUND } from "../worker/ledger.js";
 // 옛 배포 세대의 **고정 fixture**. 지금 코드가 아니다 — 그 파일 머리말을 볼 것.
@@ -611,15 +611,23 @@ function befriend(env, a, b, status = "accepted") {
     "로그인 왕복이 안 막힌다");
   assert.equal((await worker.fetch(new Request("https://api.test/login/kakao"), env)).status, 302,
     "로그인 시작까지 막았다 — 세션도 안 만드는 자리다");
-  // 51. **읽기는 안 막는다.** 세면 정상 사용이 먼저 걸린다.
-  assert.equal((await call(env, A.token, "/book")).status, 200, "읽기까지 막았다");
+  // 51. **읽기도 센다**(2026-08-19 정정). 예전에는 "읽기는 안 막는다 — 세면 정상 사용이 먼저
+  //     걸린다"였고 그 자리가 정확히 재현 R5 였다: 인증이 필요한 읽기가 **아무 버킷에도 없어서**
+  //     쿠키 없는 요청·위조 쿠키 요청이 상한 없이 임차증을 소비했다(요청 200회 → ledger 400 쓰기).
+  //     이제 전용 `read` 버킷(분당 120)이라 정상 사용은 여전히 안 걸리고 상한은 생긴다.
+  assert.equal((await call(env, A.token, "/book")).status, 429, "읽기가 안 세어진다 — 익명 요청의 상한이 없다");
   // 52. 인증 전/후 버킷이 갈린다. 한 버킷이면 남의 로그인 시도가 내 저장을 막는다.
   //     ⚠️ 인증 전 버킷 이름은 `login` **하나**다. 전에는 공통 `auth` 와 라우트별 `login` 이
   //     둘 다 있어서 한 번의 로그인이 두 곳에 세어졌다(한도는 절반, D1 쓰기는 두 배).
   assert.ok(calls.some((k) => k.startsWith("login|")) && calls.some((k) => k.startsWith("write|")),
     "버킷이 안 갈렸다: " + JSON.stringify(calls));
+  assert.ok(calls.some((k) => k.startsWith("read|")), "읽기 버킷이 없다: " + JSON.stringify(calls));
   assert.ok(!calls.some((k) => k.startsWith("auth|")), "없어진 auth 버킷이 아직 세고 있다: " + JSON.stringify(calls));
-  assert.ok(calls.includes("write|" + A.uid), "쓰기 키가 uid 기준이 아니다");
+  // ⚠️ **키가 uid 가 아니라 IP 다**(2026-08-19). 리미터가 인증보다 **먼저** 돌아야 인증되지 않은
+  //     요청이 임차증을 소비하기 전에 막힌다 — 그 자리에서는 uid 를 아직 모른다(재현 R5).
+  //     대가: 공유 IP(회사·학교·CGNAT)는 같은 버킷을 나눠 쓴다.
+  assert.ok(!calls.some((k) => k.includes(A.uid)),
+    "리미터 키에 uid 가 들어 있다 — 인증 뒤에 세고 있다는 뜻이다: " + JSON.stringify(calls));
   // 53. **바인딩이 없으면 아무것도 안 막는다.** 지금 운영이 이 상태다 — 되는 척하지 않는다.
   delete env.RL;
   assert.equal((await call(env, A.token, "/book", "PUT", { words: [], version: 0 })).status, 200, "바인딩이 없는데 막혔다");
@@ -924,12 +932,20 @@ function befriend(env, a, b, status = "accepted") {
   assert.equal(r429.status, 429, "창 안인데 다시 통과했다");
   assert.equal(r429.headers.get("Retry-After"), "60", "언제 다시 오라는 말이 없다");
 
-  // 86. **읽기는 안 센다.** 남용해도 남는 게 없고, 세면 정상 사용이 먼저 걸린다.
+  // 86. 읽기는 **자기 버킷**으로 센다(분당 120). 좁은 `friends` 버킷을 다 써도 목록 조회는 된다 —
+  //     한 버킷이면 초대 코드를 두드린 사람이 자기 화면도 못 여는 고장이 된다.
+  //     ⚠️ 2026-08-19 정정: 예전에는 "읽기는 안 센다"였고 그 자리가 재현 R5 였다.
   for (let i = 0; i < 30; i++) assert.equal((await call(env, A.token, "/friends")).status, 200, "읽기가 막혔다");
 
-  // 87. 세는 단위는 사람이다 — 한 사람이 막혔다고 다른 사람까지 막히면 그건 방어가 아니라 고장이다.
-  assert.equal((await call(env, B.token, "/friends", "POST", { code: "없는코드" })).status, 404,
-    "남이 두드렸다고 이 사람까지 막혔다");
+  // 87. 세는 단위는 **IP** 다(2026-08-19). 리미터가 인증보다 먼저 돌아야 인증되지 않은 요청이
+  //     임차증을 소비하기 전에 막히는데, 그 자리에서는 uid 를 아직 모른다(재현 R5).
+  //     ⚠️ **대가를 그대로 잰다**: 같은 IP 의 다른 계정은 같은 버킷을 나눠 쓴다(공유 IP 에서
+  //     이웃이 내 몫을 태울 수 있다). 그래서 다른 IP 는 막히지 않는다는 것을 함께 고정한다 —
+  //     그것마저 무너지면 리미터 하나가 전 세계를 막는다.
+  assert.equal((await call(env, B.token, "/friends", "POST", { code: "없는코드" })).status, 429,
+    "같은 IP 인데 버킷이 갈렸다 — 인증 뒤에 세고 있다는 뜻이다");
+  assert.equal((await call(env, B.token, "/friends", "POST", { code: "없는코드" }, { "CF-Connecting-IP": "198.51.100.7" })).status, 404,
+    "다른 IP 까지 막혔다 — 방어가 아니라 고장이다");
 
   // 88. 카운터에 **원문 uid·IP 가 남지 않는다.** 남용을 세려고 개인정보를 쌓지 않는다.
   for (const row of env.DB._db.prepare("SELECT bucket FROM rate_limits").all()) {
@@ -1348,9 +1364,12 @@ function befriend(env, a, b, status = "accepted") {
   //      안 갈리면 남용 방어가 정상 사용을 죽인다.
   assert.equal((await call(env, A.token, "/book", "PUT", { words: ["사랑"], name: "", version: 0 })).status, 200,
     "회전이 막혔다고 단어장 저장까지 막혔다");
-  // 115. 남이 회전을 두드렸다고 이 사람까지 막히지 않는다.
-  assert.notEqual((await call(env, B.token, "/friends/code", "POST")).status, 429,
-    "남이 회전을 두드렸다고 이 사람까지 막혔다");
+  // 115. **다른 IP** 의 사람은 막히지 않는다. 세는 단위가 IP 라(2026-08-19 · 재현 R5)
+  //      같은 IP 는 나눠 쓰지만, 그것마저 안 갈리면 리미터 하나가 전 세계를 막는다.
+  assert.equal((await call(env, B.token, "/friends/code", "POST")).status, 429,
+    "같은 IP 인데 버킷이 갈렸다 — 인증 뒤에 세고 있다는 뜻이다");
+  assert.notEqual((await call(env, B.token, "/friends/code", "POST", undefined, { "CF-Connecting-IP": "198.51.100.9" })).status, 429,
+    "다른 IP 까지 막혔다 — 방어가 아니라 고장이다");
 }
 
 // ══ 25c. 레이트리밋 버킷 등록 (T54) ══════════════════════════════════════
@@ -1403,12 +1422,24 @@ function befriend(env, a, b, status = "accepted") {
   assert.equal(routeFor("POST", "/signup/start").bucket, "signup", "T55: 가입 시작이 자기 버킷을 안 쓴다");
   assert.equal(routeFor("GET", "/cb/kakao").bucket, "login", "T55: 콜백이 login 버킷이 아니다");
   assert.equal(routeFor("PUT", "/book").bucket, "write", "T55: 단어장 저장이 write 버킷이 아니다");
-  assert.equal(routeFor("GET", "/book").bucket, null, "T55: 읽기를 센다");
+  // ⚠️ 2026-08-19 정정: 읽기도 **센다**. 예전에는 버킷이 `null` 이라 인증이 필요한 읽기가
+  //    아무 상한 없이 임차증을 소비했다(재현 R5). 지금은 전용 `read` 버킷이다.
+  assert.equal(routeFor("GET", "/book").bucket, "read", "T55: 인증이 필요한 읽기에 버킷이 없다");
+  // **임차증을 드는 라우트에는 버킷이 반드시 있다.** 없으면 그 라우트가 곧 증폭 통로다.
+  for (const [m, p] of [["GET", "/book"], ["PUT", "/book"], ["GET", "/me"], ["PUT", "/me"],
+                        ["DELETE", "/me"], ["DELETE", "/session"], ["GET", "/friends"],
+                        ["POST", "/friends"], ["POST", "/friends/code"], ["GET", "/friends/x/book"],
+                        ["PUT", "/friends/x"], ["DELETE", "/friends/x"], ["POST", "/signup/start"],
+                        ["GET", "/cb/kakao"], ["GET", "/exchange/naver"]]) {
+    const r = routeFor(m, p);
+    assert.ok(r && r.lease && r.bucket,
+      `T55: ${m} ${p} 가 임차증을 드는데 레이트리밋 버킷이 없다 — 상한 없는 쓰기 통로다`);
+  }
   // HEAD 는 GET 과 같은 라우트다. 가르면 `curl -sI` 로 확인하라고 적어 둔 절차가 404 를 받는다.
   assert.ok(routeFor("HEAD", "/health"), "T55: HEAD /health 가 404 가 된다");
   assert.equal(routeFor("HEAD", "/login/kakao").lease, false, "T55: HEAD 가 임차증을 든다");
   assert.equal(routeFor("HEAD", "/session"), null, "T55: HEAD 가 DELETE 전용 라우트를 연다");
-  assert.equal(routeFor("GET", "/friends").bucket, null, "T55: 목록 조회를 센다");
+  assert.equal(routeFor("GET", "/friends").bucket, "read", "T55: 목록 조회에 버킷이 없다");
 }
 
 // ══ 26. RL_KEY — 리미터 키는 **비밀키 HMAC** 이다 ═════════════════════════
@@ -1766,7 +1797,41 @@ function befriend(env, a, b, status = "accepted") {
     for (const p of ["/health", "/ready", "/policies"])
       assert.equal(maintenanceAllows(mode, p, "GET"), true, `T8-a1: 모드 ${mode} 에서 ${p} 가 막혔다`);
   }
-  // ③ 아는 모드는 그대로 동작한다(막는 쪽만 재면 「영영 안 열리는」 회귀를 못 잡는다).
+  // ③ ★ **`lease:true` 인 라우트 전부**가 `unbound` 에서 막힌다 — 표에서 뽑아 전수로 잰다.
+  //    2026-08-19 까지는 이 보장을 「임차증 블록 안의 `if (!env.LEDGER)`」가 한 번 더 지킨다고
+  //    적어 뒀는데, 그 줄은 **도달할 수 없는 코드**였다(전체 스위트 계측 결과 도달 0회).
+  //    관측할 수 없는 방어를 통과 항목으로 세지 않는다 — 지우고, 대신 그 보장을 여기서 잰다.
+  {
+    const SAMPLES = [
+      ["GET", "/health"], ["GET", "/ready"], ["GET", "/policies"], ["GET", "/login/kakao"],
+      ["POST", "/signup/start"], ["GET", "/cb/kakao"], ["GET", "/exchange/naver"],
+      ["DELETE", "/session"], ["GET", "/book"], ["PUT", "/book"], ["GET", "/me"],
+      ["PUT", "/me"], ["DELETE", "/me"], ["GET", "/friends"], ["POST", "/friends"],
+      ["POST", "/friends/code"], ["GET", "/friends/x/book"], ["PUT", "/friends/x"],
+      ["DELETE", "/friends/x"],
+    ];
+    // 대표 경로가 **표를 전부 덮었나.** 라우트를 더하고 여기 안 적으면 그것만 검사 밖에 남는다.
+    const covered = new Set();
+    for (const [m, p] of SAMPLES) if (routeFor(m, p)) covered.add(JSON.stringify(routeFor(m, p)) + p.replace(/x/g, ""));
+    assert.ok(SAMPLES.filter(([m, p]) => routeFor(m, p)).length >= routeCount(),
+      `T8-a1: 대표 경로 ${SAMPLES.length}개가 라우트 표 ${routeCount()}개를 다 못 덮는다 — 검사기가 낡았다`);
+    for (const [m, p] of SAMPLES) {
+      const rt = routeFor(m, p);
+      if (!rt || !rt.lease) continue;
+      assert.equal(maintenanceAllows(MODE_UNBOUND, p, m), false,
+        `T8-a1: ledger 미바인딩(${MODE_UNBOUND})인데 ${m} ${p} 가 열린다 — 추적 밖에서 주 D1 을 만진다`);
+      assert.equal(maintenanceAllows("unknown", p, m), false,
+        `T8-a1: 모드를 모르는데 ${m} ${p} 가 열린다`);
+    }
+    // 반대쪽: `lease:false` 인 라우트는 어느 모드에서도 답해야 한다(운영자의 유일한 창).
+    for (const [m, p] of SAMPLES) {
+      const rt = routeFor(m, p);
+      if (!rt || rt.lease) continue;
+      if (p.startsWith("/login/")) continue;   // 로그인 시작은 게이트가 막는 쪽이 맞다
+      assert.equal(maintenanceAllows(MODE_UNBOUND, p, m), true, `T8-a1: ${m} ${p} 가 미바인딩에서 막혔다`);
+    }
+  }
+  // ④ 아는 모드는 그대로 동작한다(막는 쪽만 재면 「영영 안 열리는」 회귀를 못 잡는다).
   assert.equal(maintenanceAllows("open", "/book", "PUT"), true, "T8-a1: open 인데 쓰기가 막힌다");
   assert.equal(maintenanceAllows("maintenance", "/book", "GET"), true, "T8-a1: 유지보수인데 읽기가 막힌다");
   assert.equal(maintenanceAllows("maintenance", "/book", "PUT"), false, "T8-a1: 유지보수인데 쓰기가 통과한다");
@@ -1862,10 +1927,18 @@ function befriend(env, a, b, status = "accepted") {
   assert.equal(ledgerWrites() - l0, 2, "T52: 쓰기 하나에 임차증이 하나가 아니다");
   assert.equal(dbWrites() - d0, 1, "T52: 쓰기 하나가 rate_limits 버킷 하나를 넘게 만들었다");
 
-  // ── T53. ★ 한도에 닿은 뒤 같은 공격을 반복해도 **쓰기가 유한한 상한에서 멈춘다.**
-  //   리미터가 증폭기가 되지 않는지 재는 자리다(2026-08-16 결정 A′ 이전의 그 결함).
+  // ── T53. ★ 한도에 닿은 뒤 같은 공격을 반복하면 **두 저장소 모두 쓰기가 0 이다.**
+  //
+  //   ⚠️ **이 검사는 2026-08-19 에 뒤집혔다.** 예전 T53 은 「막힌 요청도 임차증은 딴다 —
+  //      상한이 있다는 것은 요청당 정확히 둘이다」를 확인하고 그것을 **「유한한 상한」이라 적었다.**
+  //      틀렸다: 요청 수에 상한이 없으면 요청당 상수는 상한이 아니다. 실측으로 인증 없는 요청
+  //      200회가 ledger 쓰기 400회를 냈고, 5만 회면 D1 무료 한도(하루 10만 쓰기)가 바닥난다
+  //      (재현 R5). 그래서 **리미터를 임차증보다 앞으로** 옮겼다 — 막힌 요청은 이제 어느 DB 도
+  //      만지지 않는다. 총량 불변식(요청 수를 2배로 늘려도 쓰기가 같다)은
+  //      `scripts/test-reaudit.mjs` 의 R5 가 잰다.
   const env2 = makeEnv({ KAKAO_ID: "id", KAKAO_SECRET: "s" });
   const w2 = () => env2.DB._db.prepare("SELECT COALESCE(SUM(n),0) AS n FROM rate_limits").get().n;
+  const dw2 = () => env2.DB._db.prepare("SELECT total_changes() AS n").get().n;
   const lw2 = () => env2.LEDGER._db.prepare("SELECT total_changes() AS n").get().n;
   let blocked = 0;
   for (let i = 0; i < 60; i++) {
@@ -1874,11 +1947,10 @@ function befriend(env, a, b, status = "accepted") {
   }
   assert.ok(blocked > 0, "T53: 60번을 눌렀는데 한 번도 안 막혔다");
   assert.ok(w2() <= RL_MAX_LOGIN + 1, `T53: 429 를 받으면서 카운터가 계속 올랐다(${w2()}) — 리미터가 증폭기다`);
-  // ⚠️ ledger 쓰기는 **막힌 요청에도 난다** — 임차증은 리미터보다 먼저 따기 때문이다
-  //    (세션 인증 전에 따야 그 조회까지 추적된다). 상한이 있다는 것은 「요청당 정확히 둘」이다.
-  const before = lw2();
-  for (let i = 0; i < 10; i++) await worker.fetch(new Request("https://api.test/cb/kakao?code=x&state=y", { headers: ip }), env2);
-  assert.equal(lw2() - before, 20, "T53: 차단된 요청의 ledger 쓰기가 요청당 둘을 넘는다");
+  const beforeD = dw2(), beforeL = lw2();
+  for (let i = 0; i < 100; i++) await worker.fetch(new Request("https://api.test/cb/kakao?code=x&state=y", { headers: ip }), env2);
+  assert.equal(dw2() - beforeD, 0, "T53: 차단된 뒤에도 주 D1 쓰기가 났다 — 리미터가 증폭기다");
+  assert.equal(lw2() - beforeL, 0, "T53: 차단된 뒤에도 ledger 쓰기가 났다 — 임차증이 리미터보다 앞선다");
 }
 
 console.log("test-friends: 통과 — 로그인 왕복 표(브라우저 결속) · 친구 쌍 유일성 · 친구 권한(행 하나) · 쿠키 세션 · 세대 무효화 · CSRF(Origin 필수) · 제공자ID 비공개 "

@@ -464,7 +464,12 @@ const RL_WINDOW = 60_000;
 // `signup` 은 **전용 버킷**이다. `write` 에 얹으면 넉넉한 한도(120)를 그대로 물려받는데,
 //    가입 시작은 세션도 계정도 안 만들지만 **제공자 인증 주소를 찍어내는 자리**라 좁아야 한다.
 //    WRITE_ROUTES 에 `/signup` 을 넣지 않는 이유이기도 하다 — 넣으면 한 요청을 두 번 센다.
-const RL_MAX = { login: 10, signup: 10, friends: 20, rotate: 5, write: 120 };
+// `read` 는 **인증이 필요한 읽기**다(`GET /book`·`/me`·`/friends`·`/friends/:id/book`).
+//    2026-08-19 까지 이 넷은 버킷이 없어서 **아무것도 세지 않았고**, 임차증은 인증보다 먼저
+//    따므로 쿠키 없는 요청·위조 쿠키 요청 하나하나가 ledger 쓰기 둘을 냈다 — 요청 수에 상한이
+//    없으니 쓰기에도 상한이 없었다(재현 R5 · 위협 47). 읽기를 세면 정상 사용자도 요청마다
+//    D1 쓰기 하나를 내지만, 그 값은 IP·분당 **121 에서 멈춘다.** 무한한 쪽을 유한하게 바꾼다.
+const RL_MAX = { login: 10, signup: 10, friends: 20, rotate: 5, read: 120, write: 120 };
 // 어느 라우트가 어느 버킷을 쓰는지는 **ROUTES 표 하나**가 정한다. 없는 경로는 표에 없으므로
 // 세기 전에 404 다 — 없는 자리를 두드려 우리 DB 쓰기를 유발할 수 있으면 리미터가 공격 도구가 된다.
 //
@@ -503,7 +508,14 @@ const rlBucket = async (env, msg) => {
 // 창 하나를 여러 번 통과한다(친구 상한이 겪은 것과 같은 종류의 경합이다).
 // 리미터가 고장 나면 통과시킨다(fail-open): 남용 방어가 서비스를 멈추는 쪽이 더 나쁘고,
 // 진짜 방어선은 WAF 다. 이 선택을 아는 채로 한다.
-async function limited(env, req, uid, bucket) {
+// ⚠️ **`uid` 를 받지 않는다**(2026-08-19). 이 함수는 이제 **인증보다 먼저** 돈다 —
+//    인증을 먼저 하면 그 조회 자체가 임차증 안에서 일어나야 하고, 임차증을 먼저 따면
+//    리미터가 막아도 ledger 쓰기는 이미 났다(재현 R5). 그래서 셀 수 있는 신원은 IP 뿐이다.
+//    ⚠️ 이건 대가가 있다: 공유 IP(회사·학교·CGNAT)에서는 같은 버킷을 나눠 쓴다.
+//    ponytail: uid 별로 되돌리려면 **DB 없이 검증되는 세션 쿠키**(서명 envelope)가 필요하다 —
+//      그래야 인증 전에 「우리가 발급한 세션인가」를 알 수 있다. 전용 시크릿 하나가 더 늘고
+//      기존 세션이 전부 끊기므로 지금 범위 밖에 둔다(docs/OPS_RUNBOOK.md §12).
+async function limited(env, req, bucket) {
   // ⚠️ **한도부터 읽는다.** 아래 어느 갈래보다 먼저다 — 모르는 버킷을 들고 온 것은 우리 쪽
   //    버그이고, fail-open 으로 통과시키면 그 버그가 「리미터 없음」으로 조용히 산다.
   const max = rlMax(bucket);
@@ -512,7 +524,7 @@ async function limited(env, req, uid, bucket) {
   //    리미터가 요청을 통과시키는 게 아니라 **500 으로 죽였다** — 남용 방어가 서비스 거부가 된다.
   if (env.RL) {
     try {
-      const who = uid || req.headers.get("CF-Connecting-IP") || "anon";
+      const who = req.headers.get("CF-Connecting-IP") || "anon";
       const { success } = await env.RL.limit({ key: bucket + "|" + who });
       return !success;
     } catch {
@@ -523,7 +535,7 @@ async function limited(env, req, uid, bucket) {
   const now = Date.now();
   // ⚠️ 키에 uid·IP **원문을 넣지 않는다.** 남용을 세려고 개인정보를 쌓는 건 목적에 비해 과하다.
   //    (로그에도 남기지 않는다 — 아래 어디에서도 console.log 하지 않는다.)
-  const who = uid || req.headers.get("CF-Connecting-IP") || "anon";
+  const who = req.headers.get("CF-Connecting-IP") || "anon";
   const key = await rlBucket(env, `${bucket}|${who}|${Math.floor(now / RL_WINDOW)}`);
   // 키를 못 만들었다 = RL_KEY 가 없다. **평문 해시로 되돌아가지 않고** 세지 않는다(위 rlBucket).
   if (!key) return false;
@@ -911,21 +923,24 @@ const ROUTES = [
   [/^\/signup\/start$/, ["POST"], true, "signup"],
   [new RegExp(`^/(?:cb|exchange)/(?:${PROVIDER_RE})$`), ["GET"], true, "login"],
   [/^\/session$/, ["DELETE"], true, "write"],
-  [/^\/book$/, ["GET"], true, null],
+  [/^\/book$/, ["GET"], true, "read"],
   [/^\/book$/, ["PUT"], true, "write"],
-  [/^\/me$/, ["GET"], true, null],
+  [/^\/me$/, ["GET"], true, "read"],
   [/^\/me$/, ["PUT", "DELETE"], true, "write"],
   // ⚠️ `GET /friends` 는 읽기처럼 보이지만 초대 코드가 없으면 그 자리에서 만든다(myCode).
-  [/^\/friends$/, ["GET"], true, null],
+  [/^\/friends$/, ["GET"], true, "read"],
   [/^\/friends$/, ["POST"], true, "friends"],
   [/^\/friends\/code$/, ["POST"], true, "rotate"],
-  [/^\/friends\/[^/]+\/book$/, ["GET"], true, null],
+  [/^\/friends\/[^/]+\/book$/, ["GET"], true, "read"],
   [/^\/friends\/[^/]+$/, ["PUT", "DELETE"], true, "write"],
 ];
 
 // 표가 실제로 쓰는 버킷 전부. 테스트가 이것과 `RL_MAX` 를 대조한다 — 표에 새 버킷을 적고
 // 한도 등록을 잊으면 `rlMax()` 가 던지므로, 그 실패를 사용자가 아니라 테스트가 먼저 본다.
 export const routeBuckets = () => [...new Set(ROUTES.map(([, , , b]) => b).filter(Boolean))];
+// 표의 크기. 테스트가 「대표 경로 목록이 표를 전부 덮었나」를 이 값으로 확인한다 —
+// 라우트를 더하고 목록에 안 적으면 그 라우트만 검사 밖에 남는다.
+export const routeCount = () => ROUTES.length;
 
 // 모르는 경로·허용되지 않은 method 는 `null`. 부르는 쪽은 그때 **아무것도 하기 전에** 404 다.
 export function routeFor(method, path) {
@@ -1001,16 +1016,35 @@ export default {
         503, { "Retry-After": "60" });
     }
 
+    // ── 0-1-0. 레이트리밋 ──
+    // **임차증보다 먼저다.** 뒤에 두면 429 를 돌려주는 요청도 임차증을 하나 따고 놓아
+    // ledger 에 쓰기 둘(INSERT+DELETE)을 남긴다 — 요청 수에 상한이 없으니 쓰기에도 상한이
+    // 없었다(2026-08-19 재현 R5: 위조 쿠키 200회 → ledger 400 쓰기, 인증도 필요 없었다).
+    // 옛 T53 은 「요청당 정확히 둘」을 확인하고 **「유한한 상한」이라 적었다.** 요청 수가
+    // 무제한이면 요청당 상수는 상한이 아니다.
+    //
+    // ⚠️ **인증(`whoAmI`)보다도 먼저다.** 인증을 먼저 하면 그 조회가 임차증 밖에서 일어난다.
+    //    그래서 셀 수 있는 신원은 IP 하나뿐이다(위 `limited` 의 주석).
+    // ⚠️ 리미터는 주 D1(`rate_limits`)에 쓰는데 이 자리는 임차증 **밖**이다. 그 창이 열리는
+    //    모드는 `open`·`maintenance` 뿐이다 — `restore_closed` 는 위 게이트가 이미 전부 막았고
+    //    (`ALWAYS_OPEN` 셋은 버킷이 없다), 복원의 전제가 바로 그 상태다. 그래서 「restore_closed
+    //    이고 임차증 0건」은 여전히 「추적 밖 주 D1 쓰기가 없다」를 함의한다(test-reaudit R5-f).
+    //    ponytail: 그래도 `maintenance → restore_closed` 전환과 겹치는 아주 좁은 창은 남는다.
+    //      완전히 없애려면 `rate_limits` 를 ledger D1 로 옮겨야 한다(docs/OPS_RUNBOOK.md §12).
+    if (rt.bucket && (await limited(env, req, rt.bucket))) return tooMany(env, req);
+
     // ── 0-1-1. 요청 임차증 ──
     // 세션 인증보다 **먼저** 딴다. 인증이 먼저 지나가면 `sessions`·`users` 조회가 추적 밖이다.
-    // ⚠️ **바인딩이 없으면 여기까지 오지 못한다** — `unbound` 모드에서 `lease:true` 인 라우트는
-    //    위 게이트가 전부 503 이다. 그래도 한 번 더 본다(두 번째 자물쇠): 이 검사가 빠지면
-    //    바인딩 없는 배포가 다시 추적 밖에서 사용자 데이터를 만지게 된다.
+    // ⚠️ **여기에 `if (!env.LEDGER)` 를 따로 두지 않는다**(2026-08-19에 지웠다). 그 줄은
+    //    「두 번째 자물쇠」라고 적혀 있었지만 **도달할 수 없는 코드**였다: 바인딩이 없으면
+    //    `readMode()` 가 `unbound` 를 돌려주고, `lease:true` 인 라우트는 위 게이트가 **전부**
+    //    503 이다(`ALWAYS_OPEN` 셋은 `lease:false` 다). 전체 스위트를 계측해도 도달 0회였다.
+    //    관측할 수 없는 방어는 통과 항목으로 세면 안 된다 — 세는 순간 「자물쇠가 둘」이라는
+    //    거짓 안전감만 남는다. 같은 보장을 **관측 가능한 형태로** T8-a1 이 전수로 잰다
+    //    (`lease:true` 인 라우트 전부에 대해 `maintenanceAllows(unbound, …) === false`).
+    //    바인딩이 없는 채로 여기 오면 아래 `acquireLease` 가 던지고 같은 503 이 나간다.
     let lease = null;
     if (rt.lease) {
-      if (!env.LEDGER)
-        return json(env, req, { error: "잠시 점검 중이에요. 조금 뒤에 다시 열어주세요", mode: "unknown" },
-          503, { "Retry-After": "60" });
       try {
         lease = await acquireLease(env, LEASE_MODES_REQUEST);
       } catch {
@@ -1116,8 +1150,6 @@ async function route(req, env, rc) {
       // Origin 검사. 상태 변경 검사는 아래(3번)에 있지만 그건 세션을 읽은 뒤라 여기까지 안 온다.
       const o = req.headers.get("Origin");
       if (!o || !allowed(env, o)) return json(env, req, { error: "허용되지 않은 요청이에요" }, 403);
-      // 전용 버킷. `write` 와 이중으로 세지 않는다 — WRITE_ROUTES 에 `/signup` 이 없다.
-      if (await limited(env, req, null, "signup")) return tooMany(env, req);
       const body = await readBody(req);          // Content-Type 이 JSON 이 아니면 null 이다
       const provider = body && typeof body.provider === "string" ? body.provider : "";
       if (!isProvider(provider)) return json(env, req, { error: "그런 로그인 방식이 없어요" }, 400);
@@ -1224,8 +1256,6 @@ async function route(req, env, rc) {
           r.headers.append("Set-Cookie", clearTxn());
           return r;
         };
-        // 세션을 찍어내는 자리다. GET 이라 아래 write 계수에 안 걸리므로 여기서 직접 센다.
-        if (await limited(env, req, null, "login")) return tooMany(env, req);
 
         const raw = url.searchParams.get("state");
         // 가입 state 는 `v1.` 로 시작한다. 로그인 state 는 b64u(JSON 배열)이라 그렇게 시작할 수
@@ -1349,8 +1379,8 @@ async function route(req, env, rc) {
     //    ⚠️ **버킷은 라우트 표가 정한다**(위 ROUTES). 예전에는 여기서 `WRITE_ROUTES` 로 한 번
     //       세고 `POST /friends`·`POST /friends/code` 가 자기 버킷으로 **또** 셌다 —
     //       요청 하나에 D1 쓰기 두 번이고, 막는 것은 좁은 쪽 하나뿐이라 넓은 쪽은 값만 태웠다.
-    if (rt.bucket === "write" && (await limited(env, req, uid, "write")))
-      return tooMany(env, req);
+    //    ⚠️ **계수는 여기가 아니라 요청 앞머리(0-1-0)에서 끝났다**(2026-08-19). 여기(인증 뒤)에
+    //       두면 인증되지 않은 요청은 세어지지 않은 채 임차증만 소비한다 — 그게 재현 R5 다.
 
     // 로그아웃 — 이 계정의 로그인을 **전부** 끊는다(세대를 올린다). 쿠키도 그 자리에서 지운다.
     if (path === "/session" && req.method === "DELETE") {
@@ -1526,7 +1556,7 @@ async function route(req, env, rc) {
         // **여기가 유일한 열거 공격면이다.** 초대 코드를 맞히면 남에게 요청을 보낼 수 있다
         // (수락은 여전히 상대가 하지만, 무차별 대입은 그 자체로 스팸이 된다).
         // 위 "write" 보다 좁게 센다 — 정상 사용자는 링크를 눌러 한 번 보낼 뿐이다.
-        if (await limited(env, req, uid, "friends")) return tooMany(env, req);
+        // (계수는 라우트 표가 정하고 **요청 앞머리에서** 이미 끝났다 — 0-1-0.)
         const body = await readBody(req);
         const code = typeof (body && body.code) === "string" ? body.code.trim().slice(0, 64) : "";
         const owner = code && (await env.DB.prepare(
@@ -1602,7 +1632,6 @@ async function route(req, env, rc) {
       //    그게 바닥나면 **정상 사용자의 단어장 저장이 먼저 죽는다**(리미터가 아니라 이 라우트가
       //    증폭기였다). 링크를 새로 만드는 것은 몇 달에 한 번 하는 일이라 분당 5회면 넘친다.
       if (path === "/friends/code" && req.method === "POST") {
-        if (await limited(env, req, uid, "rotate")) return tooMany(env, req);
         return json(env, req, { code: await rotateCode(env, uid) });
       }
 
