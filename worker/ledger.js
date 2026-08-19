@@ -179,12 +179,29 @@ export async function sweepConfirmed(env, now = Date.now(), limit = 500) {
   return (r.meta && r.meta.changes) || 0;
 }
 
-// 확정되지 않은 채 경보 시각을 넘긴 표식. **세기만 한다. 지우지 않는다.**
-export async function openPendingCount(env, now = Date.now()) {
+// ── 미확정 표식을 세는 **두 가지** 질문 ──────────────────────────────────
+//
+// ⚠️ 2026-08-19 까지는 `openPendingCount()` 하나가 둘을 겸했고, 그 값은 **경보 정의**였다
+//    (`pending_alert_at < now`). 그래서 방금 실패한 삭제(경보 시각은 24시간 뒤)가 **어느 쪽에도
+//    안 잡혔고**, 「미확정 삭제 0건」이라는 근거로 재개방과 복원 사전점검이 통과했다(재현 R3).
+//    「아직 경보할 때가 아니다」와 「아직 아무 문제 없다」는 다른 말이다.
+//
+//   pendingTotalCount  **안전 조건**이 쓴다. 확정 안 된 표식이 하나라도 있으면 누구를 다시
+//                      지워야 하는지가 미정이다 — 시간이 지난다고 해결되지 않으므로 시각을 안 본다
+//   pendingAlertCount  **경보**가 쓴다. 사람이 봐야 할 것이 쌓였나. `<` 는 엄격한 미만이다
+//                      (경보 시각과 같은 순간은 아직 경보가 아니다)
+export async function pendingTotalCount(env) {
+  const r = await env.LEDGER.prepare(
+    "SELECT COUNT(*) AS n FROM deletions WHERE confirmed_at IS NULL").first();
+  return r.n;
+}
+
+export async function pendingAlertCount(env, now = Date.now()) {
   const r = await env.LEDGER.prepare(
     "SELECT COUNT(*) AS n FROM deletions WHERE confirmed_at IS NULL AND pending_alert_at < ?").bind(now).first();
   return r.n;
 }
+
 
 export async function cleanupState(env) {
   if (!env.LEDGER) return null;

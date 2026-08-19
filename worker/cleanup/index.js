@@ -13,7 +13,8 @@
 // ⚠️ **이 Worker 도 주 D1 을 만지는 「온라인 workload」다.** HTTP 요청과 같은 임차증을 든다 —
 //    2026-08-18 재현에서 이것이 빠져 있어 크론이 지우는 도중에 `drainState()` 가
 //    `drained:true` 라고 답했다(T47b). 「크론이니까 예외」가 정확히 그 구멍이었다.
-import { DELETIONS_SWEEP_SQL, acquireLease, releaseLease, LEASE_MODES_CLEANUP } from "../ledger.js";
+import { DELETIONS_SWEEP_SQL, acquireLease, releaseLease, LEASE_MODES_CLEANUP,
+         pendingAlertCount } from "../ledger.js";
 
 // 무료 플랜의 scheduled Worker CPU 한도는 10ms 다. 한 번에 다 지우려다 시간 초과로
 // **매번 아무것도 못 지우는** 상태가 가장 나쁘다 — 대상별로 잘라 여러 번에 걸쳐 지운다.
@@ -71,10 +72,10 @@ export async function runCleanup(env, now = Date.now()) {
     // ⛔ C6 — 확정되지 않은 pending 은 **지우지 않는다. 세어서 알린다.**
     //    시간이 지나도 아무것도 저절로 해결되지 않는다: 계정이 살아 있으면 지우는 근거가 되고,
     //    계정이 없으면 지우는 순간 복원 때 그 사람이 되살아난다. 판정은 사람이 한다.
-    const open = await env.LEDGER.prepare(
-      "SELECT COUNT(*) AS n FROM deletions WHERE confirmed_at IS NULL AND pending_alert_at < ?")
-      .bind(now).first();
-    return { counts, openPending: open.n };
+    //    ⚠️ **경보 대상 개수다**(`pending_alert_at` 이 지난 것). 복원·재개방의 안전 조건이 쓰는
+    //       「전체 미확정 개수」와 다른 질문이라 함수를 갈라 뒀다(ledger.js · 재현 R3).
+    //       여기서 전체를 세면 방금 실패한 삭제마다 경보가 울려 아무도 경보를 안 보게 된다.
+    return { counts, openPending: await pendingAlertCount(env, now) };
   } finally {
     // ⚠️ **여기가 유일한 해제 자리다**(worker/index.js 와 같은 무늬). 해제에 실패해도 삼킨다 —
     //    남은 행은 만료 뒤 `stale` 로 세어져 **복원을 계속 막는다.** 그게 맞는 실패 방향이다.

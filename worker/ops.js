@@ -5,7 +5,7 @@
 //
 // ⚠️ 여기에는 **강제 진행 플래그가 없다.** `force`·`fallback`·`skipChecks` 를 만들지 않는다 —
 //    한 번 만들면 급할 때 쓰이고, 급할 때가 정확히 쓰면 안 되는 때다.
-import { activeLeases, drainState, openPendingCount, DELETION_KEY_VERSION, CONFIRMED_RETENTION } from "./ledger.js";
+import { activeLeases, drainState, pendingTotalCount, DELETION_KEY_VERSION, CONFIRMED_RETENTION } from "./ledger.js";
 
 // ── 유지보수 전환 ────────────────────────────────────────────────────────
 // **epoch 를 함께 올린다.** 이 순간부터 새 lease 를 딸 수 없고, 옛 epoch 의 lease 를 든
@@ -228,7 +228,9 @@ export function restoreGate(report) {
 export async function restorePreflight(env, now = Date.now()) {
   const rep = await drainReport(env, now);
   const gate = restoreGate(rep);
-  return { ...gate, drain: rep.drain, openPending: await openPendingCount(env, now), at: now };
+  // ⚠️ **전체 미확정 개수다. 경보 대상 개수가 아니다**(2026-08-19 · 재현 R3). 예전에는
+  //    `pending_alert_at < now` 로 걸러서, 방금 실패한 삭제가 여기서 0 으로 보였다.
+  return { ...gate, drain: rep.drain, openPending: await pendingTotalCount(env), at: now };
 }
 
 // 복원 절차 진입. **언제나 거부한다.** 지금 `RESTORE_CONDITIONS` 중 셋이 코드 상수로 false 이고
@@ -266,7 +268,9 @@ export async function reopenReport(env, { markFns = [], now = Date.now() } = {})
   const drain = await drainState(env, now);
   if (!drain.drained) why.push(`임차증 ${drain.open}건(stale ${drain.stale}) — 아직 도는 작업이 있다`);
   // ④ 확정되지 않은 삭제 표식이 남아 있나. 남았다면 누구를 다시 지워야 하는지가 아직 미정이다.
-  const openPending = await openPendingCount(env, now);
+  //    ⚠️ **전체 개수다.** 경보 시각(`pending_alert_at`)은 여기서 안 본다 — 방금 실패한 삭제도
+  //       「누구를 다시 지워야 하는지 모른다」이고, 그건 시간이 지난다고 해결되지 않는다(재현 R3).
+  const openPending = await pendingTotalCount(env);
   if (openPending > 0) why.push(`미확정 삭제 표식 ${openPending}건 — 사람이 판정해야 한다`);
 
   // ⑤ 재삭제 대상. **여기서 만든다.** 확정 표식은 ledger 에서 직접 읽고, 계정은 주 D1 을
