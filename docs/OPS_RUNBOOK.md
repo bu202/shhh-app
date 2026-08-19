@@ -48,19 +48,27 @@
 
 ```bash
 npx wrangler d1 create shhh-ledger              # → database_id 가 출력된다
-npx wrangler d1 execute shhh-ledger --remote --file worker/ledger-schema.sql
-# 표 넷과 초기 행이 들어갔는지 (mode=open · epoch 는 아무 값)
+# migration 을 **번호 순서대로** 건다. 새로 만드는 DB 라도 순서를 지킨다 —
+# `worker/ledger-schema.sql` 은 현재 기준 스키마일 뿐 운영 migration 파일이 아니다.
+npx wrangler d1 execute shhh-ledger --remote --file migrations-ledger/0001_ledger_init.sql
+npx wrangler d1 execute shhh-ledger --remote --file migrations-ledger/0002_deletion_key_check.sql
+# 표 다섯과 초기 행이 들어갔는지 (mode=open · epoch 는 아무 값)
 npx wrangler d1 execute shhh-ledger --remote --command \
   "SELECT mode, epoch FROM maintenance WHERE id = 1"
 npx wrangler d1 execute shhh-ledger --remote --command \
-  "SELECT COUNT(*) FROM deletions; SELECT COUNT(*) FROM write_leases; SELECT COUNT(*) FROM cleanup_runs"
+  "SELECT COUNT(*) FROM deletions; SELECT COUNT(*) FROM write_leases; SELECT COUNT(*) FROM cleanup_runs; SELECT COUNT(*) FROM deletion_keys"
 ```
 
 - `database_id` 는 **비밀값이 아니다**(KV 네임스페이스 id 와 같은 성격). 설정 파일에 적어도 된다.
 - ⚠️ **id 를 추측해서 미리 적지 않는다.** 가짜 id 는 배포를 통과하고 **첫 질의에서** 터진다.
-- ⚠️ 네 표가 다 있어야 한다. `readMode()` 가 지나가는 것은 `maintenance` 하나뿐이라,
+- ⚠️ 다섯 표가 다 있어야 한다. `readMode()` 가 지나가는 것은 `maintenance` 하나뿐이라,
   절반만 걸린 ledger 는 게이트를 멀쩡히 통과하고 **첫 계정 삭제에서만** 터진다.
-  그 실패를 배포자가 먼저 보게 하려고 `/api/ready` 의 `ledger` 가 네 표를 다 건드린다.
+  그 실패를 배포자가 먼저 보게 하려고 `/api/ready` 의 `ledger` 가 다섯 표를 다 건드린다.
+- ⚠️ **`deletion_keys` 는 비워 둔다. 손으로 채우지 않는다.** 첫 계정 삭제가 지금 `DELETION_KEY` 의
+  검사값을 스스로 적는다(TOFU). 손으로 적으면 「그때 그 키」의 증거가 아니라 **적은 사람의 주장**이
+  된다. 이 표가 있어야 reconciliation 이 잘못된 키로 살아 있는 계정을 승격하지 않는다(위협 46).
+- ⛔ **`DELETION_KEY` 를 바꾸면서 `DELETION_KEY_VERSION` 을 그대로 두지 않는다.** 그러면 다음
+  삭제가 `DELETION_KEY mismatch` 로 503 이 된다(그게 맞는 실패 방향이다 — 조용히 도는 것보다 낫다).
 
 **중단 기준:** 위 두 확인 질의 중 하나라도 실패하면 여기서 멈춘다. 다음 단계로 가지 않는다.
 
@@ -207,9 +215,15 @@ npx wrangler d1 execute shhh-ledger --remote --command \
   지나지 않는다. 그래서 그 함수들은 언제나 `restoreAllowed: false` 를 돌려준다.
   실제 통제는 코드 밖에 있다: 계정 권한, 승인 절차, 그리고 옛 배포를 없애는 일(§10-8-1).
 - 복원이 꼭 필요하면 임의로 실행하지 않고 **사고 대응으로 승격**해 별도 승인을 받는다.
-- `restore_closed` 를 다시 열 때는 `reopenReport(env, { markFns })` 가 통과해야 한다.
-  그 판정은 **대상 목록을 인자로 받지 않는다** — 주 D1 과 ledger 를 직접 읽어 스스로 만든다.
-  `setMode(env, "open", { markFns })` 도 보고서를 받지 않고 그 자리에서 다시 판정한다.
+- `restore_closed` 를 다시 열 때는 `reopenReport(env)` 가 통과해야 한다. 그 판정은 **아무 인자도
+  받지 않는다**(2026-08-19) — 대상 목록도, 표식을 만드는 함수도. 주 D1 과 ledger 를 직접 읽어
+  스스로 만들고, 키 재료는 `DELETION_MARKERS` 레지스트리가 소유한다. `setMode(env, "open")` 도
+  보고서를 받지 않고 그 자리에서 다시 판정한다.
+- ⚠️ **`restore_closed` 에서 `maintenance` 로 곧장 갈 수 없다.** `maintenance` 도 `GET /book`·
+  `GET /me`·`GET /friends/:id/book` 을 허용하는 상태라, 그리로 가면 자물쇠를 지나지 않는다
+  (2026-08-19 재현 · 위협 43). 순서는 **`restore_closed` → (검증) → `open` → `maintenance`** 다.
+- ⚠️ 전환은 **CAS** 다. 판정에 쓴 `mode`·`epoch` 이 그 사이에 바뀌면 「유지보수 전환이 경합했다」로
+  실패한다. 그때는 **다시 판정한다** — 억지로 다시 부르지 않는다.
 
 ## 11. 옛 Pages 배포 정리
 
@@ -227,7 +241,10 @@ npx wrangler d1 execute shhh-ledger --remote --command \
 |---|---|
 | **공개 OAuth·계정 출시** | No-Go. 아래가 전부 끝나야 재판정한다 |
 | 옛 배포 차단(§11) | 복원 금지 해제 조건 ⑦ |
-| 옛 엣지 캐시의 내부 파일 7개 | `*.pages.dev` 는 우리 존이 아니라 퍼지 API 를 못 쓴다. **실측으로만** 닫는다(`docs/HANDOFF.md` §4-5) |
+| ~~옛 엣지 캐시의 내부 파일 7개~~ | ✅ **2026-08-19 실측으로 닫혔다** — canonical 7개가 전부 SPA 폴백(`docs/HANDOFF.md` §4-5) |
+| **분산 요청(여러 IP)의 쓰기 증폭** | 앱 리미터는 **IP·분당**까지만 좁힌다. 여러 IP 로 나눠 오면 앱 코드로 못 막는다 — **WAF · Rate Limiting · Turnstile** 은 존이 우리 것이어야 걸 수 있어 **도메인이 붙는 날** 함께 열린다(위협 47 · §13) |
+| 세션 쿠키를 DB 없이 검증하기 | 지금 리미터는 인증 **앞**이라 신원이 IP 뿐이고, 그래서 공유 IP(CGNAT)가 버킷을 나눠 쓴다. uid 별로 되돌리려면 **서명된 세션 envelope**(전용 시크릿 하나 추가 · 기존 세션 전부 무효)가 필요하다. 지금은 사용자 0명이라 값싸지만, **바꾸는 순간 시크릿이 하나 더 는다** — 별도 결정 |
+| `rate_limits` 를 ledger D1 로 옮기기 | 리미터는 임차증 **앞**이라 그 주 D1 쓰기만 추적 밖이다. `restore_closed` 에서는 게이트가 먼저 막아 그 창이 없지만, **`maintenance` → `restore_closed` 전환과 겹치는 좁은 창**은 남는다. 옮기면 「주 D1 은 임차증 안에서만 만진다」가 예외 없는 규칙이 된다 — 주 D1 의 파괴적 migration 이 필요해 별도 승인 대상 |
 | 외부 법률 검토 L1~L15 | `docs/PRIVACY_LEGAL_REVIEW_PACKET.md`. Claude 가 법적 적합성을 판정하지 않는다 |
 | 네이버·카카오 재승인 | 절차는 `docs/OAUTH_REAPPROVAL_RUNBOOK.md`. **배포와 `/api/ready` 확인이 끝난 뒤에** 낸다 — 검수자가 여는 화면이 최신이어야 한다 |
 | 설치형 PWA 실검증 | iOS Safari · Android Chrome 에서 **설치한 뒤** 오프라인·업데이트를 직접 본다. Node 목이 통과했다고 오프라인이 되는 것이 아니다 |
@@ -236,11 +253,17 @@ npx wrangler d1 execute shhh-ledger --remote --command \
 
 ## 13. 알고 감수하는 비용
 
-- **요청 하나 = ledger 쓰기 둘**(임차증 INSERT + DELETE). 결정 A′ 의 대가다.
-  없는 주소·로그인 시작은 0 이지만(라우트 분류가 앞이다), 실재하는 라우트는 **차단된
-  429 요청에도** 임차증을 든다 — 임차증을 리미터보다 먼저 따야 세션 조회까지 추적되기 때문이다.
-  D1 무료 한도(하루 10만 쓰기)를 이 값으로 나눠 보고, 트래픽이 그 근처에 가면
-  **WAF 를 먼저 붙인다**(엣지에서 끊는 것이 언제나 더 좋은 답이다).
+- **통과한 요청 하나 = ledger 쓰기 둘**(임차증 INSERT + DELETE). 결정 A′ 의 대가다.
+  없는 주소·로그인 시작은 0 이고(라우트 분류가 앞이다), **429 로 막힌 요청도 0 이다**
+  — 2026-08-19 에 리미터를 임차증 **앞**으로 옮겼다(위협 47).
+  ⛔ **그전에는 「차단된 요청도 임차증을 든다 · 요청당 둘이 상한이다」라고 적혀 있었다.
+  요청 수가 무제한이면 요청당 상수는 상한이 아니다.**
+- 지금 상한은 **IP·분당**이다: 주 D1 은 버킷 한도+1 회, ledger 는 통과한 요청당 둘.
+  가장 넉넉한 버킷이 120 이므로 한 IP 가 한 라우트에서 낼 수 있는 쓰기는 분당 수백 수준이다.
+  D1 무료 한도(하루 10만 쓰기)를 이 값으로 나눠 보고, 트래픽이 그 근처에 가거나
+  **여러 IP 로 나눠 오는 요청**이 보이면 **WAF 를 먼저 붙인다**(엣지에서 끊는 것이 언제나 더 좋은 답이다).
+- **인증이 필요한 읽기도 이제 D1 쓰기 하나를 낸다**(`read` 버킷). 무한한 쪽을 유한하게 바꾼
+  대가이고, 정상 사용에서는 앱을 한 번 열 때 서너 건이다.
 - `LEASE_TTL` 120초는 실측이 아니라 여유값이다. 실제 p95 를 재서 좁힌다(설계서 §10-9-5 Q6).
 - 정리 크론의 `LIMIT 200` 도 실측값이 아니다. `cleanup_runs.last_counts` 가 매번 200 에
   붙어 있으면 밀리고 있다는 뜻이므로 올린다.
