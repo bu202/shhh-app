@@ -10,15 +10,36 @@ import { activeLeases, drainState, openPendingCount, DELETION_KEY_VERSION, CONFI
 // ── 유지보수 전환 ────────────────────────────────────────────────────────
 // **epoch 를 함께 올린다.** 이 순간부터 새 lease 를 딸 수 없고, 옛 epoch 의 lease 를 든
 // 요청은 fencing 을 통과하지 못한다.
-export async function setMode(env, mode, now = Date.now()) {
+export async function setMode(env, mode, { now = Date.now(), markFns = [] } = {}) {
   if (!["open", "maintenance", "restore_closed"].includes(mode)) throw new Error("unknown mode: " + mode);
+  const cur = await gateRow(env);
+  // ⚠️ **`restore_closed` 에서 `open` 으로 가는 길에만 자물쇠가 있다.** 그 전환이 곧
+  //    「되살아난 탈퇴자의 단어장을 다시 읽을 수 있게 한다」이기 때문이다(위협 36).
+  //    사전점검을 부르지 않고 이 함수만 부르면 검사를 통째로 건너뛸 수 있었다 —
+  //    그래서 여기서 **그 자리에서 만든 보고서**를 요구한다. 손으로 만든 객체는 통과하지
+  //    못한다: `reopenReport()` 가 붙여 주는 epoch·발행 시각을 지금 게이트와 대조한다.
+  if (cur && cur.mode === "restore_closed" && mode === "open") {
+    // ⚠️ **보고서를 받아서 믿지 않는다. 여기서 다시 돌린다.** 받아서 믿으면 `{canReopen:true}`
+    //    한 줄이 곧 통과다 — 검사를 인자로 우회하는 그 무늬가 정확히 restoreGate 에서
+    //    고친 것이다(2026-08-19). 받는 것은 판정이 아니라 **키 재료**(markFns)뿐이다.
+    const rep = await reopenReport(env, { markFns, now });
+    if (!rep.canReopen)
+      throw new Error("restore_closed 를 열 수 없다 — " + (rep.why.join(" · ") || "canReopen 이 거짓이다"));
+  }
   await env.LEDGER.prepare(
     `UPDATE maintenance SET mode = ?, epoch = epoch + 1,
             closed_at = CASE WHEN ? = 'open' THEN NULL ELSE ? END,
             drained_at = NULL
       WHERE id = 1`).bind(mode, mode, now).run();
-  return await env.LEDGER.prepare("SELECT mode, epoch FROM maintenance WHERE id = 1").first();
+  return await gateRow(env);
 }
+
+// 게이트 한 줄. 여러 함수가 같은 질의를 하고 있었다 — 한 곳으로 모은다.
+const gateRow = (env) => env.LEDGER.prepare("SELECT mode, epoch FROM maintenance WHERE id = 1").first();
+
+// ⚠️ **보고서에 유효기간을 두지 않는다.** 두려던 이유는 「사람이 보고서를 들고 있다가 나중에
+//    쓰는 것」을 막기 위해서였는데, 그건 애초에 보고서를 **받아서 믿을 때만** 생기는 위험이다.
+//    지금 `setMode` 는 보고서를 받지 않고 그 자리에서 다시 판정한다 — 낡을 값 자체가 없다.
 
 // ── drain 확인 ───────────────────────────────────────────────────────────
 // **온라인 workload 전체의 drain 이다**(2026-08-18 결정 A′ · 크론 편입). 임차증을 드는 것은
@@ -49,7 +70,7 @@ export async function markDrained(env, now = Date.now()) {
 // ⚠️ 그래도 유지보수 모드에서만 돈다. promote-only 는 판정 자체를 안전하게 만든 것이고,
 //    유지보수 요구는 그 위에 얹는 두 번째 자물쇠다. **둘 중 하나만 믿지 않는다.**
 export async function reconcile(env, { mark, now = Date.now(), pageSize = 500 } = {}) {
-  const gate = await env.LEDGER.prepare("SELECT mode, epoch FROM maintenance WHERE id = 1").first();
+  const gate = await gateRow(env);
   if (gate.mode === "open") return { ok: false, why: "maintenance 가 open 이다" };
   const n = await activeLeases(env, now);
   if (n !== 0) return { ok: false, why: `활성 deletion lease ${n}건 — drain 되지 않았다` };
@@ -90,7 +111,7 @@ export async function reconcile(env, { mark, now = Date.now(), pageSize = 500 } 
 // 재확인 없이 지우면 그 사이에 삭제된 계정의 표식을 지우게 되어 「표식 없는 삭제」가 된다.
 export async function removeStalePending(env, marks, { mark, now = Date.now(), confirmedByOperator = false } = {}) {
   if (!confirmedByOperator) return { ok: false, why: "운영 판정이 없다 — 자동·시간 기반 제거는 금지다" };
-  const gate = await env.LEDGER.prepare("SELECT mode, epoch FROM maintenance WHERE id = 1").first();
+  const gate = await gateRow(env);
   if (gate.mode === "open") return { ok: false, why: "maintenance 가 open 이다" };
   if ((await activeLeases(env, now)) !== 0) return { ok: false, why: "활성 deletion lease 가 있다" };
   if (typeof mark !== "function") return { ok: false, why: "계정 존재 재확인 수단이 없다" };
@@ -114,11 +135,15 @@ export async function removeStalePending(env, marks, { mark, now = Date.now(), c
   return { ok: true, removed: removed.length, refused: refused.length };
 }
 
-// ── 주 D1 복원 금지 gate ─────────────────────────────────────────────────
-// **문서가 아니라 실행되는 검사다.** 사람이 기억해야 도는 규칙은 언젠가 잊힌다.
+// ── 주 D1 복원 사전점검 ──────────────────────────────────────────────────
+// ⚠️ **이것은 「실행되는 통제」가 아니라 「실행되는 사전점검」이다.** 2026-08-19 에 표현을
+//    고쳤다: 예전 주석은 「문서가 아니라 실행되는 검사다」라고만 적어, 이 함수가 복원을
+//    **막는다**고 읽히게 두었다. 막지 못한다 — `wrangler d1 time-travel restore` 는 계정
+//    권한으로 실행되고 이 코드를 지나지 않는다. 사람이 기억해야 도는 규칙이 잊히는 것은
+//    사실이고, 그래서 조건을 코드에 두는 것은 여전히 옳다. 다만 **막는다고 말하지 않는다.**
 //
-// **아래 9개 조건이 전부 참일 때만** 복원 절차의 1번을 시작할 수 있다. **부분 충족은 충족이
-// 아니다.** 개수를 여기 손으로 적지 않는다 — 판정은 언제나 `RESTORE_CONDITIONS` 전수다.
+// **아래 조건이 전부 참이어야** 복원 절차를 논의할 수 있다. **부분 충족은 충족이 아니다.**
+// 개수를 여기 손으로 적지 않는다 — 판정은 언제나 `RESTORE_CONDITIONS` 전수다.
 //
 // 전역 user-data drain 은 2026-08-18 에 구현됐다(A′ · 정리 크론 포함). 그래도 지금은
 // **여전히 거부**다 — `noActiveLeases`(질의해야 안다) · `oldDeployments` · `regressionTests`
@@ -157,39 +182,106 @@ export const RESTORE_STATE = {
   regressionTests: false,
 };
 
+// ── 이 파일은 복원을 **막지 못한다.** 사전점검일 뿐이다 ──────────────────
+//
+// ⚠️ **정확히 말한다.** `wrangler d1 time-travel restore` 는 계정 권한을 가진 사람이 이 코드와
+//    무관하게 실행할 수 있다. 여기 있는 함수들은 그 명령을 막지 못하고, 막는 척해서도 안 된다.
+//    이것이 하는 일은 하나다 — **「지금 복원해도 되나」의 답을 질의 결과로 만들어 놓고,
+//    실수로 열리지 않게 한다.** 실제 통제는 코드 밖에 있다: 계정 권한, 승인 절차, 그리고
+//    옛 배포를 없애는 일(§10-8-1). 그래서 아래 보고서는 언제나 `restoreAllowed: false` 다.
+const RESTORE_PREFLIGHT_ONLY =
+  "이 검사는 사전점검이다. `wrangler d1 time-travel restore` 는 앱 코드가 막지 못한다 — "
+  + "복원은 사고 대응으로 승격해 별도 승인을 받는다";
+
+// **질의로만 정해지는 조건.** 나머지는 코드가 소유하고, 밖에서 넘겨받지 않는다.
+// ⚠️ 예전에는 `restoreGate(state)` 가 **임의의 객체**를 받아 그대로 믿었다. 그래서 아홉을 전부
+//    `true` 로 적은 객체 하나면 게이트가 열렸고, 테스트가 실제로 그렇게 통과하고 있었다 —
+//    「실행되는 검사」라고 적어 놓고 검사를 인자로 우회할 수 있는 상태였다.
+const QUERIED = new Set(["noActiveLeases"]);
+
 // 지금 이 순간의 drain 을 **질의해서** 상태 객체를 만든다.
 // 손으로 `noActiveLeases: true` 를 적는 것을 막으려고 이 함수를 둔다 —
 // 값이 코드가 아니라 DB 에서 와야 증거가 된다.
-export async function drainReport(env, base = RESTORE_STATE, now = Date.now()) {
+// ⚠️ **base 인자를 받지 않는다.** 받으면 그 자리가 곧 우회로다.
+export async function drainReport(env, now = Date.now()) {
   const d = await drainState(env, now);
-  return { state: { ...base, noActiveLeases: d.drained }, drain: d };
+  return { state: { ...RESTORE_STATE, noActiveLeases: d.drained }, drain: d, at: now };
 }
 
-export function restoreGate(state = RESTORE_STATE) {
-  const missing = RESTORE_CONDITIONS.filter(([k]) => !state[k]);
+// 판정. **코드가 소유한 조건은 인자로 못 바꾼다** — 밖에서 오는 것은 질의 결과 하나뿐이다.
+export function restoreGate(report) {
+  const q = (report && report.state) || {};
+  const missing = RESTORE_CONDITIONS.filter(([k]) =>
+    QUERIED.has(k) ? !q[k] : !RESTORE_STATE[k]);
   return {
-    allowed: missing.length === 0,
+    // 미충족이 0 이어도 **복원이 허용되지는 않는다.** 이 코드는 wrangler 를 막지 못하므로
+    // 「허용」이라고 말할 자격이 없다 — 말할 수 있는 것은 「사전점검을 통과했다」까지다.
+    preflightPassed: missing.length === 0,
+    allowed: false,
+    restoreAllowed: false,
+    why: RESTORE_PREFLIGHT_ONLY,
     missing: missing.map(([k, why]) => `${k}: ${why}`),
   };
 }
 
-// 복원 절차 진입. **gate 가 거부하면 여기서 끝난다.**
-export function beginRestore(state = RESTORE_STATE) {
-  const g = restoreGate(state);
-  if (!g.allowed) {
-    const e = new Error("주 D1 복원은 지금 금지다 — 미충족 " + g.missing.length + "건:\n  " + g.missing.join("\n  "));
-    e.code = "RESTORE_FORBIDDEN";
-    throw e;
-  }
-  return { ok: true };
+// 지금 상태를 **질의해서** 사전점검을 돌린다. 운영자가 부르는 것은 이것이다.
+export async function restorePreflight(env, now = Date.now()) {
+  const rep = await drainReport(env, now);
+  const gate = restoreGate(rep);
+  return { ...gate, drain: rep.drain, openPending: await openPendingCount(env, now), at: now };
 }
 
-// `restore_closed` 를 풀 수 있나. 다섯을 **전부** 확인한다.
-// 하나라도 미달이면 읽기를 다시 열지 않는다. 「쓰기만 먼저 열자」도 하지 않는다 —
-// 막으려는 것이 **읽기 노출**이기 때문이다.
-export async function reopenReport(env, { targets = [], now = Date.now() } = {}) {
-  const q = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).first());
+// 복원 절차 진입. **언제나 거부한다.** 지금 `RESTORE_CONDITIONS` 중 셋이 코드 상수로 false 이고
+// (⑦ 옛 배포 차단 · ⑨ T8 · ⑤ 는 질의값), 그 셋이 참이 되는 길은 이 저장소 안에 없다.
+// ⚠️ **강제 진행 인자를 만들지 않는다.** 한 번 만들면 급할 때 쓰이고, 급할 때가 정확히 쓰면 안 되는 때다.
+export function beginRestore(report) {
+  const g = restoreGate(report);
+  const e = new Error("주 D1 복원은 지금 금지다 — " + RESTORE_PREFLIGHT_ONLY
+    + (g.missing.length ? "\n  미충족 " + g.missing.length + "건:\n  " + g.missing.join("\n  ") : ""));
+  e.code = "RESTORE_FORBIDDEN";
+  throw e;
+}
+
+// ── 재개방 판정 — **증거를 이 함수가 직접 만든다** ───────────────────────
+//
+// ⚠️ 예전에는 `reopenReport(env, { targets })` 가 **호출자가 준 목록**을 그대로 셌다.
+//    그래서 `targets: []` 를 넘기면 잔여도 0, 살아 있는 계정도 0 이라 **`canReopen: true`** 가
+//    나왔다 — 아무것도 확인하지 않고 읽기를 다시 여는 길이다. 목록을 인자로 받는 한, 그
+//    인자를 검증하는 새 규칙을 아무리 얹어도 **결국 인자를 믿는 함수**다.
+//    그래서 인자를 없앴다: 대상 집합은 여기서 **주 D1 과 ledger 를 직접 읽어** 만든다.
+//
+// 밖에서 받는 것은 `markFns` 하나뿐이고, 그건 목록이 아니라 **키 재료**다(HMAC 함수).
+// 키는 env 에 있고 이 파일은 그것을 모르므로 받을 수밖에 없다 — 그리고 이것으로는
+// 판정을 유리하게 바꿀 수 없다: 틀린 함수를 주면 대상이 **늘어나지 줄지 않는다**
+// (표식이 안 맞으면 confirmed 집합과 대조되지 않아 잔여가 남은 채로 거부된다).
+export async function reopenReport(env, { markFns = [], now = Date.now() } = {}) {
+  const gate = await gateRow(env);
+  const why = [];
+  // ① 지금 모드가 `restore_closed` 인가. open·maintenance 에서 「다시 연다」는 말은 뜻이 없다.
+  if (gate.mode !== "restore_closed") why.push(`지금 모드가 ${gate.mode} 다 — restore_closed 에서만 판정한다`);
+  // ② 계정 존재를 다시 확인할 수단이 있나. 없으면 판정하지 않는다(removeStalePending 과 같은 규칙).
+  const usable = Array.isArray(markFns) && markFns.length > 0 && markFns.every((f) => typeof f === "function");
+  if (!usable) why.push("계정 존재 재확인 수단(markFns)이 없다 — 대상 집합을 만들 수 없다");
+  // ③ 지금 이 순간 임차증이 0 인가. **stale 도 0 이어야 한다**(만료는 해제가 아니다).
+  const drain = await drainState(env, now);
+  if (!drain.drained) why.push(`임차증 ${drain.open}건(stale ${drain.stale}) — 아직 도는 작업이 있다`);
+  // ④ 확정되지 않은 삭제 표식이 남아 있나. 남았다면 누구를 다시 지워야 하는지가 아직 미정이다.
+  const openPending = await openPendingCount(env, now);
+  if (openPending > 0) why.push(`미확정 삭제 표식 ${openPending}건 — 사람이 판정해야 한다`);
+
+  // ⑤ 재삭제 대상. **여기서 만든다.** 확정 표식은 ledger 에서 직접 읽고, 계정은 주 D1 을
+  //    페이지 단위로 훑어 키 버전마다 HMAC 해서 대조한다(restoreTargets).
+  let targets = [], scanned = 0;
+  if (usable) {
+    const { results } = await env.LEDGER.prepare(
+      "SELECT mark, key_version, confirmed_at FROM deletions WHERE confirmed_at IS NOT NULL").all();
+    const userMarks = await scanUserMarks(env, markFns);
+    scanned = userMarks.length;
+    targets = restoreTargets(userMarks, results || []);
+  }
+
   const inList = targets.map(() => "?").join(",") || "''";
+  const q = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).first());
   const leftovers = {};
   for (const t of ["sessions", "books", "invite_codes"]) {
     const r = await q(`SELECT COUNT(*) AS n FROM ${t} WHERE user_id IN (${inList})`, ...targets);
@@ -199,13 +291,18 @@ export async function reopenReport(env, { targets = [], now = Date.now() } = {})
     `SELECT COUNT(*) AS n FROM friendships WHERE requester_id IN (${inList}) OR addressee_id IN (${inList})`,
     ...targets, ...targets);
   leftovers.friendships = fr.n;
+  // ⑥ 대상이 남아 있다 = 재삭제가 아직 안 끝났다. **대상 수와 삭제 결과 수가 맞아야 한다** —
+  //    그 검증식이 곧 「targets 가 전부 사라졌나」다(설계서 §10-8 6번).
   const alive = await q(`SELECT COUNT(*) AS n FROM users WHERE id IN (${inList})`, ...targets);
+  if (alive.n !== 0) why.push(`재삭제 대상 ${alive.n}명이 아직 살아 있다`);
+  for (const [t, n] of Object.entries(leftovers)) if (n !== 0) why.push(`${t} 에 잔여 ${n}행`);
+
   return {
-    targets: targets.length,
-    stillAlive: alive.n,
-    leftovers,
-    openPending: await openPendingCount(env, now),
-    canReopen: alive.n === 0 && Object.values(leftovers).every((n) => n === 0),
+    epoch: gate.epoch, at: now, mode: gate.mode,
+    targets: targets.length, scannedUsers: scanned,
+    stillAlive: alive.n, leftovers, openPending, drain,
+    canReopen: why.length === 0,
+    why,
   };
 }
 
