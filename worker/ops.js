@@ -162,13 +162,26 @@ export async function removeStalePending(env, marks, { now = Date.now(), confirm
 
   const removed = [], refused = [];
   for (const m of marks) {
-    const row = await env.LEDGER.prepare(
-      "SELECT confirmed_at FROM deletions WHERE mark = ?").bind(m).first();
-    // confirmed 를 이 경로로 지우지 않는다. 그건 만료로만 사라진다.
-    if (!row || row.confirmed_at !== null) { refused.push(m); continue; }
     if (!live.has(m)) { refused.push(m); continue; }   // 계정이 없다 → 승격 대상이지 제거 대상이 아니다
-    await env.LEDGER.prepare("DELETE FROM deletions WHERE mark = ? AND confirmed_at IS NULL").bind(m).run();
-    removed.push(m);
+    // ⚠️ **판정과 삭제 사이가 곧 창이다**(2026-08-20 재현 T61 · 위협 48). 위 검사들은 전부
+    //    「그때 그랬다」이고, 예전 코드의 DELETE 는 **아무것도 다시 확인하지 않았다.** 그래서
+    //    이 사이에 진짜 `DELETE /me` 가 끼어들면 계정이 사라진 뒤에 표식이 지워져
+    //    **`users` 0행 · `deletions` 0행** — 지워졌는데 지운 증거가 없는 상태가 만들어졌다.
+    //    그 계정은 복원 뒤 재삭제 대상 목록에 영원히 안 나온다.
+    //
+    //    그래서 조건을 **삭제 문장 안으로** 옮긴다. 확인은 「그때 그랬다」가 아니라 **「지금
+    //    그렇다」**여야 한다. 안 맞으면 0행이 지워진다 — 닫는 쪽 실패다.
+    //      · `mode`·`epoch` 이 판정 때 그대로   (한 칸이라도 움직였으면 다른 상황이다)
+    //      · `write_leases` 가 **비어 있다**    (작업이 하나라도 돌면 계정 상태가 변할 수 있다)
+    //      · `confirmed_at IS NULL`             (confirmed 는 이 경로로 안 지운다. 만료로만 사라진다)
+    const r = await env.LEDGER.prepare(
+      `DELETE FROM deletions
+        WHERE mark = ?1 AND confirmed_at IS NULL
+          AND EXISTS (SELECT 1 FROM maintenance WHERE id = 1 AND mode = ?2 AND epoch = ?3)
+          AND NOT EXISTS (SELECT 1 FROM write_leases)`)
+      .bind(m, gate.mode, gate.epoch).run();
+    if (r.meta && r.meta.changes === 1) removed.push(m);
+    else refused.push(m);
   }
   return { ok: true, removed: removed.length, refused: refused.length };
 }
