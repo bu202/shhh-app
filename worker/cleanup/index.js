@@ -35,7 +35,9 @@ const JOBS = [
   ["sessions", "DB",
    `DELETE FROM sessions WHERE token_hash IN
       (SELECT token_hash FROM sessions WHERE expires_at < ? OR revoked_at IS NOT NULL LIMIT ${LIMIT})`],
-  ["rate_limits", "DB",
+  // C4 — **2026-08-20 부터 ledger 다**(위협 49 · migration `0003`). 주 D1 의 같은 이름 표는
+  //      남아 있지만 아무도 쓰지 않는다.
+  ["rate_limits", "LEDGER",
    `DELETE FROM rate_limits WHERE bucket IN
       (SELECT bucket FROM rate_limits WHERE expires_at < ? LIMIT ${LIMIT})`],
   // C2 — 확정된 표식만. 조건이 SQL 문자열 한 곳(ledger.js)에서 온다.

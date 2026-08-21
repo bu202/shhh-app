@@ -98,3 +98,19 @@ CREATE TABLE IF NOT EXISTS deletion_keys (
   key_check   TEXT NOT NULL,   -- HMAC-SHA256(DELETION_KEY, "shhh!/deletion-key-check/v<버전>")
   created_at  INTEGER NOT NULL
 );
+
+-- 남용 방지 카운터. **2026-08-20 에 주 D1 에서 옮겨 왔다**(위협 49 · migration `0003`).
+--
+-- 왜 여기인가: 리미터는 임차증보다 **먼저** 돌아야 하는데(위협 47), 그러면 그 쓰기가 임차증
+-- 밖이라 「주 D1 은 임차증 안에서만 만진다」에 예외가 생긴다. 카운터를 ledger 로 옮기면
+-- 예외가 사라지고, UPSERT 를 게이트와 **한 문장**으로 묶을 수 있다 — `restore_closed` 로
+-- 전환된 뒤에 깨어난 요청은 0행을 쓰고 429 로 끝난다.
+--
+-- ⚠️ 저장하는 것은 **되돌릴 수 없게 변환한 값**이다. 평문 SHA-256 이 아니라 `RL_KEY` HMAC 이라
+--    키를 모르면 넣어 볼 값 자체를 만들 수 없다(2026-08-16 · 실측 43회 대입으로 IP 가 복원됐다).
+CREATE TABLE IF NOT EXISTS rate_limits (
+  bucket     TEXT PRIMARY KEY,   -- HMAC(RL_KEY, 용도|주체|창번호)
+  n          INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS rate_limits_expires ON rate_limits(expires_at);

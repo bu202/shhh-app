@@ -16,6 +16,7 @@ const t = (m) => { n++; return m; };
 const env0 = () => ({ DB: makeD1(), LEDGER: makeLedger() });
 const lc = (env, where = "") => env.LEDGER._db.prepare(`SELECT COUNT(*) n FROM deletions ${where}`).get().n;
 const dc = (env, table, where = "") => env.DB._db.prepare(`SELECT COUNT(*) n FROM ${table} ${where}`).get().n;
+const lcT = (env, table, where = "") => env.LEDGER._db.prepare(`SELECT COUNT(*) n FROM ${table} ${where}`).get().n;
 
 // 대상마다 「만료된 것 1개 · 안 만료된 것 1개」를 심는다. 만료된 것만 사라져야 한다.
 function seed(env, now) {
@@ -34,8 +35,10 @@ function seed(env, now) {
   D.exec(`INSERT INTO sessions VALUES ('h-old','u1',0,${now - 1},NULL)`);
   D.exec(`INSERT INTO sessions VALUES ('h-rev','u1',0,${now + 60e3},${now - 1})`);      // 폐기됨 → 지운다
   D.exec(`INSERT INTO sessions VALUES ('h-live','u1',0,${now + 60e3},NULL)`);
-  D.exec(`INSERT INTO rate_limits VALUES ('rl-old',1,${now - 1})`);
-  D.exec(`INSERT INTO rate_limits VALUES ('rl-new',1,${now + 60e3})`);
+  // ⚠️ 리미터 카운터는 **ledger** 다(2026-08-20 · 위협 49). 주 D1 의 같은 이름 표는 남아 있지만
+  //    아무도 쓰지 않는다 — 거기에 넣으면 「지워졌다」가 아니라 「아무도 안 본다」를 재게 된다.
+  L.exec(`INSERT INTO rate_limits VALUES ('rl-old',1,${now - 1})`);
+  L.exec(`INSERT INTO rate_limits VALUES ('rl-new',1,${now + 60e3})`);
 }
 
 // ══ T44. ⛔ 가장 중요 — confirmed 만 지운다 ══════════════════════════════
@@ -85,8 +88,8 @@ function seed(env, now) {
   assert.equal(dc(env, "sessions", "WHERE token_hash='h-old'"), 0, t("T45: 만료 세션이 안 지워졌다"));
   assert.equal(dc(env, "sessions", "WHERE token_hash='h-rev'"), 0, t("T45: 폐기 세션이 안 지워졌다"));
   assert.equal(dc(env, "sessions", "WHERE token_hash='h-live'"), 1, t("T45: 살아 있는 세션을 지웠다"));
-  assert.equal(dc(env, "rate_limits", "WHERE bucket='rl-old'"), 0, t("T45: 만료 리미터 행이 안 지워졌다"));
-  assert.equal(dc(env, "rate_limits", "WHERE bucket='rl-new'"), 1, t("T45: 살아 있는 리미터 행을 지웠다"));
+  assert.equal(lcT(env, "rate_limits", "WHERE bucket='rl-old'"), 0, t("T45: 만료 리미터 행이 안 지워졌다"));
+  assert.equal(lcT(env, "rate_limits", "WHERE bucket='rl-new'"), 1, t("T45: 살아 있는 리미터 행을 지웠다"));
   // 계정 자체는 **절대** 안 건드린다.
   assert.equal(dc(env, "users"), 1, t("T45: 정리가 계정을 지웠다"));
 }
@@ -118,7 +121,7 @@ function seed(env, now) {
       env.LEDGER._db.prepare("SELECT mark FROM deletions ORDER BY mark").all(),
       env.DB._db.prepare("SELECT state_hash FROM consumed_signup_states ORDER BY state_hash").all(),
       env.DB._db.prepare("SELECT token_hash FROM sessions ORDER BY token_hash").all(),
-      env.DB._db.prepare("SELECT bucket FROM rate_limits ORDER BY bucket").all(),
+      env.LEDGER._db.prepare("SELECT bucket FROM rate_limits ORDER BY bucket").all(),
     ]);
     const out = await runCleanup(env, now);
     // ★ 복원 중 정리가 겹치면 reconciliation 과 경합한다. 그 자리에서 끝낸다.
@@ -128,7 +131,7 @@ function seed(env, now) {
       env.LEDGER._db.prepare("SELECT mark FROM deletions ORDER BY mark").all(),
       env.DB._db.prepare("SELECT state_hash FROM consumed_signup_states ORDER BY state_hash").all(),
       env.DB._db.prepare("SELECT token_hash FROM sessions ORDER BY token_hash").all(),
-      env.DB._db.prepare("SELECT bucket FROM rate_limits ORDER BY bucket").all(),
+      env.LEDGER._db.prepare("SELECT bucket FROM rate_limits ORDER BY bucket").all(),
     ]), before, t(`T47: ${mode} 인데 상태가 바뀌었다`));
   }
 }
@@ -208,7 +211,7 @@ function seed(env, now) {
 
   // ⑤ **전환 이후에 시작하는** 크론은 주 D1 을 한 줄도 만지지 않는다.
   const before = JSON.stringify([
-    env.DB._db.prepare("SELECT bucket FROM rate_limits ORDER BY bucket").all(),
+    env.LEDGER._db.prepare("SELECT bucket FROM rate_limits ORDER BY bucket").all(),
     env.DB._db.prepare("SELECT token_hash FROM sessions ORDER BY token_hash").all(),
   ]);
   let touched = 0;
@@ -218,7 +221,7 @@ function seed(env, now) {
   assert.equal(touched, 0,
     t("T47b: restore_closed 인데 주 D1 을 건드렸다 — 읽기 한 줄도 하면 안 된다"));
   assert.equal(JSON.stringify([
-    env.DB._db.prepare("SELECT bucket FROM rate_limits ORDER BY bucket").all(),
+    env.LEDGER._db.prepare("SELECT bucket FROM rate_limits ORDER BY bucket").all(),
     env.DB._db.prepare("SELECT token_hash FROM sessions ORDER BY token_hash").all(),
   ]), before, t("T47b: restore_closed 인데 주 D1 행이 바뀌었다"));
   assert.equal((await drainState(env, now)).open, 0,

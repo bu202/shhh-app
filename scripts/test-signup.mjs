@@ -27,6 +27,10 @@ function makeEnv(extra = {}) {
   return {
     APP_ORIGIN: ORIGIN, APP_URL: ORIGIN + "/",
     STATE_KEY: "test-signing-key", RL_KEY: "test-rl-key",
+    // ⚠️ **로컬 전용 남용 방어 스위치**(2026-08-20 · 위협 50). 없으면 계정 라우트가 DB 를
+    //    만지기 전에 503 이다 — 그 상태는 `test-stage34-closeout.mjs` T63-a 가 따로 잰다.
+    //    이 값으로는 `/ready` 가 **절대** 200 이 되지 않는다(엣지 바인딩이라야 ready 다).
+    DEV_RATE_LIMIT: "1",
     SIGNUP_STATE_KEY: KEY32, TOMBSTONE_KEY: "test-tombstone-key", DELETION_KEY: "test-deletion-key",
     KAKAO_ID: "id", KAKAO_SECRET: "s", NAVER_ID: "id", NAVER_SECRET: "s",
     DB: makeD1(), LEDGER: makeLedger(), ...extra,
@@ -205,9 +209,12 @@ const hashOf = (loc) => (String(loc).split("#")[1] || "");
   // B9. 복귀 주소는 허용된 오리진만.
   assert.equal((await startSignup(env, { back: "https://evil.test/x" })).status, 400, t("B9: 남의 주소로 복귀가 허용됐다"));
   // B10. `/signup` 은 WRITE_ROUTES 에 없어서 **이중으로 세지 않는다**(전용 버킷 하나만 쓴다).
-  const buckets = count(env, "rate_limits");
+  //     ⚠️ 카운터는 **ledger** 다(2026-08-20 · 위협 49). 주 D1 을 세면 이제 언제나 0 이라
+  //        「둘 이상 만들지 않았다」가 저절로 참이 되어 아무것도 재지 않는다.
+  const rl = () => env.LEDGER._db.prepare("SELECT COUNT(*) n FROM rate_limits").get().n;
+  const buckets = rl();
   await startSignup(env);
-  assert.equal(count(env, "rate_limits") - buckets <= 1, true, t("B10: 가입 시작 한 번이 리미터 행을 둘 이상 만들었다"));
+  assert.equal(rl() - buckets, 1, t(`B10: 가입 시작 한 번이 리미터 행을 ${rl() - buckets}개 만들었다`));
 }
 
 // ══ C. 정상 가입과 정책 기록 (T18 · T24 · T48) ═══════════════════════════
