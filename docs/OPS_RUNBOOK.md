@@ -34,6 +34,8 @@
 | 시크릿 | `MASTER_UIDS` | Pages | 아무도 마스터가 아니다 |
 | 시크릿 | `DEV_ORIGINS` | **개발 Worker 에만** | 로컬·LAN 로그인이 안 된다. ⛔ **운영에 넣지 않는다** — 넣으면 `/api/login/kakao?return=http://192.168.…` 로 세션이 같은 와이파이의 남의 서버로 간다 |
 | 변수 | `APP_ORIGIN` `APP_URL` | `wrangler.jsonc` | 복귀 주소 검증이 안 선다 |
+| 바인딩 | `RL`(엣지 레이트리밋) | `wrangler.jsonc` | **계정 라우트가 전부 503** — 남용 방어 없이 열지 않는다(위협 50). ⚠️ **지금 붙일 수 없다**: Pages Functions 지원 바인딩 목록에 없다(§13) |
+| 변수 | `DEV_RATE_LIMIT` | **로컬 전용**(`.dev.vars`·테스트) | 로컬에서 계정 라우트가 503. ⛔ **배포 설정에 넣지 않는다** — 넣으면 남용 방어 없이 열린 채 배포된다. 이 값으로는 `/api/ready` 가 200 이 되지 않는다 |
 
 > **서로 겸용하지 않는다.** 용도가 다른 비밀값을 돌려 쓰면 하나를 교체할 때 다른 하나가 같이
 > 무너진다. `STATE_KEY`(로그인 state 서명) · `SIGNUP_STATE_KEY`(가입 state 암호화) ·
@@ -52,18 +54,20 @@ npx wrangler d1 create shhh-ledger              # → database_id 가 출력된�
 # `worker/ledger-schema.sql` 은 현재 기준 스키마일 뿐 운영 migration 파일이 아니다.
 npx wrangler d1 execute shhh-ledger --remote --file migrations-ledger/0001_ledger_init.sql
 npx wrangler d1 execute shhh-ledger --remote --file migrations-ledger/0002_deletion_key_check.sql
-# 표 다섯과 초기 행이 들어갔는지 (mode=open · epoch 는 아무 값)
+npx wrangler d1 execute shhh-ledger --remote --file migrations-ledger/0003_rate_limits.sql
+# 표 여섯과 초기 행이 들어갔는지 (mode=open · epoch 는 아무 값)
 npx wrangler d1 execute shhh-ledger --remote --command \
   "SELECT mode, epoch FROM maintenance WHERE id = 1"
 npx wrangler d1 execute shhh-ledger --remote --command \
-  "SELECT COUNT(*) FROM deletions; SELECT COUNT(*) FROM write_leases; SELECT COUNT(*) FROM cleanup_runs; SELECT COUNT(*) FROM deletion_keys"
+  "SELECT COUNT(*) FROM deletions; SELECT COUNT(*) FROM write_leases; SELECT COUNT(*) FROM cleanup_runs; SELECT COUNT(*) FROM deletion_keys; SELECT COUNT(*) FROM rate_limits"
 ```
 
 - `database_id` 는 **비밀값이 아니다**(KV 네임스페이스 id 와 같은 성격). 설정 파일에 적어도 된다.
 - ⚠️ **id 를 추측해서 미리 적지 않는다.** 가짜 id 는 배포를 통과하고 **첫 질의에서** 터진다.
-- ⚠️ 다섯 표가 다 있어야 한다. `readMode()` 가 지나가는 것은 `maintenance` 하나뿐이라,
-  절반만 걸린 ledger 는 게이트를 멀쩡히 통과하고 **첫 계정 삭제에서만** 터진다.
-  그 실패를 배포자가 먼저 보게 하려고 `/api/ready` 의 `ledger` 가 다섯 표를 다 건드린다.
+- ⚠️ 여섯 표가 다 있어야 한다(`0003` 이 `rate_limits` 를 더했다 — 남용 방지 카운터가
+  2026-08-20 에 주 D1 에서 옮겨 왔다 · 위협 49). `readMode()` 가 지나가는 것은 `maintenance`
+  하나뿐이라, 절반만 걸린 ledger 는 게이트를 멀쩡히 통과하고 **첫 계정 삭제에서만** 터진다.
+  그 실패를 배포자가 먼저 보게 하려고 `/api/ready` 의 `ledger` 가 여섯 표를 다 건드린다.
 - ⚠️ **`deletion_keys` 는 비워 둔다. 손으로 채우지 않는다.** 첫 계정 삭제가 지금 `DELETION_KEY` 의
   검사값을 스스로 적는다(TOFU). 손으로 적으면 「그때 그 키」의 증거가 아니라 **적은 사람의 주장**이
   된다. 이 표가 있어야 reconciliation 이 잘못된 키로 살아 있는 계정을 승격하지 않는다(위협 46).
@@ -182,7 +186,9 @@ curl -s https://shhh-app.pages.dev/api/ready | python3 -m json.tool
 | `signupReady` | `true` | 가입 전용 키가 없다(§5) |
 | `cleanupStale` | `false` | 정리 크론이 두 시간 넘게 성공하지 못했다(§6 배포 확인) |
 | `cleanupAlert` | `false` | 확정 안 된 삭제 표식이 있거나 크론이 3회 연속 실패했다 — **사람이 본다** |
-| `providers` | 등록한 제공자 이름들 | 비어 있으면 id/secret 쌍이 안 맞거나 ledger 가 없다 |
+| `providers` | 등록한 제공자 이름들 | 비어 있으면 id/secret 쌍이 안 맞거나 ledger 가 없거나 **남용 방어가 없다** |
+| `abuseReady` | `true` | **엣지 남용 방어(`RL` 바인딩)가 없다.** 이 값이 거짓이면 계정 라우트가 전부 503 이다 — 지금 이 프로젝트가 그 상태다(§13 · 위협 50) |
+| `deletionEvidence` | `true` | **지금 `DELETION_KEY` 가 표식을 만든 키와 다르거나**, 모르는 키 버전이 섞여 있다. ⛔ 그 상태로 reconciliation 을 돌리면 **살아 있는 계정이 「지워진 사람」으로 승격**된다(위협 46·51). 키를 되돌리기 전에는 아무것도 하지 않는다 |
 
 - ⚠️ **배포 직후 약 1분은 옛 응답이 올 수 있다**(별칭 전파 실측). 이상하면 한 번 더 재고 나서
   원인을 말한다.
@@ -242,16 +248,52 @@ npx wrangler d1 execute shhh-ledger --remote --command \
 | **공개 OAuth·계정 출시** | No-Go. 아래가 전부 끝나야 재판정한다 |
 | 옛 배포 차단(§11) | 복원 금지 해제 조건 ⑦ |
 | ~~옛 엣지 캐시의 내부 파일 7개~~ | ✅ **2026-08-19 실측으로 닫혔다** — canonical 7개가 전부 SPA 폴백(`docs/HANDOFF.md` §4-5) |
-| **분산 요청(여러 IP)의 쓰기 증폭** | 앱 리미터는 **IP·분당**까지만 좁힌다. 여러 IP 로 나눠 오면 앱 코드로 못 막는다 — **WAF · Rate Limiting · Turnstile** 은 존이 우리 것이어야 걸 수 있어 **도메인이 붙는 날** 함께 열린다(위협 47 · §13) |
+| **분산 요청(여러 IP)의 쓰기 증폭** | 앱 리미터는 **IP·분당**까지만 좁힌다. 여러 IP 로 나눠 오면 앱 코드로 못 막는다 — **WAF · Rate Limiting · Turnstile** 은 존이 우리 것이어야 걸 수 있어 **도메인이 붙는 날** 함께 열린다(위협 47·50). ⚠️ **2026-08-20 부터 이것이 계정 기능의 전제 조건이다** — 붙기 전에는 계정 라우트가 503 이다(§13) |
 | 세션 쿠키를 DB 없이 검증하기 | 지금 리미터는 인증 **앞**이라 신원이 IP 뿐이고, 그래서 공유 IP(CGNAT)가 버킷을 나눠 쓴다. uid 별로 되돌리려면 **서명된 세션 envelope**(전용 시크릿 하나 추가 · 기존 세션 전부 무효)가 필요하다. 지금은 사용자 0명이라 값싸지만, **바꾸는 순간 시크릿이 하나 더 는다** — 별도 결정 |
-| `rate_limits` 를 ledger D1 로 옮기기 | 리미터는 임차증 **앞**이라 그 주 D1 쓰기만 추적 밖이다. `restore_closed` 에서는 게이트가 먼저 막아 그 창이 없지만, **`maintenance` → `restore_closed` 전환과 겹치는 좁은 창**은 남는다. 옮기면 「주 D1 은 임차증 안에서만 만진다」가 예외 없는 규칙이 된다 — 주 D1 의 파괴적 migration 이 필요해 별도 승인 대상 |
+| ~~`rate_limits` 를 ledger D1 로 옮기기~~ | ✅ **2026-08-20 에 옮겼다**(위협 49 · migration `migrations-ledger/0003`). 「주 D1 은 임차증 안에서만 만진다」에 예외가 없어졌다. ⚠️ 주 D1 의 옛 표는 **그대로 둔다** — 파괴적 migration 은 별도 승인이고 안 쓰는 표는 해가 없다 |
+| **엣지 남용 방어 자체** | 지금은 붙일 수단이 없다 — Pages Functions 지원 바인딩에 ratelimits 가 없고 `*.pages.dev` 에는 WAF 규칙을 못 건다. 그래서 **계정 라우트가 fail-closed 다**(위협 50). 선택지·비용은 §13 |
 | 외부 법률 검토 L1~L15 | `docs/PRIVACY_LEGAL_REVIEW_PACKET.md`. Claude 가 법적 적합성을 판정하지 않는다 |
 | 네이버·카카오 재승인 | 절차는 `docs/OAUTH_REAPPROVAL_RUNBOOK.md`. **배포와 `/api/ready` 확인이 끝난 뒤에** 낸다 — 검수자가 여는 화면이 최신이어야 한다 |
 | 설치형 PWA 실검증 | iOS Safari · Android Chrome 에서 **설치한 뒤** 오프라인·업데이트를 직접 본다. Node 목이 통과했다고 오프라인이 되는 것이 아니다 |
 | 바깥 origin 수형 그림의 오프라인 | `<img>` 로 받는 응답은 opaque(성공·실패 구분 불가)라 캐시하지 않는다. 하려면 그림을 우리 origin 으로 옮기거나 CORS 를 요청해야 한다(`service-worker.js` 의 `cacheable`) |
 | legacy KV 폐기 | 방향만 승인됐다. 6단계 순서는 `docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md` §11 |
 
-## 13. 알고 감수하는 비용
+## 13. 남용 방어 — 지금 없고, 그래서 계정 라우트가 닫혀 있다 (2026-08-20)
+
+**코드가 강제하는 것:** `RL`(엣지 레이트리밋) 바인딩이 없으면 `/api/health`·`/api/ready`·
+`/api/policies` 만 답하고, 나머지 요청은 **주 D1·ledger 어느 쪽도 만지기 전에** 503 이다.
+`/api/health` 는 `providers: []`·`abuseReady:false` 로 답해 버튼도 그리지 않는다.
+
+**왜:** 리미터가 셀 수 있는 신원은 **IP** 하나뿐이고(인증보다 앞에서 돌아야 하므로),
+IP·분당 한도는 **IP 를 나누면 그대로 곱해진다.** 실측(`scripts/test-stage34-closeout.mjs` T63-b,
+숫자는 코드가 잰다): 익명 IP 하나가 한 창에 두 저장소 합 **수백 건**을 쓰고, 하루치로
+환산하면 **IP 한 개**로도 D1 무료 한도(하루 10만 쓰기)를 넘긴다. 한도가 바닥나면
+**계정 전체의 D1 질의가 실패**하고 정상 사용자의 저장이 먼저 죽는다.
+
+**확인된 사실(공식 문서 · 2026-08):**
+
+- Pages Functions 의 지원 바인딩 목록에 **ratelimits 가 없다**(Workers 전용). Turnstile 도 바인딩이 아니다.
+- Workers 의 Rate Limiting 바인딩은 wrangler ≥ 4.36.0 이 필요하고 `simple.period` 는 10 또는 60,
+  **카운터가 Cloudflare 위치(colo)별**이라 전 세계 합계 한도가 아니다.
+- WAF 레이트리밋 규칙은 **우리 존**에 건다. `*.pages.dev` 는 Cloudflare 소유라 못 건다.
+- D1 Free plan: 하루 **읽기 500만 행 · 쓰기 10만 행**. 인덱스 갱신도 쓰기로 센다.
+
+### 13-1. ⛔ 사용자 결정 — 무엇을 붙일 것인가
+
+**Claude 가 고르지 않는다.** 넷 다 돈·도메인·구조가 걸려 있다.
+
+| 안 | 무엇을 한다 | 얻는 것 | 대가 |
+|---|---|---|---|
+| **A. 커스텀 도메인 + WAF 레이트리밋** | 도메인을 사서 Cloudflare 존에 붙이고 Pages 에 연결한 뒤 WAF 규칙을 건다 | 엣지에서 끊는다 — 우리 D1 에 닿기 전에 막힌다. 캐시 퍼지도 그날 함께 열린다 | 도메인 비용(연 단위) · DNS 작업 · OAuth 콜백 주소를 전부 새 도메인으로 재등록(네이버·카카오 재검수) |
+| **B. API 를 Workers 로 되돌리고 ratelimits 바인딩** | Pages Functions 대신 Worker 로 API 를 뺀다 | 코드 안에서 엣지 리미터를 쓴다. 도메인 없이도 된다 | **앱과 API 의 origin 이 갈라진다** — 쿠키·CSP·CORS·네이버 조건을 전부 되돌려야 한다. 2026-08 에 같은 origin 으로 합친 작업을 되감는 것이다. 게다가 카운터가 colo 별이라 분산 공격에는 부분 방어다 |
+| **C. Turnstile 을 가입·로그인 앞에 둔다** | 사람 확인을 통과해야 계정 경로가 열린다 | 자동화된 대량 요청을 크게 줄인다 | 바인딩이 아니라 **HTTP 검증 호출**이라 우리 Worker 가 매번 외부를 부른다 · 사용자 마찰이 는다 · 읽기 경로 전체에 걸 수는 없다 |
+| **D. 아무것도 안 한다(현 상태 유지)** | 계정 라우트를 닫아 둔다 | 비용 0 · D1 이 탈 일이 없다 | **계정 기능이 열리지 않는다.** 로그인 없는 PWA 사용만 가능하다 |
+
+**지금 상태는 D 다.** 그리고 그것이 「공개 출시 No-Go」의 기술적 내용이다 —
+A~C 중 하나가 실제로 붙고 `/api/ready` 의 `abuseReady` 가 `true` 가 되기 전에는
+계정 기능을 열 수 없다.
+
+## 14. 알고 감수하는 비용
 
 - **통과한 요청 하나 = ledger 쓰기 둘**(임차증 INSERT + DELETE). 결정 A′ 의 대가다.
   없는 주소·로그인 시작은 0 이고(라우트 분류가 앞이다), **429 로 막힌 요청도 0 이다**
