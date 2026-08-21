@@ -29,7 +29,7 @@ import { POLICY_BUNDLE } from "./policies.js";
 import {
   deletionMark, DELETION_KEY_VERSION, readMode, ledgerAnswers, drainState,
   acquireLease, leaseAlive, releaseLease, LEASE_MODES_REQUEST,
-  markPending, markConfirmed, sweepConfirmed, cleanupState,
+  markPending, markConfirmed, sweepConfirmed, cleanupState, deletionEvidenceUsable,
 } from "./ledger.js";
 
 const P = {
@@ -147,13 +147,34 @@ const readyProviders = (env) => Object.keys(P).filter((n) => {
   const { id, secret } = creds(env, n);
   return !!id && (!!secret || !!P[n].optionalSecret);
 });
+// ── 남용 방어 계약 ──────────────────────────────────────────────────────
+// **리미터가 셀 수 있는 신원은 IP 하나뿐이고, IP 를 나누면 한도는 그대로 곱해진다.**
+// 실측(T63-b): 익명 IP 하나가 한 창에 두 저장소 합 861 쓰기 — 하루치로 환산하면 IP 한 개로도
+// D1 무료 한도(하루 10만 쓰기)를 넘긴다. 바닥나면 **계정 전체의 D1 질의가 실패**하고
+// 정상 사용자의 저장이 먼저 죽는다.
+//
+// 분산 요청을 끊는 것은 **엣지의 일**이다(WAF 레이트리밋 · Turnstile). 둘 다 커스텀 도메인이나
+// Workers 전환이 필요하고, 지금 이 프로젝트에는 **없다**(설계서 §12-2 · 공식 문서 확인:
+// Pages Functions 지원 바인딩 목록에 ratelimits 가 없다). 그래서 코드가 강제하는 것은 하나다 —
+// **막지 못하는 채로 열지 않는다.**
+//
+//   edge  `RL` 바인딩이 있다 — 엣지가 센다(우리 DB 를 안 쓴다). 계정 라우트가 열린다
+//   dev   `DEV_RATE_LIMIT` — 로컬 전용. 라우트는 열리지만 **ready 는 절대 참이 아니다**
+//   none  둘 다 없다 — 계정 라우트는 **어느 DB 도 만지기 전에** 503
+//
+// ⚠️ `DEV_RATE_LIMIT` 을 배포 가능한 설정 파일에 넣지 않는다(`scripts/test-config.mjs` 가 막는다).
+export const abuseGuard = (env) => (env.RL ? "edge" : (env.DEV_RATE_LIMIT ? "dev" : "none"));
+
 const health = (env) => {
   // ⚠️ **ledger 바인딩이 없으면 제공자를 하나도 알려주지 않는다.** 그 상태에서는 로그인 콜백이
   //    게이트에서 503 이라(`unbound`), 버튼을 그려 봐야 누르면 실패한다. 화면이 이 목록만 보고
   //    버튼을 그리므로(js/auth.js), 여기서 비우는 것이 「안전하지 않은 부분 구성에서는 버튼이
   //    안 나온다」의 유일한 자리다. 되는 척하지 않는다.
   const ledgerBound = !!env.LEDGER;
-  const providers = ledgerBound ? readyProviders(env) : [];
+  // ⚠️ **남용 방어가 없으면 제공자도 비운다.** 그 상태에서는 로그인 콜백이 게이트 앞에서
+  //    503 이라(위 abuseGuard), 버튼을 그려 봐야 누르면 실패한다 — ledger 미바인딩과 같은 판단이다.
+  const guard = abuseGuard(env);
+  const providers = (ledgerBound && guard !== "none") ? readyProviders(env) : [];
   // DB 바인딩이 없으면 로그인도 단어장도 못 한다 — ready 가 아니다.
   // ⚠️ KV 는 더 이상 안 본다. 바인딩은 **롤백용으로 남겨 두지만** 새 코드는 쓰지 않는다.
   // ⚠️ RL_KEY 도 **있어야 하는 값**이다. 없으면 리미터가 세지 않는데(rlBucket 참조),
@@ -163,8 +184,12 @@ const health = (env) => {
   //    로그인은 되는데 **가입만 조용히 막히는** 상태가 된다 — 화면 어디에도 안 보이는 결함이라
   //    여기서 말하지 않으면 아무도 모른다. `DELETION_KEY` 도 같다(없으면 계정 삭제가 503).
   const keys = !!(env.STATE_KEY && env.RL_KEY && env.SIGNUP_STATE_KEY && env.TOMBSTONE_KEY && env.DELETION_KEY);
-  return { ok: true, ready: !!(keys && env.APP_ORIGIN && env.DB && ledgerBound && providers.length),
-           providers, ledgerBound,
+  // ⚠️ **`dev` 는 ready 가 아니다.** 로컬에서 라우트를 열어 두는 스위치일 뿐이라, 그것으로
+  //    `ready:true` 를 내면 「테스트가 통과하니 배포해도 된다」가 된다.
+  const abuseReady = guard === "edge";
+  return { ok: true,
+           ready: !!(keys && env.APP_ORIGIN && env.DB && ledgerBound && abuseReady && providers.length),
+           providers, ledgerBound, abuseReady,
            signupReady: !!(ledgerBound && env.SIGNUP_STATE_KEY && env.TOMBSTONE_KEY) };
 };
 
@@ -176,13 +201,15 @@ const health = (env) => {
 //    사용자의 첫 친구 요청에서 500 을 낸다. 그래서 코드가 실제로 만지는 테이블과 **컬럼까지**
 //    건드려 본다(pair_key 를 조건에 넣은 이유가 그것이다: 0002·0003 이 걸렸는지 여기서 드러난다).
 //    COUNT 는 작은 테이블이라 값싸고, readiness 는 자주 부르는 자리가 아니다.
+// ⚠️ **`rate_limits` 는 2026-08-20 에 이 목록에서 빠졌다.** 카운터가 ledger 로 갔고 이 코드는
+//    주 D1 의 같은 이름 표를 더 이상 만지지 않는다(위협 49). 안 쓰는 표를 readiness 조건으로
+//    두면 「지워도 되는 표」 하나가 사이트를 503 으로 만든다. ledger 쪽은 `ledgerAnswers()` 가 본다.
 const dbAnswers = async (env) => {
   if (!env.DB) return false;
   try {
     const r = await env.DB.prepare(
       `SELECT (SELECT COUNT(*) FROM users) + (SELECT COUNT(*) FROM sessions)
             + (SELECT COUNT(*) FROM books) + (SELECT COUNT(*) FROM invite_codes)
-            + (SELECT COUNT(*) FROM rate_limits)
             + (SELECT COUNT(*) FROM friendships WHERE pair_key IS NOT NULL)
             + (SELECT COUNT(*) FROM policy_events WHERE document_version IS NOT NULL)
             + (SELECT COUNT(*) FROM consumed_signup_states WHERE key_version IS NOT NULL) AS n`).first();
@@ -391,13 +418,15 @@ export async function newSession(env, userId) {
   // ⚠️ **죽은 행을 여기서 치운다.** whoAmI 는 만료를 판정에서만 걸러내고 행은 그대로 뒀다 —
   //    그래서 다시 오지 않는 사용자의 세션 행이 영원히 남았다. 방침(180일 뒤 만료)이 거짓말은
   //    아니지만, 만료된 뒤에도 보관할 이유가 없는 것을 보관하고 있었다.
-  //    청소용 크론이 없으니 **로그인이라는 드문 자리**에 붙인다. 실패해도 로그인은 되어야 한다 —
+  //    정리 크론(`worker/cleanup/`)이 같은 일을 하지만, 여기도 **로그인이라는 드문 자리**라
+  //    둘 다 있어도 무해하다(크론이 배포되기 전까지는 여기가 유일한 청소다).
+  //    실패해도 로그인은 되어야 한다 —
   //    청소가 안 되는 것과 로그인이 안 되는 것은 무게가 다르다.
+  // ⚠️ 리미터 행 청소는 여기 없다 — 카운터가 **ledger 로 갔다**(2026-08-20 · 위협 49).
+  //    ledger 쪽 만료 행은 정리 크론의 C4 가 지운다.
   try {
-    await env.DB.batch([
-      env.DB.prepare("DELETE FROM sessions WHERE expires_at < ? OR revoked_at IS NOT NULL").bind(now),
-      env.DB.prepare("DELETE FROM rate_limits WHERE expires_at < ?").bind(now),
-    ]);
+    await env.DB.prepare("DELETE FROM sessions WHERE expires_at < ? OR revoked_at IS NOT NULL")
+      .bind(now).run();
   } catch { /* 청소 실패는 로그인을 막지 않는다 */ }
   return token;
 }
@@ -531,7 +560,10 @@ async function limited(env, req, bucket) {
       return false;
     }
   }
-  if (!env.DB) return false;
+  // ⚠️ **카운터는 ledger D1 이다**(2026-08-20 · 위협 49 · migration `0003`). 주 D1 이었을 때는
+  //    이 쓰기가 임차증 **밖**이라, 게이트 통과 뒤 UPSERT 직전에 멈춘 요청 하나 때문에
+  //    `drainState()` 가 `drained:true` 라고 답한 뒤에 주 D1 쓰기가 났다(재현 T62).
+  if (!env.LEDGER) return true;   // 셀 수 없으면 통과시키지 않는다(계정 라우트는 이미 게이트가 막는다)
   const now = Date.now();
   // ⚠️ 키에 uid·IP **원문을 넣지 않는다.** 남용을 세려고 개인정보를 쌓는 건 목적에 비해 과하다.
   //    (로그에도 남기지 않는다 — 아래 어디에서도 console.log 하지 않는다.)
@@ -545,12 +577,26 @@ async function limited(env, req, bucket) {
     //    그게 바닥나면 **정상 사용자의 단어장 저장이 먼저 죽는다**(리미터가 증폭기가 된 셈).
     //    DO UPDATE 의 WHERE 가 거짓이면 SQLite 는 행을 건드리지 않고 RETURNING 도 비운다 —
     //    그 "빈 결과"가 곧 "이미 한도를 넘었다"는 뜻이다.
-    const r = await env.DB.prepare(
-      `INSERT INTO rate_limits (bucket, n, expires_at) VALUES (?1, 1, ?2)
+    // ⚠️ **게이트가 같은 문장 안에 있다.** 읽고 나서 쓰면 그 사이의 전환이 창을 빠져나간다 —
+    //    그것이 위협 49 의 재현 순서다. 모드가 사용자 요청을 받는 상태가 아니면 INSERT 도
+    //    ON CONFLICT 갱신도 0행이고, 아래에서 **막는 쪽**으로 끝난다(닫는 쪽 실패).
+    //    `INSERT ... SELECT` 형태인 이유: 상수 `VALUES` 뒤에는 `WHERE` 를 붙일 수 없다.
+    // ⚠️ **게이트 조건을 `DO UPDATE` 쪽에 한 번 더 적지 않는다.** 처음에는 적어 뒀는데,
+    //    돌연변이로 지워도 **어느 테스트도 실패하지 않았다** — 행 원본(SELECT)이 비면 충돌
+    //    자체가 일어나지 않아 `DO UPDATE` 가 아예 평가되지 않기 때문이다(도달 불가 코드).
+    //    관측할 수 없는 방어를 남겨 두면 「자물쇠가 둘」이라는 거짓 안전감만 생긴다
+    //    (2026-08-19 에 같은 이유로 임차증 앞의 `if (!env.LEDGER)` 를 지웠다).
+    //    두 갈래가 같은 조건 하나로 막힌다는 사실은 **T62-b** 가 갱신 갈래로 직접 잰다.
+    const r = await env.LEDGER.prepare(
+      `INSERT INTO rate_limits (bucket, n, expires_at)
+       SELECT ?1, 1, ?2 WHERE EXISTS (SELECT 1 FROM maintenance
+                                       WHERE id = 1 AND mode IN ('open', 'maintenance'))
        ON CONFLICT (bucket) DO UPDATE SET n = rate_limits.n + 1
          WHERE rate_limits.n <= ?3
        RETURNING n`).bind(key, now + RL_WINDOW * 2, max).first();
-    if (!r) return true;      // 갱신을 건너뛰었다 = 이미 넘겼다. 쓰기도 안 났다.
+    // 갱신을 건너뛰었다 = 이미 한도를 넘겼거나(쓰기도 안 났다) 그 사이 게이트가 닫혔다.
+    // 둘 다 「지금은 받지 않는다」이고, 둘 다 어느 DB 에도 한 줄을 안 쓴 상태다.
+    if (!r) return true;
     return r.n > max;
   } catch {
     return false;
@@ -995,6 +1041,16 @@ export default {
     const rt = routeFor(req.method, path);
     if (!rt) return new Response("shhh! api", { status: 404, headers: cors(env, req) });
 
+    // ── 0-0-1. 남용 방어가 준비됐나 ──
+    // **게이트보다도 먼저다** — 게이트는 ledger 를 읽고, 그 질의부터가 우리가 막으려는 비용이다.
+    // 여기서 돌아가는 응답은 **어느 DB 도 만지지 않는다**(T63-a 가 두 저장소의 질의 수를 잰다).
+    // 열어 두는 것은 상태를 보는 셋뿐이다 — 운영자가 무엇이 덜 됐는지 볼 수단이 그것뿐이다.
+    // ⚠️ `GET /login/:provider` 도 닫는다. 열어 두면 제공자까지 갔다가 콜백에서 죽는다.
+    // ⚠️ 응답에 「무엇이 없다」를 쓰지 않는다 — 인증 없이 열린 자리에 설정 정보를 흘리지 않는다.
+    if (abuseGuard(env) === "none" && !ALWAYS_OPEN.some((re) => re.test(path)))
+      return json(env, req, { error: "계정 기능이 아직 열리지 않았어요", mode: "unknown" }, 503,
+        { "Retry-After": "3600" });
+
     // ── 0-1. 유지보수 게이트 ──
     // **`limited()` 보다 먼저** 온다. 뒤에 두면 리미터가 rate_limits 에 쓴다.
     // **세션 인증(`whoAmI`)보다도 먼저** 온다 — `restore_closed` 에서 인증을 한 번이라도
@@ -1103,6 +1159,13 @@ async function route(req, env, rc) {
       // ⚠️ **한 값이 여러 가지를 말하면 진짜 장애를 아무도 못 알아챈다.** 그래서 이유별로 가른다:
       //    configReady 설정이 갖춰졌나 · db 주 D1 이 답하나 · ledger 삭제 표식 저장소가 붙었나
       //    · mode 유지보수 상태 · cleanupStale 정리 크론이 제 시간에 돌고 있나
+      // ⚠️ **삭제 증거를 지금 키로 쓸 수 있나**(2026-08-20 · 위협 51). 표가 있나 없나와 다른
+      //    질문이다 — `DELETION_KEY` 를 잘못 넣은 배포는 표가 전부 멀쩡한데 **살아 있는 계정을
+      //    승격**시킬 수 있는 상태다(위협 46). 7판이 검사를 만들어 놓고 여기서 부르지 않아,
+      //    그런 배포가 smoke test 를 200 으로 통과했다.
+      //    ⛔ 나가는 것은 **참/거짓 하나**다. 키 이름·검사값·표식·개수·오류 문자열은 안 싣는다.
+      const deletionEvidence = !!env.LEDGER
+        && !!(await deletionEvidenceUsable(env).then((r) => r.ok).catch(() => false));
       const cl = await cleanupState(env).catch(() => null);
       // 마지막 성공이 **주기의 2배**보다 오래됐으면 낡은 것으로 본다. 조용히 멈춘 크론은
       // 없는 크론보다 나쁘다 — 있다고 믿게 만들기 때문이다.
@@ -1128,9 +1191,12 @@ async function route(req, env, rc) {
         //    둘 다 「못 쓴다」지만 고치는 방법이 다르다(바인딩 등록 vs migration).
         ledgerBound: h.ledgerBound, ledger,
         signupReady: h.signupReady, providers: h.providers, cleanupStale, cleanupAlert,
+        // 남용 방어가 붙었나 · 삭제 증거를 지금 키로 쓸 수 있나. **둘 다 `ready` 를 내린다** —
+        // 전자는 열면 D1 이 타고, 후자는 되돌릴 수 없는 오판을 만든다.
+        abuseReady: h.abuseReady, deletionEvidence,
         // ⚠️ `cleanupAlert` 도 `ready` 를 내리지 않는다 — `cleanupStale` 과 같은 판단이다.
         //    정리가 밀린 것은 보유기간 문제이지 사용자가 앱을 못 쓰는 상태가 아니다.
-        ready: h.ready && db && ledger && gate.mode === "open",
+        ready: h.ready && db && ledger && deletionEvidence && gate.mode === "open",
       };
       return json(env, req, r, r.ready ? 200 : 503);
     }

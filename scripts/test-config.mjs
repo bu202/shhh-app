@@ -117,18 +117,32 @@ const RUNBOOK = "docs/OPS_RUNBOOK.md";
   // 바인딩(설정 파일에 적는다) vs 시크릿·변수(대시보드/CLI 로 넣는다).
   const BINDINGS = new Set(["DB", "LEDGER", "KV", "RL"]);
   const VARS = new Set(["APP_ORIGIN", "APP_URL"]);
+  // **로컬 전용 스위치.** 문서 셋에는 적혀 있어야 하고(있는 줄 모르면 아무도 못 쓴다),
+  // **배포 가능한 설정 파일에는 절대 없어야 한다** — 있으면 남용 방어 없이 계정 라우트가
+  // 열린 채로 배포된다(위협 50). 그래서 시크릿과 **다르게** 검사한다.
+  const LOCAL_ONLY = new Set(["DEV_RATE_LIMIT"]);
   // 제공자 자격증명은 `env[provider.toUpperCase() + "_ID"]` 로 만들어져 정규식에 안 잡힌다.
   // 그건 `worker/index.js` 의 `creds()` 가 원본이므로 여기서 이름을 만들어 함께 검사한다.
   const providers = [...R("worker/index.js").matchAll(/^  (kakao|naver|google): \{$/gm)].map((m) => m[1]);
   assert.equal(providers.length, 3, t("제공자 목록을 못 읽었다 — 검사기가 낡았다"));
   for (const p of providers) { names.add(p.toUpperCase() + "_ID"); names.add(p.toUpperCase() + "_SECRET"); }
 
-  const secrets = [...names].filter((x) => !BINDINGS.has(x) && !VARS.has(x)).sort();
+  const secrets = [...names].filter((x) => !BINDINGS.has(x) && !VARS.has(x) && !LOCAL_ONLY.has(x)).sort();
   // 문서 넷이 같은 말을 해야 한다. 하나라도 빠지면 그 문서만 보고 배포한 사람이 빠뜨린다.
   const DOCS = ["README.md", "worker/SETUP.md", RUNBOOK, ROOT];
   for (const s of secrets) {
     for (const d of DOCS) {
       assert.ok(R(d).includes(s), t(`${d} 에 ${s} 가 없다 — 코드는 이 값을 요구한다`));
+    }
+  }
+  // 로컬 전용 스위치: 문서 셋에는 있고, **배포 가능한 설정 둘에는 없다.**
+  for (const v of LOCAL_ONLY) {
+    for (const d of ["README.md", "worker/SETUP.md", RUNBOOK]) {
+      assert.ok(R(d).includes(v), t(`${d} 에 ${v} 설명이 없다 — 코드가 이 이름으로 라우트를 연다`));
+    }
+    for (const c of [ROOT, CLEANUP_TEMPLATE, ...(has(CLEANUP_REAL) ? [CLEANUP_REAL] : [])]) {
+      assert.ok(!new RegExp(`"${v}"\\s*:`).test(R(c)),
+        t(`${c} 에 ${v} 가 설정값으로 들어 있다 — 남용 방어 없이 계정 라우트가 열린 채 배포된다`));
     }
   }
   // 바인딩도 같다. `RL` 은 지금 코드에서 「있으면 쓴다」라 필수가 아니다(주석이 그렇게 말한다).

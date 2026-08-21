@@ -25,6 +25,10 @@ const ORIGIN = "https://app.test";
 function makeEnv(extra = {}) {
   return { APP_ORIGIN: ORIGIN, APP_URL: ORIGIN + "/", STATE_KEY: "test-signing-key",
            RL_KEY: "test-rate-limit-key", DB: makeD1(),
+           // ⚠️ **로컬 전용 남용 방어 스위치**(2026-08-20 · 위협 50). 없으면 계정 라우트가
+           //    DB 를 만지기 전에 503 이다(T63-a 가 그 상태를 따로 잰다). 이 값으로는
+           //    `/ready` 가 절대 200 이 되지 않는다 — 그래서 아래 ready 검사들은 `RL` 을 준다.
+           DEV_RATE_LIMIT: "1",
            // ledger 와 삭제 키가 없으면 계정 삭제가 **503 으로 거부된다**(표식 없는 삭제를
            // 만들지 않기 위해서다). 없을 때의 동작은 아래 별도 블록이 따로 잰다.
            LEDGER: makeLedger(), DELETION_KEY: "test-deletion-key",
@@ -719,6 +723,10 @@ function befriend(env, a, b, status = "accepted") {
 // ══ 15. 설정 점검 (health · ready · STATE_KEY) ════════════════════════════
 {
   const bare = { APP_ORIGIN: ORIGIN };
+  // ⚠️ **`/ready` 가 200 이 되려면 엣지 남용 방어가 붙어 있어야 한다**(2026-08-20 · 위협 50).
+  //    `DEV_RATE_LIMIT` 은 로컬에서 라우트를 열 뿐 ready 를 참으로 만들지 않는다 —
+  //    그 계약 자체는 `test-stage34-closeout.mjs` T63 이 잰다.
+  const RL_EDGE = { limit: async () => ({ success: true }) };
   const get = async (path, env) =>
     (await worker.fetch(new Request("https://api.test" + path, { headers: { Origin: ORIGIN } }), env));
 
@@ -728,7 +736,7 @@ function befriend(env, a, b, status = "accepted") {
   assert.equal(h0.ready, false, "설정이 없는데 ready 다");
   // 68. /ready 는 설정이 덜 됐으면 503 이다.
   assert.equal((await get("/ready", bare)).status, 503, "설정이 없는데 /ready 가 200 이다");
-  const full = makeEnv({ KAKAO_ID: "id", GOOGLE_ID: "id", GOOGLE_SECRET: "s" });
+  const full = makeEnv({ KAKAO_ID: "id", GOOGLE_ID: "id", GOOGLE_SECRET: "s", RL: RL_EDGE });
   const h1 = await (await get("/health", full)).json();
   assert.deepEqual(h1.providers, ["kakao", "google"], "설정된 제공자만 오지 않는다");
   assert.equal((await get("/ready", full)).status, 200, "다 설정됐는데 /ready 가 503 이다");
@@ -777,7 +785,7 @@ function befriend(env, a, b, status = "accepted") {
   for (const [binding, table] of [["DB", "policy_events"], ["DB", "consumed_signup_states"],
                                   ["LEDGER", "deletions"], ["LEDGER", "write_leases"],
                                   ["LEDGER", "cleanup_runs"], ["LEDGER", "maintenance"]]) {
-    const e = makeEnv({ KAKAO_ID: "id", GOOGLE_ID: "id", GOOGLE_SECRET: "s" });
+    const e = makeEnv({ KAKAO_ID: "id", GOOGLE_ID: "id", GOOGLE_SECRET: "s", RL: RL_EDGE });
     assert.equal((await get("/ready", e)).status, 200, `${table} 를 지우기 전인데 /ready 가 200 이 아니다`);
     e[binding]._db.exec(`DROP TABLE ${table}`);
     const r = await get("/ready", e);
@@ -832,17 +840,21 @@ function befriend(env, a, b, status = "accepted") {
 // 사용자의 첫 친구 요청에서 500 을 낸다 — 실패를 사용자가 아니라 여기서 내야 한다.
 {
   // 76. 코드가 쓰는 테이블이 하나라도 없으면 준비 안 됨이다.
-  const env = makeEnv({ KAKAO_ID: "id", NAVER_ID: "id", NAVER_SECRET: "s", GOOGLE_ID: "id", GOOGLE_SECRET: "s" });
+  const env = makeEnv({ KAKAO_ID: "id", NAVER_ID: "id", NAVER_SECRET: "s", GOOGLE_ID: "id", GOOGLE_SECRET: "s",
+                        RL: { limit: async () => ({ success: true }) } });
   const ready = await worker.fetch(new Request("https://api.test/ready"), env);
   assert.equal(ready.status, 200, "정상 스키마인데 준비 안 됐다고 한다");
 
-  env.DB._db.exec("DROP TABLE rate_limits");
+  // ⚠️ `rate_limits` 가 아니라 `books` 를 지운다 — 카운터가 ledger 로 간 뒤(2026-08-20)
+  //    주 D1 의 그 표는 코드가 안 만지므로 readiness 조건이 아니다.
+  env.DB._db.exec("DROP TABLE books");
   const gone = await worker.fetch(new Request("https://api.test/ready"), env);
   assert.equal(gone.status, 503, "테이블이 통째로 없는데 준비됐다고 한다");
   assert.equal((await gone.json()).db, false, "db 항목이 실패를 안 알린다");
 
   // 77. **컬럼까지** 본다. 0002·0003 이 원격에 안 걸린 상태가 정확히 이 모양이다.
-  const env2 = makeEnv({ KAKAO_ID: "id", NAVER_ID: "id", NAVER_SECRET: "s", GOOGLE_ID: "id", GOOGLE_SECRET: "s" });
+  const env2 = makeEnv({ KAKAO_ID: "id", NAVER_ID: "id", NAVER_SECRET: "s", GOOGLE_ID: "id", GOOGLE_SECRET: "s",
+                         RL: { limit: async () => ({ success: true }) } });
   env2.DB._db.exec("DROP TABLE friendships");
   env2.DB._db.exec("CREATE TABLE friendships (requester_id TEXT, addressee_id TEXT, status TEXT, created_at INTEGER)");
   assert.equal((await worker.fetch(new Request("https://api.test/ready"), env2)).status, 503,
@@ -948,7 +960,7 @@ function befriend(env, a, b, status = "accepted") {
     "다른 IP 까지 막혔다 — 방어가 아니라 고장이다");
 
   // 88. 카운터에 **원문 uid·IP 가 남지 않는다.** 남용을 세려고 개인정보를 쌓지 않는다.
-  for (const row of env.DB._db.prepare("SELECT bucket FROM rate_limits").all()) {
+  for (const row of env.LEDGER._db.prepare("SELECT bucket FROM rate_limits").all()) {
     assert.ok(!row.bucket.includes(A.uid) && !row.bucket.includes(B.uid), "리미터 키에 uid 원문이 남았다");
   }
 }
@@ -960,7 +972,7 @@ function befriend(env, a, b, status = "accepted") {
 {
   const env = makeEnv();
   const A = await signUp(env, "kakao", "A"), B = await signUp(env, "kakao", "B");
-  const counters = () => env.DB._db.prepare("SELECT bucket, n FROM rate_limits").all();
+  const counters = () => env.LEDGER._db.prepare("SELECT bucket, n FROM rate_limits").all();
   const total = () => counters().reduce((s, r) => s + r.n, 0);
 
   // 89. 한도까지 두드려 막힌 상태를 만든다.
@@ -991,9 +1003,9 @@ function befriend(env, a, b, status = "accepted") {
   // 92. **한 요청은 한 번만 센다.** /cb 는 공통 검사와 개별 검사에 두 번 걸려 있었다 —
   //     한 번의 로그인 시도가 카운터를 둘 올리면 한도가 실제로는 절반이고 쓰기는 두 배다.
   const env2 = makeEnv();
-  const t0 = env2.DB._db.prepare("SELECT COUNT(*) AS n FROM rate_limits").get().n;
+  const t0 = env2.LEDGER._db.prepare("SELECT COUNT(*) AS n FROM rate_limits").get().n;
   await worker.fetch(new Request("https://api.test/cb/kakao?code=x&state=y"), env2);
-  const t1 = env2.DB._db.prepare("SELECT COUNT(*) AS n FROM rate_limits").get().n;
+  const t1 = env2.LEDGER._db.prepare("SELECT COUNT(*) AS n FROM rate_limits").get().n;
   assert.equal(t1 - t0, 1, `로그인 왕복 한 번에 카운터가 ${t1 - t0}개 늘었다 — 이중 집계다`);
 
   // 93. 로그인 왕복은 **login 한도(10)** 로 막힌다. 이름이 갈려 있으면 넉넉한 write 한도(120)가
@@ -1454,7 +1466,7 @@ function befriend(env, a, b, status = "accepted") {
   const plain = async (s) => b64u(await crypto.subtle.digest("SHA-256", ENC.encode(s)));
   const hit = async (env, ip = "203.0.113.42") =>
     worker.fetch(new Request("https://api.test/cb/kakao?code=x&state=y", { headers: { "CF-Connecting-IP": ip } }), env);
-  const buckets = (env) => env.DB._db.prepare("SELECT bucket FROM rate_limits").all().map((r) => r.bucket);
+  const buckets = (env) => env.LEDGER._db.prepare("SELECT bucket FROM rate_limits").all().map((r) => r.bucket);
 
   // 116. ★ 저장된 키가 **평문 해시가 아니다.** 이 단언이 곧 "대입으로 못 푼다"의 실질이다.
   const env = makeEnv({ KAKAO_ID: "id" });
@@ -1496,7 +1508,7 @@ function befriend(env, a, b, status = "accepted") {
 {
   const env = makeEnv({ KAKAO_ID: "id" });
   const ip = { "CF-Connecting-IP": "198.51.100.77" };
-  const counters = () => env.DB._db.prepare("SELECT COUNT(*) n FROM rate_limits").get().n;
+  const counters = () => env.LEDGER._db.prepare("SELECT COUNT(*) n FROM rate_limits").get().n;
 
   // 121. ★ 로그인 **시작**은 세지 않는다. 세면 D1 쓰기가 두 배인데 막는 것은 없다.
   for (let i = 0; i < 20; i++) {
@@ -1543,7 +1555,7 @@ function befriend(env, a, b, status = "accepted") {
     env.DB._db.prepare("SELECT COUNT(*) n FROM users").get(),
     env.DB._db.prepare("SELECT COUNT(*) n FROM sessions").get(),
     env.DB._db.prepare("SELECT COUNT(*) n FROM invite_codes").get(),
-    env.DB._db.prepare("SELECT COUNT(*) n FROM rate_limits").get(),
+    env.LEDGER._db.prepare("SELECT COUNT(*) n FROM rate_limits").get(),
     env.DB._db.prepare("SELECT version FROM books WHERE user_id=?").get(A.uid),
   ]);
 
@@ -1894,8 +1906,20 @@ function befriend(env, a, b, status = "accepted") {
   const ip = { "CF-Connecting-IP": "203.0.113.77" };
   // 쓰기를 실제로 센다. `changes` 가 아니라 **행 수**로 재면 INSERT 뒤 DELETE 된 임차증이
   // 안 잡히므로, ledger 는 sqlite 의 총 변경 수(total_changes)로 본다.
-  const dbWrites = () => env.DB._db.prepare("SELECT COUNT(*) n FROM rate_limits").get().n;
+  const dbWrites = () => env.LEDGER._db.prepare("SELECT COUNT(*) n FROM rate_limits").get().n;
   const ledgerWrites = () => env.LEDGER._db.prepare("SELECT total_changes() AS n").get().n;
+  // ⚠️ **2026-08-20 부터 ledger 에는 리미터 카운터도 산다**(위협 49). 그래서 「총 변경 수 2」가
+  //    더 이상 「임차증 하나」와 같은 말이 아니다 — 임차증 문장을 **직접** 센다. 총 변경 수로
+  //    계속 재면 카운터 쓰기가 임차증 하나를 가려 준다(재려던 것을 못 재게 된다).
+  let leaseIns = 0, leaseDel = 0;
+  {
+    const raw = env.LEDGER.prepare.bind(env.LEDGER);
+    env.LEDGER.prepare = (sql) => {
+      if (/INSERT INTO write_leases/.test(sql)) leaseIns++;
+      if (/DELETE FROM write_leases/.test(sql)) leaseDel++;
+      return raw(sql);
+    };
+  }
 
   // ── T50. ★ 없는 주소·허용되지 않은 method 를 100번 두드려도 **두 DB 모두 쓰기 0.**
   let d0 = dbWrites(), l0 = ledgerWrites();
@@ -1917,15 +1941,19 @@ function befriend(env, a, b, status = "accepted") {
   assert.equal(dbWrites(), d0, "T51: 로그인 시작이 rate_limits 를 늘렸다");
   assert.equal(ledgerWrites(), l0, "T51: 로그인 시작이 임차증을 땄다 — 주 D1 을 안 만지는데 추적한다");
 
-  // ── T52. ★ 정상 읽기·쓰기는 **정확히 임차증 하나**(INSERT 1 + DELETE 1 = 2 변경).
-  l0 = ledgerWrites();
+  // ── T52. ★ 정상 읽기·쓰기는 **정확히 임차증 하나**(획득 1 + 해제 1).
+  let i0 = leaseIns, x0 = leaseDel;
+  d0 = dbWrites();
   assert.equal((await call(env, A.token, "/book")).status, 200, "T52: 정상 읽기가 안 된다");
-  assert.equal(ledgerWrites() - l0, 2, "T52: 읽기 하나에 임차증이 하나가 아니다");
-  l0 = ledgerWrites(); d0 = dbWrites();
+  assert.equal(leaseIns - i0, 1, "T52: 읽기 하나에 임차증이 하나가 아니다");
+  assert.equal(leaseDel - x0, 1, "T52: 읽기의 임차증이 해제되지 않았다");
+  assert.equal(dbWrites() - d0, 1, "T52: 읽기 하나가 리미터 버킷 하나를 넘게 만들었다");
+  i0 = leaseIns; x0 = leaseDel; d0 = dbWrites();
   assert.equal((await call(env, A.token, "/book", "PUT", { words: ["가"], version: 0 }, ip)).status, 200,
     "T52: 정상 쓰기가 안 된다");
-  assert.equal(ledgerWrites() - l0, 2, "T52: 쓰기 하나에 임차증이 하나가 아니다");
-  assert.equal(dbWrites() - d0, 1, "T52: 쓰기 하나가 rate_limits 버킷 하나를 넘게 만들었다");
+  assert.equal(leaseIns - i0, 1, "T52: 쓰기 하나에 임차증이 하나가 아니다");
+  assert.equal(leaseDel - x0, 1, "T52: 쓰기의 임차증이 해제되지 않았다");
+  assert.equal(dbWrites() - d0, 1, "T52: 쓰기 하나가 리미터 버킷 하나를 넘게 만들었다");
 
   // ── T53. ★ 한도에 닿은 뒤 같은 공격을 반복하면 **두 저장소 모두 쓰기가 0 이다.**
   //
@@ -1937,7 +1965,7 @@ function befriend(env, a, b, status = "accepted") {
   //      만지지 않는다. 총량 불변식(요청 수를 2배로 늘려도 쓰기가 같다)은
   //      `scripts/test-reaudit.mjs` 의 R5 가 잰다.
   const env2 = makeEnv({ KAKAO_ID: "id", KAKAO_SECRET: "s" });
-  const w2 = () => env2.DB._db.prepare("SELECT COALESCE(SUM(n),0) AS n FROM rate_limits").get().n;
+  const w2 = () => env2.LEDGER._db.prepare("SELECT COALESCE(SUM(n),0) AS n FROM rate_limits").get().n;
   const dw2 = () => env2.DB._db.prepare("SELECT total_changes() AS n").get().n;
   const lw2 = () => env2.LEDGER._db.prepare("SELECT total_changes() AS n").get().n;
   let blocked = 0;

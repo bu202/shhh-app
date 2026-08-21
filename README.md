@@ -90,11 +90,20 @@ npx wrangler pages deploy --project-name shhh-app --branch main
 | `KAKAO_ID` `KAKAO_SECRET` `NAVER_ID` `NAVER_SECRET` `GOOGLE_ID` `GOOGLE_SECRET` | 시크릿 | 그 제공자 버튼이 안 뜬다 |
 | `MASTER_UIDS` | 시크릿 | 아무도 마스터가 아니다 |
 | `DEV_ORIGINS` | 시크릿(**개발 Worker 에만**) | 로컬·LAN 주소로 로그인 못 한다(운영에는 넣지 않는다) |
+| `DEV_RATE_LIMIT` | **로컬 전용**(`.dev.vars`·테스트) | 계정 라우트가 **DB 를 만지기 전에 503** — 아래 「남용 방어」 참조 |
+| `RL` (엣지 레이트리밋 바인딩) | `wrangler.jsonc` | 계정 라우트가 열리지 않는다. **지금 이 프로젝트에는 없다** |
 | `APP_ORIGIN` `APP_URL` | `wrangler.jsonc` | 복귀 주소 검증이 안 선다 |
 | **`DB`** (D1 `shhh-db`) | `wrangler.jsonc` | 전부 안 된다 |
 | **`LEDGER`** (D1 `shhh-ledger`) | `wrangler.jsonc` | **사용자 데이터 API 가 전부 503** — 표식 없는 삭제·추적 없는 쓰기를 만들지 않는다 |
 
 - **서로 겸용하지 않는다.** 용도가 다른 비밀값을 돌려 쓰면 하나를 교체할 때 다른 하나가 같이 무너진다.
+- **남용 방어가 없으면 계정 라우트를 열지 않는다**(2026-08-20 · 설계서 위협 50). 리미터가 셀 수
+  있는 신원은 IP 하나뿐이고, IP 를 나누면 한도는 그대로 곱해진다 — 실측으로 익명 IP **하나**가
+  하루면 D1 무료 쓰기 한도를 넘긴다. 분산 요청을 끊는 것은 엣지(WAF·Turnstile)의 일인데
+  Pages Functions 에는 그 바인딩이 없다. 그래서 `RL` 바인딩이 없으면 `/api/health`·`/api/ready`·
+  `/api/policies` 만 답하고 나머지는 **어느 DB 도 만지기 전에** 503 이다.
+  `DEV_RATE_LIMIT` 은 로컬에서 그 문을 여는 스위치이고, **그 값으로는 `ready` 가 참이 되지 않는다.**
+  ⛔ 배포되는 설정 파일에 넣지 않는다(`scripts/test-config.mjs` 가 막는다).
 - ⚠️ **`LEDGER` 는 아직 안 붙였다**(ledger D1 미생성). 그래서 지금 배포하면 계정 기능이 열리지
   않는다 — 그게 의도된 상태다. 만드는 절차는 [`docs/OPS_RUNBOOK.md`](docs/OPS_RUNBOOK.md).
 - 이 표는 손으로 세지 않는다. `scripts/test-config.mjs` 가 **코드에서 `env.*` 를 읽어**

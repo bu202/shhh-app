@@ -75,16 +75,18 @@ export async function deletionEvidenceUsable(env) {
   const versions = (results || []).map((r) => r.v);
   const unknown = versions.filter((v) => !DELETION_MARKERS.has(v));
   if (unknown.length) why.push(`모르는 삭제 key_version ${unknown.join(",")} 이 있다 — 그 표식은 대조할 수 없다`);
-  if (versions.length) {
-    let want = null;
-    try { want = await keyCheck(env); } catch { why.push("DELETION_KEY 가 없다 — 표식을 대조할 수 없다"); }
-    if (want !== null) {
-      const row = await env.LEDGER.prepare(
-        "SELECT key_check FROM deletion_keys WHERE key_version = ?").bind(DELETION_KEY_VERSION).first();
-      if (!row) why.push("삭제 키 검사값이 기록돼 있지 않다 — 지금 키가 그때 그 키인지 알 수 없다");
-      else if (row.key_check !== want) why.push("지금 DELETION_KEY 가 표식을 만든 키와 다르다");
-    }
-  }
+  let want = null;
+  try { want = await keyCheck(env); } catch { /* 아래에서 판정한다 */ }
+  // ⚠️ **표식이 0건이어도 키 기록이 있으면 대조한다**(2026-08-20 · T64). 예전에는 `deletions`
+  //    가 비면 통째로 건너뛰어서, 확정 표식이 전부 만료된 뒤 **키가 어긋난 배포가 「쓸 수 있다」로
+  //    보였다.** 그 배포는 다음 삭제에서 `markPending` 이 던질 때까지 아무 신호도 안 낸다.
+  const row = await env.LEDGER.prepare(
+    "SELECT key_check FROM deletion_keys WHERE key_version = ?").bind(DELETION_KEY_VERSION).first();
+  if (!row) {
+    // 기록이 아예 없다 = 아직 아무것도 안 지운 배포다. 표식이 있는데 없으면 그건 이상하다.
+    if (versions.length) why.push("삭제 키 검사값이 기록돼 있지 않다 — 지금 키가 그때 그 키인지 알 수 없다");
+  } else if (want === null) why.push("DELETION_KEY 가 없다 — 기록된 검사값과 대조할 수 없다");
+  else if (row.key_check !== want) why.push("지금 DELETION_KEY 가 표식을 만든 키와 다르다");
   return { ok: why.length === 0, why };
 }
 
@@ -293,7 +295,8 @@ export async function ledgerAnswers(env) {
             + (SELECT COUNT(*) FROM write_leases WHERE expires_at IS NOT NULL)
             + (SELECT COUNT(*) FROM cleanup_runs WHERE id = 1)
             + (SELECT COUNT(*) FROM maintenance WHERE mode IS NOT NULL)
-            + (SELECT COUNT(*) FROM deletion_keys WHERE key_check IS NOT NULL) AS n`).first();
+            + (SELECT COUNT(*) FROM deletion_keys WHERE key_check IS NOT NULL)
+            + (SELECT COUNT(*) FROM rate_limits WHERE expires_at IS NOT NULL) AS n`).first();
     return typeof r?.n === "number";
   } catch {
     return false;

@@ -53,6 +53,7 @@ function counting(db) {
 
 const env0 = () => ({
   APP_ORIGIN: ORIGIN, APP_URL: ORIGIN + "/", STATE_KEY: "k", RL_KEY: "r",
+  DEV_RATE_LIMIT: "1",
   SIGNUP_STATE_KEY: KEY32, TOMBSTONE_KEY: "t", DELETION_KEY: "d",
   DB: makeD1(), LEDGER: makeLedger(), KAKAO_ID: "id",
 });

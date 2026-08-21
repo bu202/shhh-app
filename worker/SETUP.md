@@ -33,6 +33,10 @@ npx wrangler pages secret put KAKAO_ID --project-name shhh-app
 #  DELETION_KEY     — 삭제 표식 HMAC. 없으면 계정 삭제 503.
 #  MASTER_UIDS      — 무료 벽이 없는 계정. 쉼표 구분. 비우면 아무도 마스터가 아니다.
 #  DEV_ORIGINS      — **개발 Worker 에만.** localhost·LAN 주소를 허용한다. 운영에 넣지 않는다.
+#  DEV_RATE_LIMIT   — **로컬 전용.** 없으면 계정 라우트가 DB 를 만지기 전에 503 이다(위협 50).
+#                     `.dev.vars` 나 테스트 env 에만 둔다. ⛔ wrangler.jsonc 에 넣지 않는다 —
+#                     넣으면 남용 방어 없이 계정 기능이 열린 채 배포된다. 이 값으로는
+#                     `/api/ready` 가 절대 200 이 아니다(엣지 `RL` 바인딩이라야 ready 다).
 npx wrangler pages secret list --project-name shhh-app     # 목록(값은 안 보인다)
 ```
 

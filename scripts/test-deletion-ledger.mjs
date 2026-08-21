@@ -30,6 +30,7 @@ const KEY32 = Buffer.from(Uint8Array.from({ length: 32 }, (_, i) => i + 3)).toSt
 
 function makeEnv(extra = {}) {
   return { APP_ORIGIN: ORIGIN, APP_URL: ORIGIN + "/", STATE_KEY: "k", RL_KEY: "r",
+           DEV_RATE_LIMIT: "1",   // 로컬 전용 남용 방어 스위치(위협 50). 없으면 계정 라우트가 503
            SIGNUP_STATE_KEY: KEY32, TOMBSTONE_KEY: "tk", DELETION_KEY: "dk",
            DB: makeD1(), LEDGER: makeLedger(), ...extra };
 }
