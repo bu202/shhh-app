@@ -89,6 +89,70 @@ assert.equal(cacheName, await swCacheName(), "캐시 이름이 지금 dist 자�
     "서비스워커의 정책 선캐시 목록이 지금 번들과 다르다 — `node scripts/policies.mjs` 를 다시 돌려라");
 }
 
+// ── 화면 코드가 부르는 바깥 origin 이 CSP 에 다 열려 있나 ────────────────
+// ⛔ **CSP 위반은 조용하다.** 위젯이 안 뜨고 콘솔도 별말 없어서, 빼고 배포해 대조하기 전까지
+//    원인을 못 찾는다 — sldict 그림에서 이미 겪었다(`_headers` 머리말). 그래서 코드가 실제로
+//    적어 둔 주소를 긁어 **정책과 대조한다.** 손으로 세는 목록은 반드시 낡는다.
+{
+  const csp = /Content-Security-Policy: ([^\n]+)/.exec(readFileSync(new URL("../_headers", import.meta.url), "utf8"));
+  assert.ok(csp, "_headers 에서 CSP 를 못 읽었다 — 검사기가 낡았다");
+  const client = ["js/auth.js", "js/authApi.js", "js/app.js", "js/friends.js", "service-worker.js"]
+    .map((f) => readFileSync(new URL("../" + f, import.meta.url), "utf8")).join("\n");
+  // ⚠️ **주석을 지우고 본다.** 「예전에는 이 주소였다」 같은 기록이 걸리면, 검사를 통과시키려고
+  //    그 기록을 지우게 된다 — 왜 그렇게 했는지가 사라지는 쪽이 더 나쁘다.
+  const code = client.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+  const origins = new Set([...code.matchAll(/https:\/\/([a-z0-9.-]+\.[a-z]{2,})/g)].map((m) => m[1]));
+  // 코드 안의 주소가 전부 「불러오는 것」은 아니다. 제공자 인증 주소는 화면 이동이지 fetch 가 아니다.
+  const IGNORE = new Set(["developers.cloudflare.com", "kauth.kakao.com", "nid.naver.com",
+                          "accounts.google.com", "kapi.kakao.com", "openapi.naver.com",
+                          "oauth2.googleapis.com", "www.googleapis.com", "shhh-app.pages.dev",
+                          "shhh.example.com", "example.com"]);
+  for (const o of origins) {
+    if (IGNORE.has(o)) continue;
+    assert.ok(csp[1].includes(o),
+      `화면 코드가 https://${o} 를 부르는데 CSP 에 없다 — 배포하면 조용히 막힌다`);
+  }
+  // Turnstile 은 **스크립트와 iframe 둘 다** 필요하다. 하나만 열면 위젯이 조용히 안 뜬다.
+  if (/challenges\.cloudflare\.com/.test(code)) {
+    const dirs = Object.fromEntries(csp[1].split(";").map((d) => {
+      const [k, ...v] = d.trim().split(/\s+/);
+      return [k, v.join(" ")];
+    }));
+    for (const d of ["script-src", "frame-src"])
+      assert.ok((dirs[d] || "").includes("challenges.cloudflare.com"),
+        `CSP 의 ${d} 에 challenges.cloudflare.com 이 없다 — 사람 확인 위젯이 조용히 안 뜬다`);
+  }
+}
+
+// ── 호스트 잠금 미들웨어를 **실제로 돌려 본다** (2026-08-22 · 결정 0·1) ──
+// ⛔ 소스를 훑는 검사만 두면 「조건을 통째로 꺼도 통과」한다(돌연변이 N12 가 그랬다).
+//    Pages 가 정적 요청에 Worker 를 안 태우므로, 이 파일이 화면 쪽의 유일한 방어다.
+{
+  const mw = await import("../functions/_middleware.js");
+  const run = (env, url, method = "GET") =>
+    mw.onRequest({ env, request: new Request(url, { method }), next: () => new Response("next") });
+  const OFF = { APP_ORIGIN: "https://shhh-app.pages.dev" };
+  const ON = { EDGE_GUARD: "waf", APP_ORIGIN: "https://shhh.example.com" };
+
+  // ① 선언이 없으면 **아무것도 안 한다** — 도메인이 붙기 전에 켜면 지금 주소가 죽는다.
+  assert.equal((await run(OFF, "https://shhh-app.pages.dev/")).status, 200,
+    "EDGE_GUARD 가 없는데 리다이렉트했다 — 지금 쓰는 주소가 죽는다");
+  // ② waf + 정식 호스트 → 그대로 통과.
+  assert.equal((await run(ON, "https://shhh.example.com/app")).status, 200,
+    "정식 호스트인데 리다이렉트했다");
+  // ③ waf + pages.dev → 302 로 정식 호스트. **쿼리와 경로를 잃지 않는다.**
+  const r = await run(ON, "https://shhh-app.pages.dev/x?y=1");
+  assert.equal(r.status, 302, `pages.dev 우회가 ${r.status} 로 통과했다 — WAF 를 지나지 않는 경로다`);
+  assert.equal(r.headers.get("Location"), "https://shhh.example.com/x?y=1",
+    "리다이렉트가 경로·쿼리를 잃었다");
+  // ④ GET·HEAD 만 옮긴다.
+  assert.equal((await run(ON, "https://shhh-app.pages.dev/api/book", "POST")).status, 200,
+    "POST 를 리다이렉트했다 — 본문이 있는 요청은 API 의 403 이 답한다");
+  // ⑤ waf 인데 APP_ORIGIN 이 아직 pages.dev 면 **아무것도 안 한다**(무한 리다이렉트 방지).
+  assert.equal((await run({ EDGE_GUARD: "waf", APP_ORIGIN: "https://shhh-app.pages.dev" },
+    "https://shhh-app.pages.dev/")).status, 200, "자기 자신으로 리다이렉트했다 — 무한 루프다");
+}
+
 // ── 호스트 잠금 규칙이 두 곳에서 같은가 (2026-08-22 · 결정 0·1 · 위협 55) ──
 // `functions/_middleware.js` 는 정적 요청을, `worker/index.js` 는 API 를 막는다. Pages 가
 // 정적 요청에 Worker 를 안 태우므로 규칙이 두 벌일 수밖에 없다 — 어긋나면 한쪽만 막힌다.

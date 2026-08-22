@@ -9,7 +9,7 @@
 import assert from "node:assert";
 import worker, { createAccountWithPolicy, findUser, newSession, pathTemplate,
   routeFor, rlMax, routeBuckets, routeCount, maintenanceAllows, envelopeOk,
-  authRoutes } from "../worker/index.js";
+  authRoutes, mkSessionToken, SESSION_ENVELOPE_VERSION } from "../worker/index.js";
 import { makeD1, makeLedger, withLatency } from "./_d1.mjs";
 import { drainState, readMode, MODE_UNBOUND } from "../worker/ledger.js";
 // 옛 배포 세대의 **고정 fixture**. 지금 코드가 아니다 — 그 파일 머리말을 볼 것.
@@ -2074,6 +2074,23 @@ function befriend(env, a, b, status = "accepted") {
     assert.equal(led() - l0, 0, `T71-b[${why}]: ledger 쓰기가 났다`);
     assert.ok(!JSON.stringify(r.body).includes("서명") && !JSON.stringify(r.body).includes("만료"),
       `T71-b[${why}]: 거절 사유를 알려줬다 — 위조 시도에 진행 상황을 준다`);
+  }
+
+  // T71-b2. ★ **제대로 서명된** 만료 토큰과 모르는 판. 위 b 는 값을 고쳐 서명을 깨뜨리므로
+  //   **서명 검사가 먼저 잡아** 만료·판 검사를 한 번도 지나지 않는다 — 그 둘을 따로 재려면
+  //   우리 키로 **정상 서명한** 토큰이어야 한다. (돌연변이 N2·N3 이 여기서 잡힌다)
+  for (const [why, tok] of [
+    ["정상 서명된 만료 토큰", await mkSessionToken(env, Date.now() - 1000)],
+    ["정상 서명된 모르는 판", await mkSessionToken(env, Date.now() + 600e3,
+                                                  String(Number(SESSION_ENVELOPE_VERSION) + 1))],
+  ]) {
+    assert.equal(await envelopeOk(env, tok), false, `T71-b2[${why}]: 서명만 보고 통과시켰다`);
+    const spy = dbQ(), l0 = led();
+    const r = await call(env, tok, "/book");
+    spy.stop();
+    assert.equal(r.status, 401, `T71-b2[${why}]: ${r.status} 로 지나갔다`);
+    assert.equal(spy.q.length, 0, `T71-b2[${why}]: 주 D1 에 질의 ${spy.q.length}건`);
+    assert.equal(led() - l0, 0, `T71-b2[${why}]: ledger 쓰기가 났다`);
   }
 
   // T71-c. ★ **서명이 맞아도 인증이 아니다.** DB 에 없는 세션은 401 이다.

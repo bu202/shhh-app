@@ -441,9 +441,12 @@ const mkToken = () => b64u(crypto.getRandomValues(new Uint8Array(32)));
 //
 // 모양: `<판>.<무작위>.<만료 초>.<서명>` — 서명은 앞의 셋을 이어 붙인 문자열의 HMAC 이다.
 // 판이 있는 이유: 모양을 바꿔야 하는 날 **옛 모양을 조용히 통과시키지 않기 위해서**다.
-const SESSION_ENVELOPE_VERSION = "1";
+export const SESSION_ENVELOPE_VERSION = "1";
 
-const envelopeSign = async (env, msg) => {
+// export 하는 이유: 테스트가 **제대로 서명된** 만료 토큰·모르는 판 토큰을 만들어야 하기
+// 때문이다. 서명 규칙을 테스트에 베껴 적으면 그 순간 로직이 두 벌이 되고, 두 벌은 반드시
+// 갈라진다. ⚠️ 이 함수는 키를 받지 않는다 — `env` 안의 값을 쓴다.
+export const envelopeSign = async (env, msg) => {
   const k = await crypto.subtle.importKey("raw", ENC.encode(env.SESSION_ENVELOPE_KEY),
     { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   return b64u(await crypto.subtle.sign("HMAC", k, ENC.encode(msg)));
@@ -451,8 +454,8 @@ const envelopeSign = async (env, msg) => {
 
 // 새 세션 토큰. 만료를 **서명 안에** 넣는다 — 넣지 않으면 만료 판정에 DB 가 필요하고,
 // 그러면 값싸게 버리려던 요청이 다시 DB 를 만진다.
-async function mkSessionToken(env, expMs) {
-  const body = `${SESSION_ENVELOPE_VERSION}.${mkToken()}.${Math.floor(expMs / 1000)}`;
+export async function mkSessionToken(env, expMs, version = SESSION_ENVELOPE_VERSION) {
+  const body = `${version}.${mkToken()}.${Math.floor(expMs / 1000)}`;
   return `${body}.${await envelopeSign(env, body)}`;
 }
 
