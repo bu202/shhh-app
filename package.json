@@ -6,7 +6,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "policies": "node scripts/policies.mjs stamp",
-    "test": "for t in auth client book fingers compounds match assemble knn screen home meaning policies signup friends deletion-ledger cleanup migrations hash sw dist config docs reaudit stage34-closeout; do node scripts/test-$t.mjs || exit 1; done"
+    "test": "for t in auth client book fingers compounds match assemble knn screen home meaning policies signup friends deletion-ledger cleanup migrations hash sw dist config docs reaudit stage34-closeout abuse-guard; do node scripts/test-$t.mjs || exit 1; done"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
