@@ -256,7 +256,7 @@ npm test
 npm audit
 ```
 
-- `npm test`가 빌드와 `dist/` 공개 파일 검사까지 수행한다. **24개 스위트**다.
+- `npm test`가 빌드와 `dist/` 공개 파일 검사까지 수행한다. **25개 스위트**다.
 - **`scripts/test-config.mjs` 는 설정·바인딩·시크릿 계약만 본다.** 코드에서 `env.*` 를 읽어
   `README.md`·`worker/SETUP.md`·`wrangler.jsonc`·`docs/OPS_RUNBOOK.md` 와 대조하고, 설정이
   가리키는 파일이 실재하는지·배포 가능한 설정에 placeholder 가 없는지를 본다.

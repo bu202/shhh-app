@@ -42,11 +42,25 @@
     // 검증 단계에선 pages.dev. 도메인이 붙으면 **여기와 OAuth 콘솔 3사를 같이** 바꾼다.
     "APP_ORIGIN": "https://shhh-app.pages.dev",
     "APP_URL": "https://shhh-app.pages.dev/"
+    // ⛔ **`EDGE_GUARD` 가 아직 없다. 그래서 이 설정으로 배포하면 계정 라우트가 전부 503 이다.**
+    //    값은 `"waf"` 또는 `"ratelimit"` 이고, **모르는 값·빈 값은 전부 `none`** 이다
+    //    (위협 52·55 · 설계서 §12-3-1). 그것이 의도된 상태다 — 막지 못하는 채로 열지 않는다.
+    //      "EDGE_GUARD": "waf"        // 커스텀 도메인 + WAF 규칙. APP_ORIGIN 이 *.pages.dev 면
+    //                                 // 코드가 none 으로 떨어뜨린다(그 존에는 규칙을 못 건다)
+    //      "EDGE_GUARD": "ratelimit"  // Workers 전환 + ratelimits 바인딩(아래)
+    //    모드별 절차와 외부 점검 항목은 `docs/OPS_RUNBOOK.md` §13-2.
+    //
+    // ⚠️ **`ratelimits` 바인딩은 Pages Functions 에 못 붙인다**(공식 지원 목록에 없다).
+    //    붙일 수 있게 되는 날의 계약: 이름은 `RL`, `simple.period` 는 10 또는 60,
+    //    `simple.limit` 은 분당 환산으로 **`RL_MAX` 의 최댓값 이상**이어야 한다 —
+    //    그보다 좁으면 엣지가 먼저 잘라 문서의 버킷별 한도가 거짓이 된다
+    //    (`scripts/test-config.mjs` 가 잰다).
   }
   // 비밀값은 여기 적지 않는다 — `wrangler pages secret put <이름>` 으로 넣는다.
   // KAKAO_ID · KAKAO_SECRET · NAVER_ID · NAVER_SECRET · GOOGLE_ID · GOOGLE_SECRET
   // · STATE_KEY · MASTER_UIDS · **RL_KEY** · **SIGNUP_STATE_KEY** · **TOMBSTONE_KEY**
-  // · **DELETION_KEY**  (12개)
+  // · **DELETION_KEY** · **READY_KEY**(`/api/ready` 진단용 운영자 키 — 없으면 진단을 아무도
+  //   못 본다. 키 없는 호출은 두 DB 를 만지지 않고 503 이다 · 위협 56)
   // 개발 Worker 에만: DEV_ORIGINS — localhost·LAN 허용. ⛔ **운영에는 넣지 않는다.**
   //
   // ⚠️ **목록을 손으로 세지 않는다.** 이 줄이 8개인 채로 남아 RL_KEY 를 빠뜨릴 뻔했고, 그

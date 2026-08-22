@@ -376,12 +376,21 @@ ok(`원격 반영 과장 ${REMOTE_CLAIMS.length}종 — 0건`);
     if (re.test(ops)) bad(`worker/ops.js ${why}`);
   }
   // 리미터가 임차증보다 뒤로 가면 위협 47 이 되살아난다. **순서를 소스에서 직접 잰다.**
+  // ⚠️ **자리가 셋이 됐다**(2026-08-22 · 위협 52·56). 엣지 사전 거름이 게이트보다 앞이고,
+  //    게이트가 우리 카운터보다 앞이고, 카운터가 임차증보다 앞이다. 하나라도 뒤집히면
+  //    「막힌 요청이 DB 를 만진다」가 되살아난다.
   {
     const idx = strip(R("worker/index.js"));
-    const rl = idx.indexOf("await limited(env, req, rt.bucket)");
+    const edge = idx.indexOf("await edgeVerdict(env, req,");
+    const gate = idx.indexOf("gate = await readMode(env)");
+    const rl = idx.indexOf("await countVerdict(env, req, rt.bucket)");
     const lease = idx.indexOf("await acquireLease(env, LEASE_MODES_REQUEST)");
-    if (rl < 0 || lease < 0) bad("worker/index.js 에서 리미터·임차증 자리를 못 찾았다 — 검사기가 낡았다");
-    else if (rl > lease) bad("worker/index.js 의 리미터가 임차증보다 뒤에 있다 — 막힌 요청도 ledger 에 쓴다 (위협 47)");
+    if (edge < 0 || gate < 0 || rl < 0 || lease < 0)
+      bad("worker/index.js 에서 엣지 거름·게이트·리미터·임차증 자리를 못 찾았다 — 검사기가 낡았다");
+    else {
+      if (edge > gate) bad("worker/index.js 의 엣지 사전 거름이 게이트보다 뒤에 있다 — 고장 난 바인딩의 503 이 ledger 를 읽는다 (위협 52)");
+      if (rl > lease) bad("worker/index.js 의 리미터가 임차증보다 뒤에 있다 — 막힌 요청도 ledger 에 쓴다 (위협 47)");
+    }
   }
   // 임차증 해제가 UPDATE 로 되돌아가면 표가 무한히 자란다(정리 크론은 시간당 200행).
   if (/UPDATE write_leases SET released_at/.test(strip(R("worker/ledger.js")))) {

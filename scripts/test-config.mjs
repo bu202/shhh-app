@@ -116,7 +116,10 @@ const RUNBOOK = "docs/OPS_RUNBOOK.md";
 
   // 바인딩(설정 파일에 적는다) vs 시크릿·변수(대시보드/CLI 로 넣는다).
   const BINDINGS = new Set(["DB", "LEDGER", "KV", "RL"]);
-  const VARS = new Set(["APP_ORIGIN", "APP_URL"]);
+  // ⚠️ `EDGE_GUARD` 는 **운영자가 선언하는 값**이라 vars 다(2026-08-22 · 위협 55). 값이 없으면
+  //    계정 라우트가 닫힌다 — 그것이 지금 상태이고, 그래서 「없어도 된다」가 아니라
+  //    「없다는 사실이 문서에 적혀 있어야 한다」다. 아래 6-b 가 값까지 검사한다.
+  const VARS = new Set(["APP_ORIGIN", "APP_URL", "EDGE_GUARD"]);
   // **로컬 전용 스위치.** 문서 셋에는 적혀 있어야 하고(있는 줄 모르면 아무도 못 쓴다),
   // **배포 가능한 설정 파일에는 절대 없어야 한다** — 있으면 남용 방어 없이 계정 라우트가
   // 열린 채로 배포된다(위협 50). 그래서 시크릿과 **다르게** 검사한다.
@@ -134,6 +137,10 @@ const RUNBOOK = "docs/OPS_RUNBOOK.md";
     for (const d of DOCS) {
       assert.ok(R(d).includes(s), t(`${d} 에 ${s} 가 없다 — 코드는 이 값을 요구한다`));
     }
+  }
+  // 선언 변수도 같다. 이름만 코드에 있고 문서에 없으면 아무도 켤 줄 모른다.
+  for (const v of ["EDGE_GUARD"]) {
+    for (const d of DOCS) assert.ok(R(d).includes(v), t(`${d} 에 ${v} 설명이 없다 — 코드가 이 이름으로 계정 라우트를 연다`));
   }
   // 로컬 전용 스위치: 문서 셋에는 있고, **배포 가능한 설정 둘에는 없다.**
   for (const v of LOCAL_ONLY) {
@@ -185,6 +192,49 @@ const RUNBOOK = "docs/OPS_RUNBOOK.md";
   // 비밀값은 설정 파일에 적지 않는다(이 파일은 공개 레포에 올라간다).
   assert.ok(!root.vars || !Object.keys(root.vars).some((k) => /KEY|SECRET|TOKEN|PASS/i.test(k)),
     t("wrangler.jsonc 의 vars 에 비밀값처럼 생긴 이름이 있다"));
+}
+
+// ══ 5-b. 남용 방어 설정이 코드의 계약과 맞나 ═════════════════════════════
+//
+// 위협 53: 엣지 바인딩의 한도는 **설정의 `simple.limit`·`period`** 에 고정되고 `limit()` 인자는
+// `key` 뿐이다(공식 문서 · wrangler 4.123 스키마). 그래서 바인딩 하나로 버킷 여섯의 서로 다른
+// 한도를 낼 수 없다 — 우리 카운터가 그 숫자의 집행자이고, 엣지는 **볼류메트릭 사전 거름**이다.
+// 사전 거름이 우리 버킷보다 좁으면 문서에 적힌 숫자가 거짓이 된다.
+{
+  const root = parse(ROOT);
+  const src = R("worker/index.js");
+  // `RL_MAX` 를 코드에서 읽는다 — 숫자를 여기 손으로 적으면 그 순간 낡는다.
+  const m = /const RL_MAX = \{([^}]*)\}/.exec(src);
+  assert.ok(m, t("worker/index.js 에서 RL_MAX 를 못 읽었다 — 검사기가 낡았다"));
+  const maxes = [...m[1].matchAll(/:\s*(\d+)/g)].map((x) => +x[1]);
+  assert.ok(maxes.length >= 6, t(`RL_MAX 에서 한도를 ${maxes.length}개만 읽었다 — 검사기가 낡았다`));
+  const ourMax = Math.max(...maxes);
+
+  const rls = root.ratelimits || [];
+  for (const r of rls) {
+    assert.equal(r.name, "RL", t(`엣지 리미터 바인딩 이름이 ${r.name} 이다 — 코드는 env.RL 을 본다`));
+    assert.ok(r.simple && [10, 60].includes(r.simple.period),
+      t("ratelimits 의 period 는 10 또는 60 만 된다(공식 스키마)"));
+    // 창이 10초면 분당으로 환산해서 비교한다 — 우리 창은 60초다.
+    const perMinute = r.simple.limit * (60 / r.simple.period);
+    assert.ok(perMinute >= ourMax,
+      t(`엣지 사전 거름(${perMinute}/분)이 우리 버킷 최대(${ourMax}/분)보다 좁다 — 문서의 버킷별 한도가 거짓이 된다`));
+  }
+  // 선언과 바인딩이 짝이 맞나. `ratelimit` 모드인데 바인딩이 없으면 배포해도 계정 라우트가 닫힌다.
+  const guard = (root.vars || {}).EDGE_GUARD;
+  if (guard !== undefined) {
+    assert.ok(["waf", "ratelimit"].includes(guard),
+      t(`EDGE_GUARD 가 "${guard}" 다 — 코드가 아는 모드는 waf·ratelimit 뿐이고 나머지는 none 이다`));
+    if (guard === "ratelimit")
+      assert.ok(rls.length, t("EDGE_GUARD 가 ratelimit 인데 ratelimits 바인딩이 없다 — 배포해도 계정 라우트가 닫힌다"));
+    if (guard === "waf")
+      assert.ok(!/\.pages\.dev/.test((root.vars || {}).APP_ORIGIN || ""),
+        t("EDGE_GUARD 가 waf 인데 APP_ORIGIN 이 *.pages.dev 다 — 그 존에는 WAF 규칙을 못 건다"));
+  } else {
+    // 없는 것이 지금 사실이다. 그 사실이 runbook 에 적혀 있어야 다음 사람이 그대로 배포하지 않는다.
+    assert.match(R(RUNBOOK), /지금 상태는 D|현 상태 유지|지금 상태.{0,20}D/,
+      t("EDGE_GUARD 가 없는데 runbook 이 「지금 닫혀 있다」고 말하지 않는다"));
+  }
 }
 
 // ══ 6. runbook 이 절차서로서 최소한을 갖췄나 ═════════════════════════════

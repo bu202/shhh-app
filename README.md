@@ -87,17 +87,22 @@ npx wrangler pages deploy --project-name shhh-app --branch main
 | `SIGNUP_STATE_KEY` (32바이트 base64url) | 시크릿 | 회원가입 503 |
 | `TOMBSTONE_KEY` | 시크릿 | 회원가입 503 |
 | `DELETION_KEY` | 시크릿 | 계정 삭제 503 |
+| **`READY_KEY`** | 시크릿 | `/api/ready` 의 **진단을 아무도 못 본다**. 키 없는 호출은 두 DB 를 만지지 않고 503 이다(설계서 위협 56) |
 | `KAKAO_ID` `KAKAO_SECRET` `NAVER_ID` `NAVER_SECRET` `GOOGLE_ID` `GOOGLE_SECRET` | 시크릿 | 그 제공자 버튼이 안 뜬다 |
 | `MASTER_UIDS` | 시크릿 | 아무도 마스터가 아니다 |
 | `DEV_ORIGINS` | 시크릿(**개발 Worker 에만**) | 로컬·LAN 주소로 로그인 못 한다(운영에는 넣지 않는다) |
 | `DEV_RATE_LIMIT` | **로컬 전용**(`.dev.vars`·테스트) | 계정 라우트가 **DB 를 만지기 전에 503** — 아래 「남용 방어」 참조 |
-| `RL` (엣지 레이트리밋 바인딩) | `wrangler.jsonc` | 계정 라우트가 열리지 않는다. **지금 이 프로젝트에는 없다** |
+| **`EDGE_GUARD`** (`waf` 또는 `ratelimit`) | `wrangler.jsonc` vars | 계정 라우트가 열리지 않는다. **선언되지 않은 방어를 있다고 보지 않는다**(위협 52·55). **지금 이 프로젝트에는 없다** |
+| `RL` (엣지 레이트리밋 바인딩) | `wrangler.jsonc` | `EDGE_GUARD="ratelimit"` 인데 없거나 `limit()` 이 함수가 아니면 계정 라우트가 열리지 않는다. **Pages Functions 에는 못 붙인다** |
 | `APP_ORIGIN` `APP_URL` | `wrangler.jsonc` | 복귀 주소 검증이 안 선다 |
 | **`DB`** (D1 `shhh-db`) | `wrangler.jsonc` | 전부 안 된다 |
 | **`LEDGER`** (D1 `shhh-ledger`) | `wrangler.jsonc` | **사용자 데이터 API 가 전부 503** — 표식 없는 삭제·추적 없는 쓰기를 만들지 않는다 |
 
 - **서로 겸용하지 않는다.** 용도가 다른 비밀값을 돌려 쓰면 하나를 교체할 때 다른 하나가 같이 무너진다.
-- **남용 방어가 없으면 계정 라우트를 열지 않는다**(2026-08-20 · 설계서 위협 50). 리미터가 셀 수
+- **남용 방어가 없으면 계정 라우트를 열지 않는다**(2026-08-22 · 설계서 위협 52~56). ⛔ **「있다」는
+  방어의 증거가 아니다** — 8판까지는 `RL` 이라는 이름의 아무 값이나 통과했고 문자열 하나로
+  `/api/ready` 가 200 이었다. 지금은 `EDGE_GUARD` 선언과 **부를 수 있는 바인딩**을 함께 본다.
+  리미터가 셀 수
   있는 신원은 IP 하나뿐이고, IP 를 나누면 한도는 그대로 곱해진다 — 실측으로 익명 IP **하나**가
   하루면 D1 무료 쓰기 한도를 넘긴다. 분산 요청을 끊는 것은 엣지(WAF·Turnstile)의 일인데
   Pages Functions 에는 그 바인딩이 없다. 그래서 `RL` 바인딩이 없으면 `/api/health`·`/api/ready`·
