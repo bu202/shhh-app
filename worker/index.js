@@ -118,22 +118,44 @@ const ENC = new TextEncoder();
 const b64u = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const unb64u = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
 
-// ⚠️ **STATE_KEY 가 없으면 던진다.** 없을 때 그냥 진행하면 `ENC.encode(undefined)` 가
-// 문자열 `"undefined"` 를 서명 키로 쓴다 — 그 키는 누구나 아는 값이라 **아무나 유효한 state 를
-// 만들 수 있고**, state 안에는 로그인 뒤 토큰을 실어 보낼 주소가 들어 있다. 조용히 도는 쪽이
-// 안 도는 쪽보다 나쁜 자리라 실패-닫힘으로 둔다(라우트에서 503 으로 잡는다).
+// ⚠️ **STATE_KEY 가 없으면 던진다.**
+// ⚠️ **정정(2026-08-22):** 여기 있던 옛 주석은 「없으면 `ENC.encode(undefined)` 가 문자열
+//    `"undefined"` 를 서명 키로 쓴다」고 적었는데 **사실이 아니다.** `TextEncoder.encode()` 의
+//    인자 기본값은 빈 문자열이라 결과는 **길이 0 바이트**이고, `importKey` 가 거기서
+//    `Zero-length key is not supported` 로 던진다(Node·workerd 둘 다 실측).
+//    그러므로 이 줄은 **두 번째 자물쇠가 아니다** — 얻는 것은 「무엇이 없는지 이름이 적힌
+//    오류」 하나다. 실제로 막는 것은 라우트 앞의 `loginPossible()`·`signupPossible()` 이고,
+//    그 사실은 `scripts/test-signup.mjs` 의 T73 이 잰다.
 async function sign(env, msg) {
   if (!env.STATE_KEY) throw new Error("STATE_KEY not configured");
   const k = await crypto.subtle.importKey("raw", ENC.encode(env.STATE_KEY), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   return b64u(await crypto.subtle.sign("HMAC", k, ENC.encode(msg)));
 }
 
-// 비밀값 비교는 **끝까지** 한다. 앞에서 끊으면 몇 글자가 맞았는지가 응답 시간으로 새어,
-// 한 글자씩 붙여 가며 값을 알아낼 수 있다. 길이가 다르면 그 자리에서 거짓 — 길이는 비밀이 아니다.
-const sameSecret = (a, b) => {
-  if (typeof a !== "string" || typeof b !== "string" || !a || a.length !== b.length) return false;
+// 비밀값 비교. **원문을 직접 훑지 않는다** — 두 값의 SHA-256 요약 **32바이트끼리** 비교한다.
+// 그래서 길이가 달라도 하는 일이 같고, 길이도 「앞에서 몇 글자가 맞았나」도 시간으로 새지 않는다.
+// 예전에는 `a.length !== b.length` 로 먼저 끊고 `charCodeAt` 을 하나씩 XOR 했다 — 길이는
+// 비밀이 아니라는 판단은 맞지만, 원문 문자열을 인덱싱하는 비교는 엔진의 문자열 표현
+// (latin1/UTF-16·rope)에 따라 시간이 달라질 수 있고 그 성질은 우리가 정하지 못한다.
+//
+// ⚠️ **`crypto.subtle.timingSafeEqual` 을 쓰지 않는다.** 그것은 Workers 런타임의 확장이고
+//    Node 의 `crypto.subtle` 에는 없다(공식 문서: Workers Web Crypto 의 비표준 메서드).
+//    이 저장소의 회귀 테스트는 `worker/index.js` 를 **Node 에서 그대로 실행**하므로, 그 함수를
+//    쓰면 갈래가 둘로 갈리고 둘 중 하나는 영원히 테스트를 안 지난다. 요약 비교는 두 런타임에서
+//    **같은 코드 한 벌**로 돈다.
+// ⚠️ 요약을 비교해도 안전한 이유: 공격자가 아는 것은 자기 추측의 요약뿐이고, 요약 바이트가 몇
+//    개 맞았는지로는 원문을 한 글자씩 좁힐 수 없다(한 비트만 달라도 요약이 전부 달라진다).
+// ⚠️ **비동기다.** 부르는 쪽은 전부 `await` 한다 — 빠뜨리면 Promise 가 늘 truthy 라 검사가
+//    통째로 무력해진다. `scripts/test-friends.mjs` 가 그 실수를 직접 잰다.
+const sameSecret = async (a, b) => {
+  if (typeof a !== "string" || typeof b !== "string" || !a || !b) return false;
+  const [x, y] = await Promise.all([
+    crypto.subtle.digest("SHA-256", ENC.encode(a)),
+    crypto.subtle.digest("SHA-256", ENC.encode(b)),
+  ]);
+  const u = new Uint8Array(x), v = new Uint8Array(y);
   let d = 0;
-  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  for (let i = 0; i < u.length; i++) d |= u[i] ^ v[i];
   return d === 0;
 };
 
@@ -147,6 +169,33 @@ const readyProviders = (env) => Object.keys(P).filter((n) => {
   const { id, secret } = creds(env, n);
   return !!id && (!!secret || !!P[n].optionalSecret);
 });
+
+// ── 로그인·가입을 **끝까지** 할 수 있나 (2026-08-22 · 부분 시크릿) ────────
+//
+// ⛔ 재현: `SESSION_ENVELOPE_KEY` 만 빠진 배포에서 `signupReady` 가 **참**이었고, 가입이
+//    그대로 진행돼 **users · policy_events · sessions 행이 생기고 제공자 호출 2회가 나갔다.**
+//    그렇게 만든 세션은 다음 요청부터 전부 503 이라 그 계정은 **쓸 수 없는 계정**이다 —
+//    되돌리려면 사람이 지워야 하고, 지우려면 `DELETION_KEY` 가 또 있어야 한다.
+//    「일부만 있으면 일부만 된다」가 아니라 **일부만 있으면 시작하지 않는다.**
+//
+// ⚠️ **조건을 세 곳에 나눠 적지 않는다.** 화면(`/health`)·시작(`/signup/start`)·
+//    콜백(`/cb`·`/exchange`)이 **같은 함수 하나**를 본다. 나눠 적으면 한 곳만 고치는 날
+//    「버튼은 그려지는데 누르면 실패」 또는 그 반대가 생긴다.
+// ⚠️ 값은 보지 않는다 — 있나 없나만.
+//
+//   loginPossible   기존 사용자가 로그인해서 **쓸 수 있는 세션**을 받을 수 있나.
+//                   `SESSION_ENVELOPE_KEY` 가 여기 있는 이유: 없으면 `newSession()` 이 던져
+//                   왕복 끝에서 500 이 나고, 어쩌다 토큰이 만들어져도 그 쿠키는 다음 요청의
+//                   envelope 검사에서 거부된다. 어느 쪽이든 **쓸 수 없는 계정**이 남는다.
+//   signupPossible  거기에 더해 **가입을 기록하고 나중에 지울 수 있나.** `DELETION_KEY` 가
+//                   여기 있는 이유: 지울 수 없는 계정을 새로 만들면 privacy.html 의 약속이
+//                   만드는 순간 거짓이 된다.
+export const loginPossible = (env) => !!(env.DB && env.LEDGER && env.APP_ORIGIN
+  && env.STATE_KEY && env.RL_KEY && env.SESSION_ENVELOPE_KEY);
+export const signupPossible = (env) => loginPossible(env)
+  && !!(env.SIGNUP_STATE_KEY && env.TOMBSTONE_KEY && env.DELETION_KEY
+        && env.TURNSTILE_SECRET && env.TURNSTILE_SITE_KEY);
+
 // ── 남용 방어 계약 v2 ────────────────────────────────────────────────────
 // **리미터가 셀 수 있는 신원은 IP 하나뿐이고, IP 를 나누면 한도는 그대로 곱해진다.**
 // 실측(T67-c): 서로 다른 IP 100개가 한 번씩 보낸 익명 요청에 429 는 0건이고 ledger 쓰기는
@@ -219,7 +268,9 @@ const health = async (env) => {
   //    503 이라(위 abuseGuard), 버튼을 그려 봐야 누르면 실패한다 — ledger 미바인딩과 같은 판단이다.
   const guard = guardMode(env);
   const works = await guardWorks(env);
-  const providers = (ledgerBound && works) ? readyProviders(env) : [];
+  // ⚠️ **로그인을 끝까지 할 수 없는 배포도 버튼을 안 그린다**(부분 시크릿). 전에는 여기서
+  //    세션 서명 키를 안 봐서, 눌러서 제공자까지 갔다가 **쓸 수 없는 세션**을 받아 왔다.
+  const providers = (ledgerBound && works && loginPossible(env)) ? readyProviders(env) : [];
   // DB 바인딩이 없으면 로그인도 단어장도 못 한다 — ready 가 아니다.
   // ⚠️ KV 는 더 이상 안 본다. 바인딩은 **롤백용으로 남겨 두지만** 새 코드는 쓰지 않는다.
   // ⚠️ RL_KEY 도 **있어야 하는 값**이다. 없으면 리미터가 세지 않는데(rlBucket 참조),
@@ -245,8 +296,8 @@ const health = async (env) => {
            // ⚠️ `TURNSTILE_SECRET` 과 site key 도 가입의 전제다(2026-08-22 · 결정 3).
            //    비밀값은 **있나 없나**만, site key 는 **화면이 위젯을 그리는 데 필요**하므로
            //    값 그대로 나간다 — 공개 값이다(브라우저에 박히도록 설계된 값).
-           signupReady: !!(ledgerBound && env.SIGNUP_STATE_KEY && env.TOMBSTONE_KEY
-                           && env.TURNSTILE_SECRET && env.TURNSTILE_SITE_KEY),
+           // ⚠️ **`/signup/start` 와 콜백이 보는 것과 같은 함수다.** 나눠 적으면 갈라진다.
+           signupReady: signupPossible(env) && providers.length > 0,
            turnstileSiteKey: env.TURNSTILE_SITE_KEY || null };
 };
 
@@ -311,7 +362,7 @@ async function takeState(env, state) {
   const i = state.lastIndexOf(".");
   if (i < 0) return null;
   const body = state.slice(0, i);
-  if (!sameSecret(await sign(env, body), state.slice(i + 1))) return null;
+  if (!(await sameSecret(await sign(env, body), state.slice(i + 1)))) return null;
   let p;
   try { p = JSON.parse(new TextDecoder().decode(unb64u(body))); } catch { return null; }
   const [provider, back, exp, nonce, txn] = p;
@@ -447,6 +498,10 @@ export const SESSION_ENVELOPE_VERSION = "1";
 // 때문이다. 서명 규칙을 테스트에 베껴 적으면 그 순간 로직이 두 벌이 되고, 두 벌은 반드시
 // 갈라진다. ⚠️ 이 함수는 키를 받지 않는다 — `env` 안의 값을 쓴다.
 export const envelopeSign = async (env, msg) => {
+  // ⚠️ **키가 없으면 던진다.** 위 `sign()` 과 같은 이유이고, 같은 한계도 그대로다 —
+  //    없으면 `importKey` 가 어차피 길이 0 으로 던지므로 이 줄이 여는 문은 없다.
+  //    얻는 것은 **이름이 적힌 오류** 하나다. 실제로 막는 것은 `loginPossible()` 이다.
+  if (!env.SESSION_ENVELOPE_KEY) throw new Error("SESSION_ENVELOPE_KEY not configured");
   const k = await crypto.subtle.importKey("raw", ENC.encode(env.SESSION_ENVELOPE_KEY),
     { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   return b64u(await crypto.subtle.sign("HMAC", k, ENC.encode(msg)));
@@ -471,7 +526,7 @@ export async function envelopeOk(env, token, now = Date.now()) {
   if (!/^[A-Za-z0-9_-]{1,86}$/.test(rand)) return false;  // 모양이 아니면 서명도 볼 것 없다
   const e = Number(exp);
   if (!Number.isInteger(e) || e * 1000 <= now) return false;
-  return sameSecret(await envelopeSign(env, `${v}.${rand}.${exp}`), sig);
+  return await sameSecret(await envelopeSign(env, `${v}.${rand}.${exp}`), sig);
 }
 
 // 쿠키. **HttpOnly** 라 자바스크립트가 못 읽는다 — XSS 가 나도 세션을 통째로 훔쳐 가지 못한다.
@@ -508,7 +563,7 @@ const TXN = "shh_t";
 const setTxn = (t) => `${TXN}=${t}; ${ATTRS}; Max-Age=600`;
 const clearTxn = () => `${TXN}=; ${ATTRS}; Max-Age=0`;
 // 표가 없거나 다르면 거짓. state 에 표가 안 실린 옛 왕복도 거짓이다(10분이면 다 만료된다).
-const bound = async (env, req, st) => !!st.txn && sameSecret(st.txn, await sha256(readCookie(req, TXN)));
+const bound = async (env, req, st) => !!st.txn && (await sameSecret(st.txn, await sha256(readCookie(req, TXN))));
 
 // 새 세션 한 줄. 발급 시점의 session_version 을 같이 박아 둔다 — 그 값이 users 와 달라지는 순간
 // 이 세션은 죽는다(아래 killSessions).
@@ -833,9 +888,22 @@ const jsonFetch = async (url, init) => {
 // ⚠️ 실패 사유를 사용자에게 옮기지 않는다. 「사람 확인이 필요해요」 하나로 끝낸다 —
 //    사유 문자열은 Cloudflare 가 쓴 것이고 우리 화면의 말이 아니다.
 const TURNSTILE_VERIFY = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+// 위젯이 실어 보내는 목적 이름. **화면과 서버가 같은 상수를 쓴다**(js/auth.js 의 render 옵션).
+// 왜 보나: 다른 자리(예: 문의 폼)에 붙인 위젯의 토큰을 가입에 재사용하는 길을 닫는다.
+export const TURNSTILE_ACTION = "signup";
+
+// 이 토큰이 **우리 도메인에서** 풀린 것인가. 기준은 `APP_ORIGIN` 하나다.
+// ⚠️ **요청의 Host 를 기준으로 쓰지 않는다.** Host 는 요청하는 쪽이 정하는 값이라, 그것과
+//    대조하면 「자기가 말한 도메인과 자기가 가져온 토큰이 같다」를 확인하는 셈이 된다.
+// ⚠️ Turnstile 이 돌려주는 `hostname` 에는 포트가 없다(공식 문서: 챌린지가 제공된 호스트명).
+export const turnstileHost = (env) => {
+  try { return new URL(env.APP_ORIGIN).hostname; } catch { return null; }
+};
 
 async function turnstileOk(env, req, token) {
   if (typeof token !== "string" || !token || token.length > 2048) return false;
+  const want = turnstileHost(env);
+  if (!want) return false;                      // APP_ORIGIN 이 주소가 아니면 대조할 기준이 없다
   const form = new URLSearchParams({ secret: env.TURNSTILE_SECRET, response: token });
   const ip = req.headers.get("CF-Connecting-IP");
   if (ip) form.set("remoteip", ip);
@@ -843,9 +911,13 @@ async function turnstileOk(env, req, token) {
     method: "POST", body: form,
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
   });
-  // 못 받았거나(네트워크·시간 초과) 성공이 아니면 **거부**다. 검증 서버 오류를 통과로 바꾸면
-  // 그 순간 Turnstile 은 없는 것과 같다.
-  return r !== null && r.success === true;
+  // 못 받았거나(네트워크·시간 초과·JSON 이 아님) 성공이 아니면 **거부**다. 검증 서버 오류를
+  // 통과로 바꾸면 그 순간 Turnstile 은 없는 것과 같다.
+  if (r === null || r.success !== true) return false;
+  // ⚠️ **`success` 만 보면 절반이다**(공식 문서 「Validate the action and hostname when
+  //    specified」). 두 값이 **없는 응답도 거부**한다 — 「지정했을 때만 본다」를 「없으면
+  //    통과」로 읽으면, 필드를 빼고 오는 응답 하나가 검사를 통째로 건너뛴다.
+  return r.action === TURNSTILE_ACTION && r.hostname === want;
 }
 
 async function verifyProvider(env, origin, name, code, state) {
@@ -1366,7 +1438,7 @@ async function route(req, env, rc) {
       //    익명에게 알려줬다.
       //    비교는 상수 시간이고 **DB 를 만지기 전**이다. `READY_KEY` 가 없는 배포에서는 진단이
       //    불가다 — 「키가 없으면 전부 공개」로 되돌아가지 않는다.
-      if (!sameSecret(env.READY_KEY || "", req.headers.get("X-Ready-Key") || ""))
+      if (!(await sameSecret(env.READY_KEY || "", req.headers.get("X-Ready-Key") || "")))
         return json(env, req, { ok: true, ready: false, diagnostics: false }, 503,
           { "Retry-After": "60" });
       // 게이트는 **여기서** 읽는다 — 인증 없는 호출이 ledger 를 만지지 않게 하려고 바깥에서 뺐다.
@@ -1459,7 +1531,10 @@ async function route(req, env, rc) {
       // 설정이 덜 된 채로 조용히 돌지 않는다. 넷 다 없으면 가입 자체를 열지 않는다.
       // ⚠️ `TURNSTILE_SECRET` 도 여기 있다(2026-08-22 · 결정 3) — 없으면 사람 확인을 할 수
       //    없고, 확인 없이 공개 가입을 여는 것은 「방어를 안 붙인 채 여는 것」과 같다.
-      if (!id || !env.SIGNUP_STATE_KEY || !env.TOMBSTONE_KEY || !env.TURNSTILE_SECRET)
+      // ⚠️ **화면과 콜백이 보는 것과 같은 함수다**(`signupPossible`). 나눠 적었을 때 무슨 일이
+      //    났나: `SESSION_ENVELOPE_KEY`·`DELETION_KEY` 가 빠진 배포에서 여기가 통과하고,
+      //    콜백이 계정·정책 기록·세션을 만든 뒤 그 세션이 다음 요청부터 전부 503 이었다.
+      if (!id || !signupPossible(env))
         return json(env, req, { error: "회원가입이 아직 준비되지 않았어요" }, 503);
       // ⚠️ **`true` 만 받는다.** 없거나 `false` 거나 `"true"` 문자열이면 거부다 —
       //    「값이 있으면 통과」로 만들면 `age14: 0` 같은 값이 지나간다.
@@ -1520,7 +1595,9 @@ async function route(req, env, rc) {
       const { id } = creds(env, m[1]);
       // 설정이 덜 된 채로 **조용히 돌지 않는다.** STATE_KEY 가 없으면 state 서명이 아무나
       // 만들 수 있는 값이 되므로 로그인 자체를 열지 않는다(sign 이 던지는 것의 앞단 방어).
-      if (!id || !env.STATE_KEY) return new Response(m[1] + " 로그인이 아직 설정되지 않았어요", { status: 503 });
+      // ⚠️ `STATE_KEY` 하나만 보던 자리다. 세션 서명 키가 없으면 왕복 끝에 **쓸 수 없는 세션**을
+      //    받으므로, 제공자까지 보내기 전에 여기서 끝낸다(`loginPossible`).
+      if (!id || !loginPossible(env)) return new Response(m[1] + " 로그인이 아직 설정되지 않았어요", { status: 503 });
       // ⚠️ **여기서는 세지 않는다.** 예전엔 `/cb`·`/exchange` 와 같은 `login` 버킷으로 셌는데,
       //    한 번의 로그인이 두 자리를 지나므로 **한도 10 이 실제로는 완전한 로그인 5회**였다
       //    (실측). 공유 IP(회사·학교·모바일 CGNAT)에서는 그 5회를 건물 하나가 나눠 쓴다.
@@ -1596,7 +1673,10 @@ async function route(req, env, rc) {
             return viaApp
               ? json(env, req, { error: "약관이 새로 바뀌었어요. 다시 가입해 주세요", policyStale: true }, 409)
               : fail(null, 302, st.back + "#login=stale");
-          if (!env.TOMBSTONE_KEY) return fail("회원가입이 아직 준비되지 않았어요", 503);
+          // ⚠️ **`/signup/start` 와 같은 함수다.** 여기서 다시 보는 이유: 시작과 콜백 사이에
+          //    시크릿이 지워질 수 있고, 무엇보다 **이 검사는 제공자 호출 앞에 있어야** 실패가
+          //    되돌릴 수 있는 실패로 남는다(호출이 나가면 `code` 가 소비된다).
+          if (!signupPossible(env)) return fail("회원가입이 아직 준비되지 않았어요", 503);
           // ⚠️ **사람 확인을 지난 가입인가**(2026-08-22 · 결정 3). `/signup/start` 가 Turnstile 을
           //    통과시킨 뒤에만 `hv` 를 넣는다. 이 값은 AEAD 안에 있어 위조할 수 없고, 그래서
           //    「가입 시작을 건너뛰고 제공자 인증만으로 계정을 만든다」가 여기서 끝난다.
@@ -1604,6 +1684,12 @@ async function route(req, env, rc) {
           //       안 보기 때문이다.
           if (st.hv !== 1) return fail("사람 확인이 필요해요. 다시 가입해 주세요.", 400);
         }
+
+        // ⚠️ **세션을 만들 수 있는 배포인가 — 외부 호출 앞에서 본다.** 없으면 왕복 끝에
+        //    쓸 수 없는 세션을 심게 되고, `code` 는 이미 소비돼 되돌릴 수 없다.
+        if (!loginPossible(env))
+          return viaApp ? fail("로그인이 아직 준비되지 않았어요", 503)
+                        : fail(null, 302, st.back + "#login=fail");
 
         const code = url.searchParams.get("code");
         if (!code) {

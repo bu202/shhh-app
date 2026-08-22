@@ -413,6 +413,52 @@ const noLeak = (body, where) => {
   }
 }
 
+// ══ T76. 카운터 저장소가 **답을 안 하면** 닫는다 (2026-08-22 재감사) ══════
+//
+// ⛔ 이 블록이 없던 동안 무슨 일이 났나: `countVerdict()` 의 `catch` 를 `return OK` 로 바꾸는
+//    돌연변이가 **스위트 25개를 전부 통과했다.** 그 배포는 ledger 가 답을 안 하는 동안
+//    계정 경로를 **세지 않고 통과**시킨다 — 위협 52 가 닫았다고 적은 바로 그 상태다.
+//    「RL_KEY 가 없을 때」는 재고 있었지만(test-friends 120), 「저장소가 던질 때」는 아무도
+//    재지 않았다. 방어의 실패 경로는 **경로마다** 재야 한다.
+//
+// ⚠️ 게이트(`readMode`)가 먼저 도는 라우트라, ledger 를 통째로 고장 내면 게이트에서 막혀
+//    카운터까지 못 간다. 그래서 **카운터 문장만** 던지게 만든다 — 재려는 갈래를 정확히 겨눈다.
+{
+  // rate_limits UPSERT 만 던지는 ledger. 나머지 질의는 그대로 답한다.
+  const brokenCounter = (led) => {
+    const saved = led.prepare.bind(led);
+    led.prepare = (sql) => (/INSERT INTO rate_limits/.test(sql)
+      ? { bind: () => ({ first: async () => { throw new Error("boom"); },
+                         run: async () => { throw new Error("boom"); } }) }
+      : saved(sql));
+    return led;
+  };
+
+  for (const [bucket, [path, method]] of Object.entries(BUCKET_ROUTE)) {
+    const env = makeEnv({ EDGE_GUARD: "ratelimit", RL: edgeRL() });
+    const token = needsAuth(path, method) ? await session(env) : undefined;
+    brokenCounter(env.LEDGER);
+    const m = await measure(env, () => call(env, path, { method, token }));
+    // 429 가 아니다 — 「좀 있다 다시」가 아니라 「지금 셀 수 없다」다.
+    assert.equal(m.out.status, 503,
+      t(`T76-a[${bucket}]: 카운터가 던지는데 ${m.out.status} 다`));
+    // 그리고 **주 D1 에는 한 줄도 안 간다.** 셀 수 없는 상태로 사용자 데이터를 만지지 않는다.
+    assert.equal(m.dbW, 0, t(`T76-a[${bucket}]: 셀 수 없는데 주 D1 에 쓰기 ${m.dbW}건`));
+    noLeak(await m.out.clone().text(), `T76-a[${bucket}]`);
+  }
+  // 표에 새 버킷이 생기면 여기도 늘어야 한다 — 안 늘면 그 버킷만 이 검사 밖에 남는다.
+  assert.deepEqual(Object.keys(BUCKET_ROUTE).sort(), routeBuckets().sort(),
+    t("T76-a: 대표 라우트 표가 실제 버킷 목록과 다르다"));
+
+  // ── b. 반대쪽. 저장소가 멀쩡하면 **같은 요청이 지나간다** — 「늘 503」으로 고치면 여기서 걸린다.
+  {
+    const env = makeEnv({ EDGE_GUARD: "ratelimit", RL: edgeRL() });
+    const token = await session(env);
+    const r = await call(env, "/api/book", { token });
+    assert.notEqual(r.status, 503, t("T76-b: 멀쩡한 저장소인데 계정 경로가 503 이다"));
+  }
+}
+
 console.log(`test-abuse-guard: ${n}개 통과 — T65 가짜·고장 난 바인딩 fail-closed · `
   + `T66 버킷별 한도의 집행자 · T67 다중 IP 실측과 문서 대조 · T68 모드별 활성화 경로 · `
-  + `T69 공개 readiness 남용`);
+  + `T69 공개 readiness 남용 · T76 카운터 저장소 고장 fail-closed`);

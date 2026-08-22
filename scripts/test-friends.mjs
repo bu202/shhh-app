@@ -17,6 +17,7 @@ import legacy from "./fixtures/legacy-worker.mjs";
 // `login` 버킷의 한도. worker/index.js 의 RL_MAX 와 같은 값이어야 한다(T53 이 쓴다).
 const RL_MAX_LOGIN = 10;
 import { beginRestore, drainReport, restoreGate } from "../worker/ops.js";
+import fs from "node:fs";
 
 const ORIGIN = "https://app.test";
 
@@ -2163,8 +2164,81 @@ function befriend(env, a, b, status = "accepted") {
   }
 }
 
+// ══ T75 — 비밀값 비교는 **원문을 훑지 않는다** (2026-08-22) ══════════════
+//
+// 옛 구현은 `a.length !== b.length` 로 먼저 끊고 `charCodeAt` 을 하나씩 XOR 했다.
+// 길이가 비밀이 아니라는 판단은 맞지만, **원문 문자열을 인덱싱하는 비교**는 엔진의 문자열
+// 표현(latin1/UTF-16·rope)에 따라 시간이 달라질 수 있고 그 성질은 우리가 정하지 못한다.
+// 지금은 두 값의 SHA-256 요약 **32바이트끼리** 비교한다 — 길이가 달라도 하는 일이 같다.
+//
+// ⚠️ `crypto.subtle.timingSafeEqual` 은 Workers 런타임의 확장이고 Node 에는 없다.
+//    이 스위트는 worker/index.js 를 **Node 에서 그대로 실행**하므로, 그것을 쓰면 갈래가 둘로
+//    갈리고 둘 중 하나는 영원히 테스트를 안 지난다. 그 판단을 여기에 못박는다.
+{
+  const env = makeEnv();
+  const ready = (key, extra = {}) => worker.fetch(new Request("https://api.test/ready",
+    { headers: { ...(key === null ? {} : { "X-Ready-Key": key }), ...extra } }), env);
+
+  // ── a. 맞는 키만 진단을 본다. **틀린 길이·빈 값·없는 헤더가 전부 같은 답**이다.
+  {
+    const ok = await ready(env.READY_KEY);
+    assert.ok(ok.status === 200 || ok.status === 503, "T75-a: 맞는 키가 오류를 냈다");
+    assert.equal((await ok.json()).diagnostics, true, "T75-a: 맞는 키인데 진단이 안 나왔다");
+    // ⚠️ 뒤에 공백을 붙인 값은 **넣어 봐야 소용없다** — HTTP 헤더 값은 런타임이 앞뒤 공백을
+    //   떼고 전달한다(실측: `"test-ready-key "` 가 맞는 키로 도착한다). 우리 비교의 성질이
+    //   아니라 헤더 규격이라, 여기서 재면 규격을 우리 결함으로 오해하게 된다.
+    for (const bad of ["", "x", "test-ready-ke", "test-ready-keyy", "test-ready-kex",
+                       "TEST-READY-KEY", "a".repeat(200), null]) {
+      const r = await ready(bad);
+      assert.equal(r.status, 503, `T75-a: 틀린 키(${JSON.stringify(bad)})로 진단이 나왔다`);
+      const j = await r.json();
+      assert.equal(j.diagnostics, false, `T75-a: 틀린 키(${JSON.stringify(bad)})가 진단을 봤다`);
+      // 답이 **한 가지 모양**이어야 한다 — 길이가 맞았는지 여부가 응답으로 새면 안 된다.
+      assert.deepEqual(Object.keys(j).sort(), ["diagnostics", "ok", "ready"],
+        `T75-a: 틀린 키(${JSON.stringify(bad)})의 응답 모양이 다르다`);
+    }
+  }
+
+  // ── b. ★ **`await` 를 빠뜨리면 검사가 통째로 무력해진다.** Promise 는 늘 truthy 다.
+  //   비동기로 바꾼 함수의 가장 흔한 사고라, 소스에서 직접 잰다.
+  {
+    const src = fs.readFileSync(new URL("../worker/index.js", import.meta.url), "utf8");
+    const uses = [...src.matchAll(/(.{0,12})sameSecret\(/g)]
+      .filter((m) => !/const $/.test(m[1]));        // 정의 자리는 뺀다
+    assert.ok(uses.length >= 4, `T75-b: sameSecret 호출을 ${uses.length}개만 찾았다 — 정규식이 낡았다`);
+    for (const m of uses)
+      assert.ok(/await $/.test(m[1]), `T75-b: await 없는 sameSecret 호출이 있다 — "${m[1]}sameSecret("`);
+  }
+
+  // ── c. ★ 원문 길이로 먼저 끊지 않는다. 그 줄이 살아 있으면 요약 비교는 장식이다.
+  {
+    const src = fs.readFileSync(new URL("../worker/index.js", import.meta.url), "utf8");
+    const body = src.slice(src.indexOf("const sameSecret"), src.indexOf("const sameSecret") + 900);
+    assert.ok(!/a\.length\s*!==\s*b\.length/.test(body), "T75-c: 원문 길이로 먼저 끊는다");
+    assert.ok(!/charCodeAt/.test(body), "T75-c: 원문 문자열을 인덱싱해 비교한다");
+    assert.ok(/digest\("SHA-256"/.test(body), "T75-c: 요약으로 비교하지 않는다");
+    // 부르는 자리만 본다 — 「왜 안 쓰는가」를 적은 주석까지 막으면 규칙을 적는 것이 벌이 된다.
+    assert.ok(!/timingSafeEqual\s*\(/.test(src),
+      "T75-c: Node 에 없는 Workers 확장을 부른다 — 이 스위트는 Node 에서 돈다");
+  }
+
+  // ── d. 같은 함수가 **서명 검증**도 한다. 한 글자만 달라도 거짓이어야 한다.
+  {
+    const good = await mkSessionToken(env, Date.now() + 600e3);
+    assert.equal(await envelopeOk(env, good), true, "T75-d: 정상 토큰이 거부됐다");
+    const parts = good.split(".");
+    const flip = (c) => (c === "A" ? "B" : "A");
+    const tampered = [parts[0], parts[1], parts[2],
+                      flip(parts[3][0]) + parts[3].slice(1)].join(".");
+    assert.equal(await envelopeOk(env, tampered), false, "T75-d: 서명 한 글자를 바꿔도 통과했다");
+    assert.equal(await envelopeOk(env, parts.slice(0, 3).join(".") + "." + parts[3].slice(0, -1)),
+      false, "T75-d: 서명을 한 글자 줄여도 통과했다");
+  }
+}
+
 console.log("test-friends: 통과 — 로그인 왕복 표(브라우저 결속) · 친구 쌍 유일성 · 친구 권한(행 하나) · 쿠키 세션 · 세대 무효화 · CSRF(Origin 필수) · 제공자ID 비공개 "
   + "· 버전 충돌 · 수락 트랜잭션(상한 포함) · 무관계 DELETE · 마스터 · 복귀 주소 · 본문 한도 · state 서명 · 코드 회전 · 상한 · 헤더 · readiness(스키마 실질의) · 세션 청소 · 레이트리밋(RL_KEY HMAC · 버킷 분리) · 제공자 응답 상한 · 계정 삭제 원자성(표식·lease) · 활성 초대 코드 1개 · 유지보수/restore_closed 게이트 · 전역 user-data drain(요청당 임차증 1개 · 지연 읽기·쓰기 · TTL 만료 ≠ 해제) "
   + "· LEDGER 미바인딩 fail-closed(계층별) · 라우트 분류(없는 주소·로그인 시작의 쓰기 0) · 임차증 상한 "
   + "· 레이트리밋 버킷 등록(프로토타입 속성 거부) · 아직 못 막는 것(T8-b · 옛 배포 fixture) 고정 "
-  + "· T71 세션 envelope(모양·서명·판·만료 · DB 앞 거절 · 서명 ≠ 인증 · 키 전용성·교체 · auth 라우트 전수)");
+  + "· T71 세션 envelope(모양·서명·판·만료 · DB 앞 거절 · 서명 ≠ 인증 · 키 전용성·교체 · auth 라우트 전수) "
+  + "· T75 비밀값 비교(요약 32바이트 · await 전수 · 응답 모양 하나)");

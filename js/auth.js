@@ -724,7 +724,10 @@ if (typeof document !== "undefined") {
       return;
     }
     // 사람 확인 자리. **버튼 위**에 둔다 — 다 채우고 마지막에 막히는 순서를 만들지 않는다.
-    let hvToken = null;
+    // ⚠️ 토큰은 **1회용**이다(공식 문서: 300초·재사용은 `timeout-or-duplicate`). 그래서
+    //    한 번 보낸 뒤에는 반드시 버리고 위젯을 다시 풀게 한다 — 안 그러면 사용자는 같은
+    //    토큰으로 계속 눌러 원인 없는 실패를 반복한다(실제로 그랬다).
+    const hv = { token: null };
     const hvBox = document.createElement("div");
     hvBox.className = "signup-human";
     buttons.parentNode.insertBefore(hvBox, buttons);
@@ -736,12 +739,12 @@ if (typeof document !== "undefined") {
       const el = document.createElement("button");
       el.type = "button"; el.className = "btn-primary login-" + k;
       el.textContent = NAMES[k] + "로 가입하기";
-      el.addEventListener("click", () => startSignup(k, el, why, b.pv, cbTerms, cbAge, () => hvToken));
+      el.addEventListener("click", () => startSignup(k, el, why, b.pv, cbTerms, cbAge, hv));
       buttons.appendChild(el);
       return el;
     });
     const sync = () => {
-      const ok = cbTerms.checked && cbAge.checked && !!hvToken;
+      const ok = cbTerms.checked && cbAge.checked && !!hv.token;
       for (const el of btns) { el.disabled = !ok || SIGNUP_BUSY; }
       why.textContent = ok ? "가입할 방법을 골라주세요."
         : !cbTerms.checked || !cbAge.checked ? "두 항목을 확인하셔야 가입할 수 있어요."
@@ -749,10 +752,13 @@ if (typeof document !== "undefined") {
     };
     cbTerms.addEventListener("change", sync);
     cbAge.addEventListener("change", sync);
+    // 보낸 토큰을 버리고 위젯을 처음 상태로 되돌린다. **화면이 아직 남아 있을 때만** 부른다
+    // (성공하면 제공자로 이동하므로 되돌릴 화면이 없다).
+    hv.spend = () => { hv.token = null; resetTurnstile(); sync(); };
     sync();
     // ⚠️ **위젯이 안 뜨면 그 사실을 말한다.** 조용히 두면 사용자는 체크를 다 하고도 버튼이
     //    회색인 이유를 모른다 — 화면에 이유가 없으면 그건 고장이다.
-    renderTurnstile(hvBox, (tok) => { hvToken = tok || null; sync(); }).then((drawn) => {
+    renderTurnstile(hvBox, (tok) => { hv.token = tok || null; sync(); }).then((drawn) => {
       hvNote.textContent = drawn
         ? "가입 전에 사람 확인을 한 번 거쳐요."
         : "사람 확인을 불러오지 못했어요. 연결을 확인하고 새로고침해 주세요.";
@@ -797,23 +803,37 @@ if (typeof document !== "undefined") {
   }
 
   // 위젯 하나를 그리고 **토큰이 오면** onToken 을 부른다. 반환값은 「그렸나」다.
+  //
+  // ⚠️ **위젯 id 를 보관한다.** 없으면 `turnstile.reset()` 을 부를 수 없어, 한 번 쓴 토큰이
+  //    화면에 그대로 남는다 — 사용자는 같은 값을 계속 보내고 서버는 계속 거절한다.
+  // ⚠️ `action` 을 실어 보낸다. 서버가 그 값을 대조하므로(worker/index.js 의 TURNSTILE_ACTION),
+  //    다른 자리에 붙인 위젯의 토큰을 가입에 재사용하는 길이 닫힌다. **두 값은 같아야 한다.**
+  let HV_WIDGET = null;
+  const TURNSTILE_ACTION = "signup";
   async function renderTurnstile(box, onToken) {
     if (!TURNSTILE_KEY) return false;
     if (!(await loadTurnstile())) return false;
     try {
-      window.turnstile.render(box, {
+      HV_WIDGET = window.turnstile.render(box, {
         sitekey: TURNSTILE_KEY,
+        action: TURNSTILE_ACTION,
         callback: (token) => onToken(token),
         // 만료·오류는 **토큰을 지운다.** 남겨 두면 이미 쓴 토큰으로 다시 시도하게 되고
         // 서버는 `timeout-or-duplicate` 로 거절한다 — 사용자에게는 원인 없는 실패로 보인다.
         "expired-callback": () => onToken(null),
         "error-callback": () => onToken(null),
       });
-      return true;
-    } catch { return false; }
+      return HV_WIDGET !== undefined && HV_WIDGET !== null;
+    } catch { HV_WIDGET = null; return false; }
   }
 
-  async function startSignup(provider, btn, why, pv, cbTerms, cbAge, getToken) {
+  // 위젯을 처음 상태로. 실패해도 삼킨다 — 되돌리기가 안 되는 것보다 화면이 멈추는 쪽이 나쁘다.
+  function resetTurnstile() {
+    if (HV_WIDGET === null || !window.turnstile || !window.turnstile.reset) return;
+    try { window.turnstile.reset(HV_WIDGET); } catch { /* 위젯이 이미 사라진 화면 */ }
+  }
+
+  async function startSignup(provider, btn, why, pv, cbTerms, cbAge, hv) {
     if (SIGNUP_BUSY) return;                 // 두 번 눌러도 왕복이 둘로 갈라지지 않는다
     SIGNUP_BUSY = true;
     btn.disabled = true;
@@ -821,11 +841,15 @@ if (typeof document !== "undefined") {
     if (location.hash) localStorage.setItem(BACK_KEY, location.hash);
     const r = await apiSignupStart(provider, {
       terms: !!(cbTerms && cbTerms.checked), age14: !!(cbAge && cbAge.checked), pv,
-      turnstile: getToken ? getToken() : null,
+      turnstile: hv ? hv.token : null,
     });
     if (r.ok) { location.href = r.url; return; }
     SIGNUP_BUSY = false;
-    btn.disabled = false;
+    // ⚠️ **보낸 토큰은 성공·실패와 무관하게 죽은 값이다.** 여기서 버리고 위젯을 다시 풀게
+    //    하지 않으면, 사용자가 같은 토큰으로 다시 눌러 `timeout-or-duplicate` 로 또 막힌다 —
+    //    화면에는 아무 이유도 안 보이는 무한 반복이 된다.
+    //    `hv.spend()` 안의 `sync()` 가 버튼을 다시 잠그므로 아래에서 되살리지 않는다.
+    if (hv && hv.spend) hv.spend(); else btn.disabled = false;
     why.textContent = r.kind === "policy_stale"
       ? "약관이 새로 바뀌었어요. 새로고침한 뒤 다시 시도해 주세요."
       // 사람 확인은 **다시 풀어야** 한다. 토큰은 1회용이라 같은 값으로 다시 보내면 또 막힌다.

@@ -10,6 +10,7 @@ import worker, {
   makeSignupState, takeSignupState, stateTombstone,
 } from "../worker/index.js";
 import { POLICY_BUNDLE } from "../worker/policies.js";
+import { TURNSTILE_ACTION } from "../worker/index.js";
 import { makeD1, makeLedger, withLatency } from "./_d1.mjs";
 import { createHash } from "node:crypto";
 
@@ -68,7 +69,12 @@ const asBrowser = (h = {}) => ({ ...h, "CF-Connecting-IP": `203.0.113.${(++ip % 
 
 // Turnstile 검증 서버 대역. **부른 횟수와 마지막 본문을 기록한다** — 「거부가 외부 호출 앞에서
 // 일어났나」와 「토큰을 실제로 보냈나」가 여러 단언의 핵심이다.
-export const turnstile = { calls: 0, last: null, answer: { success: true } };
+// ⚠️ 기본 답은 **실제 성공 응답의 모양**이다 — `success` 만 있는 답을 기본으로 두면
+//    「action·hostname 을 안 보는 서버」가 그대로 통과한다(공식 문서: Validate the action
+//    and hostname when specified). 그 둘이 빠지거나 어긋난 답은 아래 T70-b 가 넣어 본다.
+export const TURNSTILE_HOST = new URL(ORIGIN).hostname;
+export const turnstile = { calls: 0, last: null,
+  answer: { success: true, action: "signup", hostname: TURNSTILE_HOST } };
 const withTurnstile = (fn) => async (url, init) => {
   if (!String(url).includes("challenges.cloudflare.com")) return fn(url, init);
   turnstile.calls++;
@@ -612,7 +618,7 @@ function failOn(db, needle) {
       assert.ok(!JSON.stringify(r.body).includes("timeout-or-duplicate"),
         t("T70-b: Cloudflare 오류 코드가 사용자 응답에 실렸다"));
     }
-    turnstile.answer = { success: true };
+    turnstile.answer = { success: true, action: "signup", hostname: TURNSTILE_HOST };
   }
 
   // ── T70-c. ★ 검증 서버가 죽으면(네트워크 오류) **통과시키지 않는다.**
@@ -694,7 +700,186 @@ function failOn(db, needle) {
   }
 }
 
+// ══ K. T73 — **부분 시크릿에서는 가입이 시작조차 되지 않는다** (2026-08-22) ══
+//
+// ⛔ 재현(고치기 전): `SESSION_ENVELOPE_KEY` 만 빠진 makeEnv 에서 `signupReady` 가 **참**이었고,
+//    `/signup/start` 가 200 을 냈고, 콜백이 **users 1행 · policy_events 3행 · sessions 1행**을
+//    만들고 제공자를 2번 불렀다. 그렇게 만든 세션은 다음 요청부터 전부 503 이라 **쓸 수 없는
+//    계정**이 남는다 — 지우려면 `DELETION_KEY` 가 또 있어야 한다.
+//    ⚠️ 이것은 「배포자가 조심하면 된다」가 아니다. 시크릿 12개를 손으로 넣는 절차에서
+//       하나 빠지는 것은 **정상 범위의 사고**이고, 그때 사용자 데이터가 생기면 안 된다.
+{
+  // 뺐을 때 **가입이 열려서는 안 되는** 값 전부. 하나씩 빼고 세 자리를 같이 잰다.
+  const REQUIRED = ["STATE_KEY", "RL_KEY", "SIGNUP_STATE_KEY", "TOMBSTONE_KEY",
+                    "DELETION_KEY", "SESSION_ENVELOPE_KEY", "TURNSTILE_SECRET", "TURNSTILE_SITE_KEY"];
+
+  // ── T73-a. 화면이 **버튼을 그리지 않는다.** `/health` 가 준비됐다고 말하면 사용자가 먼저 안다.
+  for (const key of REQUIRED) {
+    const env = makeEnv({ [key]: undefined });
+    const h = await (await worker.fetch(new Request("https://api.test/health"), env)).json();
+    assert.equal(h.signupReady, false, t(`T73-a: ${key} 가 없는데 가입 준비됨이라고 말한다`));
+  }
+  // 세션 서명 키가 없으면 **로그인 버튼도** 안 그린다 — 눌러도 쓸 수 없는 세션을 받는다.
+  {
+    const h = await (await worker.fetch(new Request("https://api.test/health"),
+      makeEnv({ SESSION_ENVELOPE_KEY: undefined }))).json();
+    assert.deepEqual(h.providers, [], t("T73-a: 세션 서명 키가 없는데 로그인 버튼을 그린다"));
+  }
+  // 반대쪽도 잰다 — 전부 있으면 참이어야 한다. 안 그러면 「늘 거짓」으로 고쳐도 통과한다.
+  {
+    const h = await (await worker.fetch(new Request("https://api.test/health"), makeEnv())).json();
+    assert.equal(h.signupReady, true, t("T73-a: 전부 갖췄는데 가입 준비가 안 됐다고 말한다"));
+    assert.ok(h.providers.length > 0, t("T73-a: 전부 갖췄는데 제공자가 비었다"));
+  }
+
+  // ── T73-b. ★ `/signup/start` 가 **503** 이다. 200 이면 그 뒤가 전부 열린다.
+  for (const key of REQUIRED) {
+    const env = makeEnv({ [key]: undefined });
+    turnstile.calls = 0;
+    const r = await startSignup(env);
+    assert.equal(r.status, 503, t(`T73-b: ${key} 없이 가입 시작이 ${r.status} 로 열렸다`));
+    assert.equal(r.state, null, t(`T73-b: ${key} 없이 state 를 발급했다`));
+    // 설정이 덜 된 상태에서 **외부 호출을 내보내지 않는다** — 그 호출부터가 우리 비용이다.
+    assert.equal(turnstile.calls, 0, t(`T73-b: ${key} 없이 검증 서버를 불렀다`));
+  }
+
+  // ── T73-c. ★★ 콜백까지 갔을 때 **어느 표에도 한 줄이 안 생긴다.**
+  //   state 는 **온전한 env** 로 만들고(= 가입 시작은 지났던 왕복), 콜백만 시크릿이 빠진
+  //   배포에서 처리한다. 배포 도중 시크릿이 지워진 상황이 정확히 이 모양이다.
+  for (const key of REQUIRED) {
+    const full = makeEnv();
+    const good = await startSignup(full);
+    assert.ok(good.state, t("T73-c: 준비용 정상 가입 시작이 실패했다"));
+    // 같은 DB·ledger 를 쓰되 시크릿만 뺀다 — 행이 생기는지 봐야 하므로 저장소는 공유한다.
+    const crippled = { ...full, [key]: undefined };
+    const r = await withProvider("partial-" + key, () => cb(crippled, good.state, good.txn));
+    assert.ok(!String(r.headers.get("Location") || "").includes("#login=ok"),
+      t(`T73-c: ${key} 가 없는데 가입이 끝났다`));
+    assert.equal(count(full, "users"), 0, t(`T73-c: ${key} 없이 계정이 만들어졌다`));
+    assert.equal(count(full, "policy_events"), 0, t(`T73-c: ${key} 없이 정책 기록이 남았다`));
+    assert.equal(count(full, "sessions"), 0, t(`T73-c: ${key} 없이 세션이 만들어졌다`));
+    assert.equal(count(full, "consumed_signup_states"), 0,
+      t(`T73-c: ${key} 없이 소비 표식이 남았다`));
+    assert.equal(providerCalls, 0, t(`T73-c: ${key} 가 없는데 제공자를 ${providerCalls}번 불렀다`));
+  }
+
+  // ── T73-d. ★ **로그인도 같다.** 기존 사용자가 눌러도 쓸 수 없는 세션을 받으면 안 된다.
+  {
+    const full = makeEnv();
+    const good = await startSignup(full);
+    await withProvider("login-base", () => cb(full, good.state, good.txn));
+    assert.equal(count(full, "users"), 1, t("T73-d: 준비용 가입이 안 됐다"));
+    const before = count(full, "sessions");
+    // 세션 서명 키만 빼고 **로그인** 왕복을 돈다.
+    const crippled = { ...full, SESSION_ENVELOPE_KEY: undefined };
+    const start = await worker.fetch(new Request("https://api.test/login/kakao"), crippled);
+    assert.equal(start.status, 503, t(`T73-d: 세션 서명 키 없이 로그인 시작이 ${start.status} 였다`));
+    // 시작을 막아도 **옛 링크가 콜백으로 직접 올 수 있다.** 거기서도 세션이 안 생겨야 한다.
+    const lg = await worker.fetch(new Request("https://api.test/login/kakao"), full);
+    const lstate = new URL(lg.headers.get("Location")).searchParams.get("state");
+    const ltxn = (lg.headers.get("Set-Cookie").match(/shh_t=([^;]*)/) || [])[1];
+    const r = await withProvider("login-partial", () => cb(crippled, lstate, ltxn));
+    // ⚠️ 실패도 302 다(앱으로 되돌려보낸다). **상태 코드가 아니라 어디로 보내는지**를 본다.
+    assert.ok(!String(r.headers.get("Location") || "").includes("#login=ok"),
+      t("T73-d: 세션 서명 키 없이 로그인 콜백이 성공했다"));
+    assert.equal(r.headers.get("Set-Cookie") === null
+      || !/shh_s=[^;]+/.test(r.headers.get("Set-Cookie")), true,
+      t("T73-d: 세션 서명 키 없이 세션 쿠키를 심었다"));
+    assert.equal(count(full, "sessions"), before, t("T73-d: 세션 서명 키 없이 세션 행이 늘었다"));
+    assert.equal(providerCalls, 0, t("T73-d: 거부가 제공자 호출 뒤에 일어났다"));
+  }
+
+  // ── T73-e. ★ 서명 함수 자체가 **없는 키로 조용히 돌지 않는다.**
+  //   ⚠️ 이 단언은 **명시 검사가 없어도 통과한다** — `TextEncoder.encode(undefined)` 는 길이 0
+  //      바이트라 `importKey` 가 거기서 던지기 때문이다(돌연변이 M6 이 살아남는 이유이고,
+  //      그 사실을 보고서에 그대로 적었다). 그래도 재는 이유는 「없는 키로 세션이 만들어지지
+  //      않는다」가 지켜야 할 성질이기 때문이다 — 나중에 서명 방식을 바꿔 길이 0 이 통과하는
+  //      원시함수를 쓰게 되면 이 단언이 먼저 깨진다.
+  {
+    await assert.rejects(() => newSession({ ...makeEnv(), SESSION_ENVELOPE_KEY: undefined }, "u1"),
+      t("T73-e: 세션 서명 키가 없는데 토큰이 만들어졌다"));
+    n += 1;
+  }
+}
+
+// ══ L. T74 — Turnstile 응답의 **action 과 hostname 까지** 본다 (2026-08-22) ══
+//
+// ⛔ 재현(고치기 전): `turnstileOk` 가 `success === true` 하나만 봤다. 그래서
+//    ① 다른 자리(문의 폼 등)에 붙인 위젯의 토큰을 가입에 그대로 쓸 수 있고
+//    ② 다른 도메인에 우리 site key 로 붙인 위젯에서 푼 토큰도 통과했다.
+//    공식 문서는 「Validate the action and hostname when specified」라고 적는다.
+{
+  const HOST = TURNSTILE_HOST;
+  const good = { success: true, action: "signup", hostname: HOST };
+
+  // ── T74-a. ★ action 이 다르거나 없으면 거부다.
+  for (const ans of [{ ...good, action: "contact" }, { ...good, action: "" },
+                     { success: true, hostname: HOST }]) {
+    turnstile.answer = ans;
+    const r = await startSignup(makeEnv());
+    assert.equal(r.status, 400, t(`T74-a: action=${JSON.stringify(ans.action)} 인데 가입이 시작됐다`));
+  }
+
+  // ── T74-b. ★ hostname 이 다르거나 없으면 거부다.
+  for (const ans of [{ ...good, hostname: "evil.test" }, { ...good, hostname: "" },
+                     { success: true, action: "signup" }]) {
+    turnstile.answer = ans;
+    const r = await startSignup(makeEnv());
+    assert.equal(r.status, 400, t(`T74-b: hostname=${JSON.stringify(ans.hostname)} 인데 가입이 시작됐다`));
+  }
+
+  // ── T74-c. ★ 기준은 **`APP_ORIGIN`** 이지 **요청이 도착한 주소**가 아니다.
+  //   같은 코드가 여러 주소로 뜬다(프로덕션 별칭 · `<해시>.pages.dev` · preview alias).
+  //   도착 주소를 기준으로 삼으면 그중 아무 데서나 푼 토큰이 통과한다 — 호스트 잠금이
+  //   막으려는 것과 같은 종류의 우회로다(위협 55).
+  {
+    const env = makeEnv();
+    turnstile.answer = { ...good, hostname: "preview.example" };
+    const real = globalThis.fetch;
+    globalThis.fetch = withTurnstile(real);
+    // 요청은 **다른 호스트**로 도착하지만 Origin 은 우리 것이다(같은 코드의 다른 별칭).
+    const res = await worker.fetch(new Request("https://preview.example/api/signup/start", {
+      method: "POST", headers: asBrowser({ Origin: ORIGIN, "Content-Type": "application/json" }),
+      body: JSON.stringify({ provider: "kakao", terms: true, age14: true, pv: POLICY_BUNDLE.pv,
+                             turnstile: "tok" }),
+    }), env).finally(() => { globalThis.fetch = real; });
+    assert.equal(res.status, 400,
+      t("T74-c: 요청이 도착한 주소를 기준으로 삼아 다른 별칭에서 푼 토큰이 통과했다"));
+    turnstile.answer = good;
+  }
+
+  // ── T74-d. ★ 정상 응답은 통과한다. 막는 쪽만 재면 「늘 거부」로 고쳐도 통과한다.
+  {
+    turnstile.answer = good;
+    const r = await startSignup(makeEnv());
+    assert.equal(r.status, 200, t(`T74-d: 정상 사람 확인이 ${r.status} 로 막혔다`));
+  }
+
+  // ── T74-e. ★ `APP_ORIGIN` 이 주소가 아니면 **부르지도 않고** 거부한다.
+  {
+    turnstile.answer = good;
+    turnstile.calls = 0;
+    const r = await startSignup(makeEnv({ APP_ORIGIN: "not-a-url" }));
+    assert.notEqual(r.status, 200, t("T74-e: 대조 기준이 없는데 가입이 시작됐다"));
+    assert.equal(turnstile.calls, 0, t("T74-e: 대조 기준도 없이 검증 서버를 불렀다"));
+    turnstile.answer = good;
+  }
+
+  // ── T74-f. 화면과 서버가 **같은 action 문자열**을 쓴다. 다르면 정상 가입이 전부 막힌다.
+  {
+    const client = (await import("node:fs")).readFileSync(new URL("../js/auth.js", import.meta.url), "utf8");
+    const m = client.match(/TURNSTILE_ACTION\s*=\s*"([^"]+)"/);
+    assert.ok(m, t("T74-f: 화면 코드에 action 상수가 없다 — 위젯이 action 을 안 싣는다"));
+    assert.equal(m[1], TURNSTILE_ACTION,
+      t(`T74-f: 화면 action(${m && m[1]}) 과 서버 action(${TURNSTILE_ACTION}) 이 다르다`));
+    assert.ok(/action:\s*TURNSTILE_ACTION/.test(client),
+      t("T74-f: 화면이 위젯에 action 을 안 넘긴다"));
+    n += 3;
+  }
+}
+
 console.log(`test-signup: ${n}개 통과 — 가입 state AEAD(nonce·AAD·키 길이·키 분리) · `
   + `필수 항목 fail-closed · 정책 기록 ${REQUIRED_POLICY_EVENTS}종 원자성 · CHECK 강제 · `
   + `소비 표식(순차·동시·재소비) · 로그인 경로가 계정을 안 만듦 · 만료 정리 · 로그 0건 · `
-  + `T70 Turnstile(토큰 없음·위조·재사용·만료·검증 실패·시크릿 부재·콜백 대조·범위)`);
+  + `T70 Turnstile(토큰 없음·위조·재사용·만료·검증 실패·시크릿 부재·콜백 대조·범위) · `
+  + `T73 부분 시크릿(화면·시작·콜백·로그인에서 행 0건) · T74 action·hostname 대조`);

@@ -111,13 +111,21 @@ function loadClient({ store = {}, routes, loc = {} } = {}) {
         queueMicrotask(() => { for (const fn of c.handlers.error || []) fn({}); });
       } else {
         window.turnstile = {
+          // 실제 API 는 **위젯 id 를 돌려준다.** 안 돌려주면 `reset(id)` 을 부를 수 없다 —
+          // 대역이 그 사실을 감추면 화면 코드의 그 결함을 테스트가 못 본다.
           render(box, opts) {
             if (turnstileMode === "render-throw") throw new Error("no");
+            box.__opts = opts;
             // 실제 위젯처럼 **나중에** 토큰을 준다. 즉시 주면 「토큰 없이도 열린다」를 못 잡는다.
             box.__solve = (tok) => opts.callback(tok);
             box.__expire = () => opts["expired-callback"]();
             box.__error = () => opts["error-callback"]();
+            window.turnstile.__box = box;
+            return "widget-1";
           },
+          // 되돌리기. 몇 번 불렸는지와 어느 id 로 불렸는지를 남긴다.
+          resets: [],
+          reset(id) { window.turnstile.resets.push(id); },
         };
         queueMicrotask(() => { for (const fn of c.handlers.load || []) fn({}); });
       }
@@ -171,7 +179,7 @@ function loadClient({ store = {}, routes, loc = {} } = {}) {
   )(localStorage, location, history, crypto, fetch, document, () => confirmAnswer, addEventListener, window);
 
   return {
-    ...inner, store, calls, document, segs, location,
+    ...inner, store, calls, document, segs, location, window,
     fireStorage: (key, newValue) => { for (const fn of winHandlers.storage || []) fn({ key, newValue }); },
     setTurnstileMode: (m) => { turnstileMode = m; window.turnstile = null; },
     setRoutes: (fn) => { route = fn; },
@@ -1082,18 +1090,33 @@ await T("회원가입 화면 — 정책 해시 대조 · 필수 체크 · 실패
       b.checked = true;
       for (const fn of b.handlers.change || []) fn({});
     }
+    const hvBox = walk(gate(c)).find((e) => e.className === "signup-human");
+    await settle();
+    hvBox.__solve("tok-a");
     const kakao = btn(c, "카카오로 가입하기");
+    assert.equal(kakao.disabled, false, t("사람 확인을 마쳤는데 가입 버튼이 안 열린다"));
     kakao.click();
     await settle();
-    assert.equal(kakao.disabled, false, t("가입 시작이 실패했는데 버튼이 영구히 잠겼다"));
     assert.ok(hasText(c, "약관이 새로 바뀌었어요"), t("policyStale 을 사용자 말로 옮기지 않는다"));
     assert.notEqual(c.location.href, "https://kauth.kakao.com/go", t("실패했는데 제공자로 보냈다"));
+    // ★ **보낸 토큰은 죽은 값이다**(1회용 · 300초). 실패한 뒤에도 들고 있으면 사용자가 같은
+    //   값으로 계속 눌러 `timeout-or-duplicate` 로 또 막힌다 — 화면에 이유가 없는 무한 반복이다.
+    assert.deepEqual(c.window.turnstile.resets, ["widget-1"],
+      t("가입 시작이 실패했는데 사람 확인 위젯을 되돌리지 않았다"));
+    assert.equal(kakao.disabled, true,
+      t("쓴 토큰이 그대로인데 버튼이 열려 있다 — 같은 값으로 다시 보내게 된다"));
+    // 그리고 **막다른 길이 아니다.** 다시 풀면 열린다.
+    hvBox.__solve("tok-b");
+    assert.equal(kakao.disabled, false, t("사람 확인을 다시 했는데 버튼이 영구히 잠겼다"));
     // 6. 두 번 눌러도 왕복이 둘로 갈라지지 않는다.
     const before = c.calls.filter((x) => x.path === "/signup/start").length;
     kakao.click(); kakao.click();
     await settle();
     assert.ok(c.calls.filter((x) => x.path === "/signup/start").length <= before + 1,
       t("가입 버튼 연타가 왕복을 여러 개 만들었다"));
+    // 두 번째 왕복이 **다른 토큰**을 보냈다. 같은 값이면 서버가 중복으로 거절한다.
+    const sent = c.calls.filter((x) => x.path === "/signup/start").map((x) => JSON.parse(x.body).turnstile);
+    assert.deepEqual([...new Set(sent)], sent, t("가입 시작이 같은 사람 확인 토큰을 두 번 보냈다"));
   }
 
   // 7. ★ **로그인으로 왔는데 계정이 없으면 가입 화면으로 안내한다.** 「실패했어요」가 아니다.
