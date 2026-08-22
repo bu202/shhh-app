@@ -235,7 +235,9 @@ const noLeak = (body, where) => {
       for (let round = 0; round < 2; round++)
         for (let i = 0; i < 100; i++) await call(env, "/api/book", { ip: ip(i) });
     });
-    assert.equal(m.lW, 500, t(`T67-d: 200 요청에 ledger 쓰기 ${m.lW}건 — 카운터는 IP 당 한 번만 INSERT 다(100 + 200×2)`));
+    // ⚠️ 두 번째 방문도 카운터 갱신(`ON CONFLICT DO UPDATE`)이라 **쓰기 1건**이다 —
+    //    「행이 이미 있으니 공짜」가 아니다. 그래서 요청 수에 정확히 비례한다.
+    assert.equal(m.lW, 600, t(`T67-d: 200 요청에 ledger 쓰기 ${m.lW}건 — 요청당 3건에 비례해야 한다`));
   }
 
   // ── e. 버킷 여섯 전부 같은 성질이다 — 하나라도 빠지면 그 경로가 측정 밖이다.

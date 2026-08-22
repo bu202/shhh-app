@@ -29,6 +29,8 @@ const KEY32 = Buffer.from(Uint8Array.from({ length: 32 }, (_, i) => i + 3)).toSt
 const makeEnv = (extra = {}) => ({
   APP_ORIGIN: ORIGIN, APP_URL: ORIGIN + "/", STATE_KEY: "k", RL_KEY: "r",
   SIGNUP_STATE_KEY: KEY32, TOMBSTONE_KEY: "tk", DELETION_KEY: "dk",
+  // `/ready` 진단은 운영자 키를 요구한다(2026-08-22 · 위협 56).
+  READY_KEY: "closeout-ops-key",
   DEV_RATE_LIMIT: "1", DB: makeD1(), LEDGER: makeLedger(), ...extra,
 });
 let seq = 0;
@@ -338,24 +340,36 @@ function spy(db) {
     const h = await (await worker.fetch(new Request("https://api.test/health"), env)).json();
     assert.equal(h.ready, false,
       t(`T63-b: IP ${ips}개로 D1 한도를 태울 수 있는 설정이 ready 라고 답한다`));
-    assert.equal((await worker.fetch(new Request("https://api.test/ready"), env)).status, 503,
+    // ⚠️ 운영자 키를 들고 묻는다 — 키 없는 `/ready` 는 2026-08-22 부터 **언제나** 503 이라
+    //    (위협 56) 그것만 재면 이 단언이 아무것도 확인하지 않는다.
+    assert.equal((await worker.fetch(new Request("https://api.test/ready",
+      { headers: { "X-Ready-Key": env.READY_KEY } }), env)).status, 503,
       t("T63-b: 같은 설정에서 /ready 가 200 이다"));
   }
 
-  // ── T63-c. ★ 엣지 방어가 붙으면 열린다. 「늘 닫힘」으로 고치면 여기서 걸린다.
+  // ── T63-c. ★ 방어를 선언하고 **부를 수 있는** 바인딩이 붙으면 열린다.
+  //
+  // ⛔ **9판 정정(2026-08-22 · 위협 52·53).** 이 항목은 8판에서 「위협 50 을 닫았다」의 근거로
+  //    쓰였다. 실제로 잰 것은 **동작하는 mock 하나를 넣으면 문이 열린다**뿐이고, 그때 코드는
+  //    `env.RL` 이 truthy 이기만 하면 열었다 — 문자열도, 빈 객체도, 던지는 `limit()` 도.
+  //    **가짜·고장 난 값은 `scripts/test-abuse-guard.mjs` T65 가 잰다.** 여기는 「늘 닫힘」으로
+  //    고치는 회귀만 막는다.
+  // ⛔ 옛 마지막 단언(「엣지 리미터가 있으면 카운터 쓰기 0」)도 **폐기했다.** 그 동작이 바로
+  //    `rlMax()` 를 장식으로 만든 자리다(rotate 5/분이 20회 통과) — 이제 우리 카운터는
+  //    **엣지가 있어도 돈다**(T66-b).
   {
     const env = makeEnv({ KAKAO_ID: "id", KAKAO_SECRET: "s", DEV_RATE_LIMIT: undefined,
-                          RL: { limit: async () => ({ success: true }) } });
+                          EDGE_GUARD: "ratelimit", RL: { limit: async () => ({ success: true }) } });
     const A = await mkUser(env, "t63c");
     assert.equal((await call(env, A.token, "/book")).status, 200, t("T63-c: 엣지 방어가 있는데 읽기가 막혔다"));
     const h = await (await worker.fetch(new Request("https://api.test/health"), env)).json();
     assert.equal(h.ready, true, t("T63-c: 엣지 방어가 붙었는데 ready 가 아니다"));
-    // 엣지 리미터는 우리 DB 를 안 쓴다 — 익명 요청이 카운터 쓰기를 만들지 않는다.
-    const l0 = changes(env.LEDGER), d0 = changes(env.DB);
+    // 주 D1 은 여전히 카운터를 안 만진다 — 그 쓰기는 2026-08-20 에 ledger 로 갔다(위협 49).
+    const d0 = changes(env.DB);
     for (let i = 0; i < 20; i++)
       await worker.fetch(new Request("https://api.test/book", { headers: { "CF-Connecting-IP": "198.51.100.9" } }), env);
-    assert.ok((changes(env.DB) - d0) === 0,
-      t(`T63-c: 엣지 리미터가 있는데 주 D1 카운터에 ${changes(env.DB) - d0}건을 썼다`));
+    assert.equal(changes(env.DB) - d0, 0,
+      t(`T63-c: 익명 요청이 주 D1 에 ${changes(env.DB) - d0}건을 썼다`));
   }
 }
 
@@ -367,9 +381,11 @@ function spy(db) {
 // 있는 상태로 사용자에게 열린다(위협 46 의 조건이 그대로 선다 · 위협 51).
 {
   const full = (extra = {}) => makeEnv({ KAKAO_ID: "id", GOOGLE_ID: "id", GOOGLE_SECRET: "s",
+                                         EDGE_GUARD: "ratelimit",
                                          RL: { limit: async () => ({ success: true }) }, ...extra });
   const ready = async (env) => {
-    const r = await worker.fetch(new Request("https://api.test/ready", { headers: { Origin: ORIGIN } }), env);
+    const r = await worker.fetch(new Request("https://api.test/ready",
+      { headers: { Origin: ORIGIN, "X-Ready-Key": env.READY_KEY || "" } }), env);
     return { status: r.status, body: await r.json() };
   };
 

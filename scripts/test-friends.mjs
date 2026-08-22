@@ -25,6 +25,9 @@ const ORIGIN = "https://app.test";
 function makeEnv(extra = {}) {
   return { APP_ORIGIN: ORIGIN, APP_URL: ORIGIN + "/", STATE_KEY: "test-signing-key",
            RL_KEY: "test-rate-limit-key", DB: makeD1(),
+           // ⚠️ **`/ready` 의 진단은 운영자 키를 요구한다**(2026-08-22 · 위협 56). 없으면
+           //    두 DB 를 만지지 않고 503 이다 — 아래 `call()` 이 이 값을 헤더로 싣는다.
+           READY_KEY: "test-ready-key",
            // ⚠️ **로컬 전용 남용 방어 스위치**(2026-08-20 · 위협 50). 없으면 계정 라우트가
            //    DB 를 만지기 전에 503 이다(T63-a 가 그 상태를 따로 잰다). 이 값으로는
            //    `/ready` 가 절대 200 이 되지 않는다 — 그래서 아래 ready 검사들은 `RL` 을 준다.
@@ -55,7 +58,11 @@ async function signUp(env, provider, subject) {
 const another = (env, uid) => newSession(env, uid);   // 같은 계정의 다른 기기
 
 const call = async (env, token, path, method = "GET", body, extra = {}) => {
-  const headers = { Origin: ORIGIN, "Content-Type": "application/json", ...extra };
+  // ⚠️ **운영자 키를 늘 싣는다**(2026-08-22 · 위협 56). `/ready` 의 진단은 이 헤더가 있어야
+  //    돈다 — 없으면 두 DB 를 만지지 않고 503 이라, 여기 검사들이 조용히 통과해 버린다.
+  //    키가 **없는** 요청의 동작은 `scripts/test-abuse-guard.mjs` T69 가 따로 잰다.
+  const headers = { Origin: ORIGIN, "Content-Type": "application/json",
+                    "X-Ready-Key": env.READY_KEY || "", ...extra };
   if (token) headers.Cookie = "shh_s=" + token;
   const res = await worker.fetch(new Request("https://api.test" + path, {
     method, headers, body: body === undefined ? undefined : JSON.stringify(body),
@@ -613,8 +620,20 @@ function befriend(env, a, b, status = "accepted") {
   //     세지 않는다 — 둘 다 세면 한 번의 로그인이 두 번 세어져 한도가 절반이 된다(27번 블록).
   assert.equal((await worker.fetch(new Request("https://api.test/cb/kakao?code=x&state=y"), env)).status, 429,
     "로그인 왕복이 안 막힌다");
-  assert.equal((await worker.fetch(new Request("https://api.test/login/kakao"), env)).status, 302,
-    "로그인 시작까지 막았다 — 세션도 안 만드는 자리다");
+  //     ⚠️ **엣지 사전 거름은 다른 층이다**(2026-08-22 · 위협 52·53). 그 층은 버킷이 없는
+  //     계정 라우트도 `route` 키로 세므로, **전부 막는 mock** 아래에서는 로그인 시작도 429 다.
+  //     그것이 이중 집계가 아니라는 사실은 **우리 카운터의 행 수**로 잰다 — 문서의 한도를
+  //     절반으로 만드는 것은 그쪽이고, 그쪽은 로그인 시작을 여전히 세지 않는다.
+  const before = env.LEDGER._db.prepare("SELECT COUNT(*) n FROM rate_limits").get().n;
+  assert.equal((await worker.fetch(new Request("https://api.test/login/kakao"), env)).status, 429,
+    "엣지가 전부 막는 상태인데 로그인 시작이 통과했다");
+  const openEnv = makeEnv({ KAKAO_ID: "id", DEV_RATE_LIMIT: "1" });
+  assert.equal((await worker.fetch(new Request("https://api.test/login/kakao"), openEnv)).status, 302,
+    "엣지 거름이 없는데 로그인 시작을 막았다 — 세션도 안 만드는 자리다");
+  assert.equal(env.LEDGER._db.prepare("SELECT COUNT(*) n FROM rate_limits").get().n, before,
+    "로그인 시작이 **우리** 카운터에 세어졌다 — 한 번의 로그인이 두 번 세어진다");
+  assert.equal(openEnv.LEDGER._db.prepare("SELECT COUNT(*) n FROM rate_limits").get().n, 0,
+    "로그인 시작이 우리 카운터에 행을 만들었다");
   // 51. **읽기도 센다**(2026-08-19 정정). 예전에는 "읽기는 안 막는다 — 세면 정상 사용이 먼저
   //     걸린다"였고 그 자리가 정확히 재현 R5 였다: 인증이 필요한 읽기가 **아무 버킷에도 없어서**
   //     쿠키 없는 요청·위조 쿠키 요청이 상한 없이 임차증을 소비했다(요청 200회 → ledger 400 쓰기).
@@ -728,7 +747,8 @@ function befriend(env, a, b, status = "accepted") {
   //    그 계약 자체는 `test-stage34-closeout.mjs` T63 이 잰다.
   const RL_EDGE = { limit: async () => ({ success: true }) };
   const get = async (path, env) =>
-    (await worker.fetch(new Request("https://api.test" + path, { headers: { Origin: ORIGIN } }), env));
+    (await worker.fetch(new Request("https://api.test" + path,
+      { headers: { Origin: ORIGIN, "X-Ready-Key": env.READY_KEY || "" } }), env));
 
   // 67. /health 는 설정이 없어도 200 이다 — "프로세스가 도나"를 재는 자리다.
   const h0 = await (await get("/health", bare)).json();
@@ -736,7 +756,7 @@ function befriend(env, a, b, status = "accepted") {
   assert.equal(h0.ready, false, "설정이 없는데 ready 다");
   // 68. /ready 는 설정이 덜 됐으면 503 이다.
   assert.equal((await get("/ready", bare)).status, 503, "설정이 없는데 /ready 가 200 이다");
-  const full = makeEnv({ KAKAO_ID: "id", GOOGLE_ID: "id", GOOGLE_SECRET: "s", RL: RL_EDGE });
+  const full = makeEnv({ KAKAO_ID: "id", GOOGLE_ID: "id", GOOGLE_SECRET: "s", EDGE_GUARD: "ratelimit", RL: RL_EDGE });
   const h1 = await (await get("/health", full)).json();
   assert.deepEqual(h1.providers, ["kakao", "google"], "설정된 제공자만 오지 않는다");
   assert.equal((await get("/ready", full)).status, 200, "다 설정됐는데 /ready 가 503 이다");
@@ -785,7 +805,7 @@ function befriend(env, a, b, status = "accepted") {
   for (const [binding, table] of [["DB", "policy_events"], ["DB", "consumed_signup_states"],
                                   ["LEDGER", "deletions"], ["LEDGER", "write_leases"],
                                   ["LEDGER", "cleanup_runs"], ["LEDGER", "maintenance"]]) {
-    const e = makeEnv({ KAKAO_ID: "id", GOOGLE_ID: "id", GOOGLE_SECRET: "s", RL: RL_EDGE });
+    const e = makeEnv({ KAKAO_ID: "id", GOOGLE_ID: "id", GOOGLE_SECRET: "s", EDGE_GUARD: "ratelimit", RL: RL_EDGE });
     assert.equal((await get("/ready", e)).status, 200, `${table} 를 지우기 전인데 /ready 가 200 이 아니다`);
     e[binding]._db.exec(`DROP TABLE ${table}`);
     const r = await get("/ready", e);
@@ -841,23 +861,23 @@ function befriend(env, a, b, status = "accepted") {
 {
   // 76. 코드가 쓰는 테이블이 하나라도 없으면 준비 안 됨이다.
   const env = makeEnv({ KAKAO_ID: "id", NAVER_ID: "id", NAVER_SECRET: "s", GOOGLE_ID: "id", GOOGLE_SECRET: "s",
-                        RL: { limit: async () => ({ success: true }) } });
-  const ready = await worker.fetch(new Request("https://api.test/ready"), env);
+                        EDGE_GUARD: "ratelimit", RL: { limit: async () => ({ success: true }) } });
+  const ready = await worker.fetch(new Request("https://api.test/ready", { headers: { "X-Ready-Key": env.READY_KEY } }), env);
   assert.equal(ready.status, 200, "정상 스키마인데 준비 안 됐다고 한다");
 
   // ⚠️ `rate_limits` 가 아니라 `books` 를 지운다 — 카운터가 ledger 로 간 뒤(2026-08-20)
   //    주 D1 의 그 표는 코드가 안 만지므로 readiness 조건이 아니다.
   env.DB._db.exec("DROP TABLE books");
-  const gone = await worker.fetch(new Request("https://api.test/ready"), env);
+  const gone = await worker.fetch(new Request("https://api.test/ready", { headers: { "X-Ready-Key": env.READY_KEY } }), env);
   assert.equal(gone.status, 503, "테이블이 통째로 없는데 준비됐다고 한다");
   assert.equal((await gone.json()).db, false, "db 항목이 실패를 안 알린다");
 
   // 77. **컬럼까지** 본다. 0002·0003 이 원격에 안 걸린 상태가 정확히 이 모양이다.
   const env2 = makeEnv({ KAKAO_ID: "id", NAVER_ID: "id", NAVER_SECRET: "s", GOOGLE_ID: "id", GOOGLE_SECRET: "s",
-                         RL: { limit: async () => ({ success: true }) } });
+                         EDGE_GUARD: "ratelimit", RL: { limit: async () => ({ success: true }) } });
   env2.DB._db.exec("DROP TABLE friendships");
   env2.DB._db.exec("CREATE TABLE friendships (requester_id TEXT, addressee_id TEXT, status TEXT, created_at INTEGER)");
-  assert.equal((await worker.fetch(new Request("https://api.test/ready"), env2)).status, 503,
+  assert.equal((await worker.fetch(new Request("https://api.test/ready", { headers: { "X-Ready-Key": env2.READY_KEY } }), env2)).status, 503,
     "pair_key 가 없는 옛 스키마인데 준비됐다고 한다");
 }
 
@@ -1020,12 +1040,20 @@ function befriend(env, a, b, status = "accepted") {
   }
   assert.ok(loginBlocked >= 3, `세션을 만드는 자리가 10회 뒤에 안 막힌다(막힌 횟수 ${loginBlocked})`);
 
-  // 94. **리미터가 고장 나면 통과시킨다(fail-open).** 남용 방어가 서비스를 멈추는 쪽이 더 나쁘다.
-  //     D1 갈래는 이미 try/catch 지만 env.RL 갈래는 예외가 그대로 500 으로 나갔다.
-  const env4 = makeEnv({ RL: { limit: () => { throw new Error("binding down"); } } });
+  // 94. **리미터가 고장 나면 막는다(fail-closed).** ⛔ **2026-08-22 에 뒤집힌 판단이다**
+  //     (위협 52). 예전 여기에는 "고장 나면 통과시킨다 — 남용 방어가 서비스를 멈추는 쪽이 더
+  //     나쁘다"고 적혀 있었고, 그래서 던지는 `limit()` 하나로 **방어가 통째로 없는 배포**가
+  //     `/ready` 200 을 받으며 돌았다. 셀 수 없는 상태로 계정 경로를 여는 것은 「방어가 있다」가
+  //     아니다. 게다가 **500 이 아니라 503** 이어야 한다 — 예외가 그대로 나가면 스택이 샌다.
+  const env4 = makeEnv({ KAKAO_ID: "id" });
   const C = await signUp(env4, "kakao", "C");
+  env4.RL = { limit: () => { throw new Error("binding down"); } };
+  const w0 = env4.LEDGER._db.prepare("SELECT total_changes() AS n").get().n;
   const r4 = await call(env4, C.token, "/book", "PUT", { words: ["사랑"], name: "" });
-  assert.ok(r4.status < 500, `리미터 바인딩이 고장 나자 요청이 ${r4.status} 로 죽었다 — fail-open 이 아니다`);
+  assert.equal(r4.status, 503, `리미터가 고장 났는데 응답이 ${r4.status} 다 — 셀 수 없으면 열지 않는다`);
+  assert.equal(env4.LEDGER._db.prepare("SELECT total_changes() AS n").get().n, w0,
+    "고장 난 리미터가 막으면서 ledger 에 썼다 — 사전 거름이 게이트보다 뒤에 있다");
+  assert.ok(!JSON.stringify(r4.body).includes("binding down"), "예외 문자열이 응답에 실렸다");
 
   // 95. **정상 자동저장은 안 막힌다.** 0.8초마다 올라오는 단어장 저장이 먼저 걸리면
   //     그건 방어가 아니라 고장이다.
@@ -1489,15 +1517,19 @@ function befriend(env, a, b, status = "accepted") {
   // 119. ★ **RL_KEY 가 없으면 준비된 것이 아니다.** 조용히 약한 쪽으로 도는 것이 가장 나쁘다 —
   //      그래서 평문 해시로 **되돌아가지 않고**, readiness 가 시끄럽게 말한다.
   const noKey = makeEnv({ KAKAO_ID: "id", RL_KEY: undefined });
-  const rd = await (await worker.fetch(new Request("https://api.test/ready"), noKey)).json();
+  const rd = await (await worker.fetch(new Request("https://api.test/ready",
+    { headers: { "X-Ready-Key": noKey.READY_KEY } }), noKey)).json();
   assert.equal(rd.configReady, false, "RL_KEY 가 없는데 configReady 가 true 다");
   assert.equal(rd.ready, false, "RL_KEY 가 없는데 ready 다");
   assert.equal(rd.db, true, "DB 는 멀쩡한데 db:false 라고 말한다");
   assert.ok(!JSON.stringify(rd).includes("RL_KEY"), "응답이 비밀값 이름을 말한다");
 
-  // 120. 키가 없으면 **세지 않는다**(fail-open). 남용 방어가 서비스를 멈추는 쪽이 더 나쁘고,
-  //      약한 해시로 계속 세는 쪽은 방침을 거짓말로 만든다. 둘 다 안 하고 /ready 가 말한다.
-  for (let i = 0; i < 15; i++) assert.notEqual((await hit(noKey)).status, 429, "키가 없는데 막았다");
+  // 120. 키가 없으면 **세지 않고, 열지도 않는다**(fail-closed). ⛔ **2026-08-22 에 뒤집혔다**
+  //      (위협 52): 예전에는 여기서 통과시켰고(fail-open) `/ready` 만 시끄러웠다 — 그런데
+  //      계정 경로가 열려 있는 한 「말만 하는 경보」는 방어가 아니다. 약한 해시로 계속 세는
+  //      쪽은 여전히 안 한다(방침이 거짓말이 된다). 셋 중 남은 답은 **막는 것**뿐이다.
+  //      막는 응답은 429 가 아니라 **503** 이다 — 「좀 있다 다시」가 아니라 「셀 수 없다」다.
+  for (let i = 0; i < 15; i++) assert.equal((await hit(noKey)).status, 503, "키가 없는데 통과시켰다");
   assert.equal(buckets(noKey).length, 0, "RL_KEY 가 없는데 카운터를 쌓고 있다 — 약한 해시로 세고 있다");
 }
 

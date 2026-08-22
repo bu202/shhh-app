@@ -354,9 +354,11 @@ function seed(env, now) {
   const { default: worker } = await import("../worker/index.js");
   const { default: cleanup } = await import("../worker/cleanup/index.js");
   const ORIGIN = "https://app.test";
+  // ⚠️ `/ready` 의 진단은 **운영자 키**를 요구한다(2026-08-22 · 위협 56). 없으면 두 DB 를
+  //    만지지 않고 503 이라, 여기 검사들이 조용히 통과해 버린다.
   const ready = async (env) => await (await worker.fetch(
-    new Request("https://api.test/ready", { headers: { Origin: ORIGIN } }),
-    { APP_ORIGIN: ORIGIN, ...env })).json();
+    new Request("https://api.test/ready", { headers: { Origin: ORIGIN, "X-Ready-Key": "cron-ops-key" } }),
+    { APP_ORIGIN: ORIGIN, READY_KEY: "cron-ops-key", ...env })).json();
   // 크론 한 회차. **결과를 삼키지 않고 돌려준다** — 재려는 것이 바로 그 Promise 의 상태다.
   const run = async (env) => {
     const w = [];

@@ -147,25 +147,69 @@ const readyProviders = (env) => Object.keys(P).filter((n) => {
   const { id, secret } = creds(env, n);
   return !!id && (!!secret || !!P[n].optionalSecret);
 });
-// ── 남용 방어 계약 ──────────────────────────────────────────────────────
+// ── 남용 방어 계약 v2 ────────────────────────────────────────────────────
 // **리미터가 셀 수 있는 신원은 IP 하나뿐이고, IP 를 나누면 한도는 그대로 곱해진다.**
-// 실측(T63-b): 익명 IP 하나가 한 창에 두 저장소 합 861 쓰기 — 하루치로 환산하면 IP 한 개로도
-// D1 무료 한도(하루 10만 쓰기)를 넘긴다. 바닥나면 **계정 전체의 D1 질의가 실패**하고
-// 정상 사용자의 저장이 먼저 죽는다.
+// 실측(T67-c): 서로 다른 IP 100개가 한 번씩 보낸 익명 요청에 429 는 0건이고 ledger 쓰기는
+// 300건이다. D1 무료 한도는 하루 쓰기 10만 행이고, 바닥나면 **정상 사용자의 저장이 먼저 죽는다.**
 //
-// 분산 요청을 끊는 것은 **엣지의 일**이다(WAF 레이트리밋 · Turnstile). 둘 다 커스텀 도메인이나
-// Workers 전환이 필요하고, 지금 이 프로젝트에는 **없다**(설계서 §12-2 · 공식 문서 확인:
-// Pages Functions 지원 바인딩 목록에 ratelimits 가 없다). 그래서 코드가 강제하는 것은 하나다 —
-// **막지 못하는 채로 열지 않는다.**
+// 분산 요청을 끊는 것은 **엣지의 일**이다(WAF 레이트리밋 · Turnstile). 그래서 코드가 강제하는
+// 것은 하나다 — **막지 못하는 채로 열지 않는다.**
 //
-//   edge  `RL` 바인딩이 있다 — 엣지가 센다(우리 DB 를 안 쓴다). 계정 라우트가 열린다
-//   dev   `DEV_RATE_LIMIT` — 로컬 전용. 라우트는 열리지만 **ready 는 절대 참이 아니다**
-//   none  둘 다 없다 — 계정 라우트는 **어느 DB 도 만지기 전에** 503
+// ⛔ **8판은 「`env.RL` 이 truthy 면 방어 있음」이었다. 2026-08-22 에 그 판정을 철회했다** —
+//    문자열도, 빈 객체도, `limit()` 이 던지는 객체도 전부 `abuseReady:true` 였고 그 상태에서
+//    익명 요청이 진행돼 ledger 쓰기를 냈다(위협 52). **「있다」는 방어의 증거가 아니다.**
+//    또한 WAF·Turnstile 을 실제로 붙여도 `env.RL` 은 생기지 않아, runbook 이 제시한 선택지
+//    A·C 는 **코드에서 문을 열 수 없었다**(위협 55).
+//
+//   waf        `EDGE_GUARD="waf"` + `APP_ORIGIN` 이 커스텀 도메인. **호스트 잠금**과 짝이다
+//   ratelimit  `EDGE_GUARD="ratelimit"` + **부를 수 있는** `RL.limit`
+//   dev        `DEV_RATE_LIMIT` — 로컬 전용. 라우트는 열리지만 **ready 는 절대 참이 아니다**
+//   none       그 밖의 전부(모르는 선언 포함) — 계정 라우트는 **어느 DB 도 만지기 전에** 503
 //
 // ⚠️ `DEV_RATE_LIMIT` 을 배포 가능한 설정 파일에 넣지 않는다(`scripts/test-config.mjs` 가 막는다).
-export const abuseGuard = (env) => (env.RL ? "edge" : (env.DEV_RATE_LIMIT ? "dev" : "none"));
 
-const health = (env) => {
+// WAF 규칙을 걸 수 있는 호스트인가. `*.pages.dev` 는 **Cloudflare 소유 존**이라 우리가 규칙을
+// 못 건다 — 그 호스트로 온 요청은 어떤 WAF 설정도 지나지 않는다. 그래서 그 조합에서는
+// 「WAF 를 붙였다」가 성립할 수 없고, 선언을 받아 주면 안 되는 자리다.
+export const wafHost = (env) => {
+  try {
+    const h = new URL(env.APP_ORIGIN).host;
+    return h.endsWith(".pages.dev") ? null : h;
+  } catch { return null; }
+};
+
+// **동기 검사만 한다.** 요청 경로에서 매번 도는 자리라 외부 호출을 넣지 않는다 —
+// 바인딩이 실제로 답하는지는 리미터 사전 거름이 그 자리에서 확인하고(`edgeVerdict`),
+// 운영자에게는 `/ready` 가 **직접 불러 본 결과**로 답한다(`abuseProbe`).
+export const guardMode = (env) => {
+  const d = env.EDGE_GUARD;
+  if (d === "waf") return wafHost(env) ? "waf" : "none";
+  if (d === "ratelimit") return typeof env.RL?.limit === "function" ? "ratelimit" : "none";
+  if (d) return "none";                     // 모르는 선언 — 기본값이 안전한 쪽
+  return env.DEV_RATE_LIMIT ? "dev" : "none";
+};
+
+// 계정 라우트를 열 수 있는 모드인가. `dev` 는 **열지만 ready 가 아니다.**
+const guardOpens = (m) => m !== "none";
+
+// 바인딩이 **있다**와 **부르면 답한다**는 다른 말이다 — 이 구분이 없어서 던지는 `limit()` 이
+// 8판 내내 정상으로 보였다(위협 52). 우리 DB 는 안 만진다. 엣지 호출 하나다.
+const bindingUsable = async (env) => {
+  try {
+    const r = await env.RL.limit({ key: "probe" });
+    return typeof (r && r.success) === "boolean";
+  } catch { return false; }
+};
+
+// **계정 라우트가 실제로 열리나.** `waf` 는 런타임이 증명할 수 없으므로 선언 기반이고,
+// 그 사실은 설계서 §12-3-2 와 runbook §13-2 의 외부 점검이 진다.
+async function guardWorks(env) {
+  const m = guardMode(env);
+  if (m === "none") return false;
+  return m === "ratelimit" ? await bindingUsable(env) : true;   // waf · dev
+}
+
+const health = async (env) => {
   // ⚠️ **ledger 바인딩이 없으면 제공자를 하나도 알려주지 않는다.** 그 상태에서는 로그인 콜백이
   //    게이트에서 503 이라(`unbound`), 버튼을 그려 봐야 누르면 실패한다. 화면이 이 목록만 보고
   //    버튼을 그리므로(js/auth.js), 여기서 비우는 것이 「안전하지 않은 부분 구성에서는 버튼이
@@ -173,8 +217,9 @@ const health = (env) => {
   const ledgerBound = !!env.LEDGER;
   // ⚠️ **남용 방어가 없으면 제공자도 비운다.** 그 상태에서는 로그인 콜백이 게이트 앞에서
   //    503 이라(위 abuseGuard), 버튼을 그려 봐야 누르면 실패한다 — ledger 미바인딩과 같은 판단이다.
-  const guard = abuseGuard(env);
-  const providers = (ledgerBound && guard !== "none") ? readyProviders(env) : [];
+  const guard = guardMode(env);
+  const works = await guardWorks(env);
+  const providers = (ledgerBound && works) ? readyProviders(env) : [];
   // DB 바인딩이 없으면 로그인도 단어장도 못 한다 — ready 가 아니다.
   // ⚠️ KV 는 더 이상 안 본다. 바인딩은 **롤백용으로 남겨 두지만** 새 코드는 쓰지 않는다.
   // ⚠️ RL_KEY 도 **있어야 하는 값**이다. 없으면 리미터가 세지 않는데(rlBucket 참조),
@@ -186,7 +231,11 @@ const health = (env) => {
   const keys = !!(env.STATE_KEY && env.RL_KEY && env.SIGNUP_STATE_KEY && env.TOMBSTONE_KEY && env.DELETION_KEY);
   // ⚠️ **`dev` 는 ready 가 아니다.** 로컬에서 라우트를 열어 두는 스위치일 뿐이라, 그것으로
   //    `ready:true` 를 내면 「테스트가 통과하니 배포해도 된다」가 된다.
-  const abuseReady = guard === "edge";
+  // ⚠️ **바인딩을 실제로 불러 본 결과가 들어 있다**(2026-08-22 · 위협 52). 화면이 이 응답만
+  //    보고 버튼을 그리므로(js/auth.js), 여기서 확인하지 않으면 **눌러도 503 인 버튼**이
+  //    그려진다. ⚠️ `dev` 는 라우트를 열지만 **ready 는 아니다** — 그것으로 참을 내면
+  //    「테스트가 통과하니 배포해도 된다」가 된다.
+  const abuseReady = works && (guard === "waf" || guard === "ratelimit");
   return { ok: true,
            ready: !!(keys && env.APP_ORIGIN && env.DB && ledgerBound && abuseReady && providers.length),
            providers, ledgerBound, abuseReady,
@@ -544,33 +593,63 @@ const rlBucket = async (env, msg) => {
 //    ponytail: uid 별로 되돌리려면 **DB 없이 검증되는 세션 쿠키**(서명 envelope)가 필요하다 —
 //      그래야 인증 전에 「우리가 발급한 세션인가」를 알 수 있다. 전용 시크릿 하나가 더 늘고
 //      기존 세션이 전부 끊기므로 지금 범위 밖에 둔다(docs/OPS_RUNBOOK.md §12).
-async function limited(env, req, bucket) {
-  // ⚠️ **한도부터 읽는다.** 아래 어느 갈래보다 먼저다 — 모르는 버킷을 들고 온 것은 우리 쪽
-  //    버그이고, fail-open 으로 통과시키면 그 버그가 「리미터 없음」으로 조용히 산다.
-  const max = rlMax(bucket);
-  // 바인딩이 생기는 날(Workers 로 돌아가는 등) 그쪽을 먼저 쓴다 — 엣지가 더 값싸다.
-  // ⚠️ **여기도 fail-open 이다.** 전에는 이 갈래만 try 밖에 있어서, 바인딩이 흔들리면
-  //    리미터가 요청을 통과시키는 게 아니라 **500 으로 죽였다** — 남용 방어가 서비스 거부가 된다.
-  if (env.RL) {
-    try {
-      const who = req.headers.get("CF-Connecting-IP") || "anon";
-      const { success } = await env.RL.limit({ key: bucket + "|" + who });
-      return !success;
-    } catch {
-      return false;
-    }
+// 요청 하나의 판정. **세 가지다** — 통과 · 한도 초과 · 방어 고장.
+//   ok      지나간다
+//   over    한도를 넘겼다 → 429
+//   broken  셀 수 없다(바인딩이 던진다 · 키가 없다 · 저장소가 답을 안 한다) → **503**
+// ⛔ 8판까지는 고장이 **통과**였고(`catch { return false }`), 반환값이 이상하면 **전부 429**
+//    였다. 앞은 방어가 없는 것과 같고 뒤는 고장이 곧 전체 서비스 거부인데, **둘 다 `/ready` 는
+//    200** 이라 운영자가 원인을 볼 수 없었다(위협 52). 이제 「한도 초과」와 「고장」을 가른다.
+const OK = "ok", OVER = "over", BROKEN = "broken";
+
+// ── ① 엣지 사전 거름 — **게이트보다도 앞이다.** 우리 DB 를 하나도 안 만진다.
+// 여기서 나가는 503·429 는 **두 저장소 질의 0건**이다(T65-a 가 그것을 잰다).
+// ⚠️ **이 한도는 문서의 버킷별 숫자가 아니다.** Rate Limiting 바인딩의 한도는 설정의
+//    `simple.limit`·`period` 에 고정되고 `limit()` 인자는 `key` 뿐이라, 바인딩 하나로 5·10·20·120
+//    을 낼 수 없다(공식 문서 · wrangler 4.123 스키마). 그래서 이것은 **볼류메트릭 사전 거름**이고
+//    버킷별 한도는 아래 `countVerdict()` 가 집행한다(위협 53).
+// ⚠️ 카운터는 **colo 별이고 eventually consistent** 라 「전역 N/분」을 보장하지 않는다.
+async function edgeVerdict(env, req, key) {
+  if (typeof env.RL?.limit !== "function") return OK;     // 이 모드에는 사전 거름이 없다
+  const who = req.headers.get("CF-Connecting-IP") || "anon";
+  try {
+    const r = await env.RL.limit({ key: key + "|" + who });
+    if (typeof (r && r.success) !== "boolean") return BROKEN;   // 우리가 아는 모양이 아니다
+    return r.success ? OK : OVER;
+  } catch {
+    return BROKEN;
   }
+}
+
+// ── ② 버킷별 한도 — **`RL_MAX` 의 유일한 집행자다.**
+// 고정 창. **세는 것과 판정이 UPSERT 한 문장 안에서 끝난다** — 읽고 나서 쓰면 동시 요청이
+// 창 하나를 여러 번 통과한다(친구 상한이 겪은 것과 같은 종류의 경합이다).
+// ⛔ **엣지 바인딩이 있어도 끄지 않는다**(2026-08-22 · 위협 53). 8판은 껐고, 그래서 한도 100
+//    짜리 바인딩에서 `rotate`(문서상 5/분)가 **20회 연속 통과**했다 — `rlMax()` 의 숫자가
+//    장식이었다. 이 카운터는 전역 일관이라 문서의 숫자가 실제로 그 숫자다.
+// ⚠️ **`uid` 를 받지 않는다**(2026-08-19). 이 함수는 **인증보다 먼저** 돈다 —
+//    인증을 먼저 하면 그 조회 자체가 임차증 안에서 일어나야 하고, 임차증을 먼저 따면
+//    리미터가 막아도 ledger 쓰기는 이미 났다(재현 R5). 그래서 셀 수 있는 신원은 IP 뿐이다.
+//    ⚠️ 이건 대가가 있다: 공유 IP(회사·학교·CGNAT)에서는 같은 버킷을 나눠 쓴다.
+//    ponytail: uid 별로 되돌리려면 **DB 없이 검증되는 세션 쿠키**(서명 envelope)가 필요하다 —
+//      전용 시크릿 하나가 더 늘고 기존 세션이 전부 끊긴다(docs/OPS_RUNBOOK.md §13-3 · 사용자 결정).
+async function countVerdict(env, req, bucket) {
+  // ⚠️ **한도부터 읽는다.** 아래 어느 갈래보다 먼저다 — 모르는 버킷을 들고 온 것은 우리 쪽
+  //    버그이고, 통과시키면 그 버그가 「리미터 없음」으로 조용히 산다.
+  const max = rlMax(bucket);
   // ⚠️ **카운터는 ledger D1 이다**(2026-08-20 · 위협 49 · migration `0003`). 주 D1 이었을 때는
   //    이 쓰기가 임차증 **밖**이라, 게이트 통과 뒤 UPSERT 직전에 멈춘 요청 하나 때문에
   //    `drainState()` 가 `drained:true` 라고 답한 뒤에 주 D1 쓰기가 났다(재현 T62).
-  if (!env.LEDGER) return true;   // 셀 수 없으면 통과시키지 않는다(계정 라우트는 이미 게이트가 막는다)
+  if (!env.LEDGER) return BROKEN;           // 셀 수 없으면 통과시키지 않는다
   const now = Date.now();
   // ⚠️ 키에 uid·IP **원문을 넣지 않는다.** 남용을 세려고 개인정보를 쌓는 건 목적에 비해 과하다.
   //    (로그에도 남기지 않는다 — 아래 어디에서도 console.log 하지 않는다.)
   const who = req.headers.get("CF-Connecting-IP") || "anon";
   const key = await rlBucket(env, `${bucket}|${who}|${Math.floor(now / RL_WINDOW)}`);
-  // 키를 못 만들었다 = RL_KEY 가 없다. **평문 해시로 되돌아가지 않고** 세지 않는다(위 rlBucket).
-  if (!key) return false;
+  // 키를 못 만들었다 = RL_KEY 가 없다. **평문 해시로 되돌아가지 않는다**(위 rlBucket).
+  // ⛔ 그때 8판은 **통과**시켰다(fail-open). 셀 수 없는 상태로 계정 경로를 여는 것은
+  //    「방어가 있다」가 아니다 — 이제 고장으로 본다(위협 52).
+  if (!key) return BROKEN;
   try {
     // ⚠️ **막기로 정한 뒤에는 더 세지 않는다.** 전에는 한도를 넘긴 뒤에도 UPSERT 가 계속
     //    n+1 을 썼다 — 공격자는 429 를 받으면서 우리 D1 쓰기 할당량(하루 10만)을 태울 수 있었고,
@@ -596,15 +675,23 @@ async function limited(env, req, bucket) {
        RETURNING n`).bind(key, now + RL_WINDOW * 2, max).first();
     // 갱신을 건너뛰었다 = 이미 한도를 넘겼거나(쓰기도 안 났다) 그 사이 게이트가 닫혔다.
     // 둘 다 「지금은 받지 않는다」이고, 둘 다 어느 DB 에도 한 줄을 안 쓴 상태다.
-    if (!r) return true;
-    return r.n > max;
+    if (!r) return OVER;
+    return r.n > max ? OVER : OK;
   } catch {
-    return false;
+    // ⛔ 여기도 8판은 통과였다. ledger 가 답을 안 하는 상태는 게이트(`readMode`)도 이미
+    //    닫는 쪽으로 실패하는 상태다 — 리미터만 열어 둘 이유가 없다.
+    return BROKEN;
   }
 }
+
 const tooMany = (env, req) =>
   new Response(JSON.stringify({ error: "잠시 뒤에 다시 시도해 주세요" }),
     { status: 429, headers: { "Content-Type": "application/json", "Retry-After": "60", ...cors(env, req) } });
+// 방어가 고장 났다. **429 로 말하지 않는다** — 「좀 있다 다시」가 아니라 「지금 우리가 셀 수
+// 없다」이고, 그 상태로 계정 경로를 여는 것은 방어가 없는 것과 같다. 이유는 밖으로 안 나간다.
+const guardClosed = (env, req) =>
+  json(env, req, { error: "계정 기능이 아직 열리지 않았어요", mode: "unknown" }, 503,
+    { "Retry-After": "3600" });
 
 // 신뢰 경계. 무료 플랜 Worker 는 메모리가 128MB 인데 요청 본문 한도는 100MB 라,
 // 안 막으면 한 번의 요청으로 밀어붙일 수 있다.
@@ -955,7 +1042,8 @@ const publicMode = (m) => (m === "open" || m === "maintenance" || m === "restore
 //
 // 여기서 걸러진 요청은 **주 D1·ledger 어느 쪽에도 한 줄도 쓰지 않는다.**
 //
-//   lease   주 D1 을 만지나(사용자 데이터 또는 `rate_limits`) — 만지면 임차증 하나를 든다
+//   lease   주 D1 을 만지나(사용자 데이터) — 만지면 임차증 하나를 든다. 리미터 카운터는
+//           **ledger D1** 이라 이 판정에 안 들어간다(2026-08-20 · 위협 49)
 //   bucket  레이트리밋 버킷. **라우트 하나에 하나다** — 둘을 걸면 요청 하나가 두 번 세어져
 //           D1 쓰기가 두 배가 된다(POST /friends 가 write + friends 로 실제 그랬다)
 const PROVIDER_RE = Object.keys(P).join("|");
@@ -1006,15 +1094,17 @@ export const pathTemplate = (p) =>
   p.replace(/^\/api/, "").replace(/^\/friends\/(?!code$)[^/]+/, "/friends/:id");
 
 // 임차증을 **따지 않는** 라우트(위 표의 `lease:false`). 그 근거는 셋을 다 만족해야 한다:
-//   ① 주 D1 을 읽지도 쓰지도 않는다(`rate_limits` 도 주 D1 이다 — 만지면 임차증을 든다)
+//   ① 주 D1 을 읽지도 쓰지도 않는다(리미터 카운터는 2026-08-20 에 ledger 로 갔다)
 //   ② 복원 중에도 답해야 한다 — 운영자가 상태를 볼 수단이 이것뿐이다
 //   ③ 읽기 전용이라 복원본을 오염시킬 수 없다
 //
 //   /health         설정이 있나 없나만. DB 를 아예 안 본다
-//   /ready          `COUNT(*)` 집계만 본다. **행 내용을 읽지 않는다.** 여기서 임차증을 따면
-//                   `restore_closed` 에서 획득이 거부돼 운영자가 상태를 못 보게 된다
+//   /ready          **운영자 키가 있을 때만** `COUNT(*)` 집계를 본다. 행 내용은 읽지 않는다.
+//                   키가 없으면 어느 DB 도 안 만진다(2026-08-22 · 위협 56). 여기서 임차증을
+//                   따면 `restore_closed` 에서 획득이 거부돼 운영자가 상태를 못 보게 된다
 //   /policies       우리가 빌드에 박은 상수. DB 를 안 본다
-//   /login/:제공자  302 와 서명 하나. **세지도 않는다**(위 표의 bucket 이 null 인 이유)
+//   /login/:제공자  302 와 서명 하나. **우리 카운터는 세지 않는다**(위 표의 bucket 이 null 인
+//                   이유). 엣지 사전 거름은 `route` 키로 센다 — 층이 다르고 겹치지 않는다
 
 // 정리 크론이 **연속 몇 번** 실패하면 경보인가. 1~2회는 D1 의 일시 오류로도 난다 —
 // 그때마다 경보하면 사람이 경보를 무시하게 되고, 그게 진짜 고장을 지나치는 길이다.
@@ -1043,16 +1133,29 @@ export default {
 
     // ── 0-0-1. 남용 방어가 준비됐나 ──
     // **게이트보다도 먼저다** — 게이트는 ledger 를 읽고, 그 질의부터가 우리가 막으려는 비용이다.
-    // 여기서 돌아가는 응답은 **어느 DB 도 만지지 않는다**(T63-a 가 두 저장소의 질의 수를 잰다).
+    // 여기서 돌아가는 응답은 **어느 DB 도 만지지 않는다**(T65-a·T67-a 가 두 저장소를 잰다).
     // 열어 두는 것은 상태를 보는 셋뿐이다 — 운영자가 무엇이 덜 됐는지 볼 수단이 그것뿐이다.
     // ⚠️ `GET /login/:provider` 도 닫는다. 열어 두면 제공자까지 갔다가 콜백에서 죽는다.
     // ⚠️ 응답에 「무엇이 없다」를 쓰지 않는다 — 인증 없이 열린 자리에 설정 정보를 흘리지 않는다.
-    if (abuseGuard(env) === "none" && !ALWAYS_OPEN.some((re) => re.test(path)))
-      return json(env, req, { error: "계정 기능이 아직 열리지 않았어요", mode: "unknown" }, 503,
-        { "Retry-After": "3600" });
+    const open = ALWAYS_OPEN.some((re) => re.test(path));
+    if (!open) {
+      const mode = guardMode(env);
+      if (!guardOpens(mode)) return guardClosed(env, req);
+      // ⚠️ **호스트 잠금은 `waf` 모드의 짝이다.** WAF 규칙은 우리 존에만 걸리므로
+      //    `*.pages.dev` 로 오는 요청은 규칙을 **통째로 건너뛴다** — 그 우회로를 열어 두면
+      //    「WAF 를 붙였다」가 계정 API 에 대해 거짓이 된다(위협 55).
+      //    정적 화면까지 막지는 못한다(그건 Pages 가 준다). 막는 것은 **계정 API** 다.
+      if (mode === "waf" && url.host !== wafHost(env))
+        return json(env, req, { error: "이 주소에서는 계정 기능을 쓸 수 없어요" }, 403);
+      // 엣지 사전 거름. 버킷이 없는 계정 라우트(`/login/:provider`)도 **엣지에서는 센다** —
+      // 우리 카운터의 이중 집계(2026-08-16 사고)와 다른 층이라 겹치지 않는다.
+      const edge = await edgeVerdict(env, req, rt.bucket || "route");
+      if (edge === BROKEN) return guardClosed(env, req);
+      if (edge === OVER) return tooMany(env, req);
+    }
 
     // ── 0-1. 유지보수 게이트 ──
-    // **`limited()` 보다 먼저** 온다. 뒤에 두면 리미터가 rate_limits 에 쓴다.
+    // **리미터(`countVerdict`)보다 먼저** 온다. 뒤에 두면 게이트가 닫힌 뒤에도 카운터가 쓴다.
     // **세션 인증(`whoAmI`)보다도 먼저** 온다 — `restore_closed` 에서 인증을 한 번이라도
     // 시도하면 되살아난 `sessions` 행을 조회하게 되고, 그 결과가 타이밍·오류로 새어 나간다.
     // ⚠️ ledger 질의가 **실패하면 막는다.** 그건 「열려 있다」가 아니라 「모른다」이고,
@@ -1060,13 +1163,19 @@ export default {
     // ⚠️ 질의가 실패해도 `/health`·`/ready`·`/policies` 는 답해야 한다 — 운영자가 「무엇이
     //    고장 났나」를 볼 수단이 그것뿐이고, 셋 다 게이트와 무관하게 늘 열린 자리다.
     //    나머지는 아래 `maintenanceAllows` 가 `unknown` 을 막는다(모르면 닫는다).
-    let gate;
-    try {
-      gate = await readMode(env);
-    } catch {
-      gate = { mode: "unknown", epoch: 0, bound: !!env.LEDGER };
+    // ⚠️ **`ALWAYS_OPEN` 셋은 여기서 게이트를 읽지 않는다**(2026-08-22 · 위협 56).
+    //    `maintenanceAllows()` 가 어느 모드에서도 셋을 열어 주므로 그 질의는 판정을 바꾸지
+    //    않는데, 인증 없이 열린 자리라 **요청 수만큼 ledger 읽기가 늘었다.** 모드가 필요한
+    //    것은 `/ready` 하나뿐이고, 거기서는 **운영자 키를 확인한 뒤에** 스스로 읽는다.
+    let gate = null;
+    if (!open) {
+      try {
+        gate = await readMode(env);
+      } catch {
+        gate = { mode: "unknown", epoch: 0, bound: !!env.LEDGER };
+      }
     }
-    if (!maintenanceAllows(gate.mode, path, req.method)) {
+    if (gate && !maintenanceAllows(gate.mode, path, req.method)) {
       // 무엇을·왜 복원하는지는 말하지 않는다. 「지금 안 된다」와 「언제 다시 와라」만 말한다.
       return json(env, req, { error: "잠시 점검 중이에요. 조금 뒤에 다시 열어주세요", mode: publicMode(gate.mode) },
         503, { "Retry-After": "60" });
@@ -1081,13 +1190,15 @@ export default {
     //
     // ⚠️ **인증(`whoAmI`)보다도 먼저다.** 인증을 먼저 하면 그 조회가 임차증 밖에서 일어난다.
     //    그래서 셀 수 있는 신원은 IP 하나뿐이다(위 `limited` 의 주석).
-    // ⚠️ 리미터는 주 D1(`rate_limits`)에 쓰는데 이 자리는 임차증 **밖**이다. 그 창이 열리는
-    //    모드는 `open`·`maintenance` 뿐이다 — `restore_closed` 는 위 게이트가 이미 전부 막았고
-    //    (`ALWAYS_OPEN` 셋은 버킷이 없다), 복원의 전제가 바로 그 상태다. 그래서 「restore_closed
-    //    이고 임차증 0건」은 여전히 「추적 밖 주 D1 쓰기가 없다」를 함의한다(test-reaudit R5-f).
-    //    ponytail: 그래도 `maintenance → restore_closed` 전환과 겹치는 아주 좁은 창은 남는다.
-    //      완전히 없애려면 `rate_limits` 를 ledger D1 로 옮겨야 한다(docs/OPS_RUNBOOK.md §12).
-    if (rt.bucket && (await limited(env, req, rt.bucket))) return tooMany(env, req);
+    // ⚠️ 리미터 카운터는 **ledger D1** 이다(2026-08-20 · 위협 49). 이 자리는 임차증 **밖**이라
+    //    주 D1 이었을 때는 「drained:true 뒤의 주 D1 쓰기」가 났다(T62). 지금 이 갈래가 만지는
+    //    것은 ledger 뿐이고, 그 UPSERT 는 게이트를 **같은 문장의 WHERE 로** 들고 있다 —
+    //    전환 뒤에 깨어난 요청은 0행을 쓰고 막히는 쪽으로 끝난다.
+    if (rt.bucket) {
+      const v = await countVerdict(env, req, rt.bucket);
+      if (v === BROKEN) return guardClosed(env, req);
+      if (v === OVER) return tooMany(env, req);
+    }
 
     // ── 0-1-1. 요청 임차증 ──
     // 세션 인증보다 **먼저** 딴다. 인증이 먼저 지나가면 `sessions`·`users` 조회가 추적 밖이다.
@@ -1138,9 +1249,21 @@ async function route(req, env, rc) {
     // 앱은 /health 의 providers 로 **설정 안 된 제공자의 버튼을 아예 안 그린다.**
     // ⚠️ 값도, 비밀값 이름도 내보내지 않는다. 있나 없나만.
     // 앱이 이 응답으로 **실제로 되는 버튼만** 그린다. 값도, 비밀값 이름도 나가지 않는다.
-    if (path === "/health") return json(env, req, health(env));
+    if (path === "/health") return json(env, req, await health(env));
     if (path === "/ready") {
-      const h = health(env);
+      // ⛔ **진단은 운영자만 본다**(2026-08-22 · 위협 56). 8판까지 이 자리는 인증 없이 열려 있고
+      //    한 번 부를 때마다 주 D1 1 질의(7개 표 COUNT)와 ledger 5 질의를 냈다 — 요청 수에
+      //    상한이 없으니 비용에도 없었다. 「방어가 없으면 D1 이 탈 일이 없다」는 **계정 경로에만**
+      //    참이었다. 게다가 응답이 `signupReady`·`providers`·`cleanupAlert` 로 구성 상태를
+      //    익명에게 알려줬다.
+      //    비교는 상수 시간이고 **DB 를 만지기 전**이다. `READY_KEY` 가 없는 배포에서는 진단이
+      //    불가다 — 「키가 없으면 전부 공개」로 되돌아가지 않는다.
+      if (!sameSecret(env.READY_KEY || "", req.headers.get("X-Ready-Key") || ""))
+        return json(env, req, { ok: true, ready: false, diagnostics: false }, 503,
+          { "Retry-After": "60" });
+      // 게이트는 **여기서** 읽는다 — 인증 없는 호출이 ledger 를 만지지 않게 하려고 바깥에서 뺐다.
+      const gate = await readMode(env).catch(() => ({ mode: "unknown", epoch: 0 }));
+      const h = await health(env);
       // ⚠️ **설정이 덜 됐어도 DB 는 실제로 물어본다.** 전에는 `h.ready &&` 로 건너뛰어서,
       //    OAuth 비밀값이 없는 지금 같은 상태에서 `db:false` 가 나왔다 — 그런데 그 false 는
       //    "DB 가 죽었다"가 아니라 "안 물어봤다"였다. 두 가지를 한 값으로 말하면, 진짜로 DB 가
@@ -1164,6 +1287,11 @@ async function route(req, env, rc) {
       //    승격**시킬 수 있는 상태다(위협 46). 7판이 검사를 만들어 놓고 여기서 부르지 않아,
       //    그런 배포가 smoke test 를 200 으로 통과했다.
       //    ⛔ 나가는 것은 **참/거짓 하나**다. 키 이름·검사값·표식·개수·오류 문자열은 안 싣는다.
+      // ⚠️ **바인딩이 「있다」가 아니라 「부르면 답한다」를 본다**(2026-08-22 · 위협 52).
+      //    던지는 `limit()` 이 8판 내내 정상으로 보인 이유가 이 확인이 없었기 때문이다.
+      //    `waf` 모드는 런타임이 증명할 수 없어 선언 기반이다 — 규칙이 실제로 있는지는
+      //    `docs/OPS_RUNBOOK.md` §13-2 의 외부 점검이 답한다.
+      const abuseReady = h.abuseReady;
       const deletionEvidence = !!env.LEDGER
         && !!(await deletionEvidenceUsable(env).then((r) => r.ok).catch(() => false));
       const cl = await cleanupState(env).catch(() => null);
@@ -1193,10 +1321,10 @@ async function route(req, env, rc) {
         signupReady: h.signupReady, providers: h.providers, cleanupStale, cleanupAlert,
         // 남용 방어가 붙었나 · 삭제 증거를 지금 키로 쓸 수 있나. **둘 다 `ready` 를 내린다** —
         // 전자는 열면 D1 이 타고, 후자는 되돌릴 수 없는 오판을 만든다.
-        abuseReady: h.abuseReady, deletionEvidence,
+        abuseReady, deletionEvidence, diagnostics: true,
         // ⚠️ `cleanupAlert` 도 `ready` 를 내리지 않는다 — `cleanupStale` 과 같은 판단이다.
         //    정리가 밀린 것은 보유기간 문제이지 사용자가 앱을 못 쓰는 상태가 아니다.
-        ready: h.ready && db && ledger && deletionEvidence && gate.mode === "open",
+        ready: h.ready && abuseReady && db && ledger && deletionEvidence && gate.mode === "open",
       };
       return json(env, req, r, r.ready ? 200 : 503);
     }
