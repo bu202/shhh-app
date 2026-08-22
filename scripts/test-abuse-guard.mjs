@@ -11,7 +11,8 @@
 // ⛔ **공개 디버그 라우트를 만들지 않는다.** 재현을 위해 프로덕션에 뚫은 구멍이 곧 다음 위협이다.
 //    측정은 셰임(`scripts/_d1.mjs`)의 `prepare` 를 감싸서만 한다.
 import assert from "node:assert";
-import worker, { rlMax, routeBuckets, routeCount, guardMode } from "../worker/index.js";
+import worker, { rlMax, routeBuckets, routeCount, guardMode, routeFor,
+                 createAccountWithPolicy, newSession } from "../worker/index.js";
 import { makeD1, makeLedger } from "./_d1.mjs";
 
 const ORIGIN = "https://app.test";
@@ -30,14 +31,25 @@ const edgeRL = (limit = 1e9) => {
 const makeEnv = (extra = {}) => ({
   APP_ORIGIN: ORIGIN, APP_URL: ORIGIN + "/", STATE_KEY: "k", RL_KEY: "r",
   SIGNUP_STATE_KEY: KEY32, TOMBSTONE_KEY: "tk", DELETION_KEY: "dk", READY_KEY: "operator-key",
+  SESSION_ENVELOPE_KEY: "env-key",
   KAKAO_ID: "kid", DB: makeD1(), LEDGER: makeLedger(), ...extra,
 });
 const base = (env) => env.APP_ORIGIN || ORIGIN;
-const call = (env, path, { method = "GET", ip = "1.2.3.4", host, headers = {} } = {}) =>
+const call = (env, path, { method = "GET", ip = "1.2.3.4", host, token, headers = {} } = {}) =>
   worker.fetch(new Request((host ? "https://" + host : base(env)) + path, {
     method, headers: { Origin: ORIGIN, "Content-Type": "application/json",
-                       "CF-Connecting-IP": ip, ...headers },
+                       "CF-Connecting-IP": ip, ...(token ? { Cookie: "shh_s=" + token } : {}), ...headers },
   }), env);
+// 세션 하나. **인증이 필요한 라우트는 이것이 있어야 리미터까지 간다**(2026-08-22 · 결정 4) —
+// 세션 envelope 서명이 그보다 앞에서 우리 것이 아닌 쿠키를 버리기 때문이다.
+let uSeq = 0;
+const session = async (env) => {
+  const uid = await createAccountWithPolicy(env, "kakao", "ag" + ++uSeq,
+    { stateHash: "s-" + Math.random(), stateExp: Date.now() + 600e3, occurredAt: Date.now() });
+  return await newSession(env, uid);
+};
+// 그 라우트가 세션을 요구하나. 표가 원본이다 — 여기서 손으로 나열하면 표가 바뀔 때 낡는다.
+const needsAuth = (path, method = "GET") => !!routeFor(method, path.replace(/^\/api/, "")).auth;
 const changes = (db) => db._db.prepare("SELECT total_changes() AS n").get().n;
 // 이 시점 이후 그 DB 에 던져진 SQL 을 전부 기록한다(읽기 포함).
 function spy(db) {
@@ -149,9 +161,11 @@ const noLeak = (body, where) => {
     const max = rlMax(b);
     const rl = edgeRL();                                  // 언제나 success:true
     const env = makeEnv({ EDGE_GUARD: "ratelimit", RL: rl });
+    // 인증이 필요한 라우트는 **우리 쿠키**로 두드려야 리미터까지 간다(결정 4).
+    const token = needsAuth(path, method) ? await session(env) : undefined;
     const codes = [];
     for (let i = 0; i < max + 1; i++)
-      codes.push((await call(env, path, { method, ip: "7.7.7.7" })).status);
+      codes.push((await call(env, path, { method, token, ip: "7.7.7.7" })).status);
     const first = codes.slice(0, max), last = codes[max];
     assert.ok(!first.includes(429), t(`T66-b[${b}]: 한도(${max}) 안인데 ${first.indexOf(429) + 1}번째가 429`));
     assert.equal(last, 429, t(`T66-b[${b}]: 한도+1(${max + 1})인데 ${last} — 엣지 mock 이 전부 허용했고 우리 카운터는 안 셌다`));
@@ -161,8 +175,10 @@ const noLeak = (body, where) => {
   // ── c. **한 요청이 두 버킷에 세어지지 않는다.** 카운터 행 수로 잰다.
   {
     const env = makeEnv({ DEV_RATE_LIMIT: "1" });
-    await call(env, "/api/friends", { method: "POST" });
-    const rows = env.LEDGER._db.prepare("SELECT COUNT(*) n FROM rate_limits").get().n;
+    const token = await session(env);
+    const before = env.LEDGER._db.prepare("SELECT COUNT(*) n FROM rate_limits").get().n;
+    await call(env, "/api/friends", { method: "POST", token });
+    const rows = env.LEDGER._db.prepare("SELECT COUNT(*) n FROM rate_limits").get().n - before;
     assert.equal(rows, 1, t(`T66-c: 요청 하나가 카운터 행 ${rows}개를 만들었다 — 이중 집계다`));
   }
 
@@ -170,8 +186,9 @@ const noLeak = (body, where) => {
   //    설정 쪽 계약은 `scripts/test-config.mjs` 가 보고, 여기서는 그 상황의 동작을 고정한다.
   {
     const env = makeEnv({ EDGE_GUARD: "ratelimit", RL: edgeRL(2) });   // 엣지가 2/창
+    const token = await session(env);
     const codes = [];
-    for (let i = 0; i < 4; i++) codes.push((await call(env, "/api/book", { ip: "8.8.8.8" })).status);
+    for (let i = 0; i < 4; i++) codes.push((await call(env, "/api/book", { token, ip: "8.8.8.8" })).status);
     assert.equal(codes[2], 429, t("T66-d: 엣지 사전 거름이 막지 않았다"));
     const l = env.LEDGER._db.prepare("SELECT COUNT(*) n FROM write_leases").get().n;
     assert.equal(l, 0, t("T66-d: 엣지가 막은 요청이 임차증을 땄다 — 사전 거름이 뒤에 있다"));
@@ -181,8 +198,9 @@ const noLeak = (body, where) => {
 // ══ T67. 여러 IP 의 최초 요청 — 문서가 약속한 범위와 대조 ═════════════════
 //
 // 고치기 전: IP 100개 × 익명 `GET /book` 1회 → 429 **0건** · 401 100건 · ledger 쓰기 **200건**.
-// 이 블록은 **막았다고 주장하는 칸이 0 인지**와 **못 막는다고 적은 칸이 실제로 늘어나는지**를
-// 함께 잰다. 뒤쪽이 없으면 문서가 과장인지 거짓인지 구분되지 않는다(§12-3-3).
+// 세션 envelope 도입 뒤(결정 4)에는 **인증 없는 쪽이 0건**이 되고, 유효한 세션을 가진 분산
+// 요청만 비용을 낸다. 이 블록은 **막았다고 주장하는 칸이 0 인지**와 **못 막는다고 적은 칸이
+// 실제로 늘어나는지**를 함께 잰다 — 뒤쪽이 없으면 문서가 과장인지 거짓인지 구분되지 않는다.
 {
   const ip = (i) => `10.0.${(i / 256) | 0}.${i % 256}`;
 
@@ -201,43 +219,50 @@ const noLeak = (body, where) => {
     assert.equal(m.dbQ + m.lQ + m.dbW + m.lW, 0, t("T67-a: 닫힌 상태에서 DB 를 만졌다"));
   }
 
-  // ── b. 열린 상태 · 같은 IP 반복: **한도에서 멈춘다**(§12-3-3 「막는다」 칸).
+  // ── b. 열린 상태 · **우리 쿠키를 가진** 같은 IP 반복: 한도에서 멈춘다(§12-3-3 「막는다」 칸).
   {
     const env = makeEnv({ DEV_RATE_LIMIT: "1" });
+    const token = await session(env);
     let blocked = 0;
     for (let i = 0; i < rlMax("read") + 20; i++)
-      if ((await call(env, "/api/book", { ip: "9.9.9.9" })).status === 429) blocked++;
+      if ((await call(env, "/api/book", { token, ip: "9.9.9.9" })).status === 429) blocked++;
     assert.equal(blocked, 20, t(`T67-b: 한도를 넘긴 20건 중 ${blocked}건만 막혔다`));
   }
 
-  // ── c. 열린 상태 · IP 100개 × 1회: **막지 못한다.** 문서와 같은 수가 나와야 한다.
-  //    요청당 ledger 쓰기 = 카운터 1 + 임차증 2 = **3**.
+  // ── c. ★ **인증 없는 분산 요청의 비용이 0 이다**(2026-08-22 · 결정 4 · 위협 54).
+  //   고치기 전에는 요청당 ledger 쓰기 3건(카운터 1 + 임차증 2)이었다.
   {
     const env = makeEnv({ DEV_RATE_LIMIT: "1" });
     const m = await measure(env, async () => {
-      const c = { 429: 0, 401: 0, other: 0 };
+      const c = { 401: 0, other: 0 };
       for (let i = 0; i < 100; i++) {
-        const r = await call(env, "/api/book", { ip: ip(i) });
-        c[r.status] === undefined ? c.other++ : c[r.status]++;
+        const r = await call(env, "/api/book", { ip: ip(i), headers: { Cookie: "shh_s=forged-" + i } });
+        r.status === 401 ? c[401]++ : c.other++;
       }
       return c;
     });
-    assert.equal(m.out[429], 0, t("T67-c: 분산 요청이 막혔다 — 문서가 「못 막는다」고 적었다"));
-    assert.equal(m.out[401], 100, t("T67-c: 401 이 100건이 아니다"));
-    assert.equal(m.lW, 300, t(`T67-c: 요청 100건에 ledger 쓰기 ${m.lW}건 — 문서는 요청당 3건이라 적었다`));
-    assert.equal(m.dbW, 0, t(`T67-c: 인증도 안 된 요청이 주 D1 에 ${m.dbW}건을 썼다`));
+    assert.equal(m.out[401], 100, t("T67-c: 위조 쿠키가 401 이 아니다"));
+    assert.equal(m.lW, 0, t(`T67-c: 위조 쿠키 100건이 ledger 에 ${m.lW}건을 썼다 — envelope 검증이 리미터보다 뒤에 있다`));
+    assert.equal(m.dbW + m.dbQ, 0, t(`T67-c: 위조 쿠키가 주 D1 을 만졌다(${m.dbQ}질의 · ${m.dbW}쓰기)`));
   }
 
-  // ── d. IP 100개 × 2회: 같은 비율로 는다(= 상한이 없다).
+  // ── d. ⛔ **못 막는 칸**: 유효한 세션을 가진 분산 요청은 그대로 비용을 낸다.
+  //   이것이 결정 6 이 인정한 잔여 위험이다 — **줄어들지 않았다는 것을 여기서 고정한다.**
+  //   줄어들면(막았다면) 문서가 과장이고, 이 단언이 그것을 잡는다.
   {
     const env = makeEnv({ DEV_RATE_LIMIT: "1" });
+    const token = await session(env);
     const m = await measure(env, async () => {
+      for (let i = 0; i < 100; i++) await call(env, "/api/book", { token, ip: ip(i) });
+    });
+    assert.equal(m.lW, 300, t(`T67-d: 유효 세션 100건에 ledger 쓰기 ${m.lW}건 — 문서는 요청당 3건이라 적었다`));
+    const m2 = await measure(env, async () => {
       for (let round = 0; round < 2; round++)
-        for (let i = 0; i < 100; i++) await call(env, "/api/book", { ip: ip(i) });
+        for (let i = 0; i < 100; i++) await call(env, "/api/book", { token, ip: ip(i) });
     });
     // ⚠️ 두 번째 방문도 카운터 갱신(`ON CONFLICT DO UPDATE`)이라 **쓰기 1건**이다 —
-    //    「행이 이미 있으니 공짜」가 아니다. 그래서 요청 수에 정확히 비례한다.
-    assert.equal(m.lW, 600, t(`T67-d: 200 요청에 ledger 쓰기 ${m.lW}건 — 요청당 3건에 비례해야 한다`));
+    //    「행이 이미 있으니 공짜」가 아니다. 그래서 요청 수에 정확히 비례한다(= 상한이 없다).
+    assert.equal(m2.lW, 600, t(`T67-d: 200 요청에 ledger 쓰기 ${m2.lW}건 — 요청당 3건에 비례해야 한다`));
   }
 
   // ── e. 버킷 여섯 전부 같은 성질이다 — 하나라도 빠지면 그 경로가 측정 밖이다.
@@ -245,11 +270,28 @@ const noLeak = (body, where) => {
     const env = makeEnv({ DEV_RATE_LIMIT: "1" });
     for (const b of routeBuckets()) {
       const [path, method] = BUCKET_ROUTE[b];
+      const token = needsAuth(path, method) ? await session(env) : undefined;
       const m = await measure(env, async () => {
-        for (let i = 0; i < 5; i++) await call(env, path, { method, ip: ip(500 + i) });
+        for (let i = 0; i < 5; i++) await call(env, path, { method, token, ip: ip(500 + i) });
       });
       assert.ok(m.lW > 0, t(`T67-e[${b}]: 분산 요청이 ledger 를 하나도 안 썼다 — 측정이 라우트를 못 탄다`));
       assert.ok(m.lW <= 5 * 3, t(`T67-e[${b}]: 요청 5건에 ledger 쓰기 ${m.lW}건 — 요청당 3건을 넘는다`));
+    }
+  }
+
+  // ── f. ★ 인증이 필요한 라우트가 **전부** 값싼 문 뒤에 있다. 표를 훑어 전수로 잰다.
+  {
+    const env = makeEnv({ DEV_RATE_LIMIT: "1" });
+    for (const [path, method] of [["/api/book", "GET"], ["/api/book", "PUT"], ["/api/me", "GET"],
+                                  ["/api/me", "PUT"], ["/api/me", "DELETE"], ["/api/friends", "GET"],
+                                  ["/api/friends", "POST"], ["/api/friends/code", "POST"],
+                                  ["/api/friends/xyz/book", "GET"], ["/api/friends/xyz", "DELETE"],
+                                  ["/api/session", "DELETE"]]) {
+      assert.ok(needsAuth(path, method), t(`T67-f: ${method} ${path} 가 표에서 auth 가 아니다`));
+      const m = await measure(env, () => call(env, path, { method, headers: { Cookie: "shh_s=forged" } }));
+      assert.equal(m.out.status, 401, t(`T67-f: ${method} ${path} 가 위조 쿠키에 ${m.out.status} 로 답했다`));
+      assert.equal(m.dbQ + m.lQ + m.dbW + m.lW, 0,
+        t(`T67-f: ${method} ${path} 가 위조 쿠키에 DB 를 만졌다(질의 ${m.dbQ + m.lQ} · 쓰기 ${m.dbW + m.lW})`));
     }
   }
 }

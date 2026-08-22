@@ -5,6 +5,7 @@
 // 이 검사는 **빌드를 직접 돌린 뒤** 결과물을 훑는다 — 사람이 기억해서 돌리는 검사는 안 돈다.
 import assert from "node:assert";
 import { build, FORBIDDEN, swCacheName } from "./build.mjs";
+import { readFileSync } from "node:fs";
 
 const files = await build();
 
@@ -86,6 +87,27 @@ assert.equal(cacheName, await swCacheName(), "캐시 이름이 지금 dist 자�
   const got = assets.filter((a) => a.startsWith("policies/")).sort();
   assert.deepEqual(got, want,
     "서비스워커의 정책 선캐시 목록이 지금 번들과 다르다 — `node scripts/policies.mjs` 를 다시 돌려라");
+}
+
+// ── 호스트 잠금 규칙이 두 곳에서 같은가 (2026-08-22 · 결정 0·1 · 위협 55) ──
+// `functions/_middleware.js` 는 정적 요청을, `worker/index.js` 는 API 를 막는다. Pages 가
+// 정적 요청에 Worker 를 안 태우므로 규칙이 두 벌일 수밖에 없다 — 어긋나면 한쪽만 막힌다.
+{
+  const mw = readFileSync(new URL("../functions/_middleware.js", import.meta.url), "utf8");
+  const wk = readFileSync(new URL("../worker/index.js", import.meta.url), "utf8");
+  for (const [re, why] of [
+    [/"waf"/, "waf 모드에서만 도는 조건"],
+    [/endsWith\(".pages.dev"\)/, "pages.dev 를 정식 호스트로 인정하지 않는 규칙"],
+    [/new URL\(env\.APP_ORIGIN\)\.host/, "정식 호스트의 출처(APP_ORIGIN)"],
+  ]) {
+    assert.match(mw, re, `functions/_middleware.js 에 ${why} 가 없다`);
+    assert.match(wk, re, `worker/index.js 에 ${why} 가 없다 — 두 곳의 규칙이 어긋난다`);
+  }
+  // GET·HEAD 만 옮긴다. 본문이 있는 요청을 리다이렉트하면 두 번 나가거나 GET 으로 바뀐다.
+  assert.match(mw, /"GET" \|\| ctx\.request\.method === "HEAD"/,
+    "_middleware 가 GET·HEAD 밖의 method 도 리다이렉트한다");
+  // 주석에도 308 이라는 낱말이 나오므로 **실제 status 자리만** 본다.
+  assert.ok(!/status:\s*(301|308)/.test(mw), "_middleware 가 영구 리다이렉트를 쓴다 — 되돌릴 수 없다");
 }
 
 console.log(`test-dist: 통과 — dist/ ${files.length}개, 내부 파일 0개, 선캐시 ${assets.length}개 전부 존재, `

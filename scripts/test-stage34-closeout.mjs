@@ -28,7 +28,7 @@ const KEY32 = Buffer.from(Uint8Array.from({ length: 32 }, (_, i) => i + 3)).toSt
 //    503 이다 — T63 이 그 상태를 따로 잰다.
 const makeEnv = (extra = {}) => ({
   APP_ORIGIN: ORIGIN, APP_URL: ORIGIN + "/", STATE_KEY: "k", RL_KEY: "r",
-  SIGNUP_STATE_KEY: KEY32, TOMBSTONE_KEY: "tk", DELETION_KEY: "dk",
+  SIGNUP_STATE_KEY: KEY32, TOMBSTONE_KEY: "tk", DELETION_KEY: "dk", SESSION_ENVELOPE_KEY: "env-key",
   // `/ready` 진단은 운영자 키를 요구한다(2026-08-22 · 위협 56).
   READY_KEY: "closeout-ops-key",
   DEV_RATE_LIMIT: "1", DB: makeD1(), LEDGER: makeLedger(), ...extra,

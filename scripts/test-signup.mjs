@@ -32,6 +32,9 @@ function makeEnv(extra = {}) {
     //    이 값으로는 `/ready` 가 **절대** 200 이 되지 않는다(엣지 바인딩이라야 ready 다).
     DEV_RATE_LIMIT: "1",
     SIGNUP_STATE_KEY: KEY32, TOMBSTONE_KEY: "test-tombstone-key", DELETION_KEY: "test-deletion-key",
+    SESSION_ENVELOPE_KEY: "test-session-envelope-key",
+    // 사람 확인(2026-08-22 · 결정 3). 없으면 가입이 503 이다 — 그 상태는 F 블록이 따로 잰다.
+    TURNSTILE_SECRET: "test-turnstile-secret", TURNSTILE_SITE_KEY: "0xTEST",
     KAKAO_ID: "id", KAKAO_SECRET: "s", NAVER_ID: "id", NAVER_SECRET: "s",
     DB: makeD1(), LEDGER: makeLedger(), ...extra,
   };
@@ -46,7 +49,11 @@ let providerCalls = 0;
 const withProvider = async (subject, fn) => {
   const real = globalThis.fetch;
   providerCalls = 0;
-  globalThis.fetch = async (url) => {
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes("challenges.cloudflare.com")) {
+      turnstile.calls++;
+      return new Response(JSON.stringify(turnstile.answer), { headers: { "Content-Type": "application/json" } });
+    }
     providerCalls++;
     return new Response(JSON.stringify(String(url).includes("token")
       ? { access_token: "tok" }
@@ -59,13 +66,26 @@ const withProvider = async (subject, fn) => {
 let ip = 0;
 const asBrowser = (h = {}) => ({ ...h, "CF-Connecting-IP": `203.0.113.${(++ip % 250) + 1}` });
 
+// Turnstile 검증 서버 대역. **부른 횟수와 마지막 본문을 기록한다** — 「거부가 외부 호출 앞에서
+// 일어났나」와 「토큰을 실제로 보냈나」가 여러 단언의 핵심이다.
+export const turnstile = { calls: 0, last: null, answer: { success: true } };
+const withTurnstile = (fn) => async (url, init) => {
+  if (!String(url).includes("challenges.cloudflare.com")) return fn(url, init);
+  turnstile.calls++;
+  turnstile.last = String(init && init.body);
+  return new Response(JSON.stringify(turnstile.answer), { headers: { "Content-Type": "application/json" } });
+};
+
 // 가입 시작 → { url, state, txn }. **진짜 라우트를 지난다** — 규칙을 테스트에 베끼지 않는다.
 async function startSignup(env, body = {}, headers = {}) {
+  const real = globalThis.fetch;
+  globalThis.fetch = withTurnstile(real);
   const res = await worker.fetch(new Request(ORIGIN + "/api/signup/start", {
     method: "POST",
     headers: asBrowser({ Origin: ORIGIN, "Content-Type": "application/json", ...headers }),
-    body: JSON.stringify({ provider: "kakao", terms: true, age14: true, pv: POLICY_BUNDLE.pv, ...body }),
-  }), env);
+    body: JSON.stringify({ provider: "kakao", terms: true, age14: true, pv: POLICY_BUNDLE.pv,
+                           turnstile: "test-token", ...body }),
+  }), env).finally(() => { globalThis.fetch = real; });
   const set = res.headers.get("Set-Cookie") || "";
   const j = await res.json().catch(() => null);
   return {
@@ -558,6 +578,123 @@ function failOn(db, needle) {
   }
 }
 
+// ══ J. T70 — Turnstile 은 공개 회원가입에만, 그리고 **서버가 결과를 본다** ══
+//
+// 사용자 결정 3(2026-08-22). ⛔ 이 블록이 없으면 Turnstile 은 **화면 장식**이 된다 —
+// 위젯을 붙여 놓고 서버가 그 결과를 한 번도 안 보는 구성이 가장 흔한 실패다.
+{
+  const st = (extra) => ({ ...extra });
+
+  // ── T70-a. ★ 토큰이 없거나 비면 가입이 시작되지 않는다.
+  {
+    const env = makeEnv();
+    for (const tk of [undefined, "", null, 123, {}, "x".repeat(2049)]) {
+      turnstile.calls = 0;
+      const r = await startSignup(env, { turnstile: tk });
+      assert.equal(r.status, 400, t(`T70-a: turnstile=${JSON.stringify(tk)} 로 가입이 시작됐다`));
+      assert.equal(r.body.humanCheck, true, t("T70-a: 사람 확인 실패를 화면이 구분할 수 없다"));
+      assert.equal(r.state, null, t("T70-a: 거부했는데 state 를 줬다"));
+      // 모양이 틀린 토큰은 **외부 호출도 안 나간다** — 그 호출 자체가 우리 비용이다.
+      if (tk !== "x".repeat(2049) && tk !== undefined && tk !== "" && tk !== null)
+        assert.equal(turnstile.calls, 0, t(`T70-a: 모양이 틀린 토큰(${typeof tk})으로 외부를 불렀다`));
+    }
+  }
+
+  // ── T70-b. ★ 검증 서버가 거절하면 가입이 안 된다(위조·재사용·만료가 전부 여기로 온다).
+  {
+    const env = makeEnv();
+    for (const ans of [{ success: false, "error-codes": ["invalid-input-response"] },
+                       { success: false, "error-codes": ["timeout-or-duplicate"] },
+                       { success: "true" }, { ok: true }, {}]) {
+      turnstile.answer = ans;
+      const r = await startSignup(env);
+      assert.equal(r.status, 400, t(`T70-b: ${JSON.stringify(ans)} 인데 가입이 시작됐다`));
+      assert.ok(!JSON.stringify(r.body).includes("timeout-or-duplicate"),
+        t("T70-b: Cloudflare 오류 코드가 사용자 응답에 실렸다"));
+    }
+    turnstile.answer = { success: true };
+  }
+
+  // ── T70-c. ★ 검증 서버가 죽으면(네트워크 오류) **통과시키지 않는다.**
+  {
+    const env = makeEnv();
+    const real = globalThis.fetch;
+    globalThis.fetch = async (url, init) =>
+      String(url).includes("challenges.cloudflare.com") ? Promise.reject(new Error("down")) : real(url, init);
+    const res = await worker.fetch(new Request(ORIGIN + "/api/signup/start", {
+      method: "POST", headers: asBrowser({ Origin: ORIGIN, "Content-Type": "application/json" }),
+      body: JSON.stringify({ provider: "kakao", terms: true, age14: true, pv: POLICY_BUNDLE.pv,
+                             turnstile: "tok" }),
+    }), env).finally(() => { globalThis.fetch = real; });
+    assert.equal(res.status, 400, t("T70-c: 검증 서버가 죽었는데 가입이 시작됐다 — fail-open 이다"));
+  }
+
+  // ── T70-d. ★ 시크릿이 없으면 **가입 자체가 열리지 않는다**(503, readiness 도 거짓).
+  {
+    const env = makeEnv({ TURNSTILE_SECRET: undefined });
+    const r = await startSignup(env);
+    assert.equal(r.status, 503, t("T70-d: TURNSTILE_SECRET 없이 가입이 시작됐다"));
+    const h = await (await worker.fetch(new Request("https://api.test/health"), env)).json();
+    assert.equal(h.signupReady, false, t("T70-d: 시크릿이 없는데 가입 준비됨이라고 말한다"));
+    const h2 = await (await worker.fetch(new Request("https://api.test/health"),
+      makeEnv({ TURNSTILE_SITE_KEY: undefined }))).json();
+    assert.equal(h2.signupReady, false, t("T70-d: site key 가 없는데 가입 준비됨이라고 말한다"));
+    assert.equal(h2.turnstileSiteKey, null, t("T70-d: 없는 site key 를 있다고 말한다"));
+  }
+
+  // ── T70-e. ★ **서버가 실제로 토큰을 보냈나.** 「검증했다」를 흉내만 내면 여기서 걸린다.
+  {
+    const env = makeEnv();
+    turnstile.calls = 0; turnstile.last = null;
+    await startSignup(env, { turnstile: "the-token" });
+    assert.equal(turnstile.calls, 1, t(`T70-e: 검증 서버를 ${turnstile.calls}번 불렀다`));
+    assert.ok(turnstile.last.includes("response=the-token"), t("T70-e: 사용자 토큰을 안 보냈다"));
+    assert.ok(turnstile.last.includes("secret=test-turnstile-secret"), t("T70-e: 시크릿을 안 보냈다"));
+  }
+
+  // ── T70-f. ★ **콜백이 그 결과를 본다.** state 에 `hv` 가 없으면 계정이 안 만들어진다.
+  //   Turnstile 을 지나지 않고 만든 state(= 가입 시작을 건너뛴 경로)를 그대로 흉내낸다.
+  {
+    const env = makeEnv();
+    const txn = "txn-" + Math.random();
+    const forged = await makeSignupState(env, "kakao", {
+      back: ORIGIN, pv: POLICY_BUNDLE.pv, occurredAt: Date.now(), terms: true, age14: true,
+      // 워커와 같은 방식으로 표 해시를 만든다(b64url SHA-256).
+      n: "", txn: createHash("sha256").update(txn).digest("base64url"),   // hv 가 없다
+    });
+    const r = await withProvider("no-hv", () => cb(env, forged, txn));
+    assert.notEqual(r.status, 302, t("T70-f: 사람 확인을 안 지난 state 로 가입이 끝났다"));
+    assert.equal(count(env, "users"), 0, t("T70-f: 사람 확인 없이 계정이 만들어졌다"));
+    assert.equal(providerCalls, 0, t("T70-f: 거부가 제공자 호출 뒤에 일어났다"));
+  }
+
+  // ── T70-g. ★ **정상 가입은 끝까지 간다.** 막는 쪽만 재면 「늘 거부」로 고쳐도 통과한다.
+  {
+    const env = makeEnv();
+    const good = await startSignup(env);
+    const r = await withProvider("hv-ok", () => cb(env, good.state, good.txn));
+    assert.equal(r.status, 302, t(`T70-g: 사람 확인을 지난 정상 가입이 ${r.status} 로 끝났다`));
+    assert.equal(count(env, "users"), 1, t("T70-g: 정상 가입인데 계정이 안 생겼다"));
+  }
+
+  // ── T70-h. 로그인과 인증된 읽기·쓰기에는 **적용하지 않는다**(결정 3: 초기 출시 범위).
+  //   여기를 넓히는 날 이 단언을 **의도적으로** 고치게 만드는 자리다.
+  {
+    const env = makeEnv();
+    const real = globalThis.fetch;
+    let called = 0;
+    globalThis.fetch = async (url, init) => {
+      if (String(url).includes("challenges.cloudflare.com")) { called++; }
+      return real(url, init);
+    };
+    try {
+      await worker.fetch(new Request("https://api.test/login/kakao"), env);
+    } finally { globalThis.fetch = real; }
+    assert.equal(called, 0, t("T70-h: 로그인 시작이 Turnstile 을 부른다 — 결정 3 의 범위 밖이다"));
+  }
+}
+
 console.log(`test-signup: ${n}개 통과 — 가입 state AEAD(nonce·AAD·키 길이·키 분리) · `
   + `필수 항목 fail-closed · 정책 기록 ${REQUIRED_POLICY_EVENTS}종 원자성 · CHECK 강제 · `
-  + `소비 표식(순차·동시·재소비) · 로그인 경로가 계정을 안 만듦 · 만료 정리 · 로그 0건`);
+  + `소비 표식(순차·동시·재소비) · 로그인 경로가 계정을 안 만듦 · 만료 정리 · 로그 0건 · `
+  + `T70 Turnstile(토큰 없음·위조·재사용·만료·검증 실패·시크릿 부재·콜백 대조·범위)`);

@@ -50,6 +50,11 @@
     //      "EDGE_GUARD": "ratelimit"  // Workers 전환 + ratelimits 바인딩(아래)
     //    모드별 절차와 외부 점검 항목은 `docs/OPS_RUNBOOK.md` §13-2.
     //
+    // ⛔ **`TURNSTILE_SITE_KEY` 도 아직 없다**(2026-08-22 · 결정 3). **공개 값**이라 여기 vars 에
+    //    적는다 — 브라우저에 박히도록 설계된 값이고, 비밀은 `TURNSTILE_SECRET` 쪽이다.
+    //    없으면 가입 화면이 위젯을 못 그리므로 `/api/health` 가 `signupReady:false` 로 답한다.
+    //      "TURNSTILE_SITE_KEY": "0x4AAA..."
+    //
     // ⚠️ **`ratelimits` 바인딩은 Pages Functions 에 못 붙인다**(공식 지원 목록에 없다).
     //    붙일 수 있게 되는 날의 계약: 이름은 `RL`, `simple.period` 는 10 또는 60,
     //    `simple.limit` 은 분당 환산으로 **`RL_MAX` 의 최댓값 이상**이어야 한다 —
@@ -61,6 +66,8 @@
   // · STATE_KEY · MASTER_UIDS · **RL_KEY** · **SIGNUP_STATE_KEY** · **TOMBSTONE_KEY**
   // · **DELETION_KEY** · **READY_KEY**(`/api/ready` 진단용 운영자 키 — 없으면 진단을 아무도
   //   못 본다. 키 없는 호출은 두 DB 를 만지지 않고 503 이다 · 위협 56)
+  // · **SESSION_ENVELOPE_KEY**(세션 쿠키 서명 · 결정 4 — 바꾸면 모든 세션이 로그아웃된다)
+  // · **TURNSTILE_SECRET**(공개 회원가입의 사람 확인 · 결정 3 — 없으면 가입만 503)
   // 개발 Worker 에만: DEV_ORIGINS — localhost·LAN 허용. ⛔ **운영에는 넣지 않는다.**
   //
   // ⚠️ **목록을 손으로 세지 않는다.** 이 줄이 8개인 채로 남아 RL_KEY 를 빠뜨릴 뻔했고, 그

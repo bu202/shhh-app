@@ -8,7 +8,8 @@
 //    지금은 진짜 SQL 이라 UNIQUE 충돌·외래키 CASCADE·changes 카운트가 실제로 일어난다.
 import assert from "node:assert";
 import worker, { createAccountWithPolicy, findUser, newSession, pathTemplate,
-  routeFor, rlMax, routeBuckets, routeCount, maintenanceAllows } from "../worker/index.js";
+  routeFor, rlMax, routeBuckets, routeCount, maintenanceAllows, envelopeOk,
+  authRoutes } from "../worker/index.js";
 import { makeD1, makeLedger, withLatency } from "./_d1.mjs";
 import { drainState, readMode, MODE_UNBOUND } from "../worker/ledger.js";
 // 옛 배포 세대의 **고정 fixture**. 지금 코드가 아니다 — 그 파일 머리말을 볼 것.
@@ -37,6 +38,8 @@ function makeEnv(extra = {}) {
            LEDGER: makeLedger(), DELETION_KEY: "test-deletion-key",
            // 가입 전용 키. 32바이트를 base64url 로 — 길이가 다르면 서버가 fail-closed 다.
            SIGNUP_STATE_KEY: SIGNUP_KEY_B64, TOMBSTONE_KEY: "test-tombstone-key",
+           // 세션 쿠키 서명 전용 키(2026-08-22 · 결정 4). 없으면 계정 라우트가 DB 전에 503 이다.
+           SESSION_ENVELOPE_KEY: "test-session-envelope-key",
            ...extra };
 }
 // 32바이트. b64u 로 43자.
@@ -1663,10 +1666,24 @@ function befriend(env, a, b, status = "accepted") {
   }
   assert.equal(snapshot(), before40, "T40~43: restore_closed 중에 행 수가 바뀌었다");
   // ⚠️ **세션 인증을 수행조차 하지 않는다.** 인증을 한 번이라도 시도하면 되살아난 sessions 행을
-  //    조회하게 되고, 그 결과가 타이밍·오류로 새어 나간다. 잘못된 쿠키와 맞는 쿠키의 응답이 같아야 한다.
-  const good = await call(env, A.token, "/book"), bad = await call(env, "bogus-token", "/book");
-  assert.equal(good.status, bad.status, "T40: 맞는 쿠키와 틀린 쿠키의 응답이 다르다 — 인증을 수행하고 있다");
-  assert.deepEqual(good.body, bad.body, "T40: 응답 본문이 달라 계정 존재가 드러난다");
+  //    조회하게 되고, 그 결과가 타이밍·오류로 새어 나간다.
+  //    ⛔ **재는 방법이 2026-08-22 에 바뀌었다**(결정 4). 예전에는 「맞는 쿠키와 틀린 쿠키의
+  //       응답이 같다」로 확인했는데, 세션 envelope 이 생기면서 **틀린 쿠키는 게이트 앞에서
+  //       401** 이 된다(DB 를 안 만진다). 상태코드가 같은지를 보는 것은 원래 재려던 것의
+  //       **대리 지표**였을 뿐이므로, 이제 **주 D1 질의 수를 직접 센다** — 그게 재려던 것이다.
+  const dbQ = () => { const q = []; const sv = env.DB.prepare;
+    env.DB.prepare = (sql) => { q.push(sql); return sv.call(env.DB, sql); };
+    return { q, stop: () => { env.DB.prepare = sv; } }; };
+  {
+    const spy = dbQ();
+    const good = await call(env, A.token, "/book"), bad = await call(env, "bogus-token", "/book");
+    spy.stop();
+    assert.equal(spy.q.length, 0, `T40: restore_closed 인데 주 D1 에 질의 ${spy.q.length}건 — 인증을 수행하고 있다`);
+    assert.equal(good.status, 503, "T40: 우리 쿠키인데 503 이 아니다");
+    assert.equal(bad.status, 401, "T40: 우리 것이 아닌 쿠키가 게이트까지 갔다");
+    for (const r of [good, bad])
+      assert.ok(!JSON.stringify(r.body).includes(A.uid), "T40: 응답에 계정 id 가 실렸다");
+  }
 
   // ── 다시 열면 원래대로. 막는 쪽만 재면 「영영 안 열리는」 회귀를 못 잡는다.
   setMode("open");
@@ -2013,7 +2030,124 @@ function befriend(env, a, b, status = "accepted") {
   assert.equal(lw2() - beforeL, 0, "T53: 차단된 뒤에도 ledger 쓰기가 났다 — 임차증이 리미터보다 앞선다");
 }
 
+// ══ T71. 세션 envelope — **DB 앞의 값싼 문** (2026-08-22 · 사용자 결정 4) ═══
+//
+// 왜 만들었나: 리미터도 임차증도 인증보다 앞이어야 하는데(위협 47·49), 그러면 쿠키 없는
+// 요청과 매번 다른 위조 쿠키가 요청마다 지속 저장소 쓰기를 낸다(실측 T67-c). 서명을 CPU 로
+// 먼저 보면 그 비용이 0 이 된다.
+// ⚠️ **이것은 인증이 아니다.** 아래 c·g·h 가 그 사실을 고정한다 — 서명이 맞아도 D1 이
+//    최종 판정한다. 그 구분이 무너지면 로그아웃·탈퇴가 무력해진다.
+{
+  const env = makeEnv({ KAKAO_ID: "id" });
+  const A = await signUp(env, "kakao", "envA");
+  const dbQ = () => { const q = []; const sv = env.DB.prepare;
+    env.DB.prepare = (sql) => { q.push(sql); return sv.call(env.DB, sql); };
+    return { q, stop: () => { env.DB.prepare = sv; } }; };
+  const led = () => env.LEDGER._db.prepare("SELECT total_changes() AS n").get().n;
+
+  // T71-a. ★ 정상 세션은 그대로 통과한다. 막는 쪽만 재면 「늘 401」로 고쳐도 통과한다.
+  assert.equal((await call(env, A.token, "/book")).status, 200, "T71-a: 정상 세션이 막혔다");
+  assert.equal(await envelopeOk(env, A.token), true, "T71-a: 우리가 만든 토큰인데 서명이 안 맞는다");
+
+  // T71-b. 모양·서명·판·만료 — **전부 DB 를 만지기 전에** 끝난다.
+  const [v, rand, exp, sig] = A.token.split(".");
+  const past = Math.floor(Date.now() / 1000) - 10;
+  const BAD = {
+    "쿠키 없음": null,
+    "무작위 문자열": "bogus",
+    "칸이 모자람": `${v}.${rand}.${exp}`,
+    "서명 한 글자 변조": `${v}.${rand}.${exp}.${sig.slice(0, -1)}${sig.slice(-1) === "A" ? "B" : "A"}`,
+    "서명 없음": `${v}.${rand}.${exp}.`,
+    "무작위 부분 교체": `${v}.${"z".repeat(rand.length)}.${exp}.${sig}`,
+    "만료 시각 늘리기": `${v}.${rand}.${Number(exp) + 86400}.${sig}`,
+    "이미 만료": `${v}.${rand}.${past}.${sig}`,
+    "모르는 판": `9.${rand}.${exp}.${sig}`,
+    "판 비어 있음": `.${rand}.${exp}.${sig}`,
+    "만료가 숫자가 아님": `${v}.${rand}.abc.${sig}`,
+  };
+  for (const [why, tok] of Object.entries(BAD)) {
+    const spy = dbQ(), l0 = led();
+    const r = await call(env, tok, "/book");
+    spy.stop();
+    assert.equal(r.status, 401, `T71-b[${why}]: ${r.status} 로 지나갔다`);
+    assert.equal(spy.q.length, 0, `T71-b[${why}]: 주 D1 에 질의 ${spy.q.length}건 — 값싼 문이 아니다`);
+    assert.equal(led() - l0, 0, `T71-b[${why}]: ledger 쓰기가 났다`);
+    assert.ok(!JSON.stringify(r.body).includes("서명") && !JSON.stringify(r.body).includes("만료"),
+      `T71-b[${why}]: 거절 사유를 알려줬다 — 위조 시도에 진행 상황을 준다`);
+  }
+
+  // T71-c. ★ **서명이 맞아도 인증이 아니다.** DB 에 없는 세션은 401 이다.
+  {
+    const orphan = await newSession(env, A.uid);
+    env.DB._db.prepare("DELETE FROM sessions WHERE user_id = ?").run(A.uid);
+    assert.equal(await envelopeOk(env, orphan), true, "T71-c: 우리가 만든 토큰인데 서명이 안 맞는다");
+    assert.equal((await call(env, orphan, "/book")).status, 401,
+      "T71-c: 서명만 맞으면 통과했다 — envelope 이 인증을 대신하고 있다");
+  }
+
+  // T71-d. ★ 로그아웃(세대 무효화) 뒤에는 같은 쿠키가 죽는다. **D1 이 최종 판정이다.**
+  {
+    const B = await signUp(env, "kakao", "envB");
+    assert.equal((await call(env, B.token, "/book")).status, 200, "T71-d: 새 세션이 안 된다");
+    assert.equal((await call(env, B.token, "/session", "DELETE")).status, 200, "T71-d: 로그아웃이 실패했다");
+    assert.equal(await envelopeOk(env, B.token), true, "T71-d: 로그아웃이 서명을 바꿨다 — 그건 D1 의 일이다");
+    assert.equal((await call(env, B.token, "/book")).status, 401, "T71-d: 로그아웃한 쿠키가 살아 있다");
+  }
+
+  // T71-e. ★ **전용 키다.** 다른 시크릿으로 서명한 토큰은 통과하지 못한다.
+  for (const k of ["test-signing-key", "test-rate-limit-key", "test-tombstone-key"]) {
+    assert.equal(await envelopeOk({ ...env, SESSION_ENVELOPE_KEY: k }, A.token), false,
+      `T71-e: ${k} 로도 서명이 맞는다 — 키를 겸용하고 있다`);
+  }
+
+  // T71-f. ★ **키를 바꾸면 전원 로그아웃된다.** 운영 문서가 약속한 그대로여야 한다.
+  {
+    const rotated = { ...env, SESSION_ENVELOPE_KEY: "brand-new-key" };
+    assert.equal(await envelopeOk(rotated, A.token), false, "T71-f: 키를 바꿨는데 옛 쿠키가 살아 있다");
+    assert.equal((await call(rotated, A.token, "/book")).status, 401, "T71-f: 키 교체 뒤에도 요청이 통과한다");
+  }
+
+  // T71-g. 키가 없으면 **검증할 수 없다 → 열지 않는다**(503, 401 아님 — 사용자 잘못이 아니다).
+  {
+    const noKey = { ...env, SESSION_ENVELOPE_KEY: undefined };
+    const r = await call(noKey, A.token, "/book");
+    assert.equal(r.status, 503, `T71-g: 키가 없는데 ${r.status} 다`);
+    const h = await (await worker.fetch(new Request("https://api.test/health"), noKey)).json();
+    assert.equal(h.ready, false, "T71-g: 세션 서명 키가 없는데 ready 다");
+  }
+
+  // T71-h. ★ **원문을 저장하지 않는다.** DB 가 새도 남의 쿠키를 쓸 수 없어야 한다.
+  {
+    const rows = env.DB._db.prepare("SELECT token_hash FROM sessions").all();
+    for (const r of rows)
+      assert.ok(!A.token.includes(r.token_hash) && r.token_hash !== A.token,
+        "T71-h: sessions 에 토큰 원문(또는 그 조각)이 저장됐다");
+  }
+
+  // T71-i. ★ 표가 `auth:true` 라고 적은 라우트는 **전부** 이 문 뒤에 있다. 전수로 잰다.
+  {
+    const SAMPLE = { "GET": ["/book", "/me", "/friends", "/friends/x/book"],
+                     "PUT": ["/book", "/me", "/friends/x"],
+                     "POST": ["/friends", "/friends/code"],
+                     "DELETE": ["/session", "/me", "/friends/x"] };
+    let n = 0;
+    for (const [method, paths] of Object.entries(SAMPLE)) {
+      for (const p of paths) {
+        if (!routeFor(method, p) || !routeFor(method, p).auth) continue;
+        n++;
+        const spy = dbQ();
+        const r = await call(env, "forged-cookie", p, method, method === "GET" ? undefined : {});
+        spy.stop();
+        assert.equal(r.status, 401, `T71-i: ${method} ${p} 가 위조 쿠키에 ${r.status} 로 답했다`);
+        assert.equal(spy.q.length, 0, `T71-i: ${method} ${p} 가 위조 쿠키에 주 D1 을 만졌다`);
+      }
+    }
+    assert.equal(n, authRoutes().length, `T71-i: 표의 auth 라우트 ${authRoutes().length}개 중 ${n}개만 쟀다`);
+  }
+}
+
 console.log("test-friends: 통과 — 로그인 왕복 표(브라우저 결속) · 친구 쌍 유일성 · 친구 권한(행 하나) · 쿠키 세션 · 세대 무효화 · CSRF(Origin 필수) · 제공자ID 비공개 "
   + "· 버전 충돌 · 수락 트랜잭션(상한 포함) · 무관계 DELETE · 마스터 · 복귀 주소 · 본문 한도 · state 서명 · 코드 회전 · 상한 · 헤더 · readiness(스키마 실질의) · 세션 청소 · 레이트리밋(RL_KEY HMAC · 버킷 분리) · 제공자 응답 상한 · 계정 삭제 원자성(표식·lease) · 활성 초대 코드 1개 · 유지보수/restore_closed 게이트 · 전역 user-data drain(요청당 임차증 1개 · 지연 읽기·쓰기 · TTL 만료 ≠ 해제) "
   + "· LEDGER 미바인딩 fail-closed(계층별) · 라우트 분류(없는 주소·로그인 시작의 쓰기 0) · 임차증 상한 "
-  + "· 레이트리밋 버킷 등록(프로토타입 속성 거부) · 아직 못 막는 것(T8-b · 옛 배포 fixture) 고정");
+  + "· 레이트리밋 버킷 등록(프로토타입 속성 거부) · 아직 못 막는 것(T8-b · 옛 배포 fixture) 고정 "
+  + "· T71 세션 envelope(모양·서명·판·만료 · DB 앞 거절 · 서명 ≠ 인증 · 키 전용성·교체 · auth 라우트 전수)");

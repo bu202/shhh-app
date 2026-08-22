@@ -228,7 +228,10 @@ const health = async (env) => {
   // ⚠️ **가입 전용 키 둘도 여기 있다**(2026-08-18). 없으면 `/signup/start` 가 503 이라
   //    로그인은 되는데 **가입만 조용히 막히는** 상태가 된다 — 화면 어디에도 안 보이는 결함이라
   //    여기서 말하지 않으면 아무도 모른다. `DELETION_KEY` 도 같다(없으면 계정 삭제가 503).
-  const keys = !!(env.STATE_KEY && env.RL_KEY && env.SIGNUP_STATE_KEY && env.TOMBSTONE_KEY && env.DELETION_KEY);
+  // ⚠️ **`SESSION_ENVELOPE_KEY` 도 필수다**(2026-08-22 · 결정 4). 없으면 세션 서명을 만들 수도
+  //    확인할 수도 없어 계정 라우트가 전부 503 이다 — 화면 어디에도 안 보이는 종류의 결함이다.
+  const keys = !!(env.STATE_KEY && env.RL_KEY && env.SIGNUP_STATE_KEY && env.TOMBSTONE_KEY
+                  && env.DELETION_KEY && env.SESSION_ENVELOPE_KEY);
   // ⚠️ **`dev` 는 ready 가 아니다.** 로컬에서 라우트를 열어 두는 스위치일 뿐이라, 그것으로
   //    `ready:true` 를 내면 「테스트가 통과하니 배포해도 된다」가 된다.
   // ⚠️ **바인딩을 실제로 불러 본 결과가 들어 있다**(2026-08-22 · 위협 52). 화면이 이 응답만
@@ -239,7 +242,12 @@ const health = async (env) => {
   return { ok: true,
            ready: !!(keys && env.APP_ORIGIN && env.DB && ledgerBound && abuseReady && providers.length),
            providers, ledgerBound, abuseReady,
-           signupReady: !!(ledgerBound && env.SIGNUP_STATE_KEY && env.TOMBSTONE_KEY) };
+           // ⚠️ `TURNSTILE_SECRET` 과 site key 도 가입의 전제다(2026-08-22 · 결정 3).
+           //    비밀값은 **있나 없나**만, site key 는 **화면이 위젯을 그리는 데 필요**하므로
+           //    값 그대로 나간다 — 공개 값이다(브라우저에 박히도록 설계된 값).
+           signupReady: !!(ledgerBound && env.SIGNUP_STATE_KEY && env.TOMBSTONE_KEY
+                           && env.TURNSTILE_SECRET && env.TURNSTILE_SITE_KEY),
+           turnstileSiteKey: env.TURNSTILE_SITE_KEY || null };
 };
 
 // /ready 전용. 바인딩이 **있다**와 DB 가 **답한다**는 다른 말이다 — 잘못된 database_id 로 배포하면
@@ -417,6 +425,52 @@ const SESSION_DAYS = 180;
 const sha256 = async (s) => b64u(await crypto.subtle.digest("SHA-256", ENC.encode(s)));
 const mkToken = () => b64u(crypto.getRandomValues(new Uint8Array(32)));
 
+// ── 세션 envelope (2026-08-22 · 사용자 결정 4 · 위협 54) ──────────────────
+// **DB 를 만지지 않고** 「우리가 발급한 쿠키인가」를 판정한다. 왜 필요한가: 리미터도 임차증도
+// 인증보다 **앞**에 있어야 하는데(위협 47·49), 그러면 쿠키 없는 요청·매번 다른 위조 쿠키도
+// 요청마다 ledger 쓰기를 낸다 — 실측 IP 100개 × 1회에 429 0건 · ledger 쓰기 300건(T67-c).
+// 서명을 CPU 로 먼저 보면 그 비용이 **0** 이 된다.
+//
+// ⚠️ **이것은 인증이 아니다.** 서명이 맞아도 그 세션이 살아 있는지는 모른다 — 로그아웃·탈퇴·
+//    세대 무효화는 전부 D1 의 일이다. 그래서 통과한 뒤에도 `whoAmI()` 가 그대로 돈다.
+//    envelope 는 「우리 것이 아닌 쿠키를 값싸게 버리는 문」이지 「누구인가」를 답하지 않는다.
+// ⚠️ **전용 키다.** `STATE_KEY`·`RL_KEY`·`TOMBSTONE_KEY` 를 돌려 쓰지 않는다 — 겸용하면
+//    하나를 교체할 때 다른 하나가 같이 무너진다.
+// ⚠️ **키를 바꾸면 모든 세션이 로그아웃된다**(서명이 전부 안 맞는다). 절차는
+//    `docs/OPS_RUNBOOK.md` §5 에 적는다.
+//
+// 모양: `<판>.<무작위>.<만료 초>.<서명>` — 서명은 앞의 셋을 이어 붙인 문자열의 HMAC 이다.
+// 판이 있는 이유: 모양을 바꿔야 하는 날 **옛 모양을 조용히 통과시키지 않기 위해서**다.
+const SESSION_ENVELOPE_VERSION = "1";
+
+const envelopeSign = async (env, msg) => {
+  const k = await crypto.subtle.importKey("raw", ENC.encode(env.SESSION_ENVELOPE_KEY),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return b64u(await crypto.subtle.sign("HMAC", k, ENC.encode(msg)));
+};
+
+// 새 세션 토큰. 만료를 **서명 안에** 넣는다 — 넣지 않으면 만료 판정에 DB 가 필요하고,
+// 그러면 값싸게 버리려던 요청이 다시 DB 를 만진다.
+async function mkSessionToken(env, expMs) {
+  const body = `${SESSION_ENVELOPE_VERSION}.${mkToken()}.${Math.floor(expMs / 1000)}`;
+  return `${body}.${await envelopeSign(env, body)}`;
+}
+
+// **CPU 만 쓴다.** 여기서 거짓이면 어느 DB 도 만지지 않고 401 이다.
+// 거절 사유를 밖으로 말하지 않는다 — 「서명이 틀렸다」와 「만료됐다」를 구분해 주면
+// 위조를 시도하는 쪽에 진행 상황을 알려주는 셈이 된다.
+export async function envelopeOk(env, token, now = Date.now()) {
+  if (!env.SESSION_ENVELOPE_KEY || typeof token !== "string") return false;
+  const parts = token.split(".");
+  if (parts.length !== 4) return false;
+  const [v, rand, exp, sig] = parts;
+  if (v !== SESSION_ENVELOPE_VERSION) return false;      // 지원하지 않는 판
+  if (!/^[A-Za-z0-9_-]{1,86}$/.test(rand)) return false;  // 모양이 아니면 서명도 볼 것 없다
+  const e = Number(exp);
+  if (!Number.isInteger(e) || e * 1000 <= now) return false;
+  return sameSecret(await envelopeSign(env, `${v}.${rand}.${exp}`), sig);
+}
+
 // 쿠키. **HttpOnly** 라 자바스크립트가 못 읽는다 — XSS 가 나도 세션을 통째로 훔쳐 가지 못한다.
 //   Path=/api  : 정적 자산 요청에는 안 실린다(붙일 이유가 없다)
 //   SameSite=Lax: 남의 사이트에서 우리에게 보내는 POST 에는 안 실린다(CSRF 의 절반)
@@ -458,12 +512,16 @@ const bound = async (env, req, st) => !!st.txn && sameSecret(st.txn, await sha25
 // export 하는 이유: scripts/test-friends.mjs 가 로그인 왕복을 흉내내지 않고 **진짜 경로로**
 // 세션을 만들기 위해서다. 토큰 해시를 테스트가 직접 계산하게 두면 그 순간 로직이 두 벌이 된다.
 export async function newSession(env, userId) {
-  const token = mkToken();
-  const u = await env.DB.prepare("SELECT session_version FROM users WHERE id = ?").bind(userId).first();
   const now = Date.now();
+  const expires = now + SESSION_DAYS * 86400e3;
+  // ⚠️ **서명 envelope 다**(2026-08-22 · 결정 4). 저장하는 것은 여전히 **토큰 전체의 SHA-256**
+  //    이라 DB 가 새도 남의 세션을 쓸 수 없다. 만료는 envelope 와 `sessions.expires_at` 둘 다에
+  //    있고, **DB 쪽이 최종 판정**이다(관리자가 행을 지우면 그 순간 끝나야 하므로).
+  const token = await mkSessionToken(env, expires);
+  const u = await env.DB.prepare("SELECT session_version FROM users WHERE id = ?").bind(userId).first();
   await env.DB.prepare(
     "INSERT INTO sessions (token_hash, user_id, session_version, expires_at) VALUES (?, ?, ?, ?)")
-    .bind(await sha256(token), userId, u ? u.session_version : 0, now + SESSION_DAYS * 86400e3).run();
+    .bind(await sha256(token), userId, u ? u.session_version : 0, expires).run();
   // ⚠️ **죽은 행을 여기서 치운다.** whoAmI 는 만료를 판정에서만 걸러내고 행은 그대로 뒀다 —
   //    그래서 다시 오지 않는 사용자의 세션 행이 영원히 남았다. 방침(180일 뒤 만료)이 거짓말은
   //    아니지만, 만료된 뒤에도 보관할 이유가 없는 것을 보관하고 있었다.
@@ -761,6 +819,32 @@ const jsonFetch = async (url, init) => {
   }
 };
 
+// ── Turnstile — 공개 회원가입 시작점에만 (2026-08-22 · 사용자 결정 3) ────
+// **단독 방어가 아니다.** 덮는 것은 `POST /signup/start` 하나이고, 로그인과 인증된 읽기·쓰기는
+// 덮지 않는다(토큰이 없는 자리다). WAF(엣지)와 세션 envelope 위에 얹는 보조다.
+//
+// ⚠️ **바인딩이 아니라 HTTP 검증이다** — Pages Functions 에 Turnstile 바인딩은 없다(공식 문서).
+//    그래서 우리 Worker 가 매 가입 시작마다 Cloudflare 를 한 번 부른다.
+// ⚠️ 토큰은 **1회용이고 300초** 짜리다(공식 문서). 재사용은 `timeout-or-duplicate` 로 거부된다 —
+//    그 거부를 우리가 성공으로 바꾸지 않는다.
+// ⚠️ 실패 사유를 사용자에게 옮기지 않는다. 「사람 확인이 필요해요」 하나로 끝낸다 —
+//    사유 문자열은 Cloudflare 가 쓴 것이고 우리 화면의 말이 아니다.
+const TURNSTILE_VERIFY = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+
+async function turnstileOk(env, req, token) {
+  if (typeof token !== "string" || !token || token.length > 2048) return false;
+  const form = new URLSearchParams({ secret: env.TURNSTILE_SECRET, response: token });
+  const ip = req.headers.get("CF-Connecting-IP");
+  if (ip) form.set("remoteip", ip);
+  const r = await jsonFetch(TURNSTILE_VERIFY, {
+    method: "POST", body: form,
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+  });
+  // 못 받았거나(네트워크·시간 초과) 성공이 아니면 **거부**다. 검증 서버 오류를 통과로 바꾸면
+  // 그 순간 Turnstile 은 없는 것과 같다.
+  return r !== null && r.success === true;
+}
+
 async function verifyProvider(env, origin, name, code, state) {
   const p = P[name];
   const { id, secret } = creds(env, name);
@@ -1043,32 +1127,41 @@ const publicMode = (m) => (m === "open" || m === "maintenance" || m === "restore
 //           **ledger D1** 이라 이 판정에 안 들어간다(2026-08-20 · 위협 49)
 //   bucket  레이트리밋 버킷. **라우트 하나에 하나다** — 둘을 걸면 요청 하나가 두 번 세어져
 //           D1 쓰기가 두 배가 된다(POST /friends 가 write + friends 로 실제 그랬다)
+//   auth    살아 있는 세션이 필요한가. 필요하면 **DB 를 만지기 전에** 세션 envelope 서명을
+//           확인하고, 우리 것이 아니면 그 자리에서 401 이다(2026-08-22 · 결정 4 · 위협 54).
+//           ⚠️ 이건 인증이 아니라 **값싼 문**이다 — 통과해도 `whoAmI()` 가 그대로 돈다
 const PROVIDER_RE = Object.keys(P).join("|");
 const ROUTES = [
-  [/^\/health$/, ["GET"], false, null],
-  [/^\/ready$/, ["GET"], false, null],
-  [/^\/policies$/, ["GET"], false, null],
+  [/^\/health$/, ["GET"], false, null, false],
+  [/^\/ready$/, ["GET"], false, null, false],
+  [/^\/policies$/, ["GET"], false, null, false],
   // 로그인 시작. **DB 를 아예 안 만진다** — 302 하나와 서명 하나다(그래서 세지도 않는다).
   // 모르는 제공자 이름은 여기서 안 걸린다 = 알 수 없는 라우트 = 404, 쓰기 0건.
-  [new RegExp(`^/login/(?:${PROVIDER_RE})$`), ["GET"], false, null],
-  [/^\/signup\/start$/, ["POST"], true, "signup"],
-  [new RegExp(`^/(?:cb|exchange)/(?:${PROVIDER_RE})$`), ["GET"], true, "login"],
-  [/^\/session$/, ["DELETE"], true, "write"],
-  [/^\/book$/, ["GET"], true, "read"],
-  [/^\/book$/, ["PUT"], true, "write"],
-  [/^\/me$/, ["GET"], true, "read"],
-  [/^\/me$/, ["PUT", "DELETE"], true, "write"],
+  [new RegExp(`^/login/(?:${PROVIDER_RE})$`), ["GET"], false, null, false],
+  [/^\/signup\/start$/, ["POST"], true, "signup", false],
+  [new RegExp(`^/(?:cb|exchange)/(?:${PROVIDER_RE})$`), ["GET"], true, "login", false],
+  [/^\/session$/, ["DELETE"], true, "write", true],
+  [/^\/book$/, ["GET"], true, "read", true],
+  [/^\/book$/, ["PUT"], true, "write", true],
+  [/^\/me$/, ["GET"], true, "read", true],
+  [/^\/me$/, ["PUT", "DELETE"], true, "write", true],
   // ⚠️ `GET /friends` 는 읽기처럼 보이지만 초대 코드가 없으면 그 자리에서 만든다(myCode).
-  [/^\/friends$/, ["GET"], true, "read"],
-  [/^\/friends$/, ["POST"], true, "friends"],
-  [/^\/friends\/code$/, ["POST"], true, "rotate"],
-  [/^\/friends\/[^/]+\/book$/, ["GET"], true, "read"],
-  [/^\/friends\/[^/]+$/, ["PUT", "DELETE"], true, "write"],
+  [/^\/friends$/, ["GET"], true, "read", true],
+  [/^\/friends$/, ["POST"], true, "friends", true],
+  [/^\/friends\/code$/, ["POST"], true, "rotate", true],
+  [/^\/friends\/[^/]+\/book$/, ["GET"], true, "read", true],
+  [/^\/friends\/[^/]+$/, ["PUT", "DELETE"], true, "write", true],
 ];
 
 // 표가 실제로 쓰는 버킷 전부. 테스트가 이것과 `RL_MAX` 를 대조한다 — 표에 새 버킷을 적고
 // 한도 등록을 잊으면 `rlMax()` 가 던지므로, 그 실패를 사용자가 아니라 테스트가 먼저 본다.
 export const routeBuckets = () => [...new Set(ROUTES.map(([, , , b]) => b).filter(Boolean))];
+// 세션이 필요한 (경로, method) 쌍 전부. 테스트가 이것과 실제 401 동작을 대조한다 — 표에
+// `auth:true` 를 적고 코드가 안 보면, 그 라우트만 값싼 문 밖에 남는다.
+// **method 별로 펼친다**: 한 줄이 `["PUT","DELETE"]` 를 함께 담으므로, 줄 수를 세면
+// 실제로 열려 있는 자리보다 적게 세게 된다.
+export const authRoutes = () =>
+  ROUTES.filter(([, , , , a]) => a).flatMap(([, ms]) => ms.map((m) => m));
 // 표의 크기. 테스트가 「대표 경로 목록이 표를 전부 덮었나」를 이 값으로 확인한다 —
 // 라우트를 더하고 목록에 안 적으면 그 라우트만 검사 밖에 남는다.
 export const routeCount = () => ROUTES.length;
@@ -1078,8 +1171,8 @@ export function routeFor(method, path) {
   // `HEAD` 는 `GET` 과 같은 라우트다. 런타임이 본문을 떼고 보내므로 판정을 갈라 둘 이유가 없고,
   // 가르면 `curl -sI` 로 확인하라고 적어 둔 절차(worker/SETUP.md)가 404 를 받는다.
   const m = method === "HEAD" ? "GET" : method;
-  for (const [re, methods, lease, bucket] of ROUTES) {
-    if (methods.includes(m) && re.test(path)) return { lease, bucket };
+  for (const [re, methods, lease, bucket, auth] of ROUTES) {
+    if (methods.includes(m) && re.test(path)) return { lease, bucket, auth };
   }
   return null;
 }
@@ -1149,6 +1242,21 @@ export default {
       const edge = await edgeVerdict(env, req, rt.bucket || "route");
       if (edge === BROKEN) return guardClosed(env, req);
       if (edge === OVER) return tooMany(env, req);
+    }
+
+    // ── 0-0-2. 우리가 발급한 쿠키인가 — **CPU 만 쓴다** ──
+    // (2026-08-22 · 사용자 결정 4 · 위협 54) 순서가 고정이다:
+    //   요청 → **envelope 검증** → 경로별 인증 요구 → 내부 제한기·임차증 → D1 세션·사용자 → 처리
+    // 왜 이 자리인가: 리미터도 임차증도 인증보다 앞이어야 하고(위협 47·49), 그러면 쿠키 없는
+    // 요청과 매번 다른 위조 쿠키가 요청마다 지속 저장소 쓰기를 낸다 — 실측 IP 100개 × 1회에
+    // **ledger 쓰기 300건**(T67-c). 서명은 DB 없이 볼 수 있으므로 그 비용을 **0** 으로 만든다.
+    // ⚠️ **이 통과는 인증이 아니다.** 아래 `whoAmI()` 가 그대로 돌아 폐기·만료·세대·계정 존재를
+    //    D1 에서 최종 판정한다. 여기서 하는 말은 「이건 우리가 만든 쿠키다」 하나뿐이다.
+    // ⚠️ 키가 없으면 **검증할 수 없다** — 통과시키지 않는다(계정 라우트는 어차피 열 수 없다).
+    if (rt.auth) {
+      if (!env.SESSION_ENVELOPE_KEY) return guardClosed(env, req);
+      if (!(await envelopeOk(env, readCookie(req))))
+        return json(env, req, { error: "로그인이 필요해요" }, 401);
     }
 
     // ── 0-1. 유지보수 게이트 ──
@@ -1345,8 +1453,10 @@ async function route(req, env, rc) {
       const provider = body && typeof body.provider === "string" ? body.provider : "";
       if (!isProvider(provider)) return json(env, req, { error: "그런 로그인 방식이 없어요" }, 400);
       const { id } = creds(env, provider);
-      // 설정이 덜 된 채로 조용히 돌지 않는다. 셋 다 없으면 가입 자체를 열지 않는다.
-      if (!id || !env.SIGNUP_STATE_KEY || !env.TOMBSTONE_KEY)
+      // 설정이 덜 된 채로 조용히 돌지 않는다. 넷 다 없으면 가입 자체를 열지 않는다.
+      // ⚠️ `TURNSTILE_SECRET` 도 여기 있다(2026-08-22 · 결정 3) — 없으면 사람 확인을 할 수
+      //    없고, 확인 없이 공개 가입을 여는 것은 「방어를 안 붙인 채 여는 것」과 같다.
+      if (!id || !env.SIGNUP_STATE_KEY || !env.TOMBSTONE_KEY || !env.TURNSTILE_SECRET)
         return json(env, req, { error: "회원가입이 아직 준비되지 않았어요" }, 503);
       // ⚠️ **`true` 만 받는다.** 없거나 `false` 거나 `"true"` 문자열이면 거부다 —
       //    「값이 있으면 통과」로 만들면 `age14: 0` 같은 값이 지나간다.
@@ -1361,6 +1471,12 @@ async function route(req, env, rc) {
       let backOrigin = null;
       try { backOrigin = new URL(back).origin; } catch { /* 아래에서 400 */ }
       if (!allowed(env, backOrigin)) return json(env, req, { error: "허용되지 않은 주소예요" }, 400);
+      // ── 사람 확인 ──
+      // **정책 검사(약관·연령·pv)를 통과한 뒤**에 부른다 — 형식이 틀린 요청 때문에 외부 호출을
+      // 내보내면 그 자체가 우리 비용이 되고, 사용자는 위젯을 두 번 풀게 된다.
+      // ⚠️ 실패해도 **어느 DB 도 만지지 않은 상태**다(리미터는 이 앞에서 이미 셌다).
+      if (!(await turnstileOk(env, req, body.turnstile)))
+        return json(env, req, { error: "사람 확인이 필요해요. 다시 시도해 주세요", humanCheck: true }, 400);
       // 행위 시각. **서버가 찍는다** — 클라이언트가 보낸 시각을 쓰면 그 값이 곧 위조 가능한 증거가 된다.
       const occurredAt = Date.now();
       const txn = mkToken();
@@ -1368,6 +1484,11 @@ async function route(req, env, rc) {
       try {
         state = await makeSignupState(env, provider, {
           back, pv: POLICY_BUNDLE.pv, occurredAt, terms: true, age14: true,
+          // 사람 확인 결과를 **서명된(암호화된) state 에 실어** 콜백까지 들고 간다(결정 3).
+          // 그러지 않으면 콜백은 「이 가입이 사람 확인을 지났나」를 알 방법이 없고,
+          // 공격자는 `/signup/start` 를 건너뛰고 제공자 인증만으로 계정을 만들려 할 수 있다.
+          // 이 값은 AEAD 안에 있으므로 위조도 열람도 안 된다(§5-4).
+          hv: 1, hvAt: occurredAt,
           n: String(body.n || "").slice(0, 64), txn: await sha256(txn),
         });
       } catch {
@@ -1473,6 +1594,12 @@ async function route(req, env, rc) {
               ? json(env, req, { error: "약관이 새로 바뀌었어요. 다시 가입해 주세요", policyStale: true }, 409)
               : fail(null, 302, st.back + "#login=stale");
           if (!env.TOMBSTONE_KEY) return fail("회원가입이 아직 준비되지 않았어요", 503);
+          // ⚠️ **사람 확인을 지난 가입인가**(2026-08-22 · 결정 3). `/signup/start` 가 Turnstile 을
+          //    통과시킨 뒤에만 `hv` 를 넣는다. 이 값은 AEAD 안에 있어 위조할 수 없고, 그래서
+          //    「가입 시작을 건너뛰고 제공자 인증만으로 계정을 만든다」가 여기서 끝난다.
+          //    ⛔ 이 검사가 없으면 Turnstile 은 **화면 장식**이 된다 — 서버가 그 결과를 한 번도
+          //       안 보기 때문이다.
+          if (st.hv !== 1) return fail("사람 확인이 필요해요. 다시 가입해 주세요.", 400);
         }
 
         const code = url.searchParams.get("code");

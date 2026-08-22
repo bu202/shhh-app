@@ -115,21 +115,23 @@ async function fetchPolicyDoc(path, expectHash) {
 // 회원가입 시작. **POST 다** — GET 링크로 만들면 남이 보낸 주소 하나가 약관 수락과 연령
 // 진술을 만들어낸다(사용자는 가입 화면을 본 적이 없는데 기록에는 "수락함"이 남는다).
 // 로그인 표시가 없는 상태의 호출이라 request() 를 안 쓴다.
-async function apiSignupStart(provider, { terms, age14, pv }) {
+async function apiSignupStart(provider, { terms, age14, pv, turnstile }) {
   const t = timeoutSignal(REQUEST_TIMEOUT);
   try {
     const res = await fetch(API + "/signup/start", {
       method: "POST", credentials: "same-origin", signal: t.signal,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        provider, terms, age14, pv,
+        provider, terms, age14, pv, turnstile,
         back: location.origin + location.pathname, n: newNonce(),
       }),
     });
     const d = await res.json().catch(() => null);
     if (res.ok && d && d.url) return { ok: true, url: d.url };
     // 원인이 다르면 사용자가 할 일도 다르다. 서버가 준 문구를 그대로 쓰되 종류를 함께 준다.
+    // 사람 확인 실패는 **사용자가 할 일이 다르다**(위젯을 다시 풀어야 한다). 그래서 따로 센다.
     const kind = d && d.policyStale ? "policy_stale"
+      : d && d.humanCheck ? "human_check"
       : res.status === 429 ? "rate_limited"
       : res.status === 503 ? "not_ready"
       : res.status === 400 ? "invalid" : "server";
@@ -297,17 +299,21 @@ async function apiHealth() {
   const t = timeoutSignal(REQUEST_TIMEOUT);
   try {
     const res = await fetch(API + "/health", { signal: t.signal });
-    if (!res.ok) return { ok: false, providers: [], signupReady: null };
+    if (!res.ok) return { ok: false, providers: [], signupReady: null, turnstileSiteKey: null };
     const d = await res.json().catch(() => null);
     // ⚠️ **`signupReady` 를 버리지 않는다.** 버렸을 때 어떻게 되냐면: 서버는 제공자가 설정돼
     //    있으니 `providers:["kakao"]` 를 주고 가입 전용 키는 없어서 `signupReady:false` 를 주는데,
     //    화면은 앞의 것만 보고 **「카카오로 가입하기」를 그린다.** 누르면 `/signup/start` 가 503 이다.
     //    로그인은 되는데 가입만 막힌 상태는 실제로 생길 수 있다(키가 다섯이라 하나만 빠질 수 있다).
+    // ⚠️ **`turnstileSiteKey` 도 버리지 않는다**(2026-08-22 · 결정 3). 가입 화면이 이 값으로
+    //    사람 확인 위젯을 그린다 — 없으면 위젯이 안 뜨고, 위젯이 없으면 서버가 400 을 낸다.
+    //    **공개 값이다**(브라우저에 박히도록 설계된 값). 비밀은 서버 쪽 검증 키다.
     return d && Array.isArray(d.providers)
-      ? { ok: true, providers: d.providers, signupReady: d.signupReady === true }
-      : { ok: false, providers: [], signupReady: null };
+      ? { ok: true, providers: d.providers, signupReady: d.signupReady === true,
+          turnstileSiteKey: typeof d.turnstileSiteKey === "string" ? d.turnstileSiteKey : null }
+      : { ok: false, providers: [], signupReady: null, turnstileSiteKey: null };
   } catch {
-    return { ok: false, providers: [], signupReady: null };
+    return { ok: false, providers: [], signupReady: null, turnstileSiteKey: null };
   } finally {
     t.done();
   }

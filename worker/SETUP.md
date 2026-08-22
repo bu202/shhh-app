@@ -33,12 +33,19 @@ npx wrangler pages secret put KAKAO_ID --project-name shhh-app
 #  DELETION_KEY     — 삭제 표식 HMAC. 없으면 계정 삭제 503.
 #  READY_KEY        — /api/ready 진단용 운영자 키(`X-Ready-Key` 헤더). 없으면 진단을 아무도
 #                     못 본다 — 키 없는 호출은 두 DB 를 만지지 않고 503 이다(위협 56).
+#  SESSION_ENVELOPE_KEY — 세션 쿠키 서명(HMAC). `openssl rand -base64 32`.
+#                     ⚠️ **바꾸면 모든 세션이 로그아웃된다** — 서명이 전부 안 맞는다.
+#                     없으면 계정 라우트가 DB 를 만지기 전에 503(결정 4).
+#  TURNSTILE_SECRET — 사람 확인 서버 검증 키(Cloudflare Turnstile 위젯의 secret).
+#                     없으면 **공개 회원가입만** 503 이다. 로그인·읽기·쓰기에는 안 쓴다(결정 3).
 #  MASTER_UIDS      — 무료 벽이 없는 계정. 쉼표 구분. 비우면 아무도 마스터가 아니다.
 #  DEV_ORIGINS      — **개발 Worker 에만.** localhost·LAN 주소를 허용한다. 운영에 넣지 않는다.
 #  DEV_RATE_LIMIT   — **로컬 전용.** 없으면 계정 라우트가 DB 를 만지기 전에 503 이다(위협 50).
 #                     `.dev.vars` 나 테스트 env 에만 둔다. ⛔ wrangler.jsonc 에 넣지 않는다 —
 #                     넣으면 남용 방어 없이 계정 기능이 열린 채 배포된다. 이 값으로는
 #                     `/api/ready` 가 절대 200 이 아니다(EDGE_GUARD 선언이라야 ready 다).
+#  TURNSTILE_SITE_KEY — **시크릿이 아니라 wrangler.jsonc 의 vars** 다(공개 값).
+#                     가입 화면이 위젯을 그리는 데 쓴다. 없으면 signupReady 가 거짓이다.
 #  EDGE_GUARD       — **시크릿이 아니라 wrangler.jsonc 의 vars** 다. `waf` 또는 `ratelimit`.
 #                     없거나 모르는 값이면 계정 라우트가 DB 를 만지기 전에 503 이다.
 #                     모드별 절차는 docs/OPS_RUNBOOK.md §13-2.

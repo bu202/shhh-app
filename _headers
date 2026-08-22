@@ -21,9 +21,16 @@
 #    열어 한쪽만 뜨는 것으로 갈랐다. 지금 값은 브라우저 기본값과 같고 origin 까지만 보낸다.
 # ⚠️ 카메라(js/camera.js)를 되살리면 MediaPipe 가 cdn.jsdelivr.net · storage.googleapis.com 에서
 #    온다. **그때 script-src 와 connect-src 를 같이 고쳐야 한다** — 안 고치면 카메라가 조용히 안 뜬다.
+#
+# ⚠️ `challenges.cloudflare.com` 이 **script-src 와 frame-src 에** 있는 이유 — Turnstile 이다
+#    (2026-08-22 · 사용자 결정 3). 위젯은 ① 그 주소에서 스크립트를 받고 ② iframe 을 띄운다.
+#    둘 중 하나만 열면 위젯이 **조용히 안 뜬다.** `connect-src` 는 열지 않았다 — 토큰 검증은
+#    브라우저가 아니라 **우리 서버**가 한다(worker/index.js 의 turnstileOk).
+#    ⚠️ 이건 우리가 통제하지 않는 외부 스크립트를 **가입 화면에** 들이는 결정이다. 그 대가를
+#       알고 골랐다: 공개 가입에 사람 확인이 없으면 계정을 열 수 없다(설계서 §12-3-4).
 
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://sldict.korean.go.kr data:; connect-src 'self' https://sldict.korean.go.kr; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' https://sldict.korean.go.kr data:; connect-src 'self' https://sldict.korean.go.kr; frame-src https://challenges.cloudflare.com; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: camera=(), microphone=(), geolocation=()
   X-Content-Type-Options: nosniff

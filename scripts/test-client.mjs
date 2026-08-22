@@ -80,7 +80,7 @@ function loadClient({ store = {}, routes, loc = {} } = {}) {
     const path = String(url).replace(/^\/api/, "");
     // 시간 제한이 **붙었는지**도 기록한다. 이 스텁은 진짜 타이머를 돌리지 않으므로
     // "12초 뒤에 끊기나"는 못 재지만, "끊을 수단을 들려 보냈나"는 여기서 잴 수 있다.
-    calls.push({ method, path, aborts: !!opt.signal });
+    calls.push({ method, path, aborts: !!opt.signal, body: opt.body });
     const r = await route(method, path, opt);
     if (r.throw) throw new Error("offline");           // 네트워크 끊김
     // 시간 초과. **실제 타이머를 기다리지 않는다** — 12초를 세는 것은 브라우저 기능이고
@@ -98,7 +98,34 @@ function loadClient({ store = {}, routes, loc = {} } = {}) {
 
   const segs = ["mine", "friends"].map((b) => { const e = makeEl("button"); e.dataset.book = b; return e; });
   const byId = new Map();
+  // ── 사람 확인 위젯 대역 (2026-08-22 · 결정 3) ────────────────────────────
+  // 가입 화면은 외부 스크립트를 `document.head` 에 붙여 받는다. 여기서는 그 붙이는 순간을
+  // 가로채 **성공/실패를 골라 만든다** — 실제 네트워크를 타지 않으면서 두 갈래를 다 잰다.
+  const window = { turnstile: null };
+  let turnstileMode = "ok";        // "ok" · "script-fail" · "render-throw"
+  const head = makeEl("head");
+  head.appendChild = (c) => {
+    head.children.push(c);
+    if (String(c.src || "").includes("challenges.cloudflare.com")) {
+      if (turnstileMode === "script-fail") {
+        queueMicrotask(() => { for (const fn of c.handlers.error || []) fn({}); });
+      } else {
+        window.turnstile = {
+          render(box, opts) {
+            if (turnstileMode === "render-throw") throw new Error("no");
+            // 실제 위젯처럼 **나중에** 토큰을 준다. 즉시 주면 「토큰 없이도 열린다」를 못 잡는다.
+            box.__solve = (tok) => opts.callback(tok);
+            box.__expire = () => opts["expired-callback"]();
+            box.__error = () => opts["error-callback"]();
+          },
+        };
+        queueMicrotask(() => { for (const fn of c.handlers.load || []) fn({}); });
+      }
+    }
+    return c;
+  };
   const document = {
+    head,
     getElementById(id) {
       if (!byId.has(id)) { const e = makeEl(); e.id = id; byId.set(id, e); }
       return byId.get(id);
@@ -139,12 +166,14 @@ function loadClient({ store = {}, routes, loc = {} } = {}) {
 
   const inner = new Function(
     "localStorage", "location", "history", "crypto", "fetch", "document", "confirm", "addEventListener",
+    "window",
     src,
-  )(localStorage, location, history, crypto, fetch, document, () => confirmAnswer, addEventListener);
+  )(localStorage, location, history, crypto, fetch, document, () => confirmAnswer, addEventListener, window);
 
   return {
     ...inner, store, calls, document, segs, location,
     fireStorage: (key, newValue) => { for (const fn of winHandlers.storage || []) fn({ key, newValue }); },
+    setTurnstileMode: (m) => { turnstileMode = m; window.turnstile = null; },
     setRoutes: (fn) => { route = fn; },
     setConfirm: (v) => { confirmAnswer = v; },
     deletes: (path) => calls.filter((c) => c.method === "DELETE" && c.path === path).length,
@@ -862,7 +891,8 @@ await T("회원가입 화면 — 정책 해시 대조 · 필수 체크 · 실패
   const hasText = (c, needle) => allText(gate(c)).includes(needle);
 
   const baseRoutes = (over = {}) => async (m, p) => {
-    if (p === "/health") return { status: 200, body: { ok: true, signupReady: true, providers: ["kakao", "naver", "google"] } };
+    if (p === "/health") return { status: 200, body: { ok: true, signupReady: true,
+      providers: ["kakao", "naver", "google"], turnstileSiteKey: "0xTEST" } };
     if (p === "/policies") return over.policies ?? { status: 200, body: { pv: PV, docs: await docsFor() } };
     if (p.startsWith("./policies/")) {
       const key = p.slice(2);
@@ -903,10 +933,28 @@ await T("회원가입 화면 — 정책 해시 대조 · 필수 체크 · 실패
     boxes[0].checked = true;
     for (const fn of boxes[0].handlers.change || []) fn({});
     assert.equal(kakao.disabled, true, t("하나만 체크했는데 가입 버튼이 열렸다"));
-    // 둘 다 체크하면 열린다.
+    // 둘 다 체크해도 **사람 확인 전에는 안 열린다**(2026-08-22 · 결정 3).
     boxes[1].checked = true;
     for (const fn of boxes[1].handlers.change || []) fn({});
-    assert.equal(kakao.disabled, false, t("둘 다 체크했는데 가입 버튼이 안 열린다"));
+    assert.equal(kakao.disabled, true, t("사람 확인 전인데 가입 버튼이 열렸다"));
+    assert.ok(hasText(c, "사람 확인을 마쳐야"), t("왜 못 누르는지 화면이 말하지 않는다"));
+    // 위젯이 토큰을 주면 열린다.
+    const hv = walk(gate(c)).find((e) => e.className === "signup-human");
+    assert.ok(hv, t("사람 확인 자리가 화면에 없다"));
+    await settle();
+    assert.ok(typeof hv.__solve === "function", t("사람 확인 위젯이 안 그려졌다"));
+    hv.__solve("tok-1");
+    assert.equal(kakao.disabled, false, t("사람 확인을 마쳤는데 가입 버튼이 안 열린다"));
+    // 토큰이 만료되면 **다시 닫힌다.** 남겨 두면 이미 쓴 토큰으로 재시도해 서버가 거절한다.
+    hv.__expire();
+    assert.equal(kakao.disabled, true, t("사람 확인이 만료됐는데 버튼이 열려 있다"));
+    hv.__solve("tok-2");
+    // 가입 시작 본문에 **그 토큰이 실린다.**
+    kakao.click();
+    await settle();
+    const started = c.calls.filter((x) => x.path === "/signup/start");
+    assert.equal(started.length, 1, t("가입 시작이 한 번 안 갔다"));
+    assert.equal(JSON.parse(started[0].body).turnstile, "tok-2", t("가입 시작이 사람 확인 토큰을 안 보냈다"));
     // 누르면 서버가 준 주소로 간다. **체크 값을 그대로 실어 보낸다.**
     kakao.click();
     await settle();
@@ -916,6 +964,47 @@ await T("회원가입 화면 — 정책 해시 대조 · 필수 체크 · 실패
     // ⚠️ 가입을 그만두면 체크값이 **길게 남지 않는다.**
     assert.ok(!Object.keys(c.store).some((k) => /terms|age14|policy/i.test(k)),
       t("체크값이 localStorage 에 남았다"));
+  }
+
+  // 2-b. T72 — 사람 확인이 **없거나 고장 나면** 가입을 열지 않는다(2026-08-22 · 결정 3).
+  //   ⛔ 위젯을 붙여 놓고 화면이 그 결과를 안 보면 Turnstile 은 장식이 된다. 여기서 재는 것은
+  //      「화면이 토큰 없이는 진행하지 않는다」와 「왜 안 되는지 말한다」 둘이다.
+  {
+    // ① 스크립트를 못 받으면 이유를 말한다.
+    const c = await openApp(baseRoutes());
+    c.setTurnstileMode("script-fail");
+    btn(c, "가입하기").click();
+    await settle(); await settle();
+    const boxes = walk(gate(c)).filter((e) => e.type === "checkbox");
+    for (const b of boxes) { b.checked = true; for (const fn of b.handlers.change || []) fn({}); }
+    assert.equal(btn(c, "카카오로 가입하기").disabled, true, t("위젯이 없는데 가입 버튼이 열렸다"));
+    assert.ok(hasText(c, "사람 확인을 불러오지 못했어요"), t("위젯 실패를 화면이 말하지 않는다"));
+    assert.equal(c.calls.filter((x) => x.path === "/signup/start").length, 0,
+      t("사람 확인 없이 가입 시작을 보냈다"));
+  }
+  {
+    // ② 서버가 site key 를 안 주면 위젯을 부르지도 않는다(외부 요청을 만들지 않는다).
+    const c = await openApp(async (m, p) => (p === "/health"
+      ? { status: 200, body: { ok: true, signupReady: true, providers: ["kakao"], turnstileSiteKey: null } }
+      : baseRoutes()(m, p)));
+    btn(c, "가입하기").click();
+    await settle(); await settle();
+    assert.ok(!c.document.head.children.some((e) => String(e.src || "").includes("challenges")),
+      t("site key 도 없이 외부 스크립트를 받아 왔다"));
+    assert.ok(hasText(c, "사람 확인을 불러오지 못했어요"), t("위젯을 못 그린 이유를 말하지 않는다"));
+  }
+  {
+    // ③ 서버가 사람 확인 실패(400 humanCheck)를 주면 **다시 풀라고** 말한다.
+    const c = await openApp(baseRoutes({ signup: { status: 400, body: { humanCheck: true, error: "x" } } }));
+    btn(c, "가입하기").click();
+    await settle(); await settle();
+    const boxes = walk(gate(c)).filter((e) => e.type === "checkbox");
+    for (const b of boxes) { b.checked = true; for (const fn of b.handlers.change || []) fn({}); }
+    const hv = walk(gate(c)).find((e) => e.className === "signup-human");
+    hv.__solve("tok");
+    btn(c, "카카오로 가입하기").click();
+    await settle();
+    assert.ok(hasText(c, "사람 확인을 다시"), t("사람 확인 실패를 다른 오류와 같은 말로 처리했다"));
   }
 
   // 3. ★ **정책을 못 받으면 가입 버튼을 안 그린다(fail-closed) + 재시도가 있다.**
@@ -1067,4 +1156,5 @@ if (failed.length) {
 }
 console.log(`test-client: ${n}개 통과 — 로그아웃·계정삭제·친구철회 실패 처리 · 저장 완료 판정`
   + ` · 친구 목록 로딩/실패/재시도/스키마/중복요청 · 탭 간 편집 세대 · OAuth 왕복 시간 제한`
-  + ` · 가입 화면(정책 해시 대조 · 필수 체크 · 실패/재시도 · 연타 잠금 · signup_required 안내)`);
+  + ` · 가입 화면(정책 해시 대조 · 필수 체크 · 실패/재시도 · 연타 잠금 · signup_required 안내`
+  + ` · T72 사람 확인 위젯: 토큰 전에는 잠김 · 만료 시 재잠금 · 본문에 토큰 · 위젯 실패 안내)`);

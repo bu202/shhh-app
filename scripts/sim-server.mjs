@@ -69,6 +69,7 @@ const SIM_KEYS = {
   RL_KEY: randomBytes(32).toString("base64url"),
   SIGNUP_STATE_KEY: randomBytes(32).toString("base64"),   // 디코딩하면 정확히 32바이트
   TOMBSTONE_KEY: randomBytes(32).toString("base64url"),
+  SESSION_ENVELOPE_KEY: randomBytes(32).toString("base64url"),
   DELETION_KEY: randomBytes(32).toString("base64url"),
 };
 

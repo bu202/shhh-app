@@ -461,6 +461,9 @@ if (typeof document !== "undefined") {
   // 「가입하기」 버튼을 그려 놓고 누른 사람에게만 실패를 보여준다 — 기다리게 하고 실패시키는 꼴이다.
   // null = 아직 못 물어봤다 · false = 서버가 지금은 가입을 못 받는다 · true = 받는다.
   let SIGNUP_READY = null;
+  // 사람 확인 위젯의 **공개** site key(2026-08-22 · 결정 3). null = 서버가 안 줬다 = 위젯을
+  // 그릴 수 없다 = 가입을 시작해 봐야 서버가 400 이다. 그 상태는 SIGNUP_READY 가 false 로 온다.
+  let TURNSTILE_KEY = null;
   // 방금 가입한 사람과 다시 온 사람에게 다른 말을 하기 위해서만 쓴다. 자격증명이 아니다.
   let JUST_SIGNED_UP = false;
   // ⚠️ **돌아온 자리에서 이미 화면을 정했으면 게이트가 그 위를 덮지 않는다.**
@@ -720,22 +723,40 @@ if (typeof document !== "undefined") {
       buttons.appendChild(p);
       return;
     }
+    // 사람 확인 자리. **버튼 위**에 둔다 — 다 채우고 마지막에 막히는 순서를 만들지 않는다.
+    let hvToken = null;
+    const hvBox = document.createElement("div");
+    hvBox.className = "signup-human";
+    buttons.parentNode.insertBefore(hvBox, buttons);
+    const hvNote = document.createElement("p");
+    hvNote.className = "hint";
+    buttons.parentNode.insertBefore(hvNote, buttons);
+
     const btns = list.map((k) => {
       const el = document.createElement("button");
       el.type = "button"; el.className = "btn-primary login-" + k;
       el.textContent = NAMES[k] + "로 가입하기";
-      el.addEventListener("click", () => startSignup(k, el, why, b.pv, cbTerms, cbAge));
+      el.addEventListener("click", () => startSignup(k, el, why, b.pv, cbTerms, cbAge, () => hvToken));
       buttons.appendChild(el);
       return el;
     });
     const sync = () => {
-      const ok = cbTerms.checked && cbAge.checked;
+      const ok = cbTerms.checked && cbAge.checked && !!hvToken;
       for (const el of btns) { el.disabled = !ok || SIGNUP_BUSY; }
-      why.textContent = ok ? "가입할 방법을 골라주세요." : "두 항목을 확인하셔야 가입할 수 있어요.";
+      why.textContent = ok ? "가입할 방법을 골라주세요."
+        : !cbTerms.checked || !cbAge.checked ? "두 항목을 확인하셔야 가입할 수 있어요."
+        : "사람 확인을 마쳐야 가입할 수 있어요.";
     };
     cbTerms.addEventListener("change", sync);
     cbAge.addEventListener("change", sync);
     sync();
+    // ⚠️ **위젯이 안 뜨면 그 사실을 말한다.** 조용히 두면 사용자는 체크를 다 하고도 버튼이
+    //    회색인 이유를 모른다 — 화면에 이유가 없으면 그건 고장이다.
+    renderTurnstile(hvBox, (tok) => { hvToken = tok || null; sync(); }).then((drawn) => {
+      hvNote.textContent = drawn
+        ? "가입 전에 사람 확인을 한 번 거쳐요."
+        : "사람 확인을 불러오지 못했어요. 연결을 확인하고 새로고침해 주세요.";
+    });
   }
 
   // 실패해도 **끝이 있는 화면**을 준다. 재시도 버튼이 없으면 사용자가 할 수 있는 일이 없다.
@@ -754,7 +775,45 @@ if (typeof document !== "undefined") {
     status.parentNode.insertBefore(retry, status.nextSibling);
   }
 
-  async function startSignup(provider, btn, why, pv, cbTerms, cbAge) {
+  // ── 사람 확인 위젯 (2026-08-22 · 사용자 결정 3) ─────────────────────────
+  // ⚠️ **외부 스크립트다.** `_headers` 의 CSP 에 `challenges.cloudflare.com` 을 script-src·
+  //    frame-src 로 열어 뒀다. 실패하면 **조용히 넘어가지 않는다** — 토큰 없이 가입을 시작하면
+  //    서버가 400 을 내고, 사용자는 이유를 모른 채 버튼만 다시 누른다.
+  // ⚠️ 가입 화면을 **열 때만** 부른다. 앱을 켜자마자 받으면 가입할 생각이 없는 사람에게도
+  //    외부 요청이 나간다(그 자체가 privacy.html 이 설명해야 할 사실이 된다).
+  let turnstileLoading = null;
+  function loadTurnstile() {
+    if (window.turnstile) return Promise.resolve(true);
+    if (turnstileLoading) return turnstileLoading;
+    turnstileLoading = new Promise((done) => {
+      const el = document.createElement("script");
+      el.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+      el.async = true;
+      el.addEventListener("load", () => done(!!window.turnstile));
+      el.addEventListener("error", () => { turnstileLoading = null; done(false); });
+      document.head.appendChild(el);
+    });
+    return turnstileLoading;
+  }
+
+  // 위젯 하나를 그리고 **토큰이 오면** onToken 을 부른다. 반환값은 「그렸나」다.
+  async function renderTurnstile(box, onToken) {
+    if (!TURNSTILE_KEY) return false;
+    if (!(await loadTurnstile())) return false;
+    try {
+      window.turnstile.render(box, {
+        sitekey: TURNSTILE_KEY,
+        callback: (token) => onToken(token),
+        // 만료·오류는 **토큰을 지운다.** 남겨 두면 이미 쓴 토큰으로 다시 시도하게 되고
+        // 서버는 `timeout-or-duplicate` 로 거절한다 — 사용자에게는 원인 없는 실패로 보인다.
+        "expired-callback": () => onToken(null),
+        "error-callback": () => onToken(null),
+      });
+      return true;
+    } catch { return false; }
+  }
+
+  async function startSignup(provider, btn, why, pv, cbTerms, cbAge, getToken) {
     if (SIGNUP_BUSY) return;                 // 두 번 눌러도 왕복이 둘로 갈라지지 않는다
     SIGNUP_BUSY = true;
     btn.disabled = true;
@@ -762,12 +821,16 @@ if (typeof document !== "undefined") {
     if (location.hash) localStorage.setItem(BACK_KEY, location.hash);
     const r = await apiSignupStart(provider, {
       terms: !!(cbTerms && cbTerms.checked), age14: !!(cbAge && cbAge.checked), pv,
+      turnstile: getToken ? getToken() : null,
     });
     if (r.ok) { location.href = r.url; return; }
     SIGNUP_BUSY = false;
     btn.disabled = false;
     why.textContent = r.kind === "policy_stale"
       ? "약관이 새로 바뀌었어요. 새로고침한 뒤 다시 시도해 주세요."
+      // 사람 확인은 **다시 풀어야** 한다. 토큰은 1회용이라 같은 값으로 다시 보내면 또 막힌다.
+      : r.kind === "human_check"
+        ? "사람 확인을 다시 해주세요."
       : r.kind === "rate_limited"
         ? "잠시 뒤에 다시 시도해 주세요."
         : r.kind === "timeout" || r.kind === "network"
@@ -881,7 +944,8 @@ if (typeof document !== "undefined") {
     // 어느 제공자가 실제로 설정돼 있나. **renderAll 보다 먼저** 물어야 버튼이 한 번에 맞게 그려진다.
     const h = await apiHealth();
     // 못 물어봤으면 null 로 남긴다 — loginButtons 가 그걸 보고 "연결 안 됨"이라 말한다.
-    if (h.ok) { PROVIDERS = h.providers; SIGNUP_READY = h.signupReady; }
+    if (h.ok) { PROVIDERS = h.providers; SIGNUP_READY = h.signupReady;
+                TURNSTILE_KEY = h.turnstileSiteKey; }
     renderAll();
     if (fresh) toast(JUST_SIGNED_UP ? "가입했어요. 환영해요!" : "로그인했어요");
     if (authToken()) {

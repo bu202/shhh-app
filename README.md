@@ -88,6 +88,9 @@ npx wrangler pages deploy --project-name shhh-app --branch main
 | `TOMBSTONE_KEY` | 시크릿 | 회원가입 503 |
 | `DELETION_KEY` | 시크릿 | 계정 삭제 503 |
 | **`READY_KEY`** | 시크릿 | `/api/ready` 의 **진단을 아무도 못 본다**. 키 없는 호출은 두 DB 를 만지지 않고 503 이다(설계서 위협 56) |
+| **`SESSION_ENVELOPE_KEY`** | 시크릿 | 세션 쿠키 서명을 만들 수도 확인할 수도 없다 → **계정 라우트 전부 503**. 바꾸면 **모든 세션이 로그아웃**된다(설계서 결정 4) |
+| **`TURNSTILE_SECRET`** | 시크릿 | 공개 회원가입 503(사람 확인을 못 한다). 로그인·읽기·쓰기에는 안 쓴다(설계서 결정 3) |
+| **`TURNSTILE_SITE_KEY`** | `wrangler.jsonc` vars | 가입 화면이 위젯을 못 그린다 → 가입 준비 안 됨. **공개 값이다**(브라우저에 박히도록 설계된 값) |
 | `KAKAO_ID` `KAKAO_SECRET` `NAVER_ID` `NAVER_SECRET` `GOOGLE_ID` `GOOGLE_SECRET` | 시크릿 | 그 제공자 버튼이 안 뜬다 |
 | `MASTER_UIDS` | 시크릿 | 아무도 마스터가 아니다 |
 | `DEV_ORIGINS` | 시크릿(**개발 Worker 에만**) | 로컬·LAN 주소로 로그인 못 한다(운영에는 넣지 않는다) |

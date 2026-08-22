@@ -23,6 +23,7 @@ const makeEnv = (extra = {}) => ({
   APP_ORIGIN: ORIGIN, APP_URL: ORIGIN + "/", STATE_KEY: "k", RL_KEY: "r",
   DEV_RATE_LIMIT: "1",   // 로컬 전용 남용 방어 스위치(위협 50). 없으면 계정 라우트가 503
   SIGNUP_STATE_KEY: KEY32, TOMBSTONE_KEY: "tk", DELETION_KEY: "dk",
+  SESSION_ENVELOPE_KEY: "env-key",
   DB: makeD1(), LEDGER: makeLedger(), ...extra,
 });
 let seq = 0;
@@ -337,16 +338,36 @@ async function rememberKey(env) {
       t(`R5: ${label} — 쓰기 ${a.db + a.ledger}회가 한도에서 유도되는 상한 ${CAP} 을 넘는다`));
   }
 
+  // ── R5-d0. ★ **인증이 필요한 경로는 리미터에 닿지도 않는다**(2026-08-22 · 결정 4 · 위협 54).
+  //   세션 envelope 서명이 DB 앞에서 걸러내므로 쿠키 없는 요청은 401 이고 **쓰기가 0** 이다.
+  //   ⛔ 예전 R5-d 는 여기서 429 를 기대했다 — 그때는 위조 쿠키도 리미터까지 들어가 카운터
+  //      쓰기를 하나씩 냈기 때문이다. 지금은 그보다 앞에서 끝난다.
+  {
+    const ip = { "CF-Connecting-IP": "203.0.113.190" };
+    const d0 = dbW(), l0 = ledW();
+    let codes = new Set();
+    for (let i = 0; i < 200; i++)
+      codes.add((await worker.fetch(new Request("https://api.test/book",
+        { headers: { ...ip, Cookie: "shh_s=forged-" + i } }), env)).status);
+    assert.deepEqual([...codes], [401], t(`R5-d0: 위조 쿠키 200회의 응답이 ${[...codes]} 다`));
+    assert.equal(dbW() - d0, 0, t("R5-d0: 위조 쿠키가 주 D1 에 썼다"));
+    assert.equal(ledW() - l0, 0, t("R5-d0: 위조 쿠키가 ledger 에 썼다 — envelope 검증이 리미터보다 뒤에 있다"));
+  }
+
   // ── R5-d. ★ 429 를 받은 뒤에도 100회 이상 계속 두드린다. **여기서 쓰기가 0 이어야 한다.**
+  //   ⚠️ 이제 리미터까지 가려면 **우리가 발급한 서명**이 있어야 한다. 그래서 실제로 로그인한
+  //      뒤 그 쿠키로 두드린다 — 「세션을 하나 만든 공격자」가 정확히 이 모양이다(잔여 위험).
   {
     const ip = { "CF-Connecting-IP": "203.0.113.200" };
+    const victim = await mkUser(env, "r5d");
+    const cookie = { Cookie: "shh_s=" + victim.token };
     for (let i = 0; i < 200; i++)   // 확실히 한도를 넘긴 상태로 만든다
-      await worker.fetch(new Request("https://api.test/book", { headers: ip }), env);
-    const r = await worker.fetch(new Request("https://api.test/book", { headers: ip }), env);
+      await worker.fetch(new Request("https://api.test/book", { headers: { ...ip, ...cookie } }), env);
+    const r = await worker.fetch(new Request("https://api.test/book", { headers: { ...ip, ...cookie } }), env);
     assert.equal(r.status, 429, t("R5-d: 200회를 두드렸는데 막히지 않는다"));
     const d0 = dbW(), l0 = ledW();
     for (let i = 0; i < 150; i++)
-      await worker.fetch(new Request("https://api.test/book", { headers: ip }), env);
+      await worker.fetch(new Request("https://api.test/book", { headers: { ...ip, ...cookie } }), env);
     const after = { label: "429 이후 150회", N: 150, db: dbW() - d0, ledger: ledW() - l0 };
     assert.equal(after.db, 0, t(`R5-d: 429 이후에도 주 D1 쓰기가 났다(${after.db}) — 리미터가 증폭기다`));
     assert.equal(after.ledger, 0, t(`R5-d: 429 이후에도 ledger 쓰기가 났다(${after.ledger}) — 임차증이 리미터보다 앞선다`));
@@ -370,12 +391,22 @@ async function rememberKey(env) {
   //   리미터가 임차증보다 앞이라 그 쓰기만은 추적 밖이다 — 그래서 **복원 직전 상태에서는
   //   그 창 자체가 없다**는 것을 여기서 고정한다(복원 전제는 restore_closed + 임차증 0 이다).
   const env3 = makeEnv();
+  // ⚠️ **우리가 발급한 쿠키로 두드린다**(2026-08-22 · 결정 4). 위조 쿠키는 이제 게이트에
+  //    닿기도 전에 401 이라, 그것으로 재면 「게이트가 막았다」를 확인하지 못하고 검사가
+  //    저절로 통과해 버린다. 복원 중에 실제로 오는 것은 **되살아난 사람의 진짜 쿠키**다.
+  const revived = await mkUser(env3, "r5f");
   await setMode(env3, "restore_closed");
   const d0 = env3.DB._db.prepare("SELECT total_changes() AS n").get().n;
   const l0 = env3.LEDGER._db.prepare("SELECT total_changes() AS n").get().n;
   for (let i = 0; i < 50; i++)
     assert.equal((await worker.fetch(new Request("https://api.test/book",
-      { headers: { "CF-Connecting-IP": "203.0.113.201", Cookie: "shh_s=forged" } }), env3)).status, 503, t("R5-f: restore_closed 인데 503 이 아니다"));
+      { headers: { "CF-Connecting-IP": "203.0.113.201", Cookie: "shh_s=" + revived.token } }), env3)).status,
+      503, t("R5-f: restore_closed 인데 503 이 아니다"));
+  // 위조 쿠키는 게이트 앞에서 끝난다 — 그것도 쓰기 0 이어야 한다.
+  for (let i = 0; i < 50; i++)
+    assert.equal((await worker.fetch(new Request("https://api.test/book",
+      { headers: { "CF-Connecting-IP": "203.0.113.202", Cookie: "shh_s=forged-" + i } }), env3)).status,
+      401, t("R5-f: 위조 쿠키가 401 이 아니다"));
   assert.equal(env3.DB._db.prepare("SELECT total_changes() AS n").get().n, d0,
     t("R5-f: restore_closed 인데 리미터가 주 D1 에 썼다"));
   assert.equal(env3.LEDGER._db.prepare("SELECT total_changes() AS n").get().n, l0,
