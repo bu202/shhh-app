@@ -6,10 +6,46 @@
 ---
 
 
+## 2026-08-22 운영 반영 기록 — 공개 배포 안전 동기화 (결정 0)
+
+**배포 `19e69dee`** — Production / branch `main` / source **`7477867`**.
+`--commit-dirty=true` 를 쓰지 않았다(미추적 디렉터리 때문에 경고는 떴지만, 배포 기록에는
+source 커밋이 그대로 남았다 — 롤백 대상을 되짚을 수 있다). 직전 프로덕션 `f72f5225`
+(source `cba3d3a`)가 **롤백 후보**다.
+
+⚠️ **계정 기능을 여는 배포가 아니다.** `EDGE_GUARD` 를 넣지 않았으므로 계정 라우트는 두 DB 를
+만지기 전에 503 이다. 목적은 **라이브 세대를 9판의 닫힌 상태로 맞추는 것** 하나다.
+
+| # | 한 일 | 결과 |
+|---|---|---|
+| 1 | 배포 전 라이브 실측 | ⛔ `/api/book` **401**(계정 경로가 열려 있었고 DB 를 조회했다) · 키 없는 `/api/ready` 가 **진단을 그대로 노출**(`db:true`) · `/api/policies` **404**(4단계 코드가 안 나가 있었다) |
+| 2 | `READY_KEY` 등록 | production 에 등록(값 미출력). `secret list` = `READY_KEY`·`RL_KEY`·`STATE_KEY` |
+| 3 | `EDGE_GUARD` **미등록** | 의도된 상태 — 계정 라우트를 닫아 두는 유일한 장치다 |
+| 4 | `npm test`(25개) 통과 후 빌드·배포 | dist 58개 · Functions 번들 · `_headers` 함께 업로드 |
+| 5 | 계정 API | `/api/book`·`PUT /api/book`·`/api/login/kakao` **전부 503** — 본문은 「계정 기능이 아직 열리지 않았어요」 |
+| 6 | 비인증 `/api/ready` | **503** · `{"ok":true,"ready":false,"diagnostics":false}` · 틀린 키도 같다 |
+| 7 | 운영자 키 `/api/ready` | 진단이 나온다. `db:false`·`ledger:false`·`ledgerBound:false`·`abuseReady:false` — **원격 `0005` 와 ledger D1 이 아직 없다는 정확한 보고**다 |
+| 8 | `/api/health` | `providers: []` · `abuseReady:false` · `signupReady:false` · `turnstileSiteKey:null` — 버튼을 그리지 말라고 답한다 |
+| 9 | 계정 없는 PWA | `/`·`/privacy`·`manifest`·`service-worker.js`·`js/*`·`css/*`·`data/ksl-dict.json`(1.77MB)·`/api/policies` **전부 200** |
+| 10 | 내부 파일 | `/CLAUDE.md`·`/worker/index.js`·`/wrangler.jsonc`·`/package.json`·`/functions/_middleware.js` 가 전부 **SPA 폴백**(sha256 `7d809fa2268d…` = `dist/index.html`) |
+| 11 | CSP | `script-src`·`frame-src` 에 `challenges.cloudflare.com`(Turnstile) · `connect-src` 는 안 열었다 |
+| 12 | 세대 확인 | `service-worker.js`·`js/auth.js` 가 로컬 빌드와 **바이트 동일** |
+
+**이 배포로 열리지 않은 것**: 계정·가입·로그인 전부. 여는 조건은 `docs/OPS_RUNBOOK.md` §13-2
+(A 안 구성)와 §21-0 의 폐쇄 베타 9가지다.
+
+⚠️ **`READY_KEY` 값은 이 저장소 어디에도 없다.** 잃어버리면 진단을 못 보므로 새 값으로
+다시 등록해야 한다(그것 말고 잃는 것은 없다 — 사용자 데이터와 무관한 키다).
+
+---
+
 ## 2026-08-17 운영 반영 기록 (1단계)
 
 **배포 `f72f5225`** — Production / branch `main` / source **`cba3d3a`**.
-`--commit-dirty=true` 를 쓰지 않았다. 직전 프로덕션은 `acdecfa2`(source `586cc86`) — **롤백 후보**.
+`--commit-dirty=true` 를 쓰지 않았다. 직전 프로덕션은 `acdecfa2`(source `586cc86`).
+
+> ⛔ **이 절은 2026-08-17 의 기록이다. 라이브는 2026-08-22 에 `19e69dee`(source `7477867`)로
+> 바뀌었다** — 결정 0 의 안전 동기화 배포. 현재 라이브는 아래 「2026-08-22 운영 반영 기록」이 답한다.
 
 > ⚠️ **배포 시점 HEAD 와 현재 HEAD 는 다르다.** 배포 source 는 `cba3d3a` 로 고정된 사실이고,
 > 저장소 HEAD 는 그 뒤로도 문서 커밋이 얹혀 계속 움직인다. 현재 HEAD 는 `git rev-parse HEAD` 로 본다.
