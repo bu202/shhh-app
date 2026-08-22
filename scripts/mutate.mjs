@@ -41,6 +41,20 @@ for (const rel of tracked) {
 }
 symlinkSync(join(ROOT, "node_modules"), join(dir, "node_modules"));
 
+// ⚠️ **아직 스테이징하지 않은 새 파일은 사본에 없다.** `git ls-files` 는 인덱스를 읽기 때문이다.
+//    그 상태로 돌리면 「기준선이 빨갛다」로만 보이고 원인이 안 보인다 — 여기서 이름을 대고 멈춘다.
+//    (미추적 파일을 통째로 긁어오지 않는 이유: 보호 대상 미추적 디렉터리가 따라온다.)
+{
+  const missing = [...new Set(list.map((m) => `scripts/${m.suite}.mjs`).concat(list.map((m) => m.file)))]
+    .filter((f) => !existsSync(join(dir, f)));
+  if (missing.length) {
+    console.error("사본에 없는 파일이 있다 — `git add` 로 먼저 인덱스에 넣을 것:");
+    for (const f of missing) console.error("  " + f);
+    rmSync(dir, { recursive: true, force: true });
+    process.exit(2);
+  }
+}
+
 const rows = [];
 let baselineFail = 0;
 try {
