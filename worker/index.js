@@ -132,31 +132,33 @@ async function sign(env, msg) {
   return b64u(await crypto.subtle.sign("HMAC", k, ENC.encode(msg)));
 }
 
-// 비밀값 비교. **원문을 직접 훑지 않는다** — 두 값의 SHA-256 요약 **32바이트끼리** 비교한다.
-// 그래서 길이가 달라도 하는 일이 같고, 길이도 「앞에서 몇 글자가 맞았나」도 시간으로 새지 않는다.
-// 예전에는 `a.length !== b.length` 로 먼저 끊고 `charCodeAt` 을 하나씩 XOR 했다 — 길이는
-// 비밀이 아니라는 판단은 맞지만, 원문 문자열을 인덱싱하는 비교는 엔진의 문자열 표현
-// (latin1/UTF-16·rope)에 따라 시간이 달라질 수 있고 그 성질은 우리가 정하지 못한다.
+// 비밀값 비교. **Cloudflare 공식 권고 그대로다** — 두 값을 각각 SHA-256 으로 바꾼 뒤
+// 고정 길이 32바이트 요약을 **런타임의 `crypto.subtle.timingSafeEqual()`** 로 비교한다
+// (Workers 문서 「Protect against timing attacks」).
 //
-// ⚠️ **`crypto.subtle.timingSafeEqual` 을 쓰지 않는다.** 그것은 Workers 런타임의 확장이고
-//    Node 의 `crypto.subtle` 에는 없다(공식 문서: Workers Web Crypto 의 비표준 메서드).
-//    이 저장소의 회귀 테스트는 `worker/index.js` 를 **Node 에서 그대로 실행**하므로, 그 함수를
-//    쓰면 갈래가 둘로 갈리고 둘 중 하나는 영원히 테스트를 안 지난다. 요약 비교는 두 런타임에서
-//    **같은 코드 한 벌**로 돈다.
-// ⚠️ 요약을 비교해도 안전한 이유: 공격자가 아는 것은 자기 추측의 요약뿐이고, 요약 바이트가 몇
-//    개 맞았는지로는 원문을 한 글자씩 좁힐 수 없다(한 비트만 달라도 요약이 전부 달라진다).
+// 왜 요약을 먼저 만드나: `timingSafeEqual` 은 **길이가 다르면 던진다**(workerd 실측:
+// `TypeError: Input buffers must have the same byte length.`). 원문을 그대로 넣으면 길이가
+// 다른 순간 예외가 되어 「길이가 맞았나」가 관측 가능한 신호로 새어 나온다. 요약은 언제나
+// 32바이트라 그 갈래가 아예 없다 — 두 입력의 길이와 무관하게 **하는 일이 정확히 같다.**
+//
+// ⛔ **JS 반복문 XOR fallback 을 두지 않는다.** 2026-08-22 오전까지 이 자리는 요약을 만든 뒤
+//    `charCodeAt`/`Uint8Array` 를 직접 XOR 했다. 그 이유로 적혀 있던 것은 「Node 의
+//    `crypto.subtle` 에는 `timingSafeEqual` 이 없어서 테스트가 못 돈다」였는데, 그것은
+//    **테스트 환경의 문제이지 운영 구현의 보안 수준을 낮출 근거가 아니다.**
+//    지금은 반대로 한다 — 운영 코드는 런타임 API 하나만 부르고, Node 스위트가
+//    `scripts/_workers-shim.mjs` 로 그 모양을 채운다(어댑터는 `scripts/` 에만 있고 배포되지
+//    않는다 · `scripts/test-dist.mjs` 가 그것을 잰다). 그리고 **진짜 workerd 에서 도는지는
+//    `scripts/test-workerd.mjs` 가 실제 프로세스를 띄워 확인한다.**
+//
 // ⚠️ **비동기다.** 부르는 쪽은 전부 `await` 한다 — 빠뜨리면 Promise 가 늘 truthy 라 검사가
-//    통째로 무력해진다. `scripts/test-friends.mjs` 가 그 실수를 직접 잰다.
+//    통째로 무력해진다. `scripts/test-friends.mjs` 가 호출부를 전수로 잰다.
 const sameSecret = async (a, b) => {
   if (typeof a !== "string" || typeof b !== "string" || !a || !b) return false;
   const [x, y] = await Promise.all([
     crypto.subtle.digest("SHA-256", ENC.encode(a)),
     crypto.subtle.digest("SHA-256", ENC.encode(b)),
   ]);
-  const u = new Uint8Array(x), v = new Uint8Array(y);
-  let d = 0;
-  for (let i = 0; i < u.length; i++) d |= u[i] ^ v[i];
-  return d === 0;
+  return crypto.subtle.timingSafeEqual(x, y);
 };
 
 // ── 설정 점검 ────────────────────────────────────────────────────────────
@@ -165,10 +167,27 @@ const sameSecret = async (a, b) => {
 // **쌍이 맞아야 제공자로 친다.** 전에는 id 만 봐서, secret 을 안 넣은 제공자의 버튼이 화면에
 // 그려지고 사용자가 누르면 콜백에서 교환이 실패했다 — 배포자가 아니라 사용자가 먼저 알게 된다.
 // 카카오만 예외다(위 optionalSecret 참조).
-const readyProviders = (env) => Object.keys(P).filter((n) => {
-  const { id, secret } = creds(env, n);
-  return !!id && (!!secret || !!P[n].optionalSecret);
-});
+// **이 제공자로 왕복을 끝까지 돌 수 있나.** 규칙을 소유하는 함수는 이것 하나다.
+//
+// ⛔ 재현(2026-08-22, 고치기 전): `NAVER_ID` 만 있고 `NAVER_SECRET` 이 없는 배포에서
+//    `/health` 는 제대로 `providers: []` 를 줬는데(아래 목록은 쌍을 봤다) **`/signup/start` 는
+//    200 이었고 Turnstile 검증을 1회 호출한 뒤 네이버 OAuth 주소를 발급했다.**
+//    `/login/naver` 도 302 로 제공자까지 보냈다. 구글도 같았다.
+//    시작 경로들이 `creds(env, p).id` **하나만** 보고 있었기 때문이다 — 즉 「쌍이 맞아야
+//    제공자로 친다」는 규칙이 **화면에만** 있고 실제 문에는 없었다. 사용자는 제공자 화면까지
+//    갔다가 토큰 교환에서 실패하고, 우리는 그 왕복만큼 외부 호출과 리미터를 태운다.
+//
+// ⚠️ **카카오만 secret 이 선택이다**(콘솔에서 client_secret 을 꺼둘 수 있다 · 기존 정책).
+//    그 예외는 여기 한 줄로만 산다 — 여러 곳에 적으면 한 곳만 고치는 날 갈라진다.
+// ⚠️ 모르는 제공자 이름은 **거짓**이다. `isProvider` 가 자기 속성만 보므로 `__proto__` 같은
+//    이름이 여기서 참이 되는 길이 없다.
+export const providerPossible = (env, name) => {
+  if (!isProvider(name)) return false;
+  const { id, secret } = creds(env, name);
+  return !!id && (!!secret || !!P[name].optionalSecret);
+};
+
+const readyProviders = (env) => Object.keys(P).filter((n) => providerPossible(env, n));
 
 // ── 로그인·가입을 **끝까지** 할 수 있나 (2026-08-22 · 부분 시크릿) ────────
 //
@@ -1534,7 +1553,10 @@ async function route(req, env, rc) {
       // ⚠️ **화면과 콜백이 보는 것과 같은 함수다**(`signupPossible`). 나눠 적었을 때 무슨 일이
       //    났나: `SESSION_ENVELOPE_KEY`·`DELETION_KEY` 가 빠진 배포에서 여기가 통과하고,
       //    콜백이 계정·정책 기록·세션을 만든 뒤 그 세션이 다음 요청부터 전부 503 이었다.
-      if (!id || !signupPossible(env))
+      // ⚠️ **제공자별 검사가 여기 있다**(2026-08-22). 전에는 `id` 하나만 봐서, secret 이 없는
+      //    네이버·구글로도 가입이 시작되고 **Turnstile 검증 호출이 나갔다.** 이 줄은
+      //    사람 확인·state 발급·외부 호출 **전부보다 앞**이다.
+      if (!providerPossible(env, provider) || !signupPossible(env))
         return json(env, req, { error: "회원가입이 아직 준비되지 않았어요" }, 503);
       // ⚠️ **`true` 만 받는다.** 없거나 `false` 거나 `"true"` 문자열이면 거부다 —
       //    「값이 있으면 통과」로 만들면 `age14: 0` 같은 값이 지나간다.
@@ -1592,12 +1614,16 @@ async function route(req, env, rc) {
     let m = path.match(/^\/login\/(\w+)$/);
     if (m && isProvider(m[1])) {
       const p = P[m[1]];
-      const { id } = creds(env, m[1]);
       // 설정이 덜 된 채로 **조용히 돌지 않는다.** STATE_KEY 가 없으면 state 서명이 아무나
       // 만들 수 있는 값이 되므로 로그인 자체를 열지 않는다(sign 이 던지는 것의 앞단 방어).
       // ⚠️ `STATE_KEY` 하나만 보던 자리다. 세션 서명 키가 없으면 왕복 끝에 **쓸 수 없는 세션**을
       //    받으므로, 제공자까지 보내기 전에 여기서 끝낸다(`loginPossible`).
-      if (!id || !loginPossible(env)) return new Response(m[1] + " 로그인이 아직 설정되지 않았어요", { status: 503 });
+      // ⚠️ **제공자별 검사도 여기 있다**(2026-08-22). 전에는 `id` 하나만 봐서 secret 이 없는
+      //    네이버·구글도 302 로 제공자까지 보냈다 — 사용자는 거기서 로그인하고 돌아와
+      //    토큰 교환에서 실패한다. 실패를 **왕복 앞**으로 당긴다.
+      if (!providerPossible(env, m[1]) || !loginPossible(env))
+        return new Response(m[1] + " 로그인이 아직 설정되지 않았어요", { status: 503 });
+      const { id } = creds(env, m[1]);
       // ⚠️ **여기서는 세지 않는다.** 예전엔 `/cb`·`/exchange` 와 같은 `login` 버킷으로 셌는데,
       //    한 번의 로그인이 두 자리를 지나므로 **한도 10 이 실제로는 완전한 로그인 5회**였다
       //    (실측). 공유 IP(회사·학교·모바일 CGNAT)에서는 그 5회를 건물 하나가 나눠 쓴다.
@@ -1685,6 +1711,12 @@ async function route(req, env, rc) {
           if (st.hv !== 1) return fail("사람 확인이 필요해요. 다시 가입해 주세요.", 400);
         }
 
+        // ⚠️ **이 제공자로 교환을 끝낼 수 있나 — 외부 호출 앞에서 본다.** secret 이 없으면
+        //    토큰 교환이 반드시 실패하는데, 그 실패는 `code` 를 태운 **뒤**에 온다.
+        //    시작 경로를 막아도 **옛 링크가 콜백으로 직접 올 수 있으므로** 여기서도 본다.
+        if (!providerPossible(env, name))
+          return viaApp ? fail("로그인이 아직 준비되지 않았어요", 503)
+                        : fail(null, 302, st.back + "#login=fail");
         // ⚠️ **세션을 만들 수 있는 배포인가 — 외부 호출 앞에서 본다.** 없으면 왕복 끝에
         //    쓸 수 없는 세션을 심게 되고, `code` 는 이미 소비돼 되돌릴 수 없다.
         if (!loginPossible(env))

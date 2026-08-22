@@ -4,13 +4,16 @@
 // 여기가 틀리면 증상이 「약관을 본 적 없는 사람의 수락 기록이 남는다」라서 사람 눈에 안 보인다.
 //
 // 설계서 §13-5 의 T18~T21 · T23~T35 · T48 을 구현한다(T22 는 test-policies.mjs).
+// ⚠️ **가장 먼저 온다.** 운영 코드는 `crypto.subtle.timingSafeEqual()` 을 부르는데
+//    Node 에는 그 메서드가 없다 — 어댑터는 `scripts/` 에만 살고 배포되지 않는다.
+import "./_workers-shim.mjs";
 import assert from "node:assert";
 import worker, {
   createAccountWithPolicy, findUser, newSession, requiredPolicyKinds, REQUIRED_POLICY_EVENTS,
   makeSignupState, takeSignupState, stateTombstone,
 } from "../worker/index.js";
 import { POLICY_BUNDLE } from "../worker/policies.js";
-import { TURNSTILE_ACTION } from "../worker/index.js";
+import { TURNSTILE_ACTION, providerPossible } from "../worker/index.js";
 import { makeD1, makeLedger, withLatency } from "./_d1.mjs";
 import { createHash } from "node:crypto";
 
@@ -848,6 +851,26 @@ function failOn(db, needle) {
     turnstile.answer = good;
   }
 
+  // ── T74-c2. ★★ **`success` 를 독립적으로 잰다** (2026-08-22 · 돌연변이 M10 생존).
+  //   ⛔ 왜 생겼나: T70-b 가 넣던 실패 응답에는 `action`·`hostname` 이 **없었다.** 그래서
+  //      `success` 검사를 통째로 지워도 action/hostname 검사가 대신 막아 **스위트가 통과했다** —
+  //      즉 「거절을 통과로 바꾸지 않는다」가 실제로는 다른 두 필드에 얹혀 있었다.
+  //      세 필드는 각각 다른 것을 막으므로 **각각 재야 한다.**
+  //   ⚠️ 여기 넣는 응답은 **셋 중 success 만 거짓**이다. 나머지 둘은 우리 값과 같다.
+  for (const ans of [
+    { success: false, action: "signup", hostname: HOST },
+    { success: false, action: "signup", hostname: HOST, "error-codes": ["timeout-or-duplicate"] },
+    { action: "signup", hostname: HOST },                       // success 자체가 없다
+    { success: "true", action: "signup", hostname: HOST },      // 문자열은 참이 아니다
+    { success: 1, action: "signup", hostname: HOST },           // 숫자도 아니다
+  ]) {
+    turnstile.answer = ans;
+    const r = await startSignup(makeEnv());
+    assert.equal(r.status, 400,
+      t(`T74-c2: success=${JSON.stringify(ans.success)} 인데 가입이 시작됐다 — 나머지 필드에 얹혀 있다`));
+  }
+  turnstile.answer = good;
+
   // ── T74-d. ★ 정상 응답은 통과한다. 막는 쪽만 재면 「늘 거부」로 고쳐도 통과한다.
   {
     turnstile.answer = good;
@@ -878,8 +901,110 @@ function failOn(db, needle) {
   }
 }
 
+// ══ M. T77 — **제공자별 부분 시크릿도 fail-closed** (2026-08-22 · 위협 61) ══
+//
+// ⛔ 재현(고치기 전 · 실제 라우트 호출): `NAVER_ID` 만 있고 `NAVER_SECRET` 이 없는 배포에서
+//      /health          providers=[]  signupReady=false   ← 여기는 **맞게** 답했다
+//      POST /signup/start   **200** · Turnstile 검증 **1회 호출** · 네이버 OAuth 주소 발급
+//      GET  /login/naver    **302** — 제공자까지 보냈다
+//    구글도 같았다. 즉 「쌍이 맞아야 제공자로 친다」는 규칙이 **화면에만** 있었고 실제 문에는
+//    없었다. 사용자는 제공자 화면까지 갔다가 토큰 교환에서 실패하고, 우리는 그 왕복만큼
+//    외부 호출과 리미터를 태운다.
+//
+// ⚠️ **소스를 훑는 검사로 대신하지 않는다.** 위 재현이 정확히 「코드에 규칙은 있는데 그 자리에서
+//    안 부른다」였다 — 문자열 검색은 그 상태를 통과시킨다. 여기서는 전부 **진짜 라우트**를 부른다.
+{
+  const BASE = { KAKAO_ID: undefined, KAKAO_SECRET: undefined, NAVER_ID: undefined,
+                 NAVER_SECRET: undefined, GOOGLE_ID: undefined, GOOGLE_SECRET: undefined };
+  // [이름, 제공자, env, 열려야 하나]
+  const CASES = [
+    ["naver: ID 만",            "naver",  { NAVER_ID: "id" }, false],
+    ["naver: SECRET 만",        "naver",  { NAVER_SECRET: "s" }, false],
+    ["naver: 둘 다",            "naver",  { NAVER_ID: "id", NAVER_SECRET: "s" }, true],
+    ["google: ID 만",           "google", { GOOGLE_ID: "id" }, false],
+    ["google: SECRET 만",       "google", { GOOGLE_SECRET: "s" }, false],
+    ["google: 둘 다",           "google", { GOOGLE_ID: "id", GOOGLE_SECRET: "s" }, true],
+    // 카카오만 secret 이 선택이다(콘솔에서 끌 수 있다). **기존 정책을 그대로 유지한다.**
+    ["kakao: ID 만(정책상 허용)", "kakao",  { KAKAO_ID: "id" }, true],
+    ["kakao: SECRET 만",        "kakao",  { KAKAO_SECRET: "s" }, false],
+    ["kakao: 둘 다",            "kakao",  { KAKAO_ID: "id", KAKAO_SECRET: "s" }, true],
+  ];
+
+  for (const [name, prov, creds, open] of CASES) {
+    const env = makeEnv({ ...BASE, ...creds });
+
+    // ── T77-a. `/health` 가 잘못 구성된 제공자를 목록에 넣지 않는다.
+    const h = await (await worker.fetch(new Request("https://api.test/health"), env)).json();
+    assert.equal(h.providers.includes(prov), open,
+      t(`T77-a[${name}]: /health providers=${JSON.stringify(h.providers)}`));
+
+    // ── T77-b. ★ `/signup/start` — **Turnstile 검증 앞에서** 끝난다.
+    turnstile.calls = 0;
+    const r = await startSignup(env, { provider: prov });
+    if (open) {
+      assert.equal(r.status, 200, t(`T77-b[${name}]: 정상 구성인데 가입 시작이 ${r.status} 다`));
+      assert.ok(r.state, t(`T77-b[${name}]: 정상 구성인데 state 가 없다`));
+    } else {
+      assert.equal(r.status, 503, t(`T77-b[${name}]: 가입 시작이 ${r.status} 로 열렸다`));
+      assert.equal(r.state, null, t(`T77-b[${name}]: 막았다면서 state 를 줬다`));
+      assert.equal(turnstile.calls, 0,
+        t(`T77-b[${name}]: 설정이 덜 됐는데 검증 서버를 ${turnstile.calls}번 불렀다`));
+    }
+
+    // ── T77-c. ★ `/login/:provider` — 302 로 제공자까지 보내지 않는다.
+    const lg = await worker.fetch(new Request(`https://api.test/login/${prov}`,
+      { headers: asBrowser() }), env);
+    assert.equal(lg.status, open ? 302 : 503,
+      t(`T77-c[${name}]: /login/${prov} 가 ${lg.status} 다`));
+
+    // ── T77-d. ★ 막힌 경우 **어느 표에도 한 줄이 안 생긴다.**
+    if (!open) {
+      for (const tb of ["users", "sessions", "policy_events", "consumed_signup_states"])
+        assert.equal(count(env, tb), 0, t(`T77-d[${name}]: ${tb} 에 행이 생겼다`));
+    }
+  }
+
+  // ── T77-e. ★★ **콜백 시점에 secret 만 사라진 경우.** 시작을 막아도 옛 링크는 콜백으로
+  //   직접 온다. 거기서 통과하면 `code` 를 태우고 교환에서 실패한다 — 되돌릴 수 없는 실패다.
+  {
+    const full = makeEnv({ ...BASE, NAVER_ID: "id", NAVER_SECRET: "s" });
+    const good = await startSignup(full, { provider: "naver" });
+    assert.ok(good.state, t("T77-e: 준비용 정상 가입 시작이 실패했다"));
+    const crippled = { ...full, NAVER_SECRET: undefined };
+    const res = await withProvider("naver-partial", () => cb(crippled, good.state, good.txn, "c1", "naver"));
+    assert.ok(!String(res.headers.get("Location") || "").includes("#login=ok"),
+      t("T77-e: secret 이 사라졌는데 콜백이 성공했다"));
+    assert.equal(providerCalls, 0, t(`T77-e: 거부가 제공자 호출 ${providerCalls}회 뒤에 일어났다`));
+    assert.equal(count(full, "users"), 0, t("T77-e: 계정이 만들어졌다"));
+    assert.equal(count(full, "sessions"), 0, t("T77-e: 세션이 만들어졌다"));
+    assert.equal(count(full, "consumed_signup_states"), 0, t("T77-e: 소비 표식이 남았다"));
+  }
+
+  // ── T77-f. ★ 반대쪽 — 온전한 구성에서는 **끝까지 간다.** 「늘 거부」로 고치면 여기서 걸린다.
+  {
+    const full = makeEnv({ ...BASE, NAVER_ID: "id", NAVER_SECRET: "s" });
+    const good = await startSignup(full, { provider: "naver" });
+    const res = await withProvider("naver-ok", () => cb(full, good.state, good.txn, "c2", "naver"));
+    assert.equal(count(full, "users"), 1,
+      t(`T77-f: 정상 구성인데 계정이 안 생겼다 (status ${res.status})`));
+  }
+
+  // ── T77-g. 모르는 제공자 이름은 어느 자리에서도 참이 아니다.
+  {
+    const env = makeEnv();
+    for (const bad of ["__proto__", "constructor", "toString", "", "kakao2"])
+      assert.equal(providerPossible(env, bad), false,
+        t(`T77-g: providerPossible(${JSON.stringify(bad)}) 가 참이다`));
+    // 그리고 실제 라우트에서도 404(표에 없는 경로)다.
+    const r = await worker.fetch(new Request("https://api.test/login/__proto__",
+      { headers: asBrowser() }), env);
+    assert.equal(r.status, 404, t(`T77-g: /login/__proto__ 가 ${r.status} 다`));
+  }
+}
+
 console.log(`test-signup: ${n}개 통과 — 가입 state AEAD(nonce·AAD·키 길이·키 분리) · `
   + `필수 항목 fail-closed · 정책 기록 ${REQUIRED_POLICY_EVENTS}종 원자성 · CHECK 강제 · `
   + `소비 표식(순차·동시·재소비) · 로그인 경로가 계정을 안 만듦 · 만료 정리 · 로그 0건 · `
   + `T70 Turnstile(토큰 없음·위조·재사용·만료·검증 실패·시크릿 부재·콜백 대조·범위) · `
-  + `T73 부분 시크릿(화면·시작·콜백·로그인에서 행 0건) · T74 action·hostname 대조`);
+  + `T73 부분 시크릿(화면·시작·콜백·로그인에서 행 0건) · T74 action·hostname 대조 · `
+  + `T77 제공자별 시크릿 쌍(9경우 · 카카오 선택 정책 유지 · 외부 호출 0)`);

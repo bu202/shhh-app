@@ -4,6 +4,9 @@
 // 「잘못 지우는 것」이다 — 못 지운 것은 다음 회차에 지우면 되지만, 잘못 지운 것은 되돌릴 수 없다.
 //
 // 설계서 §13-5 의 T44~T47 을 구현한다.
+// ⚠️ **가장 먼저 온다.** 운영 코드는 `crypto.subtle.timingSafeEqual()` 을 부르는데
+//    Node 에는 그 메서드가 없다 — 어댑터는 `scripts/` 에만 살고 배포되지 않는다.
+import "./_workers-shim.mjs";
 import assert from "node:assert";
 import { runCleanup } from "../worker/cleanup/index.js";
 import { DELETIONS_SWEEP_SQL, drainState, acquireLease, releaseLease,

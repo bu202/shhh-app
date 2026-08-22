@@ -174,5 +174,30 @@ assert.equal(cacheName, await swCacheName(), "캐시 이름이 지금 dist 자�
   assert.ok(!/status:\s*(301|308)/.test(mw), "_middleware 가 영구 리다이렉트를 쓴다 — 되돌릴 수 없다");
 }
 
+// ── 테스트 전용 어댑터가 배포에 실려 나가지 않았나 (2026-08-22) ───────────
+// `scripts/_workers-shim.mjs` 는 Node 스위트가 `crypto.subtle.timingSafeEqual` 을 쓸 수 있게
+// 채워 주는 어댑터다. **운영 번들에 들어가면 그 순간 운영이 어느 구현으로 도는지 알 수 없다** —
+// 약한 쪽이 조용히 이기는 길이라, 여기서 전수로 막는다.
+{
+  for (const f of files)
+    assert.ok(!/_workers-shim/.test(f), `dist/ 에 테스트 어댑터가 있다: ${f}`);
+  // Pages 가 따로 번들하는 `functions/` 와 그것이 끌어가는 `worker/` 도 같이 본다.
+  // **부르는 자리만** 본다 — 「어댑터가 어디 사는가」를 적은 주석까지 막으면 규칙을 설명하는
+  // 것이 벌이 된다.
+  for (const f of ["functions/api/[[path]].js", "functions/_middleware.js",
+                   "worker/index.js", "worker/ledger.js", "worker/ops.js",
+                   "worker/policies.js", "worker/cleanup/index.js"]) {
+    const body = readFileSync(new URL("../" + f, import.meta.url), "utf8");
+    assert.ok(!/(import|require)[^\n]*_workers-shim/.test(body),
+      `${f} 가 테스트 어댑터를 import 한다 — 운영 번들에 들어간다`);
+  }
+  // 그리고 운영 코드는 **런타임 API 를 직접 부른다.** 자기 구현으로 덮어쓰면 그것도 fallback 이다.
+  const w = readFileSync(new URL("../worker/index.js", import.meta.url), "utf8");
+  assert.ok(/crypto\.subtle\.timingSafeEqual\(/.test(w),
+    "worker/index.js 가 timing-safe 비교 API 를 부르지 않는다");
+  assert.ok(!/timingSafeEqual\s*=/.test(w),
+    "worker/index.js 가 timingSafeEqual 을 스스로 정의한다 — 그건 fallback 이다");
+}
+
 console.log(`test-dist: 통과 — dist/ ${files.length}개, 내부 파일 0개, 선캐시 ${assets.length}개 전부 존재, `
   + `정책 ${pol.length}개(pv ${POLICY_BUNDLE.pv}), 캐시 ${cacheName}`);

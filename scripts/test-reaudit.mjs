@@ -5,6 +5,9 @@
 // 것인지 이름으로 남겨 둔다. 번호는 R1~R5 이고 설계서의 위협 43~47 · T56~T60 과 짝이다.
 //
 // ⚠️ **먼저 빨갛게 만들고 고쳤다.** 각 블록 머리말의 「고치기 전」이 그때 실제로 나온 값이다.
+// ⚠️ **가장 먼저 온다.** 운영 코드는 `crypto.subtle.timingSafeEqual()` 을 부르는데
+//    Node 에는 그 메서드가 없다 — 어댑터는 `scripts/` 에만 살고 배포되지 않는다.
+import "./_workers-shim.mjs";
 import assert from "node:assert";
 import worker, { createAccountWithPolicy, newSession } from "../worker/index.js";
 import {

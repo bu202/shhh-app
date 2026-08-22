@@ -235,10 +235,30 @@ const testScript = JSON.parse(R("package.json")).scripts.test;
 const suiteList = /for t in ([^;]+);/.exec(testScript);
 if (!suiteList) bad("package.json 의 test 스크립트에서 스위트 목록을 못 읽었다 — 검사기가 낡았다");
 const SUITES = suiteList ? suiteList[1].trim().split(/\s+/).length : 0;
+// ⚠️ **두 어순을 다 본다**(2026-08-22). 전에는 「N개 스위트」만 봐서 「스위트 N개」는 그냥
+//    지나갔다 — 실제로 그 형태로 적힌 문장이 문서 여러 곳에 있었다.
+// ⚠️ **과거 서술은 면제한다.** 「그 돌연변이가 스위트 25개를 전부 통과했다」는 **그때의 사실**이고
+//    지금 개수로 고치면 오히려 거짓이 된다. 현재 주장만 잰다.
+const SUITE_RE = /(?:(\d+)\s*개\s*스위트|스위트\s*\*{0,2}(\d+)\s*개)/g;
+// ⚠️ 과거인지 현재인지는 **한국어 과거 어미**로 가른다 — 「…를 전부 통과했다」는 그때의 사실이고
+//    「…를 전부 통과한다」는 지금의 주장이다. 낱말 목록을 늘리는 대신 어미를 본다(목록은 낡는다).
+// ⚠️ 강조 기호(`**`·백틱)를 떼고 본다. 「전부 통과**했다」처럼 사이에 끼면 낱말이 끊긴다.
+// ⚠️ **앞뒤 한 줄까지 창으로 본다.** 표가 아닌 본문은 줄바꿈이 문장 가운데 오므로,
+//    한 줄만 보면 「스위트 23개가\n… 통과하는 상태에서 나왔다」의 뒤쪽을 놓친다.
+// ⚠️ `HIST` 는 아래에서 선언되므로 여기서 참조하지 않는다(TDZ).
+const PAST_ENDING = /(됐|렀|났|했|였|았|었|졌|갔|왔|쟀|뒀|봤|났|섰)다|당시|그때|역사 기록|⛔/;
+const plain = (t) => t.replace(/[*`]/g, "");
 for (const f of DOCS) {
-  for (const m of R(f).matchAll(/(\d+)\s*개\s*스위트/g)) {
-    if (+m[1] !== SUITES) bad(`${f} "${m[0]}" 라고 적혀 있는데 실제는 ${SUITES}개 (package.json)`);
-  }
+  const lines = R(f).split("\n");
+  lines.forEach((ln, i) => {
+    const window = plain(lines.slice(Math.max(0, i - 1), i + 2).join(" "));
+    if (PAST_ENDING.test(window)) return;
+    for (const m of plain(ln).matchAll(SUITE_RE)) {
+      const got = +(m[1] ?? m[2]);
+      if (got !== SUITES)
+        bad(`${f}:${i + 1} "${m[0]}" 라고 적혀 있는데 실제는 ${SUITES}개 (package.json)`);
+    }
+  });
 }
 ok(`스위트 개수 ${SUITES}개 — package.json 과 문서가 일치`);
 

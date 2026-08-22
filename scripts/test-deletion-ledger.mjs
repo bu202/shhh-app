@@ -8,6 +8,9 @@
 //
 // 설계서 §13-5 의 T1~T3 · T5 · T7 · T9~T17 · T36~T39 을 구현한다
 // (T4 · T6 · T8 · T40~T43 은 HTTP 계층이라 test-friends.mjs 에 있다).
+// ⚠️ **가장 먼저 온다.** 운영 코드는 `crypto.subtle.timingSafeEqual()` 을 부르는데
+//    Node 에는 그 메서드가 없다 — 어댑터는 `scripts/` 에만 살고 배포되지 않는다.
+import "./_workers-shim.mjs";
 import assert from "node:assert";
 import worker, { createAccountWithPolicy, newSession } from "../worker/index.js";
 import {
@@ -542,6 +545,69 @@ const call = (env, token, path, method = "GET") => worker.fetch(new Request("htt
   assert.equal(await pendingAlertCount(env, now), 1, t("H2: 확정 안 된 pending 을 못 셌다"));
 }
 
+// ══ T78 — fencing 과 확정의 **일회성** (2026-08-22 · 돌연변이 M21·M22 생존) ══
+//
+// ⛔ 왜 생겼나: T5 는 `markConfirmed` 의 fencing 만 쟀다. 그래서 두 가지가 검사 밖에 있었다.
+//    ① `markPending` 의 fencing 을 **항상 참**으로 바꿔도 스위트가 통과했다(M21)
+//    ② `markConfirmed` 에서 `confirmed_at IS NULL` 을 빼도 통과했다(M22)
+//    ①이 열리면 유지보수로 전환한 뒤에도 살아남은 요청이 표식을 계속 더한다 — 전환이
+//    「막기 시작했다」가 아니라 「막았다고 적어 뒀다」가 된다.
+//    ②가 열리면 확정이 올 때마다 `expires_at` 이 뒤로 밀려 **보유기간이 사실상 무한**이 된다.
+{
+  // ── T78-a. ★ 옛 epoch 의 lease 로는 **pending 도** 못 남긴다.
+  {
+    const env = makeEnv();
+    const A = await mkUser(env, "t78a");
+    const lease = await acquireLease(env);
+    assert.ok(lease, t("T78-a: 열려 있는데 lease 를 못 땄다"));
+    // 전환으로 epoch 를 올린다. 이 lease 는 그 순간 옛 epoch 가 된다.
+    await setMode(env, "maintenance");
+    assert.equal(await leaseAlive(env, lease), false, t("T78-a: 옛 epoch 의 lease 가 살아 있다"));
+    const before = lcount(env);
+    const mark = await deletionMark(env, A.uid);
+    assert.equal(await markPending(env, lease, mark), false,
+      t("T78-a: 옛 epoch 의 lease 로 pending 표식이 남았다 — fencing 이 안 걸린다"));
+    assert.equal(lcount(env), before,
+      t("T78-a: 막았다면서 ledger 행이 늘었다"));
+  }
+
+  // ── T78-b. ★ **확정은 한 번뿐이다.** 두 번째 확정이 보유기간을 뒤로 밀면 안 된다.
+  {
+    const env = makeEnv();
+    const A = await mkUser(env, "t78b");
+    const lease = await acquireLease(env);
+    const mark = await deletionMark(env, A.uid);
+    assert.ok(await markPending(env, lease, mark), t("T78-b: pending 을 못 남겼다"));
+    const t0 = Date.now();
+    assert.equal(await markConfirmed(env, lease, mark, t0), true, t("T78-b: 첫 확정이 실패했다"));
+    const first = lrows(env, "SELECT confirmed_at, expires_at FROM deletions WHERE mark = ?", mark)[0];
+    // 같은 표식을 다시 확정하려 한다. **거짓이어야 하고 행이 그대로여야 한다.**
+    // ⚠️ **lease 가 아직 살아 있는 시각을 쓴다.** 처음에는 「한참 뒤」(+10일)를 넣었는데,
+    //    그러면 fencing 의 `expires_at > now` 가 먼저 걸려 **다른 이유로 거짓**이 됐다 —
+    //    그래서 `confirmed_at IS NULL` 을 지워도 이 단언이 통과했다(돌연변이 M22 생존).
+    //    재려는 것이 무엇인지 정확히 겨눈다: **살아 있는 lease 로도 두 번째 확정은 안 된다.**
+    const later = t0 + 1000;
+    assert.equal(await markConfirmed(env, lease, mark, later), false,
+      t("T78-b: 이미 확정된 표식이 다시 확정됐다"));
+    const again = lrows(env, "SELECT confirmed_at, expires_at FROM deletions WHERE mark = ?", mark)[0];
+    assert.equal(again.confirmed_at, first.confirmed_at, t("T78-b: 확정 시각이 바뀌었다"));
+    assert.equal(again.expires_at, first.expires_at,
+      t("T78-b: 보유기간이 뒤로 밀렸다 — 확정을 반복하면 영원히 안 지워진다"));
+  }
+
+  // ── T78-c. 반대쪽 — 살아 있는 lease 로는 **정상적으로** 남고 확정된다.
+  //   막는 쪽만 재면 「늘 거부」로 고쳐도 통과한다.
+  {
+    const env = makeEnv();
+    const A = await mkUser(env, "t78c");
+    const lease = await acquireLease(env);
+    const mark = await deletionMark(env, A.uid);
+    assert.equal(await markPending(env, lease, mark), true, t("T78-c: 정상 상태인데 pending 이 안 남았다"));
+    assert.equal(await markConfirmed(env, lease, mark), true, t("T78-c: 정상 상태인데 확정이 안 됐다"));
+  }
+}
+
 console.log(`test-deletion-ledger: ${n}개 통과 — 표식 HMAC · saga 실패 매트릭스 · lease/epoch fencing · `
   + `promote-only reconciliation · stale pending 5조건 · ledger 병합(방향·충돌·검증) · `
-  + `재삭제 대상 고유 UID · 복원 금지 gate 9조건(질의로만 참이 되는 noActiveLeases 포함) · confirmed 만 정리`);
+  + `재삭제 대상 고유 UID · 복원 금지 gate 9조건(질의로만 참이 되는 noActiveLeases 포함) · confirmed 만 정리 · `
+  + `T78 pending 도 fencing · 확정은 일회성(보유기간이 안 밀린다)`);

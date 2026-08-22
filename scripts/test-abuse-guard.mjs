@@ -10,6 +10,9 @@
 //
 // ⛔ **공개 디버그 라우트를 만들지 않는다.** 재현을 위해 프로덕션에 뚫은 구멍이 곧 다음 위협이다.
 //    측정은 셰임(`scripts/_d1.mjs`)의 `prepare` 를 감싸서만 한다.
+// ⚠️ **가장 먼저 온다.** 운영 코드는 `crypto.subtle.timingSafeEqual()` 을 부르는데
+//    Node 에는 그 메서드가 없다 — 어댑터는 `scripts/` 에만 살고 배포되지 않는다.
+import "./_workers-shim.mjs";
 import assert from "node:assert";
 import worker, { rlMax, routeBuckets, routeCount, guardMode, routeFor,
                  createAccountWithPolicy, newSession } from "../worker/index.js";

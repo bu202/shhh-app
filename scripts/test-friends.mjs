@@ -6,6 +6,9 @@
 //    **단언의 의도는 그대로 두고 전송 수단만 바꿨다** — 무엇을 지키는가는 안 바뀌었기 때문이다.
 //    가짜 KV(Map)는 "절대 실패하지 않고 즉시 일관적인" 저장소라 재는 게 적었다(함정 50).
 //    지금은 진짜 SQL 이라 UNIQUE 충돌·외래키 CASCADE·changes 카운트가 실제로 일어난다.
+// ⚠️ **가장 먼저 온다.** 운영 코드는 `crypto.subtle.timingSafeEqual()` 을 부르는데
+//    Node 에는 그 메서드가 없다 — 어댑터는 `scripts/` 에만 살고 배포되지 않는다.
+import "./_workers-shim.mjs";
 import assert from "node:assert";
 import worker, { createAccountWithPolicy, findUser, newSession, pathTemplate,
   routeFor, rlMax, routeBuckets, routeCount, maintenanceAllows, envelopeOk,
@@ -2210,16 +2213,45 @@ function befriend(env, a, b, status = "accepted") {
       assert.ok(/await $/.test(m[1]), `T75-b: await 없는 sameSecret 호출이 있다 — "${m[1]}sameSecret("`);
   }
 
-  // ── c. ★ 원문 길이로 먼저 끊지 않는다. 그 줄이 살아 있으면 요약 비교는 장식이다.
+  // ── c. ★ **런타임의 timing-safe API 를 쓴다.** 요약을 만든 뒤 JS 반복문으로 비교하면
+  //   그 비교의 시간 성질은 우리가 아니라 엔진이 정한다 — Cloudflare 공식 권고는
+  //   「digest → `crypto.subtle.timingSafeEqual()`」이다.
+  //   ⛔ **이 단언은 2026-08-22 에 방향이 뒤집혔다.** 그 전에는 「`timingSafeEqual` 을 부르면
+  //      실패」였고, 근거가 「Node 에 그 API 가 없다」였다 — **테스트 환경의 결핍을 운영
+  //      구현을 약하게 두는 이유로 쓰고 있었다.** 지금은 어댑터가 Node 쪽을 채운다.
   {
     const src = fs.readFileSync(new URL("../worker/index.js", import.meta.url), "utf8");
-    const body = src.slice(src.indexOf("const sameSecret"), src.indexOf("const sameSecret") + 900);
-    assert.ok(!/a\.length\s*!==\s*b\.length/.test(body), "T75-c: 원문 길이로 먼저 끊는다");
+    const i = src.indexOf("const sameSecret");
+    const body = src.slice(i, src.indexOf("};", i) + 2);
+    assert.ok(/crypto\.subtle\.timingSafeEqual\s*\(/.test(body),
+      "T75-c: 운영 경로가 crypto.subtle.timingSafeEqual 을 부르지 않는다");
+    assert.ok(/digest\("SHA-256"/.test(body), "T75-c: 고정 길이 요약으로 바꾸지 않는다");
+    // ⚠️ **fallback 이 남아 있으면 안 된다.** 하나라도 있으면 운영이 어느 갈래로 도는지
+    //    아무도 모르고, 약한 쪽이 조용히 이긴다.
     assert.ok(!/charCodeAt/.test(body), "T75-c: 원문 문자열을 인덱싱해 비교한다");
-    assert.ok(/digest\("SHA-256"/.test(body), "T75-c: 요약으로 비교하지 않는다");
-    // 부르는 자리만 본다 — 「왜 안 쓰는가」를 적은 주석까지 막으면 규칙을 적는 것이 벌이 된다.
-    assert.ok(!/timingSafeEqual\s*\(/.test(src),
-      "T75-c: Node 에 없는 Workers 확장을 부른다 — 이 스위트는 Node 에서 돈다");
+    assert.ok(!/\^\s*(v|y)\[i\]|for \(let i = 0; i < (u|x)\.length/.test(body),
+      "T75-c: JS XOR 반복문 fallback 이 남아 있다");
+    assert.ok(!/a\.length\s*!==\s*b\.length/.test(body), "T75-c: 원문 길이로 먼저 끊는다");
+    // 어댑터는 **테스트 쪽에만** 있다. 운영 코드가 그것을 import 하면 전제가 깨진다.
+    for (const f of ["worker/index.js", "worker/ledger.js", "worker/ops.js",
+                     "worker/cleanup/index.js", "functions/api/[[path]].js"]) {
+      const t = fs.readFileSync(new URL("../" + f, import.meta.url), "utf8");
+      // **부르는 자리만** 본다 — 「어댑터가 어디 사는가」를 적은 주석까지 막으면
+      // 규칙을 설명하는 것이 벌이 된다(이 저장소가 여러 번 겪은 무늬다).
+      assert.ok(!/(import|require)[^\n]*_workers-shim/.test(t),
+        `T75-c: ${f} 가 테스트 어댑터를 import 한다`);
+    }
+  }
+
+  // ── e. ★ **길이가 다른 요약을 넣으면 던진다.** 그 성질이 사라지면(조용히 false) 운영에서
+  //   예외가 될 코드가 테스트만 통과한다. 어댑터가 workerd 와 같은 모양인지 여기서 잰다.
+  {
+    assert.throws(() => crypto.subtle.timingSafeEqual(new Uint8Array(32), new Uint8Array(16)),
+      "T75-e: 길이가 다른데 던지지 않는다 — workerd 는 TypeError 다");
+    assert.equal(crypto.subtle.timingSafeEqual(new Uint8Array(4), new Uint8Array(4)), true,
+      "T75-e: 같은 값인데 거짓이다");
+    const a = new Uint8Array([1, 2, 3, 4]), b = new Uint8Array([1, 2, 3, 5]);
+    assert.equal(crypto.subtle.timingSafeEqual(a, b), false, "T75-e: 다른 값인데 참이다");
   }
 
   // ── d. 같은 함수가 **서명 검증**도 한다. 한 글자만 달라도 거짓이어야 한다.
@@ -2241,4 +2273,4 @@ console.log("test-friends: 통과 — 로그인 왕복 표(브라우저 결속) 
   + "· LEDGER 미바인딩 fail-closed(계층별) · 라우트 분류(없는 주소·로그인 시작의 쓰기 0) · 임차증 상한 "
   + "· 레이트리밋 버킷 등록(프로토타입 속성 거부) · 아직 못 막는 것(T8-b · 옛 배포 fixture) 고정 "
   + "· T71 세션 envelope(모양·서명·판·만료 · DB 앞 거절 · 서명 ≠ 인증 · 키 전용성·교체 · auth 라우트 전수) "
-  + "· T75 비밀값 비교(요약 32바이트 · await 전수 · 응답 모양 하나)");
+  + "· T75 비밀값 비교(요약 32바이트 + timingSafeEqual · await 전수 · 응답 모양 하나 · 어댑터 비배포)");
