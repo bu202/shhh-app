@@ -332,11 +332,23 @@ const apiRotateCode = () => request("/friends/code", { method: "POST" });
 //    null 을 "아직 모르니 셋 다 그린다"로 읽었다 — 그래서 서버에 못 닿을 때 오히려 눌러도
 //    안 되는 버튼 세 개가 떴다. 지금은 ok 로 가른다: ok:false 면 연결 문제, providers:[] 면
 //    서버가 아직 아무 제공자도 못 쓴다는 뜻이다(문구가 달라야 사용자가 할 일이 달라진다).
+//
+// ⚠️ **`ready` 를 버리지 않는다**(2026-08-23). 버렸을 때 어떻게 되냐면: 서버는 계정 기능이
+//    닫혔다고 `{"ok":true,"ready":false,"providers":[]}` 를 주는데, 이 함수가 `ready` 를 안
+//    실어 보내 판정하는 쪽(js/auth.js)의 `h.ready` 가 **언제나 `undefined`** 가 된다.
+//    `undefined === false` 는 거짓이라 **계정 상태가 늘 "ok"** 로 떨어졌다 — 라이브가 정확히
+//    그 응답을 주고 있었다. 서버가 막으므로 데이터가 새지는 않지만, 화면은 열려 있는 척한다.
+// **모든 반환 모양에 `ready` 가 boolean 으로 들어 있다.** 부르는 쪽이 `undefined` 를 정상으로
+// 읽을 여지를 남기지 않는다 — 그 여지가 이 결함 자체였다.
+//   ok     서버에 닿아 계약대로 생긴 응답을 받았나
+//   ready  서버가 **계정 기능이 열려 있다고 말했나** (`ready === true` 일 때만 참)
+// 못 물어봤거나 계약을 못 지킨 응답이면 **fail-closed**: ok:false · ready:false 다.
+const DOWN_HEALTH = Object.freeze({ ok: false, ready: false, providers: [], signupReady: null, turnstileSiteKey: null });
 async function apiHealth() {
   const t = timeoutSignal(REQUEST_TIMEOUT);
   try {
     const res = await fetch(API + "/health", { signal: t.signal });
-    if (!res.ok) return { ok: false, providers: [], signupReady: null, turnstileSiteKey: null };
+    if (!res.ok) return DOWN_HEALTH;
     const d = await res.json().catch(() => null);
     // ⚠️ **`signupReady` 를 버리지 않는다.** 버렸을 때 어떻게 되냐면: 서버는 제공자가 설정돼
     //    있으니 `providers:["kakao"]` 를 주고 가입 전용 키는 없어서 `signupReady:false` 를 주는데,
@@ -345,12 +357,15 @@ async function apiHealth() {
     // ⚠️ **`turnstileSiteKey` 도 버리지 않는다**(2026-08-22 · 결정 3). 가입 화면이 이 값으로
     //    사람 확인 위젯을 그린다 — 없으면 위젯이 안 뜨고, 위젯이 없으면 서버가 400 을 낸다.
     //    **공개 값이다**(브라우저에 박히도록 설계된 값). 비밀은 서버 쪽 검증 키다.
-    return d && Array.isArray(d.providers)
-      ? { ok: true, providers: d.providers, signupReady: d.signupReady === true,
+    // ⚠️ **`ok` 는 본문의 `ok` 도 함께 본다.** 프록시나 오류 페이지가 200 으로 돌아오면
+    //    모양만 맞고 내용이 없는 응답이 「서버가 대답했다」로 읽힌다.
+    return d && d.ok === true && Array.isArray(d.providers)
+      ? { ok: true, ready: d.ready === true, providers: d.providers,
+          signupReady: d.signupReady === true,
           turnstileSiteKey: typeof d.turnstileSiteKey === "string" ? d.turnstileSiteKey : null }
-      : { ok: false, providers: [], signupReady: null, turnstileSiteKey: null };
+      : DOWN_HEALTH;
   } catch {
-    return { ok: false, providers: [], signupReady: null, turnstileSiteKey: null };
+    return DOWN_HEALTH;
   } finally {
     t.done();
   }

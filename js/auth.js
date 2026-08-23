@@ -993,7 +993,10 @@ if (typeof document !== "undefined") {
     //    「지금 로그인돼 있나」가 아니다. 제공자가 없어도 세션은 살아 있을 수 있다.
     // 못 물어봤으면 그것도 "모른다" 라서 계정처럼 그리지 않는다 — 여기가 그 판정 자리다.
     // (개별 요청의 일시적 끊김은 down 이 아니다. 그건 「다시 시도」로 회복하는 길이 있다.)
-    setAccountState(!h.ok ? "down" : h.ready === false ? "down" : "ok");
+    // ⚠️ **여는 조건을 명시적으로 적는다.** 예전엔 `h.ready === false ? "down" : "ok"` 라
+    //    「false 가 아니면 열린다」였고, `apiHealth()` 가 `ready` 를 버리는 바람에 그 값이
+    //    **언제나 `undefined`** 라 늘 열렸다. 이제 **참일 때만 연다** — 모르면 닫는 쪽이다.
+    setAccountState(h.ok === true && h.ready === true ? "ok" : "down");
     renderAll();
     // 서버가 돌아오거나 닫히면 그 자리에서 화면을 다시 그린다 — 되돌아올 수 있어야 한다.
     onAccountState(() => renderAll());

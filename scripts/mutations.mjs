@@ -207,6 +207,37 @@ export const MUTATIONS = [
     replace: "      WHERE mark = ? AND ${fenced(FENCE)}`)",
   },
 
+  // ── 화면의 계정 readiness (2026-08-23) ─────────────────────────────────
+  //
+  // 왜 여기 있나: `apiHealth()` 가 서버 응답에서 `ready` 를 **버리고 있었다.** 판정하는 쪽
+  // (js/auth.js)은 `h.ready` 를 읽는데 없는 필드라 언제나 `undefined` 였고, 그래서 라이브의
+  // `{"ok":true,"ready":false,"providers":[]}` 를 받고도 **계정 기능을 연 것으로 판정**했다.
+  // 서버의 503 fail-closed 는 그대로였으므로 데이터가 새지는 않았지만, 화면은 열려 있는 척했다.
+  // ⛔ **그때 `test-client` 74개가 전부 통과하고 있었다** — 기본 store 가 로그인 상태라
+  //    뒤이은 `/book` 503 이 우연히 상태를 down 으로 바꿔 줬기 때문이다. 재던 것은 `ready`
+  //    계약이 아니라 **뒤이은 503** 이었다. 그래서 두 방향을 각각 잰다.
+  {
+    id: "M23", file: "js/authApi.js", suite: "test-client",
+    what: "apiHealth() 의 성공 응답에서 `ready` 를 다시 버린다",
+    invariant: "서버가 말한 `ready` 는 브라우저의 계정 상태까지 전달된다 — 버리면 판정하는 쪽이 언제나 `undefined` 를 읽는다",
+    find: "      ? { ok: true, ready: d.ready === true, providers: d.providers,",
+    replace: "      ? { ok: true, providers: d.providers,",
+  },
+  {
+    id: "M24", file: "js/authApi.js", suite: "test-client",
+    what: "`ready` 판정을 `d.ready !== false` 로 느슨하게 만든다(없거나 타입이 틀리면 열린다)",
+    invariant: "계약을 못 지킨 응답은 계정 기능을 여는 근거가 아니다 — 모르면 닫는다(fail-closed)",
+    find: "      ? { ok: true, ready: d.ready === true, providers: d.providers,",
+    replace: "      ? { ok: true, ready: d.ready !== false, providers: d.providers,",
+  },
+  {
+    id: "M25", file: "js/auth.js", suite: "test-client",
+    what: "첫 화면의 계정 판정이 `/health` 를 안 보고 언제나 열린 것으로 친다",
+    invariant: "계정 기능을 여는 근거는 서버의 `/health` 다 — 판정 자리가 응답을 안 보면 앞의 두 변이를 막아도 소용없다",
+    find: '    setAccountState(h.ok === true && h.ready === true ? "ok" : "down");',
+    replace: '    setAccountState("ok");',
+  },
+
   // ── 문서 회귀 (정적 검사) ───────────────────────────────────────────────
   //
   // 왜 여기 있나: 2026-08-22 후속 재검증에서 `npm test` 가 통과하는 상태로 **낡은 운영 상태
@@ -244,9 +275,9 @@ export const MUTATIONS = [
   {
     id: "D05", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "체크리스트 18번을 「옛 공개 배포 폐쇄 — 완료」로 되돌린다",
-    invariant: "지운 주소가 아직 401 인 동안 폐쇄 완료라고 말하지 않는다(복원 금지 해제 조건 ⑦ 이 여기 걸려 있다)",
-    find: "| 18(부분) | **옛 공개 배포 — 제어면 삭제** | ✅ **제어면 삭제만 완료 2026-08-22.** ⛔ **공개 URL 폐쇄는 미완료다**(19번 행) — 이 둘을 하나의 완료로 합치지 않는다. 실측:",
-    replace: "| ~~18~~ ✅ | **옛 공개 배포 폐쇄** | **완료 2026-08-22.** 실측:",
+    invariant: "18번은 제어면 삭제 하나의 기록이다 — 공개 접근 차단(19번)과 합쳐 「폐쇄 완료」라고 말하지 않는다(복원 금지 해제 조건 ⑦ 이 여기 걸려 있다)",
+    find: "| 18(부분) | **옛 공개 배포 — 제어면 삭제** | ✅ **제어면 삭제만 완료 2026-08-22.** ⛔ **이 행은 제어면 삭제 하나의 기록이다**",
+    replace: "| ~~18~~ ✅ | **옛 공개 배포 폐쇄** | **완료 2026-08-22.** 이 행 하나로 끝났다",
   },
   {
     id: "D06", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
@@ -259,14 +290,14 @@ export const MUTATIONS = [
     id: "D07", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "재감사 결함 합계와 위협 범위를 22건 · 39~60 으로 되돌린다",
     invariant: "결함 합계와 위협 범위는 설계서의 위협 표에서 파생된다 — 낡은 숫자는 「이미 다 봤다」는 착각을 만든다",
-    find: "차례로 재현했다(위협 **39~63** · **여섯 판 연속**",
+    find: "차례로 재현했다(위협 **39~64** · **여섯 판 연속**",
     replace: "차례로 재현했다(위협 39~60 · 다섯 판 연속",
   },
   {
     id: "D08", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "재감사 결함 합계만 22건으로 되돌린다(위협 범위는 그대로 둔다)",
     invariant: "합계는 판별 문형(`4+5+…건` · `N건을 차례로 재현`) 어느 쪽으로 적어도 파생값과 같아야 한다",
-    find: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4+3건 = **25건** 수정",
+    find: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4+3+1건 = **26건** 수정",
     replace: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4건 = **22건** 수정",
   },
   {
@@ -296,6 +327,22 @@ export const MUTATIONS = [
     invariant: "더 최신 운영 기록이 있으면 옛 날짜 절은 현재형 운영 판정을 주장할 수 없다 — 두 절이 서로 다른 「지금」을 말하면 다음 사람이 옛 쪽을 읽는다",
     find: "> ### 당시 판정 — **2026-08-22 에는 공개 URL 이 401 로 남아 있었다**",
     replace: "그러므로 지금 사실은 **「공개 URL 폐쇄는 ❌ 미완료」**이고, 다음 단계는 Cloudflare 지원 문의가 필요하다.\n\n> ### 참고",
+  },
+  {
+    id: "D14", file: "docs/OPS_RUNBOOK.md", suite: "test-docs", kind: "정적",
+    what: "현재 상태를 「옛 15개가 아직 401 · 공개 URL 폐쇄 미완료」로 되돌린다",
+    invariant: "Access 기록이 있으면 현재 상태가 「아직 401」이라고 단정할 수 없다 — 옛 401 은 「당시 사실」이지 지금이 아니다",
+    find: "  - **공개 접근 차단**: ✅ 2026-08-23. **Pages 프리뷰 액세스**로 막았다 — 옛 15개가 **전부 302 →\n"
+        + "    `cloudflareaccess.com`**(401 0건) · canonical `shhh-app.pages.dev` 는 **대상이 아니라 그대로**다(§16-1).",
+    replace: "  - **공개 접근 차단**: 미완료. 지운 15개의 해시 주소는 **아직 `/api/book` 에 401 로 답한다** —\n"
+           + "    공개 URL 폐쇄는 미완료이고 §16 이 재측정 방법을 적는다.",
+  },
+  {
+    id: "D15", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
+    what: "돌연변이 목록 개수를 낡은 22 로 되돌린다",
+    invariant: "문서가 주장하는 돌연변이 개수는 `MUTATIONS` 목록에서 파생한다 — 손으로 적은 총수는 반드시 낡는다",
+    find: "`scripts/mutations.mjs`(목록 40종",
+    replace: "`scripts/mutations.mjs`(목록 22종",
   },
   {
     id: "D13", file: "docs/HANDOFF.md", suite: "test-docs", kind: "정적",

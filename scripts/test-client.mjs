@@ -1285,6 +1285,125 @@ await T("readiness false: 가입·로그인 시작 API 를 부르지 않는다",
   assert.equal(started.length, 0, `readiness false 인데 시작 API 를 ${started.length}번 불렀다`);
 });
 
+
+// ══ readiness 계약 (2026-08-23) — `/api/health` 의 `ready` 를 버리지 않는다 ══
+//
+// 재현: `apiHealth()` 가 서버 응답에서 `providers`·`signupReady`·`turnstileSiteKey` 만 꺼내고
+// **`ready` 를 버렸다.** 그런데 판정하는 쪽(js/auth.js 의 boot)은 `h.ready === false` 를 읽는다 —
+// 없는 필드라 언제나 `undefined` 고, `undefined === false` 는 거짓이라 **계정 상태가 늘 "ok"** 였다.
+// 라이브(`/api/health` → `{"ok":true,"ready":false,"providers":[]}`)에서 화면이 계정 기능을
+// 열어 둔 것으로 판정한다는 뜻이다.
+//
+// ⛔ **위 「계정 서버 닫힘」 검사들이 이걸 못 잡은 이유**: 기본 store 가 `LOGGED_IN()` 이라
+//    boot 뒤 `sync()` 가 `/book` 을 부르고, 그 **503 응답**이 `request()` 안에서 우연히
+//    accountState 를 down 으로 바꿔 줬다. 즉 재던 것은 `ready` 계약이 아니라 **뒤이은 503** 이다.
+//    그래서 여기서는 그 우연을 두 가지로 차단한다:
+//      · 빈 store — 계정 요청 자체가 나가지 않는다
+//      · 계정 라우트를 **끊김(throw)** 으로 — `request()` 는 일시적 끊김에 accountState 를
+//        건드리지 않으므로(의도된 동작), 판정의 근거가 `/health` 하나만 남는다
+const ACCOUNT_PATHS = ["/book", "/friends", "/me", "/session", "/signup/start", "/login/"];
+const accountCalls = (c) => c.calls.filter((x) => ACCOUNT_PATHS.some((p) => x.path.startsWith(p)));
+const healthOnly = (resp) => (m, p) => (p === "/health" ? resp : { throw: true });
+const H = (body) => ({ status: 200, body });
+
+// 1. 빈 store + `ready:false` → 계정 기능을 열지 않는다. 계정 요청도 안 나간다.
+await T("readiness false(빈 store): 계정 기능을 열지 않고 계정 요청도 없다", async () => {
+  const c = await boot({ store: {}, routes: healthOnly(H({ ok: true, ready: false, providers: [] })) });
+  assert.equal(c.document.getElementById("share-btn").hidden, true,
+    "health 가 ready:false 인데 계정 기능을 연 상태로 판정했다 — `ready` 를 버렸다");
+  assert.deepEqual(accountCalls(c).map((x) => x.path), [],
+    "ready:false 인데 계정 API 를 불렀다");
+  assert.ok(!allText(c.document.getElementById("mypage")).includes("계정"),
+    "ready:false 인데 화면이 사용자를 계정 보유자로 단정한다");
+});
+
+// 2~6. 계약을 못 지키는 응답은 전부 fail-closed 다. **모르면 여는 쪽으로 떨어지지 않는다.**
+//
+// ⚠️ **로그인 표시가 있는 store 로 잰다.** 빈 store 로 재면 `share-btn` 이 `!authToken()`
+//    때문에 어차피 숨겨져서 **또 우연히 통과한다** — 이 검사가 닫으려는 결함과 똑같은 무늬다.
+//    (실제로 그렇게 썼다가 돌연변이 M24 가 살아남아서 잡혔다.)
+//    계정 라우트는 **끊김**이라 `request()` 가 accountState 를 안 건드린다 → 판정 근거는
+//    `/health` 하나뿐이다.
+const failClosed = async (label, resp) => {
+  const c = await boot({ store: LOGGED_IN(), routes: healthOnly(resp) });
+  assert.equal(c.document.getElementById("share-btn").hidden, true,
+    `${label} 인데 초대 링크 버튼이 보인다 — 계약을 못 지킨 응답은 계정 기능을 여는 근거가 아니다`);
+  const txt = allText(c.document.getElementById("mypage"));
+  assert.ok(!txt.includes("카카오"), `${label} 인데 「카카오 계정」이라고 단정한다`);
+  assert.ok(txt.includes(DOWN), `${label} 인데 점검 안내가 없다`);
+};
+for (const [label, body] of [
+  ["ready 누락", { ok: true, providers: [] }],
+  ["ready 가 문자열", { ok: true, ready: "true", providers: [] }],
+  ["ready 가 숫자 1", { ok: true, ready: 1, providers: [] }],
+  ["ready 가 null", { ok: true, ready: null, providers: [] }],
+  ["본문 ok:false", { ok: false, ready: true, providers: [] }],
+  ["본문이 배열", []],
+  ["providers 가 배열이 아님", { ok: true, ready: true, providers: "kakao" }],
+]) {
+  await T(`readiness ${label}: fail-closed`, () => failClosed(label, H(body)));
+}
+
+// 못 물어본 경우도 같다(이미 `h.ok` 로 닫혀 있던 갈래 — 회귀 방지로 함께 고정한다).
+for (const [label, resp] of [["500", { status: 500, body: {} }], ["네트워크 실패", { throw: true }],
+                             ["시간 초과", { throwName: "TimeoutError" }],
+                             ["JSON 이 아님", { status: 200, badJson: true }]]) {
+  await T(`health ${label}: fail-closed`, () => failClosed(`health ${label}`, resp));
+}
+
+// 7. `ready:true` 는 정상이다 — fail-closed 가 **영구 hidden** 이 되면 안 된다.
+//    ⚠️ 로그인 표시가 **있는** store 로 잰다. 초대 링크 버튼은 계정 동작이라 `ready:true` 만으로는
+//       안 열린다(로그인한 적 없는 사람에게 보이면 그것도 「되는 척하는 버튼」이다).
+await T("readiness true: 계정 UI 를 연다", async () => {
+  const c = await boot({ store: LOGGED_IN(), routes: healthOnly(H({ ok: true, ready: true, providers: ["kakao"] })) });
+  assert.notEqual(c.document.getElementById("share-btn").hidden, true,
+    "ready:true 인데 계정 기능이 닫힌 채로 남았다");
+});
+
+// 8. stale 로그인 표시 + `ready:false` — **뒤이은 503 없이도** 계정으로 단정하지 않는다.
+//    (계정 라우트는 끊김이다. `request()` 는 끊김에 accountState 를 안 건드리므로
+//     판정 근거가 `/health` 하나뿐인 상태를 만든다.)
+await T("stale 표시 + readiness false(503 없이): 계정으로 단정하지 않는다", async () => {
+  const store = LOGGED_IN();
+  const c = await boot({ store, routes: healthOnly(H({ ok: true, ready: false, providers: [] })) });
+  const txt = allText(c.document.getElementById("mypage"));
+  assert.ok(!txt.includes("카카오"), "ready:false 인데 「카카오 계정」이라고 말한다");
+  assert.ok(txt.includes(DOWN), "ready:false 인데 점검 안내가 없다");
+  assert.equal(store["shh-via"], "kakao", "readiness false 가 로그인 표시를 지웠다 — 401 이 아니다");
+  assert.equal(c.document.getElementById("share-btn").hidden, true,
+    "ready:false 인데 초대 링크 버튼이 보인다");
+});
+
+// 9. down 으로 시작해 401 이 와도 옛 친구·초대 데이터가 화면에 되살아나지 않는다.
+//    ⚠️ 이 검사는 **재현되지 않은 것을 확인하는 자리**다 — 결함이 없으면 그대로 통과한다.
+await T("down → 401: 옛 친구·초대 데이터가 되살아나지 않는다", async () => {
+  let ready = false, code = 503;
+  const store = LOGGED_IN();
+  const c = await boot({ store, routes: (m, p) => {
+    if (p === "/health") return H({ ok: true, ready, providers: ready ? ["kakao"] : [] });
+    if (code === 200 && p === "/friends" && m === "GET") return { status: 200, body: structuredClone(FRIENDS_OK) };
+    return { status: code, body: {} };
+  } });
+  // 서버가 돌아와 친구 목록을 한 번 싣는다
+  ready = true; code = 200;
+  c.HOOKS.screenShown?.("book");
+  await tick(12);
+  openFriends(c);
+  await tick(12);
+  assert.ok(allText(friBox(c)).includes("친구1"), "사전 조건 실패 — 친구 목록이 안 실렸다");
+  // 세션이 죽는다
+  code = 401;
+  c.HOOKS.screenShown?.("book");
+  await tick(12);
+  c.segs[1].click();
+  await tick(12);
+  const txt = allText(friBox(c));
+  assert.ok(!txt.includes("친구1"), "401 뒤에도 앞서 받은 친구 목록이 화면에 남아 있다");
+  assert.equal(store["shh-via"], undefined, "401 인데 로그인 표시가 남았다");
+  assert.equal(c.document.getElementById("share-btn").hidden, true,
+    "401 로 로그아웃됐는데 초대 링크 버튼이 보인다");
+});
+
 const failed = RESULTS.filter((r) => !r[0]);
 for (const [pass, name, why] of RESULTS) if (!pass) console.log(`  ✗ ${name}\n      ${why}`);
 if (failed.length) {

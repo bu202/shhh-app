@@ -31,7 +31,11 @@ if (typeof document !== "undefined") {
     // 있어서 계정 상태와 무관하게 늘 보였다 — 누르면 초대 코드 회전(쓰기)이 필요한데 그건
     // 503 이다. 「되는 것처럼 보이는 버튼」을 남기지 않는다(2026-08-23 실브라우저에서 발견).
     // ⚠️ `book-actions` 를 통째로 숨기지 않는다 — 「비우기」는 계정 없이도 되는 동작이다.
-    el("share-btn").hidden = accountDown();
+    // ⚠️ **로그인 표시가 없을 때도 숨긴다**(2026-08-23). 전에는 `accountDown()` 하나만 봐서
+    //    **로그인한 적 없는 사람에게도** 이 버튼이 보였고, 401 로 세션이 죽은 직후에도
+    //    (그때 계정 계층은 "ok" 다 — 서버가 대답은 했으니까) 그대로 남아 있었다.
+    //    조건은 js/auth.js 의 `accountReady()` 와 같다: **표시가 있고 서버가 열려 있을 때만.**
+    el("share-btn").hidden = !authToken() || accountDown();
     for (const b of document.querySelectorAll(".seg[data-book]")) {
       const on = b.dataset.book === VIEW;
       b.classList.toggle("on", on);
