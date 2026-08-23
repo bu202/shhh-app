@@ -1,7 +1,7 @@
 // 돌연변이 검증 실행기. `node scripts/mutate.mjs [--only M01,M14] [--json <경로>]`
 //
 // 왜 있나: **테스트가 통과한다는 것과 테스트가 방어를 지킨다는 것은 다른 말이다.** 이 저장소는
-// 스위트가 전부 통과하는 상태에서 결함 22건을 차례로 재현했다. 그래서 완료 판정의 근거를
+// 스위트가 전부 통과하는 상태에서 결함 25건을 차례로 재현했다. 그래서 완료 판정의 근거를
 // 「통과 개수」가 아니라 **「보안 불변식을 깨면 어느 테스트가 실제로 실패하는가」**로 옮긴다.
 //
 // ⚠️ **원본 작업 폴더를 절대 건드리지 않는다.** 추적 파일 목록(`git ls-files`)을 임시 폴더로
@@ -98,20 +98,29 @@ try {
 }
 
 function pick(m) {
-  return { id: m.id, file: m.file, suite: m.suite, what: m.what, invariant: m.invariant };
+  return { id: m.id, file: m.file, suite: m.suite, kind: m.kind || "동작", what: m.what, invariant: m.invariant };
 }
 
 // ── 보고 ──
 const w = (s, n) => String(s).padEnd(n);
 console.log("");
-console.log(`${w("ID", 5)} ${w("판정", 12)} ${w("스위트", 22)} 무엇을 바꿨나`);
-console.log("-".repeat(100));
-for (const r of rows) console.log(`${w(r.id, 5)} ${w(r.verdict, 12)} ${w(r.suite, 22)} ${r.what}`);
+console.log(`${w("ID", 5)} ${w("판정", 12)} ${w("종류", 6)} ${w("스위트", 22)} 무엇을 바꿨나`);
+console.log("-".repeat(108));
+for (const r of rows) console.log(`${w(r.id, 5)} ${w(r.verdict, 12)} ${w(r.kind, 6)} ${w(r.suite, 22)} ${r.what}`);
 const killed = rows.filter((r) => r.verdict === "KILLED").length;
 const survived = rows.filter((r) => r.verdict === "SURVIVED");
 const missed = rows.filter((r) => r.verdict === "ANCHOR-MISS");
-console.log("-".repeat(100));
+console.log("-".repeat(108));
 console.log(`총 ${rows.length}종 · 사망 ${killed} · 생존 ${survived.length} · 앵커 실패 ${missed.length}`);
+// ⚠️ **정적 검사와 동작 검사를 한 숫자로 합쳐 읽지 않는다.** 문서 일관성이 아무리 촘촘해도
+//    런타임 방어를 증명하지 못한다 — 그 착각이 이 저장소가 여섯 판 연속 겪은 사고의 모양이다.
+for (const k of ["동작", "정적"]) {
+  const g = rows.filter((r) => r.kind === k);
+  if (!g.length) continue;
+  console.log(`  · ${k} 검사 ${g.length}종 — 사망 ${g.filter((r) => r.verdict === "KILLED").length}`
+    + ` · 생존 ${g.filter((r) => r.verdict === "SURVIVED").length}`
+    + ` · 앵커 실패 ${g.filter((r) => r.verdict === "ANCHOR-MISS").length}`);
+}
 for (const r of survived)
   console.log(`  ⚠️ 생존 ${r.id} — ${r.what}\n     깨진 불변식: ${r.invariant}`);
 for (const r of missed) console.log(`  ⛔ 앵커 실패 ${r.id} — ${r.what}`);

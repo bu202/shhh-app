@@ -787,7 +787,206 @@ ok("2026-08-22 이후의 현재 사실 9종 · 반대 방향 서술 0건");
 }
 ok("모순 5종 — 「확정 vs 대기」 · 「0건 vs 배포」 · 「폐쇄 완료 vs 응답 중」 · 낡은 T 범위 · 삭제≠폐쇄");
 
+// ── 19. **운영현황** — 「지금」이라고 말하는 자리의 원격 실측값이 낡지 않았나 ──────
+//
+// 재현(2026-08-22 후속): 검사 7·14·17·18 이 전부 통과하는 상태에서 `docs/HANDOFF.md` §2
+// 「지금 서 있는 자리」 표가 **여섯 가지를 낡은 채로** 말하고 있었다 —
+// production 시크릿 「두 개」(`READY_KEY` 가 빠졌다) · 원격 migration 「적용 대기 0건」
+// (`0005` 가 대기 중이다) · 라이브 `f72f5225`(지금은 `19e69dee`) · `rate_limits` 5행 ·
+// 새 시크릿 「3개」 · preview 시크릿을 production 목록에서 **추정**한 서술.
+// **왜 못 잡았나**: 검사 14 의 `CURRENT_REGIONS` 는 HANDOFF 에서 §0 과 §4-1~4-7 만 봤고,
+// 검사 7 의 `현재상태` 블록은 §0 안에 있다. §2 는 **둘 사이에 끼여 어느 검사에도 안 걸렸다.**
+// 같은 날 `SECURITY_RELEASE_CHECKLIST.md` 의 「**옛 공개 배포 폐쇄** … 완료」도 통과했다 —
+// 검사 18-③ 의 정규식이 `옛 배포` 를 **붙여 쓴 형태로만** 찾았고(「옛 **공개** 배포」를 놓쳤다),
+// `폐쇄` 와 `완료` 사이의 `** | **` 를 `\s*` 로 이을 수 없었다.
+//
+// 고친 방법 두 가지:
+//   ① **범위를 넓힌다.** 「현재상태」·「운영현황」 블록에 더해, **제목이 「지금」·「현재」라고
+//      말하는 절**을 전부 현재 구간으로 본다. 자동검사 대상이 되거나, 줄마다 명시적 역사
+//      표식을 달거나 둘 중 하나다 — 「검사 밖에 있는 현재 서술」이 없어진다.
+//   ② **값을 파생시킨다.** 판 번호는 `EDITION`, T 범위·위협 범위·결함 합계는 설계서,
+//      옛 배포 해시는 HANDOFF 의 삭제 목록에서 읽는다. 손으로 적은 숫자는 반드시 낡는다.
+{
+  const OPS0 = "<!-- 운영현황:시작 -->", OPS1 = "<!-- 운영현황:끝 -->";
+
+  // 파생값 — 문서가 아니라 **원본**에서 읽는다.
+  const s3 = R(STAGE3);
+  const maxT3 = Math.max(...[...s3.matchAll(/\bT(\d+)\b/g)].map((m) => +m[1]));
+  // 위협 모델 표의 행 번호(`| **63** |`)가 위협 번호의 원본이다.
+  const maxThreat = Math.max(...[...s3.matchAll(/^\|\s*\*\*(\d+)\*\*\s*\|/gm)].map((m) => +m[1]));
+  // 재감사 결함은 위협 39 부터 이어져 있다(6판 §0-6 이 39 에서 시작한다).
+  const FIRST_REAUDIT_THREAT = 39;
+  const defects = maxThreat - FIRST_REAUDIT_THREAT + 1;
+  // 6판부터 판마다 완료 판정이 한 번씩 철회됐다 — 「n 판 연속」의 원본은 `EDITION` 이다.
+  const streak = EDITION - 5;
+
+  // 지운 배포 해시 목록도 문서가 아니라 **HANDOFF 의 삭제 기록**에서 읽는다.
+  const handoffT = R("docs/HANDOFF.md");
+  const delBlock = /\*\*삭제한 15개\*\*:([\s\S]{0,400}?)\n\n/.exec(handoffT);
+  const DELETED = delBlock ? [...delBlock[1].matchAll(/`([0-9a-f]{8})`/g)].map((m) => m[1]) : [];
+  if (DELETED.length !== 15)
+    bad(`HANDOFF 의 「삭제한 15개」 목록에서 해시 ${DELETED.length}개를 읽었다 — 15개여야 한다`);
+
+  // ── 19-a. 현재를 말하는 구간을 **전부** 모은다 ──────────────────────────
+  // 표식 블록 + 제목이 「지금·현재」인 절. 어느 쪽에도 안 들어가는 현재 서술이 없어야 한다.
+  const scopes = [];   // [파일, 라벨, 텍스트]
+  const blockOf = (t, a, b) => {
+    const i = t.indexOf(a); if (i < 0) return null;
+    const j = t.indexOf(b, i + 1); return j > i ? t.slice(i, j) : null;
+  };
+  for (const f of DOCS) {
+    const t = R(f);
+    for (const [a, b, lab] of [[NOW0, NOW1, "현재상태 블록"], [OPS0, OPS1, "운영현황 블록"]]) {
+      const s = blockOf(t, a, b);
+      if (s) scopes.push([f, lab, s]);
+    }
+    // 제목이 스스로 「지금·현재」라고 말하는 절. 다음 같은 깊이 이상의 제목까지가 그 절이다.
+    const lines = t.split("\n");
+    lines.forEach((ln, i) => {
+      const h = /^(#{2,4})\s+(.*(?:지금|현재).*)$/.exec(ln);
+      if (!h) return;
+      if (HIST.test(h[2])) return;                       // 제목이 스스로 역사라고 밝힌 절
+      let end = lines.length;
+      for (let k = i + 1; k < lines.length; k++) {
+        const h2 = /^(#{1,4})\s/.exec(lines[k]);
+        if (h2 && h2[1].length <= h[1].length) { end = k; break; }
+      }
+      const body = lines.slice(i, end).join("\n");
+      // 운영 사실을 말하지 않는 절(설계 서술·금지 규칙 등)은 대상이 아니다.
+      if (!/배포|시크릿|secret|migration|pages\.dev|D1 (생성|목록)/.test(body)) return;
+      scopes.push([f, `「${h[2].slice(0, 34)}」 절`, body]);
+    });
+  }
+  if (!scopes.some(([f, lab]) => f === "docs/HANDOFF.md" && lab === "운영현황 블록"))
+    bad(`docs/HANDOFF.md 에 운영현황 블록(${OPS0})이 없다 — 원격 실측값의 원본이 사라졌다`);
+
+  // ── 19-b. 그 구간들이 낡은 원격 사실을 말하지 않는가 ────────────────────
+  //
+  // 면제는 셋뿐이고 전부 **줄 안에서 스스로 밝힌 것**이다(앞뒤 줄로 번지지 않는다):
+  //   · 「당시 사실」·「역사 기록」 — 그 줄이 스스로 과거라고 밝힌 경우
+  //
+  // ⛔ **여기서는 `HIST` 를 쓰지 않는다.** `HIST` 에는 ⛔ 가 들어 있는데, 이 저장소는 ⛔ 를
+  //    「위험·차단」 강조로 문서 전체에서 쓴다 — 역사 표식이 아니다. 실제로 운영현황의
+  //    시크릿 행이 「⛔ 아직 없는 값 5개」라고 적고 있어서, 그 한 글자가 **같은 행의 현재
+  //    서술까지 통째로 면제**시켰다(돌연변이 D03 이 그 상태로 살아남았다).
+  //   · **닫힌 체크리스트 행**(`| ~~P0~~ ✅ |`) — 취소선이 곧 「이건 지난 항목이다」라는 표식이다
+  //   · 인용(「…」) — 금지 문구를 **나열하는** 문장은 주장이 아니다
+  // 취소선은 표의 첫 칸에도, 번호 칸 다음에도 온다(`| ~~18~~ …` · `| 7 | ~~…~~ ✅ |`).
+  const HIST_ONLY = /당시 사실|역사 기록/;
+  const CLOSED_ROW = /^\s*\|(\s*[^|]{0,16}\|)?\s*~~/;
+  for (const [f, lab, text] of scopes) {
+    const marked = (ln) => HIST_ONLY.test(ln) || CLOSED_ROW.test(ln);
+    text.split("\n").forEach((raw) => {
+      if (marked(raw)) return;
+      const ln = raw.replace(/「[^」]*」/g, "");
+      const say = (why) => bad(`${f} ${lab} 이 낡은 운영 사실을 말한다 — ${why}\n      "${raw.trim().slice(0, 100)}"`);
+
+      // ① 지운 배포를 **현재 라이브**라고 말하면 안 된다.
+      //    ⚠️ 「…가 라이브에서 403 이었다」처럼 라이브라는 말이 다른 뜻으로 쓰인 줄이 있다.
+      //       그래서 **주장과 해시가 서로 60자 안에 붙어 있을 때만** 잡는다. 60 인 이유는
+      //       「| **라이브 (production)** | **배포 `<해시>`**」 한 칸이 그만큼 길기 때문이다 —
+      //       30자로 뒀더니 바로 그 행의 돌연변이 D01 이 살아남았다. 반대쪽 오탐인
+      //       「배포 `774015e9` … 가 라이브에서 403」은 둘 사이가 90자라 안 걸린다.
+      for (const c of ln.matchAll(/라이브|현재 production|현재 배포|지금 (도는|올라간)/g)) {
+        const near = ln.slice(Math.max(0, c.index - 60), c.index + 60);
+        for (const h of DELETED)
+          if (near.includes(h)) say(`\`${h}\` 는 2026-08-22 에 지운 배포다. 현재 production 은 \`19e69dee\` 다`);
+      }
+
+      // ② 원격 migration 「대기 0건」. 저장소에 `0005` 가 있고 문서가 미적용이라고 말하는 한 거짓이다.
+      if (/(적용\s*)?대기\s*\*{0,2}\s*0\s*건/.test(ln)) say("원격 `0005` 가 적용 대기 중이다(대기 0건이 아니다)");
+
+      // ③ production 시크릿을 「두 개」라고 세거나 `READY_KEY` 를 빼면 안 된다.
+      if (/시크릿[^\n]{0,24}\(?production\)?|production[^\n]{0,24}시크릿/.test(ln)) {
+        if (/(두 개|2개|둘뿐|두개)/.test(ln)) say("production 시크릿은 `READY_KEY`·`RL_KEY`·`STATE_KEY` 세 개다");
+        if (/등록|목록|있다/.test(ln) && !/READY_KEY/.test(ln))
+          say("production 시크릿 목록에 `READY_KEY` 가 없다(2026-08-22 등록됨)");
+      }
+    });
+
+    // ── 판 번호 · T 범위 · 위협 범위 · 결함 합계 · 연속 판수 ──────────────
+    // ⚠️ **줄이 아니라 구간 전체로 본다.** 이 넷은 한 문장이 두 줄에 걸쳐 있는 일이 잦아서
+    //    (실제로 「결함 25건을 / 차례로 재현했다」가 그렇다) 줄 단위로 재면 놓친다.
+    //    대신 **주장 문형을 아주 좁게** 잡아 서술형 문장을 걸지 않는다.
+    const prose = text.split("\n").filter((ln) => !marked(ln)).join(" ").replace(/「[^」]*」/g, "");
+    const sayS = (why) => bad(`${f} ${lab} 이 낡은 운영 사실을 말한다 — ${why}`);
+
+    // ④ 「설계 N판 완료」가 현재 판정으로 쓰였는가. **더 높은 판을 같이 말하면 서술형**이라 넘어간다.
+    const maxSaid = Math.max(0, ...[...prose.matchAll(/(\d+)판/g)].map((m) => +m[1]));
+    for (const m of prose.matchAll(/설계\s*\*{0,2}(\d+)판\s*\*{0,2}\s*완료/g))
+      if (+m[1] < EDITION && maxSaid < EDITION)
+        sayS(`설계서는 ${EDITION}판이다 — "${m[0]}" 는 낡았다`);
+
+    // ⑤ 공식 테스트 명세의 범위.
+    for (const m of prose.matchAll(/(?:명세|범위|테스트)[^.。]{0,24}T1~T(\d+)|T1~T(\d+)[^.。]{0,16}(?:명세|구현 매핑)/g)) {
+      const v = +(m[1] ?? m[2]);
+      if (v !== maxT3) sayS(`테스트 명세의 최대는 T${maxT3} 다 — "T1~T${v}" 는 낡았다`);
+    }
+    // ⑥ 재감사 위협 범위.
+    for (const m of prose.matchAll(/위협\s*\*{0,2}39~(\d+)/g))
+      if (+m[1] !== maxThreat) sayS(`위협 번호의 최대는 ${maxThreat} 이다 — "${m[0]}" 는 낡았다`);
+    // ⑦ 재감사 결함 **합계**. 판별 문형은 「차례로 재현」과 「4+5+…건」 둘뿐이다.
+    for (const m of prose.matchAll(/결함\s*\*{0,2}(\d+)\s*\*{0,2}건을?\s*\*{0,2}\s*차례로 재현/g))
+      if (+m[1] !== defects) sayS(`재감사 결함 합계는 ${defects}건이다(위협 ${FIRST_REAUDIT_THREAT}~${maxThreat}) — "${m[1]}건" 는 낡았다`);
+    for (const m of prose.matchAll(/결함\s*((?:\d\+)+\d)건/g)) {
+      const sum = m[1].split("+").reduce((a, b) => a + +b, 0);
+      if (sum !== defects) sayS(`재감사 결함 합계는 ${defects}건인데 "${m[0]}" 는 ${sum}건이다`);
+    }
+    // ⑧ 완료 판정이 철회된 판수. 6판부터 이어졌으므로 `EDITION` 에서 파생한다.
+    const W = { 두: 2, 세: 3, 네: 4, 다섯: 5, 여섯: 6, 일곱: 7, 여덟: 8, 아홉: 9 };
+    for (const m of prose.matchAll(/([가-힣]+|\d+)\s*판\s*연속/g)) {
+      const v = W[m[1]] ?? (/^\d+$/.test(m[1]) ? +m[1] : null);
+      if (v !== null && v !== streak)
+        sayS(`완료 판정이 철회된 것은 6판부터 ${EDITION}판까지 ${streak}판 연속이다 — "${m[0].trim()}" 는 낡았다`);
+    }
+  }
+
+  // ── 19-c. **제어면 삭제 ≠ 공개 URL 폐쇄.** 두 사실이 서로 다른 줄에 있어야 한다 ──
+  // ⚠️ 검사 18-③·⑤ 를 여기서 **넓힌다.** 저기는 `옛 배포` 를 붙여 쓴 형태만 찾았고
+  //    `폐쇄`·`완료` 사이의 `** | **` 를 넘지 못했다 — 「**옛 공개 배포 폐쇄** | **완료」가
+  //    그대로 통과했다. 수식어와 강조·표 구분자를 넘어서 본다.
+  const CLOSED_CLAIM = /옛[^\n]{0,12}배포[^\n]{0,24}(폐쇄|차단)[\s*|:—·-]{0,10}(완료|됐다|끝났다)/;
+  for (const f of DOCS) {
+    R(f).split("\n").forEach((ln, i) => {
+      if (HIST.test(ln)) return;
+      const said = ln.replace(/「[^」]*」/g, "");         // 인용은 주장이 아니다
+      const m = CLOSED_CLAIM.exec(said);
+      if (!m) return;
+      // 부정은 **그 주장 바로 옆**에 있어야 면제다(줄 전체를 보면 다른 문장의 부정이 덮는다).
+      const near = said.slice(Math.max(0, m.index - 24), m.index + m[0].length + 24);
+      if (/아니|미완료|미충족|않는다|못|안 |부분|제어면/.test(near)) return;
+      bad(`${f}:${i + 1} 「옛 공개 배포 폐쇄 완료」라고 말한다 — 제어면에서만 지웠고 공개 URL 은 아직 401 이다\n      "${ln.trim().slice(0, 100)}"`);
+    });
+  }
+  // 두 사실이 **각각** 있어야 한다. 하나로 합치면 다음 사람이 재측정을 건너뛴다.
+  {
+    const ops = blockOf(handoffT, OPS0, OPS1) || "";
+    const rows = ops.split("\n");
+    const ctlRow = rows.find((r) => /제어면/.test(r) && /삭제/.test(r) && /(✅|완료)/.test(r));
+    const urlRow = rows.find((r) => /공개 URL/.test(r) && /(미완료|❌|아직)/.test(r));
+    if (!ctlRow) bad("HANDOFF 운영현황에 「옛 배포 — 제어면 삭제 완료」 행이 없다");
+    if (!urlRow) bad("HANDOFF 운영현황에 「옛 배포 — 공개 URL 폐쇄 미완료」 행이 없다");
+    if (ctlRow && urlRow && ctlRow === urlRow)
+      bad("HANDOFF 운영현황이 제어면 삭제와 공개 URL 폐쇄를 **한 행**에 합쳤다 — 다른 사건이므로 행을 나눈다");
+  }
+
+  // ── 19-d. 운영현황 블록이 반드시 담아야 할 실측 사실 ──────────────────────
+  {
+    const ops = blockOf(handoffT, OPS0, OPS1) || "";
+    for (const [re, what] of [
+      [/READY_KEY/, "production 시크릿 목록의 `READY_KEY`"],
+      [/`?0005[^\n]{0,60}(대기|미적용)/, "원격 `0005` 가 적용 대기라는 사실"],
+      [/19e69dee/, "현재 production 배포"],
+      [/preview[^\n]{0,60}0개|0개[^\n]{0,60}preview/, "preview 시크릿이 0개라는 **직접 조회** 결과"],
+      [/KST/, "원격을 언제 쟀는지(측정 시각)"],
+    ]) if (!re.test(ops)) bad(`HANDOFF 운영현황 블록에 ${what} 가 없다`);
+    if (handoffT.indexOf(OPS0) !== handoffT.lastIndexOf(OPS0))
+      bad("docs/HANDOFF.md 에 운영현황 블록이 둘 이상이다 — 현재 운영 상태의 원본은 하나여야 한다");
+  }
+}
+ok("운영현황 — 낡은 배포·migration·시크릿·판·T·위협·결함 서술 0건 · 제어면 삭제 ≠ 공개 URL 폐쇄");
+
 console.log(fails
   ? `test-docs: 실패 ${fails}건`
-  : "test-docs: 통과 — 낡은 문구 · 죽은 § 참조 · 번호 연속성 · 선언된 개수 · 판 번호 · 필수 절 · 완료 범위 · 보유기간 단정 · 스위트 수 · 낡은 운영 상태 · 단계 상태 일치 · 주 D1 접근 분류 등재 · 법률 자료 현재 사실 · 인수인계 현재성 · 현재 상태 구간의 낡은 drain·구현·lease·T6 서술 · drain 미구현 0건 · 정리 대상 개수 = 코드 · 2단계 결정서 현재성 · 재검증 후 현재 사실 9종 · 모순 5종");
+  : "test-docs: 통과 — 낡은 문구 · 죽은 § 참조 · 번호 연속성 · 선언된 개수 · 판 번호 · 필수 절 · 완료 범위 · 보유기간 단정 · 스위트 수 · 낡은 운영 상태 · 단계 상태 일치 · 주 D1 접근 분류 등재 · 법률 자료 현재 사실 · 인수인계 현재성 · 현재 상태 구간의 낡은 drain·구현·lease·T6 서술 · drain 미구현 0건 · 정리 대상 개수 = 코드 · 2단계 결정서 현재성 · 재검증 후 현재 사실 9종 · 모순 5종 · 운영현황 실측값");
 process.exit(fails ? 1 : 0);

@@ -10,6 +10,9 @@
 //   what       무엇을 바꾸나 (사람이 읽는 한 줄)
 //   invariant  이 변이가 깨뜨리는 **보안 불변식**
 //   suite      죽여야 하는 스위트 (여기서 안 죽으면 그 스위트에 공백이 있다는 뜻)
+//   kind       "동작" = 실제 실행 경로를 재는 검사 · "정적" = 문서·설정 일관성 검사
+//              ⚠️ **둘을 한 숫자로 합치지 않는다.** 정적 검사가 아무리 촘촘해도 런타임 방어를
+//                 증명하지 못하고, 반대도 마찬가지다 — 보고할 때 갈라서 적는다.
 //   find/replace 또는 transform  실제 변경
 //
 // ⚠️ **목표 숫자를 정해 두고 맞추지 않는다.** 살아남은 변이는 숨기지 않고 분류한다 —
@@ -202,5 +205,68 @@ export const MUTATIONS = [
     invariant: "확정은 한 번뿐이다 — 두 번째 확정이 보유기간을 매번 뒤로 민다",
     find: "      WHERE mark = ? AND confirmed_at IS NULL AND ${fenced(FENCE)}`)",
     replace: "      WHERE mark = ? AND ${fenced(FENCE)}`)",
+  },
+
+  // ── 문서 회귀 (정적 검사) ───────────────────────────────────────────────
+  //
+  // 왜 여기 있나: 2026-08-22 후속 재검증에서 `npm test` 가 통과하는 상태로 **낡은 운영 상태
+  // 여섯 가지**가 문서에 남아 있었다(`docs/HANDOFF.md` §5 의 함정 항목). 운영 상태를 잘못
+  // 읽으면 다음 사람이 **없는 것을 있다고 믿고 원격 작업을 시작한다** — 그건 코드 결함과
+  // 같은 급의 사고다. 그래서 문서 불변식도 돌연변이로 잰다.
+  {
+    id: "D01", file: "docs/HANDOFF.md", suite: "test-docs", kind: "정적",
+    what: "운영현황의 현재 라이브를 지운 배포 `f72f5225` 로 되돌린다",
+    invariant: "현재 production 배포를 정확히 말한다 — 지운 세대를 라이브라고 적으면 롤백 대상과 검증 대상이 통째로 틀어진다",
+    find: "| **라이브 (production)** | **배포 `19e69dee`**",
+    replace: "| **라이브 (production)** | **배포 `f72f5225`**",
+  },
+  {
+    id: "D02", file: "docs/HANDOFF.md", suite: "test-docs", kind: "정적",
+    what: "원격 migration 을 「적용 대기 0건」으로 되돌린다",
+    invariant: "원격 `0005` 가 적용 대기라는 사실을 말한다 — 0건이라고 적으면 migration 없이 배포해 첫 가입에서 500 이 난다",
+    find: "⛔ **`0005_policy_events_and_signup_states.sql` 적용 대기 1건**",
+    replace: "적용 대기 0건",
+  },
+  {
+    id: "D03", file: "docs/HANDOFF.md", suite: "test-docs", kind: "정적",
+    what: "production 시크릿을 「두 개」로 되돌리고 `READY_KEY` 를 뺀다",
+    invariant: "등록된 시크릿 목록이 실측과 같다 — 빠뜨리면 이미 있는 값을 또 넣거나 없는 값을 있다고 믿는다",
+    find: "| **시크릿 (production)** | **`READY_KEY` · `RL_KEY` · `STATE_KEY` 세 개**",
+    replace: "| **시크릿 (production)** | **`RL_KEY` · `STATE_KEY` 두 개 등록됨**",
+  },
+  {
+    id: "D04", file: "docs/HANDOFF.md", suite: "test-docs", kind: "정적",
+    what: "제어면 삭제와 공개 URL 폐쇄를 한 행으로 합친다",
+    invariant: "제어면 삭제와 공개 URL 폐쇄는 다른 사건이라 다른 행이다 — 합치면 다음 사람이 「끝났다」로 읽고 재측정을 건너뛴다",
+    find: "| **옛 배포 — 제어면** | ✅ **15개 삭제 완료 2026-08-22.**",
+    replace: "| **옛 배포 폐쇄** | ✅ **15개 삭제 완료 2026-08-22 — 공개 URL 폐쇄 완료.**",
+  },
+  {
+    id: "D05", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
+    what: "체크리스트 18번을 「옛 공개 배포 폐쇄 — 완료」로 되돌린다",
+    invariant: "지운 주소가 아직 401 인 동안 폐쇄 완료라고 말하지 않는다(복원 금지 해제 조건 ⑦ 이 여기 걸려 있다)",
+    find: "| 18(부분) | **옛 공개 배포 — 제어면 삭제** | ✅ **제어면 삭제만 완료 2026-08-22.** ⛔ **공개 URL 폐쇄는 미완료다**(19번 행) — 이 둘을 하나의 완료로 합치지 않는다. 실측:",
+    replace: "| ~~18~~ ✅ | **옛 공개 배포 폐쇄** | **완료 2026-08-22.** 실측:",
+  },
+  {
+    id: "D06", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
+    what: "현재 판정의 설계 판을 10판으로 되돌린다",
+    invariant: "현재 판정이 말하는 설계 판은 설계서의 판(`EDITION`)에서 파생된다",
+    find: "3단계 설계 11판 완료(9판 사용자 결정 0~7 + 10판 전체 재검증 4건 + 11판 독립 검토 3건)",
+    replace: "3단계 설계 10판 완료(9판 사용자 결정 0~7 + 10판 재검증 4건)",
+  },
+  {
+    id: "D07", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
+    what: "재감사 결함 합계와 위협 범위를 22건 · 39~60 으로 되돌린다",
+    invariant: "결함 합계와 위협 범위는 설계서의 위협 표에서 파생된다 — 낡은 숫자는 「이미 다 봤다」는 착각을 만든다",
+    find: "차례로 재현했다(위협 **39~63** · **여섯 판 연속**",
+    replace: "차례로 재현했다(위협 39~60 · 다섯 판 연속",
+  },
+  {
+    id: "D08", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
+    what: "재감사 결함 합계만 22건으로 되돌린다(위협 범위는 그대로 둔다)",
+    invariant: "합계는 판별 문형(`4+5+…건` · `N건을 차례로 재현`) 어느 쪽으로 적어도 파생값과 같아야 한다",
+    find: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4+3건 = **25건** 수정",
+    replace: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4건 = **22건** 수정",
   },
 ];
