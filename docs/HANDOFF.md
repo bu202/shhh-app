@@ -6,6 +6,63 @@
 ---
 
 
+## 2026-08-23 운영 반영 기록 — 옛 배포의 공개 접근을 Access 로 막았다
+
+⛔ **삭제가 아니다. 404 도 아니다. 가역적인 차단 실험이다.**
+
+### 왜 했나
+제어면 삭제(2026-08-22)는 성공했는데 **17시간 뒤에도 옛 해시 15개가 전부 `/api/book` 401** 이었다
+(2026-08-23 09:40 KST 실측). 캐시가 아니다 — `cf-cache-status` 헤더가 없고 `cache-control:
+private, no-store` 다. 존재한 적 없는 `deadbeef` 는 404 라 **대조군도 성립**했다.
+그 세대들은 D1/KV 바인딩을 든 채 계속 실행되고, `f72f5225` 는 **인증 없이 `/api/ready` 로
+`db:true` 를 노출**하고 있었다(주 D1 질의가 실제로 일어난다는 뜻이다).
+
+**Cloudflare 지원 티켓은 낼 수 없었다** — 무료 플랜은 청구·계정·등록기관 문의만 케이스를 열 수
+있다(대시보드 실측). 공식 문서도 `pages deployment delete` 후 URL 이 어떻게 되는지 **명시하지
+않는다**. 그래서 우리 쪽에서 막을 수 있는 수단을 썼다.
+
+### 무엇을 했나
+Pages 프로젝트 `shhh-app` > 설정 > 일반 > **프리뷰 액세스 → 「프리뷰 제한」**. 결제 정보 요구 없음.
+
+| 항목 | 값 |
+|---|---|
+| Access 대상 | **`*.shhh-app.pages.dev`** (와일드카드 서브도메인 — canonical 미포함) |
+| 정책 | `Allow Members - Cloudflare Pages` · 작업 **Allow**(Bypass 아님) |
+| 규칙 | **포함 / Emails / 운영자 이메일 1개.** Everyone 아님 |
+| 세션 | 24시간 |
+
+Pages 설정 화면이 스스로 말한다 — **「이는 프리뷰 배포 URL만 보호합니다. 프로덕션 pages.dev 및
+맞춤 도메인은 Zero Trust에서 별도로 관리됩니다.」** 그래서 공개 PWA 는 영향을 받지 않는다.
+
+### 결과 (2026-08-23 10:23 KST · 판정 기준: 302→cloudflareaccess.com / 403 / Access 로그인 화면 = 차단. **401 은 실패**)
+
+| 대상 | 적용 전 | 적용 후 |
+|---|---|---|
+| `shhh-app.pages.dev/` | 200 | **200** (영향 없음) |
+| `shhh-app.pages.dev/api/book` | 503 | **503** (영향 없음) |
+| `19e69dee` (Production 해시) | 503 | 302 → Access |
+| `8e16c92e` (Preview) | 503 | 302 → Access |
+| `cf-pages` 별칭 | 503 | 302 → Access |
+| **옛 배포 15개 `/api/book`** | **401 전부** | **302 → Access 전부** |
+| `f72f5225 /api/ready` | 200 + 무인증 `db:true` | 302 → Access |
+| `deadbeef` | 404 | 302 → Access (와일드카드) |
+
+**401 은 0건이다.**
+
+⚠️ **curl 만으로 판정하지 않았다.** 브라우저로 `f72f5225.shhh-app.pages.dev/api/book` 을 실제로
+열어 **「Sign in ・ Cloudflare Access」** 화면을 확인했고, 리다이렉트 meta 의 `auth_status` 가
+**`NONE`** 이었다 — 대시보드 로그인 쿠키가 있어도 Access 세션은 별개라 인증 없이 막힌다.
+같은 브라우저에서 canonical 은 게이트 화면이 정상 렌더링됐다.
+
+### 이 기록이 주장하지 않는 것
+- **404 가 아니다.** 배포는 여전히 존재하고 Access 뒤에서 실행될 수 있다.
+- **삭제 완료가 아니다.** 제어면 삭제 · 공개 접근 차단 · 404 는 **서로 다른 세 사건**이다.
+- **가역적이다.** 프리뷰 액세스를 끄면 15개가 다시 401 을 준다.
+- 복원 금지 해제 조건 **⑦(옛 배포 차단 D1~D12)의 충족 여부는 별도 검토**다. 이 실험은
+  「공개 접근이 막혔다」 하나만 증명한다.
+
+---
+
 ## 2026-08-22 (2) 운영 반영 기록 — 옛 배포 폐쇄와 안전 preview
 
 **한 줄**: 프로덕션만 닫아 두는 것으로는 부족했다. **옛 배포 15개가 계정 경로를 열어 둔 채
@@ -326,7 +383,7 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 | **라이브 (production)** | **배포 `19e69dee`**(Production / branch `main` / source `7477867`). 2026-08-22 실측: 계정 API 전부 **503**(두 DB 를 만지기 전) · 키 없는 `/api/ready` **503 `{"ok":true,"ready":false,"diagnostics":false}`** · 운영자 키로는 `db:false`·`ledger:false`(원격 `0005` 와 ledger D1 부재의 **정확한 보고**다). ⚠️ **계정 기능을 여는 배포가 아니다** — `EDGE_GUARD` 를 일부러 안 넣었다 |
 | **남은 배포** | **둘뿐이다** — `19e69dee`(Production)와 `8e16c92e`(Preview / branch `cf-pages` / source `7f9078a`). 두 세대는 **실행 파일이 같다**(source 차이는 배포되지 않는 문서 4개뿐) |
 | **옛 배포 — 제어면** | ✅ **15개 삭제 완료 2026-08-22.** `deployment list` 에 없고 개별 조회는 `8000009 does not exist` 다 |
-| **옛 배포 — 공개 URL** | ❌ **폐쇄 미완료.** 삭제한 `<해시>.shhh-app.pages.dev` 가 **아직 `/api/book` 에 401 로 답한다**(캐시 아님 — `cf-cache-status` 없음 · `cache-control: private, no-store`). ⛔ **제어면 삭제와 공개 URL 폐쇄는 다른 사건이다** — 실측이 404 가 되기 전까지 옛 세대는 인터넷에 남아 있다고 본다. 복원 금지 해제 조건 ⑦ 도 그래서 미충족이다 |
+| **옛 배포 — 공개 접근** | ✅ **Access 로 차단 2026-08-23 10:23 KST.** 프리뷰 액세스(`*.shhh-app.pages.dev`)를 켜서 옛 해시 **15개 전부가 302 → `cloudflareaccess.com`** 이 됐다(적용 전에는 전부 401). 정책은 **Allow · 운영자 이메일 1개**이고 Everyone·Bypass 가 아니다. 브라우저로도 「Sign in ・ Cloudflare Access」 화면을 확인했다(`auth_status: NONE`). ⚠️ **404 가 아니다** — 배포는 여전히 존재하고 Access 뒤에서 실행될 수 있다. ⚠️ **가역적이다** — 끄면 다시 401 이다. ⛔ **제어면 삭제 · 공개 접근 차단 · 404 는 서로 다른 세 사건이다.** 복원 금지 해제 조건 ⑦(D1~D12) 충족 여부는 **별도 검토 대상**이고 이 실험이 답하지 않는다 |
 | **커스텀 도메인** | **없다.** `pages project list` 의 Project Domains 는 `shhh-app.pages.dev` 하나다. **A안(도메인 + WAF)은 확정됐고 2026년 9월 예정** — `*.pages.dev` 에는 WAF 규칙을 못 걸어서 그때까지 계정 라우트는 fail-closed 다 |
 | OAuth | **비활성.** 제공자 시크릿 6개(`KAKAO_ID`·`KAKAO_SECRET`·`NAVER_*`·`GOOGLE_*`)와 `MASTER_UIDS` 미투입 |
 | **시크릿 (production)** | **`READY_KEY` · `RL_KEY` · `STATE_KEY` 세 개**(2026-08-22 17:14 KST 이름 목록 실측, 값은 보지 않는다). ⛔ 코드가 요구하는데 **아직 없는 값 5개**: `SIGNUP_STATE_KEY` · `TOMBSTONE_KEY` · `DELETION_KEY` · `SESSION_ENVELOPE_KEY` · `TURNSTILE_SECRET`. 하나라도 없으면 `loginPossible()`·`signupPossible()` 이 거짓이라 계정 라우트가 열리지 않는다. **목록을 손으로 세지 않는다** — 원본은 코드의 `env.*` 이고 `scripts/test-config.mjs` 가 문서와 대조한다 |

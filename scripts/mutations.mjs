@@ -269,4 +269,25 @@ export const MUTATIONS = [
     find: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4+3건 = **25건** 수정",
     replace: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4건 = **22건** 수정",
   },
+  {
+    id: "D09", file: "docs/HANDOFF.md", suite: "test-docs", kind: "정적",
+    what: "Access 차단을 「404 가 됐다」로 승격한다",
+    invariant: "제어면 삭제 · 공개 접근 차단 · 404 는 서로 다른 세 사건이다 — Access 차단은 배포를 없애지 않는다",
+    find: "⚠️ **404 가 아니다** — 배포는 여전히 존재하고 Access 뒤에서 실행될 수 있다.",
+    replace: "옛 배포는 이제 404 가 됐다.",
+  },
+  {
+    id: "D10", file: "docs/HANDOFF.md", suite: "test-docs", kind: "정적",
+    what: "Access 차단이 가역적이라는 사실을 지운다",
+    invariant: "프리뷰 액세스를 끄면 옛 15개가 다시 401 이다 — 되돌릴 수 있는 통제를 영구 조치로 적지 않는다",
+    find: "⚠️ **가역적이다** — 끄면 다시 401 이다.",
+    replace: "이로써 옛 배포 문제는 영구히 해결됐다.",
+  },
+  {
+    id: "D11", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
+    what: "복원 금지 해제 조건 ⑦ 이 Access 로 충족됐다고 적는다",
+    invariant: "조건 ⑦ 은 옛 배포 차단 증명(D1~D12)이고, 공개 접근 차단 하나로 대체되지 않는다",
+    find: "조건 ⑦(옛 배포 차단 D1~D12)은 **별도 검토**로 남는다.",
+    replace: "이로써 복원 금지 해제 조건 ⑦ 충족.",
+  },
 ];
