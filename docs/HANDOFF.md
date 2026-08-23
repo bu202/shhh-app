@@ -270,7 +270,7 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 > 전달 자료는 `docs/PRIVACY_LEGAL_REVIEW_PACKET.md`.
 >
 > ⚠️ **「로컬 구현이 끝났다」만으로 출시가 열리지 않는다.** 남은 순서는 넷이고 중간을 건너뛰지 않는다:
-> **원격 자원(ledger D1·새 시크릿 3개) 별도 승인 → 배포 → 출시 검증 → 옛 배포 차단(D1~D12).**
+> **원격 자원(ledger D1·미등록 시크릿 5개) 별도 승인 → 배포 → 출시 검증 → 옛 배포 차단(D1~D12).**
 > **⛔ 검증 가능한 전역 user-data drain 이 구현되기 전까지 주 D1 restore 금지**(설계서 §10-8-0).
 > 외부 법률 검토(L1~L15)는 **구현 착수 게이트에서는 빠졌지만**(프로젝트 결정 E)
 > **공개 출시 조건에는 그대로 남는다.**
@@ -302,28 +302,51 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 - 앱과 API 가 **같은 origin** 이다. 그래야 CSP 를 `connect-src 'self'` 로 조이고 쿠키를 쓴다.
   이 조건이 뒤에 나오는 레이트리밋 선택지를 좁힌다.
 
-## 2. 지금 서 있는 자리
+## 2. 지금 서 있는 자리 — **현재 운영현황**
+
+<!-- 운영현황:시작 -->
+
+> **이 블록이 운영 상태의 원본이다.** §0 의 `현재상태` 블록은 **단계 판정**을 말하고, 여기는
+> **원격 자원의 실측값**을 말한다. 둘을 한 표로 합치지 않는 이유는 갱신 주기가 다르기 때문이다 —
+> 단계는 재검토마다, 원격은 조회할 때마다 바뀐다.
+>
+> ⚠️ **여기 적힌 값은 전부 「측정한 값」이다.** 측정하지 않은 것은 **`확인 필요`** 라고 적고
+> 추정으로 채우지 않는다. `scripts/test-docs.mjs` 검사 19 가 이 블록을 잰다.
+>
+> **마지막 원격 조회: 2026-08-22 17:14 KST**(읽기 전용 — `pages deployment list` ·
+> `pages secret list`(production·preview) · `pages project list` · `d1 list` ·
+> `d1 migrations list --remote` · `d1 execute --remote` 의 `SELECT COUNT(*)`).
 
 | 항목 | 상태 |
 |---|---|
 | 브랜치 | `cf-pages`. ⚠️ **push 되지 않은 로컬 커밋이 있다** — 개수는 자주 바뀌니 `git status --short --branch` 로 본다 |
 | 테스트 | **26개 스위트** 통과(2026-08-22 실측, exit 0). `test-workerd` 가 진짜 workerd 를 띄워 운영 경로를 밟는다. 4단계에서 `test-policies` · `test-signup` · `test-deletion-ledger` · `test-cleanup` 이 늘었다. 개수의 원본은 `package.json` 의 `test` 스크립트이고 `scripts/test-docs.mjs` 가 거기서 읽어 문서와 대조한다 |
+| 돌연변이 | `node scripts/mutate.mjs` 로 **다시 돌릴 수 있다**. 목록의 원본은 `scripts/mutations.mjs`. 개수를 여기 적지 않는다 — 실행기 출력이 원본이다 |
 | 배포본 | 파일 수·선캐시 수·캐시 이름은 **빌드가 정한다** — `npm run build` 의 마지막 줄과 `scripts/test-dist.mjs` 의 출력이 원본이다. 손으로 적으면 다음 빌드에 낡는다(2026-08-20 정정: 여기 적혀 있던 「57개」는 그때 이미 58개였다). 내부 파일 0개는 `test-dist` 가 매번 검사한다 |
+| **라이브 (production)** | **배포 `19e69dee`**(Production / branch `main` / source `7477867`). 2026-08-22 실측: 계정 API 전부 **503**(두 DB 를 만지기 전) · 키 없는 `/api/ready` **503 `{"ok":true,"ready":false,"diagnostics":false}`** · 운영자 키로는 `db:false`·`ledger:false`(원격 `0005` 와 ledger D1 부재의 **정확한 보고**다). ⚠️ **계정 기능을 여는 배포가 아니다** — `EDGE_GUARD` 를 일부러 안 넣었다 |
+| **남은 배포** | **둘뿐이다** — `19e69dee`(Production)와 `8e16c92e`(Preview / branch `cf-pages` / source `7f9078a`). 두 세대는 **실행 파일이 같다**(source 차이는 배포되지 않는 문서 4개뿐) |
+| **옛 배포 — 제어면** | ✅ **15개 삭제 완료 2026-08-22.** `deployment list` 에 없고 개별 조회는 `8000009 does not exist` 다 |
+| **옛 배포 — 공개 URL** | ❌ **폐쇄 미완료.** 삭제한 `<해시>.shhh-app.pages.dev` 가 **아직 `/api/book` 에 401 로 답한다**(캐시 아님 — `cf-cache-status` 없음 · `cache-control: private, no-store`). ⛔ **제어면 삭제와 공개 URL 폐쇄는 다른 사건이다** — 실측이 404 가 되기 전까지 옛 세대는 인터넷에 남아 있다고 본다. 복원 금지 해제 조건 ⑦ 도 그래서 미충족이다 |
+| **커스텀 도메인** | **없다.** `pages project list` 의 Project Domains 는 `shhh-app.pages.dev` 하나다. **A안(도메인 + WAF)은 확정됐고 2026년 9월 예정** — `*.pages.dev` 에는 WAF 규칙을 못 걸어서 그때까지 계정 라우트는 fail-closed 다 |
 | OAuth | **비활성.** 제공자 시크릿 6개(`KAKAO_ID`·`KAKAO_SECRET`·`NAVER_*`·`GOOGLE_*`)와 `MASTER_UIDS` 미투입 |
-| 시크릿 (production) | **`RL_KEY` · `STATE_KEY` 두 개 등록됨** (2026-08-18 이름 목록 재확인, 값은 보지 않는다). ⚠️ **preview 환경에는 `RL_KEY` 가 없다.** ⚠️ 4단계가 요구하는 **`SIGNUP_STATE_KEY` · `TOMBSTONE_KEY` · `DELETION_KEY` 는 아직 없다** — 등록 전에는 가입과 계정 삭제가 503 이고 `/api/ready` 가 그렇게 말한다 |
-| ledger D1 | **아직 없다.** 스키마와 migration 은 `worker/ledger-schema.sql` · `migrations-ledger/0001_ledger_init.sql` 에 있고, 생성·바인딩은 **별도 승인** 사항이다. 바인딩이 없으면 계정 삭제가 503 이다 |
-| 정리 크론 | **로컬 구현만.** `worker/cleanup/` 에 있고, 설정은 **템플릿(`wrangler.example.jsonc`)과 실제 설정(`wrangler.jsonc`)으로 갈라져 있다**(2026-08-19). 실제 설정은 저장소에 없고(`.gitignore`) `docs/OPS_RUNBOOK.md` §3 이 만든다 — **배포 가능한 설정 파일에 placeholder 가 들어갈 수 없는 구조다**(`scripts/test-config.mjs` 가 잰다). ⛔ 그전에는 배포 가능한 설정 안에 `<TODO>` 가 그대로 있었다. 배포 전까지 운영에서는 아무도 만료 데이터를 안 치운다. 실패·경보는 2026-08-18 에 마감했다: 실패한 회차는 `ctx.waitUntil()` Promise 를 **거부해** Cron Trigger 에 실패로 남고, 확정 안 된 삭제 표식·연속 실패 3회는 `/api/ready` 의 **`cleanupAlert`** boolean 으로 나온다(개수·오류 문자열은 비공개 · 못 읽으면 `true`). **외부 알림(Slack·이메일 등)은 붙이지 않았다** — 운영 반영 단계의 별도 결정이다 |
-| 원격 D1 | **`0001`~`0004` 전부 적용 완료** (`0001`~`0003` 2026-08-14 · `0004` 2026-08-17). 2026-08-18 `migrations list` 적용 대기 **0건** · `invite_codes_active` 인덱스 존재 · 중복 활성 코드 **0건** |
-| 원격 D1 `rate_limits` | **5행, 전부 만료된 채 남아 있다**(2026-08-18 실측). 자동 정리 수단이 없다 — 위협 38 의 라이브 증거. 삭제는 원격 쓰기라 **별도 승인** 사항. ⚠️ **2026-08-20 부터 코드는 이 표를 안 쓴다** — 카운터가 ledger 로 갔다(위협 49). 표는 남겨 둔다(파괴적 migration 은 별도 승인) |
-| 원격 D1 사용자 수 | **0명** (2026-08-17 읽기 전용 `SELECT COUNT(*)` 재조회 성공). 같은 날 다른 실행 하나는 Cloudflare API `7403` 권한 오류였다. **원인은 확인되지 않았다** — 인증 컨텍스트·권한·Cloudflare 측 상태 중 무엇인지 모른다. "간헐적 장애"라고 단정하지 않는다. 값 0명은 **성공한 실행**에서 나온 것이다 |
-| legacy KV | **아직 살아 있다.** 5개(`b:1 c:1 s:2 u:1`, 접두사 개수만 확인). 새 코드는 쓰지 않는다. 폐기 방향은 승인, **실행은 별도 승인** |
+| **시크릿 (production)** | **`READY_KEY` · `RL_KEY` · `STATE_KEY` 세 개**(2026-08-22 17:14 KST 이름 목록 실측, 값은 보지 않는다). ⛔ 코드가 요구하는데 **아직 없는 값 5개**: `SIGNUP_STATE_KEY` · `TOMBSTONE_KEY` · `DELETION_KEY` · `SESSION_ENVELOPE_KEY` · `TURNSTILE_SECRET`. 하나라도 없으면 `loginPossible()`·`signupPossible()` 이 거짓이라 계정 라우트가 열리지 않는다. **목록을 손으로 세지 않는다** — 원본은 코드의 `env.*` 이고 `scripts/test-config.mjs` 가 문서와 대조한다 |
+| **시크릿 (preview)** | **0개**(2026-08-22 17:14 KST `pages secret list --env preview` **직접 조회** 결과 — production 목록에서 추정한 값이 아니다). ⚠️ preview 도 `RL_KEY` 가 없으면 리미터가 세지 않는다 |
+| **vars (미등록)** | `EDGE_GUARD` · `TURNSTILE_SITE_KEY` — 둘 다 `wrangler.jsonc` 에 주석으로만 있다. `EDGE_GUARD` 부재가 계정 라우트를 닫아 두는 **유일한 장치**다 |
+| **원격 D1** | `shhh-db` 하나뿐(`d1 list` 실측). `0001`~`0004` 적용 완료(`0001`~`0003` 2026-08-14 · `0004` 2026-08-17). ⛔ **`0005_policy_events_and_signup_states.sql` 적용 대기 1건**(2026-08-22 17:14 KST `migrations list --remote` 실측). 적용은 원격 쓰기라 **별도 승인** 사항 |
+| **원격 D1 행 수** | **전부 0행**(2026-08-22 17:14 KST 읽기 전용 `SELECT COUNT(*)`): `users` 0 · `sessions` 0 · `books` 0 · `friendships` 0 · `invite_codes` 0 · `rate_limits` 0. ⚠️ **`rate_limits` 는 전에 5행이었다**(2026-08-18 실측) — 지금 0행인 이유는 확인하지 않았다. **자동 정리 수단은 여전히 배포되지 않았다** |
+| **ledger D1** | **아직 없다**(`d1 list` 에 `shhh-ledger` 가 없다). 스키마·migration 은 `worker/ledger-schema.sql` · `migrations-ledger/0001`·`0002` 에 있고, 생성·바인딩은 **별도 승인** 사항이다. 바인딩이 없으면 `readMode()` 가 `unbound` 라 사용자 데이터 API 가 전부 503 이다 |
+| 정리 크론 | **로컬 구현만 · 미배포.** `worker/cleanup/` 에 있고, 설정은 **템플릿(`wrangler.example.jsonc`)과 실제 설정(`wrangler.jsonc`)으로 갈라져 있다**(2026-08-19). 실제 설정은 저장소에 없고(`.gitignore`) `docs/OPS_RUNBOOK.md` §3 이 만든다 — **배포 가능한 설정 파일에 placeholder 가 들어갈 수 없는 구조다**(`scripts/test-config.mjs` 가 잰다). 실패·경보는 2026-08-18 에 마감했다: 실패한 회차는 `ctx.waitUntil()` Promise 를 **거부해** Cron Trigger 에 실패로 남고, 확정 안 된 삭제 표식·연속 실패 3회는 `/api/ready` 의 **`cleanupAlert`** boolean 으로 나온다. **외부 알림(Slack·이메일 등)은 붙이지 않았다.** ⚠️ **배포 전까지 운영에서는 아무도 만료 데이터를 안 치운다** |
+| legacy KV | **아직 살아 있다.** 5개(`b:1 c:1 s:2 u:1`, 접두사 개수만 확인 — **이번에 재조회하지 않았다**). 새 코드는 쓰지 않는다. 폐기 방향은 승인, **실행은 별도 승인**이고 **이번 범위에서 제외**다 |
+| **미배포 로컬 커밋** | ⛔ **최신 세 커밋(`156fd8a`·`41455b6`·`8628e14`)과 그 문서 커밋은 production 에 안 올라갔다.** 위협 57~63 의 수정은 **로컬에만** 있다 — 라이브는 `19e69dee` 그대로다 |
 | 2단계(회원가입·개인정보) | **정책 결정 완료 2026-08-17 · 처리 근거·국외 처리·연령·CASCADE 확정 2026-08-18(프로젝트 결정)** → `docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md`. ⚠️ **외부 법률 검토 미완료** — 사용자가 공식 자료를 보고 내린 운영 결정이지 변호사 검토 결과가 아니다 |
-| 4단계(구현) | **로컬 구현 완료 2026-08-22.** **원격은 두 가지로 갈라 읽는다**(2026-08-22): ✅ **안전 동기화는 실행됐다** — production 배포 `19e69dee`(source `7477867`) · `READY_KEY` 등록 · 옛 배포 **15개 삭제** · 안전 preview `8e16c92e`. ⛔ **계정 인프라는 하나도 안 했다** — 원격 `0005` 미적용 · ledger D1 미생성 · `LEDGER` 미바인딩 · 가입·삭제·세션·Turnstile 시크릿 미등록 · OAuth 시크릿 미등록 · 정리 Worker 미배포 · 도메인·WAF 없음. 그래서 라이브의 계정 라우트는 **두 DB 를 만지기 전에 503** 이다. **원격 D1 쓰기 0건 · push 0건**은 그대로다. **전역 user-data drain 은 결정 A′ 로 구현됐다** — HTTP 요청과 **정리 크론**이 같은 임차증을 든다(T47b·T47d). 정리 크론의 **실패 전파와 경보**도 마감했다(T49) |
-| 라이브 | **배포 `f72f5225`**(Production/main, source `cba3d3a`) — 1단계 작업분이 들어 있다. 2026-08-18 09:07 KST 실측: `/api/ready` HTTP **503** · `{"ok":true,"configReady":false,"db":true,"providers":[],"ready":false}`. 이 503 은 **`providers: []`(OAuth 미설정) 때문의 의도된 fail-closed** 다. `RL_KEY` 부재도 DB 오류도 아니다 — `db:true` 가 원격 D1 스키마 접근을 증명한다 |
-| wrangler | `4.123.0` 을 devDependency 로 **고정**(예전엔 아예 설치돼 있지 않았다). OAuth 토큰은 살아 있음 |
+| 4단계(구현) | **로컬 구현 완료 2026-08-22.** ✅ **안전 동기화는 실행됐다**(배포 `19e69dee` · `READY_KEY` 등록 · 옛 배포 15개 삭제 · preview `8e16c92e`). ⛔ **계정 인프라는 하나도 안 했다** — 위 행들이 각각 답한다. **push 0건**은 그대로다 |
+| wrangler | `4.123.0` 을 devDependency 로 **고정**. OAuth 토큰은 살아 있음(`whoami` 실측) |
 | 추적 안 된 파일 | `네이버검수-캡처/` — 사용자 파일. **건드리지 않는다** |
 
-> 커밋 해시는 여기 적지 않는다. 이 표가 가장 자주 틀리던 자리라 — `git log --oneline -1` 이 늘 맞다.
+> 커밋 해시는 이 표의 **미배포 로컬 커밋** 행 말고는 적지 않는다. 가장 자주 틀리던 자리라 —
+> `git log --oneline -1` 이 늘 맞다.
+
+<!-- 운영현황:끝 -->
 
 ## 3. 닫힌 것 (근거 없이 다시 열지 말 것)
 
@@ -405,7 +428,7 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 | ~~4단계 회원가입 구현~~ ✅(로컬) | 가입 UI·API·`policy_events`·`consumed_signup_states`·삭제 표식 ledger·유지보수 3상태·정리 Worker·테스트 4종 | **로컬 완료 2026-08-18.** 남은 것은 **원격 반영 전부**(§4-7). 전역 drain 은 A′ 로 구현했고 정리 크론도 같은 임차증을 든다 |
 | ~~**4단계 전역 user-data drain**~~ ✅(로컬) | 후보 A/B/C 비교(설계서 §10-9-8·§10-9-9) 후 하나를 고르는 일이었다 | **결정 A′ 로 구현 완료 2026-08-18.** 주 D1 사용자 데이터를 만지는 작업 하나에 임차증 하나 — **HTTP 요청(`worker/index.js` 가장 바깥 `finally`)과 Scheduled Cleanup(`worker/cleanup/` 실행 하나에 하나)이 같은 `write_leases` 체계에 들어 있다.** 허용 모드만 다르다(요청은 `open`+`maintenance`, 크론은 `open` 만). T6 의 기대값도 「거부된다」가 아니라 **「도는 동안 활성 1 · 그동안 복원 거부 · 끝난 뒤에만 0」**으로 바뀌었다 — 이미 시작한 일은 HTTP 든 크론이든 끊지 않는다. 검증은 T6·T6b·T6c·T47b·T47d. ⚠️ **그래도 주 D1 복원 금지는 그대로다. 사유가 drain 이 아니다** — 바로 아래 표를 본다 |
 | ~~`privacy.html` 불일치 8건~~ ✅ | 목록은 위 문서 §14 | **완료 2026-08-18**, 가입 화면 구현과 같은 변경 단위에서 고쳤다. 남은 미확정은 **국외 처리 국가 특정**과 **복구본 보유기간** 둘이고, 둘 다 「모른다」라고 문서에 적었다 |
-| OAuth 활성화 | P0 완료(됨) + 사용자 승인 + **preview 환경 `RL_KEY` 등록** + **새 시크릿 3개** + **ledger D1** + 네이버·카카오 재승인 | 승인 대기. **공개 OAuth 는 계속 No-Go** |
+| OAuth 활성화 | P0 완료(됨) + 사용자 승인 + **preview 환경에 `RL_KEY` 넣기**(preview 시크릿은 0개다) + **시크릿 5개 등록**(§2 운영현황 표) + **ledger D1** + 네이버·카카오 재승인 | 승인 대기. **공개 OAuth 는 계속 No-Go** |
 
 > **복원 금지가 계속되는 이유를 구분한다**(§10-8-0 의 9조건 중 미충족 셋).
 >
@@ -426,7 +449,7 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 | # | 작업 | 되돌리기 | 왜 승인이 필요한가 |
 |---|---|---|---|
 | 1 | `wrangler d1 create shhh-ledger` + 스키마 적용 + Pages `LEDGER` 바인딩 | DB 삭제(빈 상태라 값싸다) | 새 원격 리소스 |
-| 2 | 시크릿 3개 등록(`SIGNUP_STATE_KEY`·`TOMBSTONE_KEY`·`DELETION_KEY`) | 재등록·삭제 | 비밀값 투입 |
+| 2 | 시크릿 5개 등록(`SIGNUP_STATE_KEY`·`TOMBSTONE_KEY`·`DELETION_KEY`·`SESSION_ENVELOPE_KEY`·`TURNSTILE_SECRET`) | 재등록·삭제 | 비밀값 투입 |
 | 3 | 원격 주 D1 에 `0005` 적용 | 백업 → 복원(단, **복원은 금지 상태**라 실질적으로 되돌리기 어렵다) | **스키마 변경.** 백업 먼저 |
 | 4 | preview 환경 `RL_KEY` 등록 | 삭제 | 비밀값 투입 |
 | 5 | Pages 배포 | 이전 배포로 롤백 | 사용자에게 나간다 |
@@ -616,6 +639,31 @@ npx wrangler pages deploy dist --project-name shhh-app --branch main   # --commi
 그 표는 사실 대조이지 **법적 충분성 판정이 아니다**.
 
 ## 5. 이 저장소가 이미 겪은 함정 (반복 금지)
+
+### 함정 — 검사 밖에 있던 「지금 상태」 표 (**당시 사실** 2026-08-18~08-22 · 2026-08-22 후속 재검증에서 닫음)
+
+**당시 사실 — 2026-08-18~08-22.** §2 의 표가 아래 여섯 가지를 **현재 상태로** 말하고 있었고
+전부 낡아 있었다. 그런데 `npm test` 는 통과했다.
+
+| 낡은 서술 | 실제(2026-08-22 17:14 KST 실측) |
+|---|---|
+| production 시크릿 **두 개**(`RL_KEY`·`STATE_KEY`) | **세 개** — `READY_KEY` 가 2026-08-22 에 늘었다 |
+| 원격 migration **적용 대기 0건** | **1건** — `0005_policy_events_and_signup_states.sql` |
+| 라이브 **`f72f5225`** | **`19e69dee`**(source `7477867`) |
+| 원격 `rate_limits` **5행** | **0행** |
+| 4단계가 요구하는 새 시크릿 **3개** | **5개** — 결정 3·4 로 `SESSION_ENVELOPE_KEY`·`TURNSTILE_SECRET` 이 늘었다 |
+| preview 시크릿을 production 목록에서 **추정**한 서술 | **직접 조회 결과 0개** — 추정이 아니라 측정이다 |
+
+**왜 못 잡았나.** `scripts/test-docs.mjs` 의 검사 7 은 `<!-- 현재상태 -->` 블록만 보고, 검사 14 의
+`CURRENT_REGIONS` 는 HANDOFF 에서 §0 과 §4-1~4-7 만 봤다. **§2 는 그 둘 사이에 끼여 어느 검사에도
+등록돼 있지 않았다.** 같은 날 `SECURITY_RELEASE_CHECKLIST.md` 의 「**옛 공개 배포 폐쇄** … 완료」도
+통과했다 — 검사 18-③ 의 정규식이 `옛 배포` 를 **붙여 쓴 형태로만** 찾아 「옛 **공개** 배포」를
+놓쳤고, `폐쇄` 와 `완료` 사이의 `** | **` 를 `\s*` 로 이을 수 없었다.
+
+**교훈: 「지금」이라고 말하는 자리는 전부 검사 대상이거나 명시적 역사 구간이어야 한다.**
+지금은 §2 가 `<!-- 운영현황 -->` 블록이고 검사 19 가 잰다 — 판 번호는 `EDITION`, T·위협·결함
+합계는 설계서, 지운 배포 해시는 이 문서의 삭제 목록에서 **파생**한다. 손으로 적은 숫자는 낡는다.
+
 
 1. **초록불이 보안을 뜻하지 않는다.** 테스트 전부 통과 상태에서 P0 4건이 살아 있었다.
    "테스트가 통과했다"가 아니라 **"실제 공격 순서가 테스트에 들어 있나"** 로 판정한다.
