@@ -1171,6 +1171,120 @@ await T("회원가입 화면 — 정책 해시 대조 · 필수 체크 · 실패
   }
 });
 
+// ══ 계정 서버가 닫혀 있을 때의 로그인 표시 (2026-08-23) ═══════════════════
+//
+// 재현: 폐쇄 베타 준비 상태의 라이브(`EDGE_GUARD`·`LEDGER` 없음)에서 계정 라우트는 **503** 이고
+// `/api/health` 는 `providers: []` 인데, 브라우저에 옛 `shh-via=kakao` 가 남아 있으면
+// 마이 화면이 **「카카오 계정」**이라고 말하고 친구·초대 동작까지 그대로 그렸다.
+// 서버가 막으므로 데이터가 새지는 않지만, **계정 상태를 거짓으로 표시**하는 결함이다.
+//
+// 규칙 세 갈래를 갈라 잰다:
+//   401  — 세션이 죽었다. 로그인 표시를 **지운다**(기존 동작).
+//   503·네트워크 실패·readiness false — 서버를 **모르는** 상태다. 표시를 **지우지 않고**,
+//          계정처럼 단정하지도 않는다. 계정 동작만 숨기고 점검 안내를 낸다.
+//   확인됨 — 서버가 실제로 대답했다. 정상 계정 화면.
+// ⚠️ 503 에서 `shh-via` 를 지우면 서버가 돌아왔을 때 사용자가 **이유 없이 로그아웃된 것처럼**
+//    보이고, 다시 로그인시키려 해도 그 자리에서는 로그인도 503 이다. 그래서 보존한다.
+const DOWN = "계정 기능을 점검 중이에요";
+const myBox = (c) => c.document.getElementById("mypage");
+const friBox = (c) => c.document.getElementById("friends");
+const routes503 = (m, p) => {
+  if (p === "/health") return { status: 200, body: { ok: true, ready: false, signupReady: false, providers: [] } };
+  return { status: 503, body: { error: "계정 기능이 아직 열리지 않았어요", mode: "unknown" } };
+};
+
+// 1. 옛 로그인 표시 + 계정 서버 닫힘 → 「카카오 계정」이라고 말하지 않는다
+await T("stale 로그인 표시 + 503: 계정으로 단정하지 않는다", async () => {
+  const c = await boot({ routes: routes503 });
+  const txt = allText(myBox(c));
+  assert.ok(!txt.includes("카카오"), "계정 서버가 닫혔는데 「카카오 계정」이라고 말한다");
+  assert.ok(txt.includes(DOWN), "점검 안내를 안 보여준다");
+});
+
+// 2. 같은 상태에서 계정 동작(친구·초대·회전·계정 변경)을 그리지 않는다
+await T("stale 로그인 표시 + 503: 계정 동작을 숨긴다", async () => {
+  const c = await boot({ routes: routes503 });
+  const txt = allText(myBox(c)) + " | " + allText(friBox(c));
+  for (const label of ["친구 초대 링크 보내기", "새 링크 만들기", "계정"])
+    assert.ok(!walk(myBox(c)).concat(walk(friBox(c))).some((e) => e._text === label),
+      `계정 서버가 닫혔는데 「${label}」 동작이 남아 있다`);
+});
+
+// 2b. 초대 링크 버튼은 **index.html 의 정적 버튼**이라 따로 숨겨야 한다
+//     ⚠️ 이 검사는 실브라우저가 먼저 찾았다 — 위 2번은 `#mypage`·`#friends` 안만 봐서
+//        `#share-btn`(다른 컨테이너)이 그대로 남아 있는 것을 놓쳤다(2026-08-23).
+await T("stale 로그인 표시 + 503: 초대 링크 버튼을 숨긴다", async () => {
+  const c = await boot({ routes: routes503 });
+  assert.equal(c.document.getElementById("share-btn").hidden, true,
+    "계정 서버가 닫혔는데 초대 링크 버튼이 그대로 보인다 — 누르면 회전(쓰기)이 503 이다");
+});
+
+// 2c. 서버가 돌아오면 다시 보인다 (숨김이 영구가 아니다)
+await T("서버 확인 성공: 초대 링크 버튼이 보인다", async () => {
+  const c = await boot();
+  assert.notEqual(c.document.getElementById("share-btn").hidden, true,
+    "정상 응답인데 초대 링크 버튼이 숨겨져 있다");
+});
+
+// 3. 503 은 로그인 표시를 **보존**한다 (401 과 다르다)
+await T("503 은 shh-via 를 지우지 않는다", async () => {
+  const store = LOGGED_IN();
+  const c = await boot({ store, routes: routes503 });
+  assert.equal(store["shh-via"], "kakao", "503 인데 로그인 표시를 지웠다 — 이유 없는 로그아웃으로 보인다");
+});
+
+// 4. 401 은 기존대로 로그인 표시를 지운다
+await T("401 은 shh-via 를 지운다", async () => {
+  const store = LOGGED_IN();
+  const c = await boot({ store, routes: (m, p) =>
+    p === "/health" ? { status: 200, body: { ok: true, ready: true, signupReady: true, providers: ["kakao"] } }
+                    : { status: 401, body: {} } });
+  assert.equal(store["shh-via"], undefined, "401 인데 로그인 표시가 남았다");
+});
+
+// 5. 서버가 실제로 확인해 주면 정상 계정 화면이다 (되돌아올 수 있다)
+await T("서버 확인 성공 → 계정 화면 복구", async () => {
+  const c = await boot();                       // defaultRoutes = 200
+  const txt = allText(myBox(c));
+  assert.ok(txt.includes("카카오"), "정상 응답인데 계정 화면이 안 나온다");
+  assert.ok(!txt.includes(DOWN), "정상 응답인데 점검 안내가 남아 있다");
+});
+
+// 6. **같은 실행 중** 친구 데이터를 이미 받은 뒤 503 이 나면 그 동작이 남지 않는다
+await T("친구 데이터 적재 후 503: 이전 친구·초대 동작이 남지 않는다", async () => {
+  let down = false;
+  const c = await boot({ routes: (m, p) => {
+    if (p === "/health") return down
+      ? { status: 200, body: { ok: true, ready: false, signupReady: false, providers: [] } }
+      : { status: 200, body: { ok: true, ready: true, signupReady: true, providers: ["kakao"] } };
+    if (down) return { status: 503, body: { error: "계정 기능이 아직 열리지 않았어요" } };
+    if (p === "/book" && m === "GET") return { status: 200, body: structuredClone(BOOK_OK) };
+    if (p === "/friends" && m === "GET") return { status: 200, body: structuredClone(FRIENDS_OK) };
+    return { status: 200, body: { ok: true } };
+  } });
+  // 친구 화면을 한 번 열어 목록을 메모리에 올린다
+  const box = openFriends(c);
+  await tick(12);
+  assert.ok(allText(box).includes("친구1"), "사전 조건 실패 — 친구 목록이 안 실렸다");
+  down = true;
+  // ⚠️ **손에 든 목록이 있으면 친구 화면은 서버를 다시 치지 않는다.** 그래서 503 을 알게 되는
+  //    계기를 실제 흐름 그대로 만든다 — 단어장 화면으로 돌아가면 배지 새로고침이 서버를 친다.
+  c.HOOKS.screenShown?.("book");
+  await tick(12);
+  c.segs[1].click();            // 같은 실행 안에서 친구 화면을 다시 그린다
+  await tick(12);
+  const txt = allText(friBox(c));
+  assert.ok(!txt.includes("친구1"), "503 뒤에도 앞서 받은 친구 목록이 화면에 남아 있다");
+  assert.ok(txt.includes(DOWN), "503 뒤에 점검 안내가 없다");
+});
+
+// 7. readiness 가 false 면 가입·로그인 **시작 API 를 부르지 않는다**
+await T("readiness false: 가입·로그인 시작 API 를 부르지 않는다", async () => {
+  const c = await boot({ store: {}, routes: routes503 });
+  const started = c.calls.filter((x) => x.path.startsWith("/signup/start") || x.path.startsWith("/login/"));
+  assert.equal(started.length, 0, `readiness false 인데 시작 API 를 ${started.length}번 불렀다`);
+});
+
 const failed = RESULTS.filter((r) => !r[0]);
 for (const [pass, name, why] of RESULTS) if (!pass) console.log(`  ✗ ${name}\n      ${why}`);
 if (failed.length) {
@@ -1180,4 +1294,5 @@ if (failed.length) {
 console.log(`test-client: ${n}개 통과 — 로그아웃·계정삭제·친구철회 실패 처리 · 저장 완료 판정`
   + ` · 친구 목록 로딩/실패/재시도/스키마/중복요청 · 탭 간 편집 세대 · OAuth 왕복 시간 제한`
   + ` · 가입 화면(정책 해시 대조 · 필수 체크 · 실패/재시도 · 연타 잠금 · signup_required 안내`
-  + ` · T72 사람 확인 위젯: 토큰 전에는 잠김 · 만료 시 재잠금 · 본문에 토큰 · 위젯 실패 안내)`);
+  + ` · T72 사람 확인 위젯: 토큰 전에는 잠김 · 만료 시 재잠금 · 본문에 토큰 · 위젯 실패 안내)`
+  + ` · 계정 서버 닫힘(503) 3상태: 표시 보존 · 계정 단정 금지 · 동작 숨김 · 복구`);

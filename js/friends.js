@@ -27,6 +27,11 @@ if (typeof document !== "undefined") {
     el("wordbook").hidden = friends;
     el("book-actions").hidden = friends;
     el("friends").hidden = !friends;
+    // 계정 기능이 닫혀 있으면 **초대 링크 버튼을 숨긴다.** 이 버튼은 index.html 에 정적으로
+    // 있어서 계정 상태와 무관하게 늘 보였다 — 누르면 초대 코드 회전(쓰기)이 필요한데 그건
+    // 503 이다. 「되는 것처럼 보이는 버튼」을 남기지 않는다(2026-08-23 실브라우저에서 발견).
+    // ⚠️ `book-actions` 를 통째로 숨기지 않는다 — 「비우기」는 계정 없이도 되는 동작이다.
+    el("share-btn").hidden = accountDown();
     for (const b of document.querySelectorAll(".seg[data-book]")) {
       const on = b.dataset.book === VIEW;
       b.classList.toggle("on", on);
@@ -38,6 +43,9 @@ if (typeof document !== "undefined") {
   for (const b of document.querySelectorAll(".seg[data-book]")) {
     b.addEventListener("click", () => { VIEW = b.dataset.book; applyView(); });
   }
+
+  // 계정 기능이 닫히거나 돌아오면 그 자리에서 갈래를 다시 그린다 — 되돌아올 수 있어야 한다.
+  onAccountState(() => applyView());
 
   // 단어장 화면을 다시 열 때마다 갈래를 되살린다. app.js 의 go() 가 renderWordbook 을 부르면서
   // #wordbook 을 채우는데, 친구 갈래에 있었다면 그게 다시 보이면 안 된다.
@@ -163,6 +171,14 @@ if (typeof document !== "undefined") {
     box.innerHTML = "";
     if (!authToken()) {
       box.innerHTML = '<p class="hint">로그인하면 친구를 추가할 수 있어요.<br>친구와 서로의 단어장을 볼 수 있게 돼요.</p>';
+      return;
+    }
+    // 계정 기능이 닫혀 있으면 **손에 든 목록을 버린다.** 같은 실행 중에 이미 받아 둔 친구·초대
+    // 코드가 화면에 남으면, 수락·회전·단어장 열기 같은 동작이 전부 503 인데도 눌러진다 —
+    // 「되는 것처럼 보이는 화면」이 정확히 이 저장소가 P0 로 닫았던 결함의 모양이다(2026-08-23).
+    if (accountDown()) {
+      DATA = null; ERROR = "";
+      box.innerHTML = '<p class="hint">계정 기능을 점검 중이에요. 사전과 연습은 그대로 쓸 수 있어요.</p>';
       return;
     }
     if (!DATA) {

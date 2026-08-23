@@ -221,8 +221,22 @@ if (typeof document !== "undefined") {
   // ── 마이페이지 ──
   // 화면 전환마다 다시 그리지 않는다. 바뀌는 건 로그인 상태뿐이라 **상태가 바뀔 때만** 그린다 —
   // 그래서 app.js 의 화면 전환에 훅을 하나 더 뚫지 않아도 된다.
+  // **계정 화면을 그려도 되는가.** 로그인 표시가 있고 **서버가 실제로 대답할 때만** 참이다.
+  // 표시만 보고 그리면 계정 라우트가 전부 503 인 배포에서 「카카오 계정」이라고 말한다(2026-08-23).
+  // ⚠️ 표시는 **지우지 않는다** — 503 은 「세션이 죽었다」가 아니라 「지금은 모른다」이고,
+  //    지워 버리면 사용자가 이유 없이 로그아웃된 것으로 보인다(그 자리에서는 로그인도 503 이다).
+  const accountReady = () => !!authToken() && !accountDown();
+  const DOWN_MSG = "계정 기능을 점검 중이에요. 사전과 연습은 그대로 쓸 수 있어요.";
+  // 점검 안내 한 줄. 계정 화면 자리마다 같은 말을 쓴다.
+  const downNote = (box) => {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = DOWN_MSG;
+    box.appendChild(p);
+  };
+
   const subText = () => {
-    if (!authToken()) return "";
+    if (!accountReady()) return "";
     return myName() ? `${myName()}님 · ${NAMES[authVia()] || ""} 계정` : (NAMES[authVia()] || "") + " 계정";
   };
   onMyPageSub(subText);
@@ -244,7 +258,10 @@ if (typeof document !== "undefined") {
     const box = document.getElementById("mypage");
     box.innerHTML = "";
 
-    if (!authToken()) {
+    if (!accountReady()) {
+      // 계정 기능이 닫혀 있으면 **왜 안 되는지**를 먼저 말한다. 로그인 표시가 남아 있어도
+      // 「계정」 행·별명·제공자 이름을 그리지 않는다 — 그게 거짓말이 되는 자리다.
+      if (authToken()) { downNote(box); return; }
       // 안내 문단은 뺐다 — 게이트에서 이미 본 말을 여기서 또 읽게 된다. 버튼만 둔다.
       loginButtons(box, "btn-primary");
       return;
@@ -290,7 +307,8 @@ if (typeof document !== "undefined") {
   function renderSettings() {
     const box = document.getElementById("settings");
     box.innerHTML = "";
-    if (!authToken()) {
+    if (!accountReady()) {
+      if (authToken()) { downNote(box); return; }
       const p = document.createElement("p");
       p.className = "hint";
       p.textContent = "로그인하면 계정 설정이 열려요.";
@@ -370,7 +388,7 @@ if (typeof document !== "undefined") {
     box.innerHTML = "";
     // 로그아웃 상태면 비워만 둔다. **여기서 GO 를 부르면 안 된다** — renderAll 은 앱이 뜰 때도
     // 도는데, 그때 화면을 옮기면 링크로 들어온 사람이 마이 탭으로 튕긴다.
-    if (!authToken()) return;
+    if (!accountReady()) { if (authToken()) downNote(box); return; }
 
     const list = document.createElement("div");
     list.className = "list";
@@ -970,7 +988,15 @@ if (typeof document !== "undefined") {
     // 못 물어봤으면 null 로 남긴다 — loginButtons 가 그걸 보고 "연결 안 됨"이라 말한다.
     if (h.ok) { PROVIDERS = h.providers; SIGNUP_READY = h.signupReady;
                 TURNSTILE_KEY = h.turnstileSiteKey; }
+    // 계정 기능이 열렸는지는 **`ready` 하나**로 판정한다(서버 계약은 그대로다).
+    // ⚠️ `providers: []` 를 근거로 쓰지 않는다 — 그건 「로그인을 시작할 수 있나」이지
+    //    「지금 로그인돼 있나」가 아니다. 제공자가 없어도 세션은 살아 있을 수 있다.
+    // 못 물어봤으면 그것도 "모른다" 라서 계정처럼 그리지 않는다 — 여기가 그 판정 자리다.
+    // (개별 요청의 일시적 끊김은 down 이 아니다. 그건 「다시 시도」로 회복하는 길이 있다.)
+    setAccountState(!h.ok ? "down" : h.ready === false ? "down" : "ok");
     renderAll();
+    // 서버가 돌아오거나 닫히면 그 자리에서 화면을 다시 그린다 — 되돌아올 수 있어야 한다.
+    onAccountState(() => renderAll());
     if (fresh) toast(JUST_SIGNED_UP ? "가입했어요. 환영해요!" : "로그인했어요");
     if (authToken()) {
       sync(fresh);

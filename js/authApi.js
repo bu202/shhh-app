@@ -26,6 +26,34 @@ const setAuthUid = (v) => { if (v) localStorage.setItem(ME_KEY, v); };
 // ⚠️ 함정 44: 지금은 주인이 하나라 단일 함수다. 두 번째 파일이 붙는 순간 배열로 바꿀 것.
 let authLost = null;
 function onAuthLost(fn) { authLost = fn; }
+
+// ── 계정 계층이 지금 쓸 수 있나 (2026-08-23) ──────────────────────────────
+// **로그인 표시(`shh-via`)와 다른 축이다.** 표시는 「이 기기가 로그인했다고 기억한다」이고,
+// 이것은 「서버의 계정 기능이 지금 대답하는가」다. 둘을 한 값으로 합치면 다음이 깨진다:
+//   · 서버가 503 인데 표시를 지우면 → 사용자는 **이유 없이 로그아웃**된 것으로 보이고,
+//     다시 로그인하려 해도 그 자리에서는 로그인도 503 이다.
+//   · 표시만 보고 화면을 그리면 → 계정 라우트가 전부 503 인데도 **「카카오 계정」**이라고
+//     말하고 친구·초대 동작까지 그린다(2026-08-23 재현).
+// 그래서 상태를 셋으로 둔다:
+//   "unknown"   아직 서버에게 물어본 적이 없다 (첫 화면)
+//   "down"      계정 기능이 닫혔거나 못 물어봤다 (503 · 네트워크 실패 · readiness false)
+//   "ok"        서버가 실제로 대답했다
+// ⚠️ **401 은 여기 안 온다.** 그건 「세션이 죽었다」라서 표시를 지우는 쪽(authLost)이 맡는다.
+// ⚠️ **`providers: []` 만으로 세션의 존재·부재를 단정하지 않는다** — 그건 「로그인 시작이
+//    가능한가」이지 「지금 로그인돼 있는가」가 아니다. 여기서는 `ready` 만 본다.
+let accountState = "unknown";
+// ⚠️ **배열이다.** `onAuthLost` 의 주석이 예고한 자리다 — 주인이 둘이 되는 순간(여기서는
+//    js/auth.js 의 계정 화면과 js/friends.js 의 친구·초대 동작) 단일 함수면 나중에 등록한
+//    쪽이 앞의 것을 조용히 덮어쓴다. 그러면 한쪽 화면만 고쳐지고 다른 쪽은 옛 상태로 남는다.
+const accountWatchers = [];
+function onAccountState(fn) { accountWatchers.push(fn); }
+const accountUsable = () => accountState === "ok";
+const accountDown = () => accountState === "down";
+function setAccountState(s) {
+  if (accountState === s) return;
+  accountState = s;
+  for (const fn of accountWatchers) fn(s);
+}
 // 로그인 표시만 세우고 지운다. **세션 자체는 서버의 쿠키가 들고 있다** —
 // 여기서 지워도 쿠키는 안 지워지므로, 로그아웃은 반드시 서버(`DELETE /session`)를 거쳐야 한다.
 // 로그아웃·세션 만료 때 **이 계정에 딸린 로컬 값**을 같이 지운다.
@@ -193,6 +221,10 @@ async function request(path, opts = {}) {
     // 시간 초과와 오프라인을 가른다. 화면에는 둘 다 "연결이 안 돼요"로 말하지만,
     // 답이 영원히 안 오는 경우와 처음부터 못 보낸 경우는 다른 일이다.
     const kind = e && (e.name === "TimeoutError" || e.name === "AbortError") ? "timeout" : "network";
+    // ⚠️ **여기서 "down" 으로 세우지 않는다.** 끊김·시간 초과는 **일시적 실패**라 계정 기능이
+    //    닫혔다는 증거가 아니다. 세워 버리면 친구 화면이 「다시 시도」 대신 점검 안내를 내서
+    //    사용자가 재시도할 방법을 잃는다(실측으로 회귀 2건 확인).
+    //    「못 물어봤다」의 판정은 **첫 화면의 `/health`** 가 맡는다(js/auth.js 의 boot).
     return { ok: false, status: 0, kind, data: null };
   } finally {
     t.done();
@@ -200,9 +232,14 @@ async function request(path, opts = {}) {
   // 세션이 죽었다 — 만료(180일)거나, 다른 기기에서 로그아웃·탈퇴했거나(세대가 올랐다).
   // 표시만 지우면 화면은 로그인 상태로 남아, 담기를 눌러도 왜 안 되는지 말해주지 않는다.
   if (res.status === 401) {
+    // 서버가 **대답은 했다** — 계정 기능 자체는 살아 있고, 이 세션이 죽었을 뿐이다.
+    setAccountState("ok");
     setAuth(null); authLost?.();
     return { ok: false, status: 401, kind: "unauthenticated", data: null };
   }
+  // 503 = 계정 기능이 열리지 않았다(LEDGER·EDGE_GUARD·시크릿 미구성). 표시는 **지우지 않는다.**
+  if (res.status === 503) setAccountState("down");
+  else if (res.status < 500) setAccountState("ok");
   const data = await res.json().catch(() => null);
   // 2xx 인데 본문이 JSON 이 아니다 — 프록시나 오류 페이지가 200 으로 돌아온 경우다.
   // 성공으로 치면 화면이 빈 값을 진짜 응답으로 받아들인다.
