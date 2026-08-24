@@ -36,7 +36,9 @@ if (fails) { console.error("test-docs: 실패"); process.exit(1); }
 const LIVE = (() => {
   const m = R("CLAUDE.md").match(/-\s*\*\*배포 `([0-9a-f]{8})`\*\*\s*—\s*Production[^\n]*source\s*\*\*`([0-9a-f]{7,40})`\*\*/);
   if (!m) { bad("CLAUDE.md 「현재 라이브」에서 production 배포 ID·source 를 못 읽었다 — 그 줄의 모양이 바뀌었다"); return null; }
-  return { deploy: m[1], source: m[2] };
+  // preview 도 같은 블록이 원본이다 — 현재 상태 블록이 옛 preview 를 적으면 검사 29 가 잡는다.
+  const pv = R("CLAUDE.md").match(/preview 는 \*\*`([0-9a-f]{8})`\*\*/);
+  return { deploy: m[1], source: m[2], preview: pv ? pv[1] : null };
 })();
 if (!LIVE) { console.error("test-docs: 실패"); process.exit(1); }
 const RE_LIVE = new RegExp(LIVE.deploy);
@@ -1307,7 +1309,112 @@ ok(`배포 경계 범위의 위협 끝번호 == ${maxTh}`);
 }
 ok(`§13-6 매핑 합계 == T${maxT}`);
 
+// ── 29. **현재 상태 블록의 배포 ID·source 는 「현재 라이브」와 같아야 한다** (2026-08-24 신설) ──
+//
+// 재현: 2026-08-24 에 production 이 `7362d2f0`(source `e02e810`)로 바뀐 뒤에도 현재 상태
+// 블록 **네 곳**이 안전 동기화를 여전히 `19e69dee`(source `7477867`)라고 적고 있었다 —
+// 체크리스트 5번·14번, `docs/HANDOFF.md` 단계 현황 4단계 행, 설계서 §현재 상태.
+//
+// **왜 기존 검사가 못 잡았나**: 검사 7 의 `STALE_NOW`·`NOW_MUST` 는 **문구**만 보고 배포 ID 는
+// 안 봤다. 검사 21(운영현황)은 `docs/HANDOFF.md` §2 만 봤고, 다른 문서의 현재 상태 블록은
+// 아무도 배포 ID 로 대조하지 않았다. 날짜가 옆에 있으면 사람 눈에도 「그때 기록」처럼 보인다.
+//
+// **면제는 날짜가 아니라 말로 받는다.** 「2026-08-22 완료」 같은 날짜는 옛 배포를 현재 사실처럼
+// 적어도 붙는다 — 실제로 그렇게 통과했다. 그래서 **당시·직전·롤백·옛·역사** 중 하나가
+// 주장 바로 옆(±80자)에 있어야 옛 배포 ID 를 허용한다.
+{
+  // ⚠️ **「옛」 한 글자를 면제 표식으로 쓰지 않는다**(2026-08-24 · 첫 시도의 실수).
+  //    「옛 배포 **15개 삭제**」가 옆줄에 흔해서, 그 한 단어가 낡은 배포 ID 를 통째로
+  //    빠져나가게 했다 — `docs/HANDOFF.md` 단계 현황과 설계서 §현재 상태가 그렇게 통과했다.
+  const PAST = /당시|직전|롤백|역사|그날|옛 (?:위험 )?세대/;
+  const live = new Set([LIVE.deploy, LIVE.source, LIVE.preview].filter(Boolean));
+  for (const f of [...NOW_FILES, "docs/OPS_RUNBOOK.md"]) {
+    const t = R(f);
+    const i = t.indexOf(NOW0), j = t.indexOf(NOW1);
+    if (i < 0 || j < i) continue;            // 블록 부재는 검사 7 이 이미 말한다
+    const now = t.slice(i, j);
+    const line0 = t.slice(0, i).split("\n").length;
+    for (const m of now.matchAll(/`([0-9a-f]{7,8})`/g)) {
+      if (live.has(m[1])) continue;
+      const near = now.slice(Math.max(0, m.index - 80), m.index + 80);
+      if (PAST.test(near)) continue;
+      bad(`${f}:~${line0 + now.slice(0, m.index).split("\n").length - 1} 현재 상태 블록이 `
+        + `배포·source \`${m[1]}\` 를 현재 사실처럼 적었다 — 지금 라이브는 `
+        + `${LIVE.deploy}(source ${LIVE.source})다. 옛 배포는 **당시·직전·롤백** 맥락에서만 적는다\n`
+        + `      "…${near.replace(/\n/g, " ").trim().slice(0, 110)}…"`);
+    }
+  }
+}
+ok(`현재 상태 블록의 배포 ID == 현재 라이브 ${LIVE.deploy}`);
+
+// ── 30. **「로컬 완료 · 배포 안 함」은 배포 뒤에 거짓이다** (2026-08-24 신설) ──
+//
+// 재현: 위협 57~60 을 고친 네 행이 배포 뒤에도 「**로컬 완료 2026-08-22 · 배포 안 함**」을
+// 현재형으로 달고 있었다. 그 수정은 `${LIVE.source}` 에 들어가 production 으로 나갔다.
+//
+// **왜 검사 27 이 못 잡았나**: 저기는 「위협 N~M」이라는 **범위**를 말하는 줄만 본다.
+// 이 네 행은 각자 위협 하나(57·58·59·60)만 가리켜 범위 문형에 안 걸렸다.
+//
+// **왜 파생 가능한가**: 배포된 source 는 저장소 역사의 한 지점이고, 문서가 「로컬 완료」라고
+// 적은 수정은 전부 그 앞이다. 그러니 배포가 한 번이라도 있었다면 「로컬 완료 + 미배포」는
+// **당시 기록일 때만** 참이다.
+//
+// ⚠️ **정리 Worker 는 예외다.** 그것은 Pages 번들이 아니라 **따로 배포하는 Worker** 라
+//    Pages 배포로 나가지 않는다 — 지금도 진짜 미배포다.
+{
+  const LOCAL_DONE = /로컬\s*(?:구현\s*)?(?:수정\s*)?완료|로컬 구현만/;
+  const NOT_DEPLOYED = /배포 안 함|배포하지 않음|배포하지 않았다|배포되지 않았|미배포|로컬에만/g;
+  const SEPARATE = /정리\s*(?:전용\s*)?(?:Worker|크론)|cleanup/;   // 별도 배포 대상
+  for (const f of DOCS) {
+    R(f).split("\n").forEach((ln, i) => {
+      if (!LOCAL_DONE.test(ln)) return;
+      for (const m of ln.matchAll(NOT_DEPLOYED)) {
+        const near = ln.slice(Math.max(0, m.index - 80), m.index + 80);
+        if (HISTORY_MARK.test(near) || SEPARATE.test(near)) continue;
+        bad(`${f}:${i + 1} 「로컬 완료 … ${m[0]}」를 현재형으로 적었다 — 그 수정은 `
+          + `${LIVE.source} 로 배포됐다(${LIVE.deploy}). 「당시 사실」로 적거나 배포 사실을 함께 적는다\n`
+          + `      "${ln.trim().slice(0, 100)}"`);
+      }
+    });
+  }
+}
+ok("「로컬 완료 · 미배포」 현재형 서술 0건");
+
+// ── 31. **timing-safe 비교 서술은 현재 구현과 같아야 한다** (2026-08-24 신설) ──
+//
+// 재현: `worker/index.js` 는 요약 32바이트를 **런타임의 `crypto.subtle.timingSafeEqual()`** 로
+// 비교한다(위협 62 · T79). 그런데 문서가 그 앞 단계의 결론 — 「Node 에 없으니 쓰지 않는다」 —
+// 를 현재 설명처럼 남기고 있었다. 읽는 사람은 JS XOR 비교가 아직 있다고 믿는다.
+//
+// **기준은 코드다.** 운영 코드가 그 API 를 실제로 부르는지 여기서 읽어, 부르는 동안에는
+// 「쓰지 않는다」는 문장을 금지한다. 되돌리면(다시 안 부르면) 이 검사도 저절로 꺼진다.
+{
+  const usesTSE = /crypto\.subtle\.timingSafeEqual\s*\(/.test(R("worker/index.js"));
+  if (!usesTSE) ok("worker/index.js 가 timingSafeEqual 을 쓰지 않는다 — 서술 검사 생략");
+  else {
+    const NOT_USED = /쓰지 않는다|안 쓴다|사용하지 않는다|못 쓴다|쓸 수 없다|쓰지 못한다/g;
+    for (const f of DOCS) {
+      R(f).split("\n").forEach((ln, i) => {
+        if (!/timingSafeEqual/.test(ln)) return;
+        for (const m of ln.matchAll(NOT_USED)) {
+          // ⚠️ **면제는 주장 바로 옆(±80자)에서만 본다**(같은 실수를 세 번째로 고쳤다 —
+          //    검사 19-c · 27 과 같은 무늬다). 줄 전체에서 찾았더니, 머리에 「당시 사실」을
+          //    단 긴 표 행이 꼬리의 현재형 서술까지 통째로 면제시켜 **D20 이 살아남았다.**
+          //    「그때는 안 썼다」는 기록이라 남기고, **판을 밝힌 문장도 기록이다** —
+          //    설계서의 위협 표는 「10판은 …라고 적었다」를 그대로 인용한다.
+          const near = ln.slice(Math.max(0, m.index - 80), m.index + 80);
+          if (HISTORY_MARK.test(near) || /\d+판/.test(near)) continue;
+          bad(`${f}:${i + 1} timingSafeEqual 을 「${m[0]}」고 적었다 — `
+            + `worker/index.js 는 digest 뒤 crypto.subtle.timingSafeEqual() 을 실제로 부른다\n`
+            + `      "…${near.trim().slice(0, 110)}…"`);
+        }
+      });
+    }
+    ok("timing-safe 비교 서술 == worker/index.js 구현");
+  }
+}
+
 console.log(fails
   ? `test-docs: 실패 ${fails}건`
-  : "test-docs: 통과 — 낡은 문구 · 죽은 § 참조 · 번호 연속성 · 선언된 개수 · 판 번호 · 필수 절 · 완료 범위 · 보유기간 단정 · 스위트 수 · 낡은 운영 상태 · 단계 상태 일치 · 주 D1 접근 분류 등재 · 법률 자료 현재 사실 · 인수인계 현재성 · 현재 상태 구간의 낡은 drain·구현·lease·T6 서술 · drain 미구현 0건 · 정리 대상 개수 = 코드 · 2단계 결정서 현재성 · 재검증 후 현재 사실 9종 · 모순 5종 · 운영현황 실측값 · 날짜별 운영 기록 · 움직이는 해시 · Access 이후 현재형 401 · 돌연변이 개수=MUTATIONS · 배포 경계 범위의 위협 끝번호 · §13-6 매핑 합계=maxT");
+  : "test-docs: 통과 — 낡은 문구 · 죽은 § 참조 · 번호 연속성 · 선언된 개수 · 판 번호 · 필수 절 · 완료 범위 · 보유기간 단정 · 스위트 수 · 낡은 운영 상태 · 단계 상태 일치 · 주 D1 접근 분류 등재 · 법률 자료 현재 사실 · 인수인계 현재성 · 현재 상태 구간의 낡은 drain·구현·lease·T6 서술 · drain 미구현 0건 · 정리 대상 개수 = 코드 · 2단계 결정서 현재성 · 재검증 후 현재 사실 9종 · 모순 5종 · 운영현황 실측값 · 날짜별 운영 기록 · 움직이는 해시 · Access 이후 현재형 401 · 돌연변이 개수=MUTATIONS · 배포 경계 범위의 위협 끝번호 · §13-6 매핑 합계=maxT · 현재 상태 블록의 배포 ID · 「로컬 완료·미배포」 현재형 0건 · timing-safe 서술=구현");
 process.exit(fails ? 1 : 0);

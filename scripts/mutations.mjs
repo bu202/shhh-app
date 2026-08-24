@@ -348,7 +348,7 @@ export const MUTATIONS = [
     id: "D15", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "돌연변이 목록 개수를 낡은 22 로 되돌린다",
     invariant: "문서가 주장하는 돌연변이 개수는 `MUTATIONS` 목록에서 파생한다 — 손으로 적은 총수는 반드시 낡는다",
-    find: "`scripts/mutations.mjs`(목록 43종",
+    find: "`scripts/mutations.mjs`(목록 46종",
     replace: "`scripts/mutations.mjs`(목록 22종",
   },
   {
@@ -371,5 +371,26 @@ export const MUTATIONS = [
     invariant: "매핑 절의 「N건 전부 연결됐다」는 표의 최대 T 번호에서 파생한다 — 표만 늘리고 합계를 안 고치면 검사가 그것을 잡아야 한다",
     find: "**81건 전부 실행 가능한 단언으로 연결됐다.**",
     replace: "**79건 전부 실행 가능한 단언으로 연결됐다.**",
+  },
+  {
+    id: "D18", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
+    what: "현재 상태 블록의 안전 동기화 배포를 직전 `19e69dee` 로 되돌린다",
+    invariant: "현재 상태 블록이 말하는 배포 ID·source 는 「현재 라이브」 원본과 같아야 한다 — 옛 배포는 당시·직전·롤백 맥락에서만 적는다",
+    find: "✅ 안전 동기화 배포는 실행됐다 — production **`7362d2f0`**(source **`e02e810`**)",
+    replace: "✅ 안전 동기화 배포 `19e69dee` 는 실행됐고, production",
+  },
+  {
+    id: "D19", file: "CLAUDE.md", suite: "test-docs", kind: "정적",
+    what: "위협 57 의 행을 「로컬 완료 · 배포 안 함」으로 되돌린다",
+    invariant: "배포된 source 앞의 「로컬 완료」 수정은 전부 배포됐다 — 「배포 안 함」은 당시 기록일 때만 참이다",
+    find: "| ~~P0~~ ✅ | **부분 시크릿에서 가입이 끝까지 진행됐다** | **로컬 수정 2026-08-22 · 배포 2026-08-24**(production `7362d2f0` · source `e02e810`). ⚠️ **당시 사실 — 2026-08-22**: 그날은 배포하지 않았고 라이브는 `19e69dee` 였다. ",
+    replace: "| ~~P0~~ ✅ | **부분 시크릿에서 가입이 끝까지 진행됐다** | **로컬 완료 2026-08-22 · 배포 안 함.** ",
+  },
+  {
+    id: "D20", file: "CLAUDE.md", suite: "test-docs", kind: "정적",
+    what: "timing-safe 비교 설명을 「Node 에 없으니 쓰지 않는다」는 중간 결론으로 되돌린다",
+    invariant: "문서의 timing-safe 서술은 worker/index.js 가 실제로 부르는 것과 같아야 한다 — 기준은 코드다",
+    find: "**현재 구현은 요약 32바이트를 런타임의 `crypto.subtle.timingSafeEqual()` 로 비교하고 JS fallback 이 없다**",
+    replace: "`crypto.subtle.timingSafeEqual` 은 **Workers 확장이라 Node 에 없다** — 스위트가 Node 에서 도는 한 쓰지 않는다",
   },
 ];
