@@ -348,7 +348,7 @@ export const MUTATIONS = [
     id: "D15", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "돌연변이 목록 개수를 낡은 22 로 되돌린다",
     invariant: "문서가 주장하는 돌연변이 개수는 `MUTATIONS` 목록에서 파생한다 — 손으로 적은 총수는 반드시 낡는다",
-    find: "`scripts/mutations.mjs`(목록 42종",
+    find: "`scripts/mutations.mjs`(목록 43종",
     replace: "`scripts/mutations.mjs`(목록 22종",
   },
   {
@@ -364,5 +364,12 @@ export const MUTATIONS = [
     invariant: "「그 뒤 로컬 커밋은 전부 미배포다」는 끝이 열린 주장이다 — 범위의 끝은 위협 표의 최신 번호에서 파생한다",
     find: "위협 57~65 의 수정은 로컬에만 있고",
     replace: "위협 57~63 의 수정은 로컬에만 있고",
+  },
+  {
+    id: "D17", file: "docs/STAGE3_SIGNUP_SECURITY_DESIGN.md", suite: "test-docs", kind: "정적",
+    what: "§13-6 매핑 합계를 낡은 79 로 되돌린다",
+    invariant: "매핑 절의 「N건 전부 연결됐다」는 표의 최대 T 번호에서 파생한다 — 표만 늘리고 합계를 안 고치면 검사가 그것을 잡아야 한다",
+    find: "**81건 전부 실행 가능한 단언으로 연결됐다.**",
+    replace: "**79건 전부 실행 가능한 단언으로 연결됐다.**",
   },
 ];
