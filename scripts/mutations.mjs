@@ -348,7 +348,10 @@ export const MUTATIONS = [
     id: "D15", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "돌연변이 목록 개수를 낡은 22 로 되돌린다",
     invariant: "문서가 주장하는 돌연변이 개수는 `MUTATIONS` 목록에서 파생한다 — 손으로 적은 총수는 반드시 낡는다",
-    find: "`scripts/mutations.mjs`(목록 46종",
+    // ⚠️ **이 앵커는 개수가 바뀔 때마다 함께 바꾼다**(D21 을 더하며 세 번째로 고쳤다).
+    //    자기가 건드리는 숫자를 앵커에 담는 변이라 피할 수 없다 — 대신 낡으면 실행기가
+    //    ANCHOR-MISS 로 종료 코드 1 을 내므로 **조용히 썩지는 않는다.**
+    find: "`scripts/mutations.mjs`(목록 47종",
     replace: "`scripts/mutations.mjs`(목록 22종",
   },
   {
@@ -392,5 +395,12 @@ export const MUTATIONS = [
     invariant: "문서의 timing-safe 서술은 worker/index.js 가 실제로 부르는 것과 같아야 한다 — 기준은 코드다",
     find: "**현재 구현은 요약 32바이트를 런타임의 `crypto.subtle.timingSafeEqual()` 로 비교하고 JS fallback 이 없다**",
     replace: "`crypto.subtle.timingSafeEqual` 은 **Workers 확장이라 Node 에 없다** — 스위트가 Node 에서 도는 한 쓰지 않는다",
+  },
+  {
+    id: "D21", file: "docs/STAGE3_SIGNUP_SECURITY_DESIGN.md", suite: "test-docs", kind: "정적",
+    what: "「종」이 없는 괄호형 내역을 낡은 「정적 17」로 되돌린다",
+    invariant: "총계뿐 아니라 **하위 내역**도 MUTATIONS 에서 파생한다 — 「N종」이라고 안 적은 괄호형 내역도 센다(총계만 보면 46 ≠ 26+17 이 남는다)",
+    find: "(동작 26 · 정적 21).",
+    replace: "(동작 26 · 정적 17).",
   },
 ];
