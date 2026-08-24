@@ -220,15 +220,15 @@ export const MUTATIONS = [
     id: "M23", file: "js/authApi.js", suite: "test-client",
     what: "apiHealth() 의 성공 응답에서 `ready` 를 다시 버린다",
     invariant: "서버가 말한 `ready` 는 브라우저의 계정 상태까지 전달된다 — 버리면 판정하는 쪽이 언제나 `undefined` 를 읽는다",
-    find: "      ? { ok: true, ready: d.ready === true, providers: d.providers,",
+    find: "      ? { ok: true, ready: d.ready, providers: d.providers,",
     replace: "      ? { ok: true, providers: d.providers,",
   },
   {
     id: "M24", file: "js/authApi.js", suite: "test-client",
-    what: "`ready` 판정을 `d.ready !== false` 로 느슨하게 만든다(없거나 타입이 틀리면 열린다)",
-    invariant: "계약을 못 지킨 응답은 계정 기능을 여는 근거가 아니다 — 모르면 닫는다(fail-closed)",
-    find: "      ? { ok: true, ready: d.ready === true, providers: d.providers,",
-    replace: "      ? { ok: true, ready: d.ready !== false, providers: d.providers,",
+    what: "성공 응답의 최소 계약에서 `ready` 의 타입 검사를 뺀다(누락·문자열·숫자·null 이 통과)",
+    invariant: "계약을 어긴 응답은 `providers` 도 못 믿는다 — 조용히 `ready:false` 로 정규화하면 계정 UI 는 닫히는데 되지 않는 로그인 버튼이 그려진다",
+    find: "    return d && d.ok === true && typeof d.ready === \"boolean\" && Array.isArray(d.providers)",
+    replace: "    return d && d.ok === true && Array.isArray(d.providers)",
   },
   {
     id: "M25", file: "js/auth.js", suite: "test-client",
@@ -236,6 +236,13 @@ export const MUTATIONS = [
     invariant: "계정 기능을 여는 근거는 서버의 `/health` 다 — 판정 자리가 응답을 안 보면 앞의 두 변이를 막아도 소용없다",
     find: '    setAccountState(h.ok === true && h.ready === true ? "ok" : "down");',
     replace: '    setAccountState("ok");',
+  },
+  {
+    id: "M26", file: "js/auth.js", suite: "test-client",
+    what: "첫 화면의 계정 판정이 `ok` 만 보고 `ready` 를 안 본다(서버가 닫혔다고 말해도 연다)",
+    invariant: "「서버가 대답했다」와 「서버가 계정 기능을 열었다고 말했다」는 다른 말이다 — 앞의 것만 보면 라이브가 주는 `ready:false` 가 아무 일도 안 한다",
+    find: '    setAccountState(h.ok === true && h.ready === true ? "ok" : "down");',
+    replace: '    setAccountState(h.ok === true ? "ok" : "down");',
   },
 
   // ── 문서 회귀 (정적 검사) ───────────────────────────────────────────────
@@ -290,14 +297,14 @@ export const MUTATIONS = [
     id: "D07", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "재감사 결함 합계와 위협 범위를 22건 · 39~60 으로 되돌린다",
     invariant: "결함 합계와 위협 범위는 설계서의 위협 표에서 파생된다 — 낡은 숫자는 「이미 다 봤다」는 착각을 만든다",
-    find: "차례로 재현했다(위협 **39~64** · **여섯 판 연속**",
+    find: "차례로 재현했다(위협 **39~65** · **여섯 판 연속**",
     replace: "차례로 재현했다(위협 39~60 · 다섯 판 연속",
   },
   {
     id: "D08", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "재감사 결함 합계만 22건으로 되돌린다(위협 범위는 그대로 둔다)",
     invariant: "합계는 판별 문형(`4+5+…건` · `N건을 차례로 재현`) 어느 쪽으로 적어도 파생값과 같아야 한다",
-    find: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4+3+1건 = **26건** 수정",
+    find: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4+3+1+1건 = **27건** 수정",
     replace: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4건 = **22건** 수정",
   },
   {
@@ -341,7 +348,7 @@ export const MUTATIONS = [
     id: "D15", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "돌연변이 목록 개수를 낡은 22 로 되돌린다",
     invariant: "문서가 주장하는 돌연변이 개수는 `MUTATIONS` 목록에서 파생한다 — 손으로 적은 총수는 반드시 낡는다",
-    find: "`scripts/mutations.mjs`(목록 40종",
+    find: "`scripts/mutations.mjs`(목록 42종",
     replace: "`scripts/mutations.mjs`(목록 22종",
   },
   {
@@ -350,5 +357,12 @@ export const MUTATIONS = [
     invariant: "움직이는 HEAD 해시를 문서에 손으로 적지 않는다 — 커밋할 때마다 낡고, 실제로 한 번 낡았다",
     find: "⛔ **production source 는 `7477867` 에 고정돼 있고, 그 뒤 로컬 커밋은 전부 미배포다.**",
     replace: "⛔ **최신 세 커밋(`156fd8a`·`41455b6`·`8628e14`)은 production 에 안 올라갔다.**",
+  },
+  {
+    id: "D16", file: "docs/OPS_RUNBOOK.md", suite: "test-docs", kind: "정적",
+    what: "미배포 범위의 위협 끝번호를 낡은 63 으로 되돌린다",
+    invariant: "「그 뒤 로컬 커밋은 전부 미배포다」는 끝이 열린 주장이다 — 범위의 끝은 위협 표의 최신 번호에서 파생한다",
+    find: "위협 57~65 의 수정은 로컬에만 있고",
+    replace: "위협 57~63 의 수정은 로컬에만 있고",
   },
 ];

@@ -359,8 +359,13 @@ async function apiHealth() {
     //    **공개 값이다**(브라우저에 박히도록 설계된 값). 비밀은 서버 쪽 검증 키다.
     // ⚠️ **`ok` 는 본문의 `ok` 도 함께 본다.** 프록시나 오류 페이지가 200 으로 돌아오면
     //    모양만 맞고 내용이 없는 응답이 「서버가 대답했다」로 읽힌다.
-    return d && d.ok === true && Array.isArray(d.providers)
-      ? { ok: true, ready: d.ready === true, providers: d.providers,
+    // ⚠️ **`ready` 는 boolean 이어야 계약이다**(2026-08-23). `d.ready === true` 만 보면
+    //    누락·문자열·숫자·null 이 전부 조용히 `ready:false` 로 **정규화**된다 — 계정 UI 는
+    //    닫히지만 `ok:true` 라 **`providers` 는 그대로 실려 나가** 로그인 버튼이 그려졌다.
+    //    계약을 어긴 응답에서 꺼낸 목록이라 그 버튼이 되는지 아무도 모른다(재현: 5개 검사).
+    //    「못 물어봤다」와 같은 갈래로 보낸다.
+    return d && d.ok === true && typeof d.ready === "boolean" && Array.isArray(d.providers)
+      ? { ok: true, ready: d.ready, providers: d.providers,
           signupReady: d.signupReady === true,
           turnstileSiteKey: typeof d.turnstileSiteKey === "string" ? d.turnstileSiteKey : null }
       : DOWN_HEALTH;

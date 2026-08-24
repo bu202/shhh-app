@@ -899,7 +899,7 @@ await T("회원가입 화면 — 정책 해시 대조 · 필수 체크 · 실패
   const hasText = (c, needle) => allText(gate(c)).includes(needle);
 
   const baseRoutes = (over = {}) => async (m, p) => {
-    if (p === "/health") return { status: 200, body: { ok: true, signupReady: true,
+    if (p === "/health") return { status: 200, body: { ok: true, ready: true, signupReady: true,
       providers: ["kakao", "naver", "google"], turnstileSiteKey: "0xTEST" } };
     if (p === "/policies") return over.policies ?? { status: 200, body: { pv: PV, docs: await docsFor() } };
     if (p.startsWith("./policies/")) {
@@ -993,7 +993,7 @@ await T("회원가입 화면 — 정책 해시 대조 · 필수 체크 · 실패
   {
     // ② 서버가 site key 를 안 주면 위젯을 부르지도 않는다(외부 요청을 만들지 않는다).
     const c = await openApp(async (m, p) => (p === "/health"
-      ? { status: 200, body: { ok: true, signupReady: true, providers: ["kakao"], turnstileSiteKey: null } }
+      ? { status: 200, body: { ok: true, ready: true, signupReady: true, providers: ["kakao"], turnstileSiteKey: null } }
       : baseRoutes()(m, p)));
     btn(c, "가입하기").click();
     await settle(); await settle();
@@ -1041,7 +1041,10 @@ await T("회원가입 화면 — 정책 해시 대조 · 필수 체크 · 실패
     const health = (body) => async (m, p) => (p === "/health" ? { status: 200, body } : baseRoutes()(m, p));
 
     // ① 로그인은 되는데 가입만 잠긴 상태
-    const locked = await openApp(health({ ok: true, providers: ["kakao"], signupReady: false }));
+    // ⚠️ `ready:true` 다 — 로그인은 되고 **가입 전용 키만** 빠진 상태가 서버에서 실제로 나온다
+    //    (`ready` 는 가입 키를 안 본다). 서버가 늘 싣는 필드를 fixture 가 빠뜨리면 계약 검사가
+    //    fixture 때문에 무너진다.
+    const locked = await openApp(health({ ok: true, ready: true, providers: ["kakao"], signupReady: false }));
     btn(locked, "가입하기").click();
     await settle();
     assert.ok(!btn(locked, "카카오로 가입하기"), t("가입이 잠겼는데 되지 않는 가입 버튼을 그렸다"));
@@ -1055,7 +1058,7 @@ await T("회원가입 화면 — 정책 해시 대조 · 필수 체크 · 실패
     assert.ok(!locked.calls.some((x) => x.path === "/policies"), t("가입이 잠겼는데 약관을 받아 왔다"));
 
     // ② 제공자가 아예 없다 = 로그인도 가입도 준비 중
-    const none = await openApp(health({ ok: true, providers: [], signupReady: false }));
+    const none = await openApp(health({ ok: true, ready: false, providers: [], signupReady: false }));
     btn(none, "가입하기").click();
     await settle();
     assert.ok(hasText(none, "지금은 새로 가입할 수 없어요"), t("제공자가 없는데 가입 안내가 없다"));
@@ -1073,7 +1076,7 @@ await T("회원가입 화면 — 정책 해시 대조 · 필수 체크 · 실패
   // 4. 오프라인·시간 초과는 **연결 문제라고 말한다.** 원인이 다르면 할 일도 다르다.
   {
     const c = await openApp(async (m, p) => (p === "/health"
-      ? { status: 200, body: { ok: true, signupReady: true, providers: ["kakao"] } }
+      ? { status: 200, body: { ok: true, ready: true, signupReady: true, providers: ["kakao"] } }
       : p === "/policies" ? { throw: true } : { status: 200, body: {} }));
     btn(c, "가입하기").click();
     await settle();
@@ -1349,6 +1352,28 @@ for (const [label, resp] of [["500", { status: 500, body: {} }], ["네트워크 
                              ["시간 초과", { throwName: "TimeoutError" }],
                              ["JSON 이 아님", { status: 200, badJson: true }]]) {
   await T(`health ${label}: fail-closed`, () => failClosed(`health ${label}`, resp));
+}
+
+// 6-b. **계약을 못 지킨 응답의 `providers` 를 믿지 않는다.** 위 검사들은 「계정 UI 가 닫히나」만
+//      재는데, 그것만으로는 `{ok:true, ready:"true", providers:["kakao"]}` 같은 응답이
+//      **로그인 버튼을 그리는 길**을 못 본다 — `ready` 가 계약을 어긴 응답에서 꺼낸 목록이라
+//      그 버튼이 실제로 되는지 아무도 모른다(눌러 봐야 안다). 「서버에 못 물어봤다」와 같은
+//      갈래로 떨어져야 한다: 버튼을 안 그리고 이유를 말한다.
+for (const [label, body] of [
+  ["ready 누락", { ok: true, providers: ["kakao"] }],
+  ["ready 가 문자열", { ok: true, ready: "true", providers: ["kakao"] }],
+  ["ready 가 숫자 1", { ok: true, ready: 1, providers: ["kakao"] }],
+  ["ready 가 null", { ok: true, ready: null, providers: ["kakao"] }],
+  ["ready 가 객체", { ok: true, ready: {}, providers: ["kakao"] }],
+]) {
+  await T(`readiness ${label}: 계약 위반 응답의 제공자로 로그인 버튼을 그리지 않는다`, async () => {
+    const c = await boot({ store: {}, routes: healthOnly(H(body)) });
+    const box = c.document.getElementById("mypage");
+    assert.ok(!findText(box, "카카오로 로그인"),
+      `${label} 인데 계약을 어긴 응답의 providers 로 로그인 버튼을 그렸다`);
+    assert.ok(allText(box).includes("연결할 수 없어"),
+      `${label} 을 「서버에 못 물어봤다」와 같은 갈래로 다루지 않는다`);
+  });
 }
 
 // 7. `ready:true` 는 정상이다 — fail-closed 가 **영구 hidden** 이 되면 안 된다.
