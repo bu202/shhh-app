@@ -378,7 +378,7 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 > ⚠️ **여기 적힌 값은 전부 「측정한 값」이다.** 측정하지 않은 것은 **`확인 필요`** 라고 적고
 > 추정으로 채우지 않는다. `scripts/test-docs.mjs` 검사 19 가 이 블록을 잰다.
 >
-> **마지막 원격 조회: 2026-08-22 17:14 KST**(읽기 전용 — `pages deployment list` ·
+> **마지막 원격 조회: 2026-08-24 12:35 KST**(읽기 전용 — `pages deployment list` ·
 > `pages secret list`(production·preview) · `pages project list` · `d1 list` ·
 > `d1 migrations list --remote` · `d1 execute --remote` 의 `SELECT COUNT(*)`).
 
@@ -388,27 +388,27 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 | 테스트 | **26개 스위트** 통과(2026-08-22 실측, exit 0). `test-workerd` 가 진짜 workerd 를 띄워 운영 경로를 밟는다. 4단계에서 `test-policies` · `test-signup` · `test-deletion-ledger` · `test-cleanup` 이 늘었다. 개수의 원본은 `package.json` 의 `test` 스크립트이고 `scripts/test-docs.mjs` 가 거기서 읽어 문서와 대조한다 |
 | 돌연변이 | `node scripts/mutate.mjs` 로 **다시 돌릴 수 있다**. 목록의 원본은 `scripts/mutations.mjs`. 개수를 여기 적지 않는다 — 실행기 출력이 원본이다 |
 | 배포본 | 파일 수·선캐시 수·캐시 이름은 **빌드가 정한다** — `npm run build` 의 마지막 줄과 `scripts/test-dist.mjs` 의 출력이 원본이다. 손으로 적으면 다음 빌드에 낡는다(2026-08-20 정정: 여기 적혀 있던 「57개」는 그때 이미 58개였다). 내부 파일 0개는 `test-dist` 가 매번 검사한다 |
-| **라이브 (production)** | **배포 `19e69dee`**(Production / branch `main` / source `7477867`). 2026-08-22 실측: 계정 API 전부 **503**(두 DB 를 만지기 전) · 키 없는 `/api/ready` **503 `{"ok":true,"ready":false,"diagnostics":false}`** · 운영자 키로는 `db:false`·`ledger:false`(원격 `0005` 와 ledger D1 부재의 **정확한 보고**다). ⚠️ **계정 기능을 여는 배포가 아니다** — `EDGE_GUARD` 를 일부러 안 넣었다 |
-| **남은 배포** | **둘뿐이다** — `19e69dee`(Production)와 `8e16c92e`(Preview / branch `cf-pages` / source `7f9078a`). 두 세대는 **실행 파일이 같다**(source 차이는 배포되지 않는 문서 4개뿐) |
+| **라이브 (production)** | **배포 `7362d2f0`**(Production / branch `main` / source **`e02e810`**) — 2026-08-24 안전 동기화. 위협 57~65 의 수정이 여기 들어 있다. 2026-08-24 12:35 KST 실측: 계정 API 전부 **503**(두 DB 를 만지기 전 · `GET`·`PUT /book` · `/login/{kakao,naver}` · `POST /signup/start`) · 키 없는·틀린 키 `/api/ready` **503 `{"ok":true,"ready":false,"diagnostics":false}`** · `/api/health` `ready:false`·`providers:[]`·`ledgerBound:false`·`abuseReady:false`·`signupReady:false` · `/api/policies` **200** · `/` **200** · 없는 주소 **404** · 내부 파일 7종 **SPA 폴백**(sha256 `7d809fa2268d…`) · SW·핵심 JS 4개가 빌드와 **바이트 동일** · 브라우저 리소스 19개 중 실패 0 · 콘솔 오류 0. ⚠️ **계정 기능을 여는 배포가 아니다** — `EDGE_GUARD` 부재가 그대로다. 실측 원본은 `docs/OPS_RUNBOOK.md` §16-5 |
+| **남은 배포** | **넷이다**(2026-08-24 실측) — `7362d2f0`(Production · source `e02e810`) · `cae28bf6`(Preview / `cf-pages` · source `e02e810`) · `19e69dee`(옛 Production · source `7477867`) · `8e16c92e`(옛 Preview · source `7f9078a`). ⚠️ **옛 둘을 지우지 않았다** — `19e69dee` 는 검증된 안전 롤백 후보다. 넷 다 계정 라우트가 닫힌 세대이고, `<해시>` 주소는 전부 Access 뒤에 있다 |
 | **옛 배포 — 제어면** | ✅ **15개 삭제 완료 2026-08-22.** `deployment list` 에 없고 개별 조회는 `8000009 does not exist` 다 |
 | **옛 배포 — 공개 접근** | ✅ **Access 로 차단 2026-08-23 10:23 KST.** 프리뷰 액세스(`*.shhh-app.pages.dev`)를 켜서 옛 해시 **15개 전부가 302 → `cloudflareaccess.com`** 이 됐다(적용 전에는 전부 401). 정책은 **Allow · 운영자 이메일 1개**이고 Everyone·Bypass 가 아니다. 브라우저로도 「Sign in ・ Cloudflare Access」 화면을 확인했다(`auth_status: NONE`). ⚠️ **404 가 아니다** — 배포는 여전히 존재하고 Access 뒤에서 실행될 수 있다. ⚠️ **가역적이다** — 끄면 다시 401 이다. ⛔ **제어면 삭제 · 공개 접근 차단 · 404 는 서로 다른 세 사건이다.** 복원 금지 해제 조건 ⑦(D1~D12) 충족 여부는 **별도 검토 대상**이고 이 실험이 답하지 않는다 |
 | **커스텀 도메인** | **없다.** `pages project list` 의 Project Domains 는 `shhh-app.pages.dev` 하나다. **A안(도메인 + WAF)은 확정됐고 2026년 9월 예정** — `*.pages.dev` 에는 WAF 규칙을 못 걸어서 그때까지 계정 라우트는 fail-closed 다 |
 | OAuth | **비활성.** 제공자 시크릿 6개(`KAKAO_ID`·`KAKAO_SECRET`·`NAVER_*`·`GOOGLE_*`)와 `MASTER_UIDS` 미투입 |
-| **시크릿 (production)** | **`READY_KEY` · `RL_KEY` · `STATE_KEY` 세 개**(2026-08-22 17:14 KST 이름 목록 실측, 값은 보지 않는다). ⛔ 코드가 요구하는데 **아직 없는 값 5개**: `SIGNUP_STATE_KEY` · `TOMBSTONE_KEY` · `DELETION_KEY` · `SESSION_ENVELOPE_KEY` · `TURNSTILE_SECRET`. 하나라도 없으면 `loginPossible()`·`signupPossible()` 이 거짓이라 계정 라우트가 열리지 않는다. **목록을 손으로 세지 않는다** — 원본은 코드의 `env.*` 이고 `scripts/test-config.mjs` 가 문서와 대조한다 |
-| **시크릿 (preview)** | **0개**(2026-08-22 17:14 KST `pages secret list --env preview` **직접 조회** 결과 — production 목록에서 추정한 값이 아니다). ⚠️ preview 도 `RL_KEY` 가 없으면 리미터가 세지 않는다 |
+| **시크릿 (production)** | **`READY_KEY` · `RL_KEY` · `STATE_KEY` 세 개**(2026-08-24 12:35 KST 이름 목록 실측, 값은 보지 않는다). ⛔ 코드가 요구하는데 **아직 없는 값 5개**: `SIGNUP_STATE_KEY` · `TOMBSTONE_KEY` · `DELETION_KEY` · `SESSION_ENVELOPE_KEY` · `TURNSTILE_SECRET`. 하나라도 없으면 `loginPossible()`·`signupPossible()` 이 거짓이라 계정 라우트가 열리지 않는다. **목록을 손으로 세지 않는다** — 원본은 코드의 `env.*` 이고 `scripts/test-config.mjs` 가 문서와 대조한다 |
+| **시크릿 (preview)** | **0개**(2026-08-24 12:35 KST `pages secret list --env preview` **직접 조회** 결과 — production 목록에서 추정한 값이 아니다). ⚠️ preview 도 `RL_KEY` 가 없으면 리미터가 세지 않는다 |
 | **vars (미등록)** | `EDGE_GUARD` · `TURNSTILE_SITE_KEY` — 둘 다 `wrangler.jsonc` 에 주석으로만 있다. `EDGE_GUARD` 부재가 계정 라우트를 닫아 두는 **유일한 장치**다 |
 | **원격 D1** | `shhh-db` 하나뿐(`d1 list` 실측). `0001`~`0004` 적용 완료(`0001`~`0003` 2026-08-14 · `0004` 2026-08-17). ⛔ **`0005_policy_events_and_signup_states.sql` 적용 대기 1건**(2026-08-22 17:14 KST `migrations list --remote` 실측). 적용은 원격 쓰기라 **별도 승인** 사항 |
-| **원격 D1 행 수** | **전부 0행**(2026-08-22 17:14 KST 읽기 전용 `SELECT COUNT(*)`): `users` 0 · `sessions` 0 · `books` 0 · `friendships` 0 · `invite_codes` 0 · `rate_limits` 0. ⚠️ **`rate_limits` 는 전에 5행이었다**(2026-08-18 실측) — 지금 0행인 이유는 확인하지 않았다. **자동 정리 수단은 여전히 배포되지 않았다** |
+| **원격 D1 행 수** | **전부 0행**(2026-08-24 12:35 KST 읽기 전용 `SELECT COUNT(*)` — 배포 **전후 두 번** 재고 같았다 · `changes:0` · `rows_written:0` · `changed_db:false`): `users` 0 · `sessions` 0 · `books` 0 · `friendships` 0 · `invite_codes` 0 · `rate_limits` 0. ⚠️ **`rate_limits` 는 전에 5행이었다**(2026-08-18 실측) — 지금 0행인 이유는 확인하지 않았다. **자동 정리 수단은 여전히 배포되지 않았다** |
 | **ledger D1** | **아직 없다**(`d1 list` 에 `shhh-ledger` 가 없다). 스키마·migration 은 `worker/ledger-schema.sql` · `migrations-ledger/0001`·`0002` 에 있고, 생성·바인딩은 **별도 승인** 사항이다. 바인딩이 없으면 `readMode()` 가 `unbound` 라 사용자 데이터 API 가 전부 503 이다 |
 | 정리 크론 | **로컬 구현만 · 미배포.** `worker/cleanup/` 에 있고, 설정은 **템플릿(`wrangler.example.jsonc`)과 실제 설정(`wrangler.jsonc`)으로 갈라져 있다**(2026-08-19). 실제 설정은 저장소에 없고(`.gitignore`) `docs/OPS_RUNBOOK.md` §3 이 만든다 — **배포 가능한 설정 파일에 placeholder 가 들어갈 수 없는 구조다**(`scripts/test-config.mjs` 가 잰다). 실패·경보는 2026-08-18 에 마감했다: 실패한 회차는 `ctx.waitUntil()` Promise 를 **거부해** Cron Trigger 에 실패로 남고, 확정 안 된 삭제 표식·연속 실패 3회는 `/api/ready` 의 **`cleanupAlert`** boolean 으로 나온다. **외부 알림(Slack·이메일 등)은 붙이지 않았다.** ⚠️ **배포 전까지 운영에서는 아무도 만료 데이터를 안 치운다** |
 | legacy KV | **아직 살아 있다.** 5개(`b:1 c:1 s:2 u:1`, 접두사 개수만 확인 — **이번에 재조회하지 않았다**). 새 코드는 쓰지 않는다. 폐기 방향은 승인, **실행은 별도 승인**이고 **이번 범위에서 제외**다 |
-| **미배포 로컬 커밋** | ⛔ **production source 는 `7477867` 에 고정돼 있고, 그 뒤 로컬 커밋은 전부 미배포다.** 위협 57~65 의 수정도 로컬에만 있다. ⚠️ **여기에 「최신 커밋」 해시를 적지 않는다** — HEAD 는 커밋할 때마다 움직여서 손으로 유지하면 반드시 낡는다(실제로 한 번 낡았다). 확인은 `git rev-parse HEAD` · `git log -1 --oneline` 이 원본이고, 배포된 지점과의 차이는 `git log --oneline 7477867..HEAD` 로 본다 |
+| **배포된 source 와 로컬** | **production source 는 `e02e810` 이다**(2026-08-24). 위협 57~65 의 수정이 배포됐다. ⚠️ **여기에 「최신 커밋」 해시를 적지 않는다** — HEAD 는 커밋할 때마다 움직여서 손으로 유지하면 반드시 낡는다(실제로 한 번 낡았다). 확인은 `git rev-parse HEAD` · `git log -1 --oneline` 이 원본이고, 배포 지점과의 차이는 `git log --oneline e02e810..HEAD` 로 본다. **push 0건**은 그대로다 |
 | 2단계(회원가입·개인정보) | **정책 결정 완료 2026-08-17 · 처리 근거·국외 처리·연령·CASCADE 확정 2026-08-18(프로젝트 결정)** → `docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md`. ⚠️ **외부 법률 검토 미완료** — 사용자가 공식 자료를 보고 내린 운영 결정이지 변호사 검토 결과가 아니다 |
-| 4단계(구현) | **로컬 구현 완료 2026-08-22.** ✅ **안전 동기화는 실행됐다**(배포 `19e69dee` · `READY_KEY` 등록 · 옛 배포 15개 삭제 · preview `8e16c92e`). ⛔ **계정 인프라는 하나도 안 했다** — 위 행들이 각각 답한다. **push 0건**은 그대로다 |
+| 4단계(구현) | **로컬 구현 완료 2026-08-22 · 2026-08-23~24 재검증 세 차례로 다시 마감(위협 64·65).** ✅ **그 코드가 2026-08-24 에 배포됐다**(production `7362d2f0` · source `e02e810` · preview `cae28bf6`). ⛔ **계정 인프라는 하나도 안 했다** — 위 행들이 각각 답한다. **push 0건**은 그대로다 |
 | wrangler | `4.123.0` 을 devDependency 로 **고정**. OAuth 토큰은 살아 있음(`whoami` 실측) |
 | 추적 안 된 파일 | `네이버검수-캡처/` — 사용자 파일. **건드리지 않는다** |
 
-> **움직이는 커밋 해시는 이 표에 적지 않는다.** 고정된 운영 사실(배포된 source `7477867`)만 적고,
+> **움직이는 커밋 해시는 이 표에 적지 않는다.** 고정된 운영 사실(배포된 source `e02e810`)만 적고,
 > 현재 HEAD 는 언제나 `git` 에게 묻는다. 가장 자주 틀리던 자리라 —
 > `git log --oneline -1` 이 늘 맞다.
 

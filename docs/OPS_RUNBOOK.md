@@ -30,12 +30,14 @@
 ⚠️ **4~8 을 실제 공개 주소에서 다시 잰다.** 로컬 통과는 배포 확인이 아니다.
 ⚠️ 이 배포로 **계정 기능이 열리지 않는다.** 열리는 조건은 §13-2 의 A 안 구성이다.
 
-## 0. 지금 상태 (2026-08-23)
+## 0. 지금 상태 (2026-08-24)
 
-- **4단계는 로컬 구현 완료다. 원격은 안전 동기화만 실행됐다** — 배포 `19e69dee`(계정 라우트를 닫아
-  둔 세대) · `READY_KEY` 등록 · 옛 배포 **제어면** 15개 삭제 · preview `8e16c92e`. **계정 인프라는 미실행** —
+- **4단계는 로컬 구현 완료이고, 그 코드가 2026-08-24 에 안전 동기화로 배포됐다** — production
+  **`7362d2f0`**(source **`e02e810`**) · preview **`cae28bf6`**(source `e02e810` · branch `cf-pages`) ·
+  `READY_KEY` 등록 · 옛 배포 **제어면** 15개 삭제. **계정 인프라는 여전히 미실행** —
   원격 `0005` 미적용 · 원격 D1 쓰기 0건 · ledger D1 미생성 · 미등록 시크릿 5개 · 정리 Worker 미배포 ·
-  커스텀 도메인·WAF 없음(A안 확정 · **2026년 9월 예정**).
+  `EDGE_GUARD` 미등록 · `LEDGER` 미바인딩 · OAuth 미활성 · 커스텀 도메인·WAF 없음(A안 확정 · **2026년 9월 예정**).
+  ⚠️ **계정 기능을 여는 배포가 아니다** — `EDGE_GUARD` 가 없으므로 계정 라우트는 두 DB 를 만지기 전에 503 이다.
 - ⛔ **제어면 삭제 · 공개 접근 차단 · 404 는 서로 다른 세 사건이다. 어느 둘도 한 완료로 합치지 않는다.**
   - **제어면 삭제**: ✅ 2026-08-22. 옛 배포 15개를 제어면 배포 목록에서 지웠다(§16).
   - **당시 사실 — 2026-08-22 삭제 직후 · Access 적용 전**: 지운 15개의 `<해시>.shhh-app.pages.dev` 가
@@ -45,10 +47,17 @@
   - ⚠️ **404 가 아니다 · 삭제가 아니다 · 배포 비실행을 증명한 것이 아니다.** 배포는 Access 뒤에 여전히 존재한다.
   - ⚠️ **가역적이다** — 프리뷰 액세스를 끄면 그 자리에서 다시 401 이다. 끄지 않는다(§16-1 의 1번).
   - ⛔ **복원 금지 해제 조건 ⑦(옛 배포 차단 D1~D12)과는 별개다.** 공개 접근 차단 하나로 대체되지 않는다.
-- ⛔ **배포된 source 는 `7477867` 이고 그 뒤 로컬 커밋은 전부 미배포다.** 위협 57~65 의 수정은 로컬에만 있고
-  라이브 배포는 `19e69dee` 다. **현재 HEAD 해시를 여기 적지 않는다** — `git rev-parse HEAD` 가 원본이다.
+- **배포된 source 는 `e02e810` 이다**(2026-08-24 · production `7362d2f0` · 아래 §16-5 가 실측 기록이다). 위협 57~65 의
+  수정이 여기 들어 있다. **현재 HEAD 해시를 여기 적지 않는다** — `git rev-parse HEAD` 가 원본이고,
+  배포 지점과의 차이는 `git log --oneline e02e810..HEAD` 로 본다.
   실측값의 원본은 `docs/HANDOFF.md` §2 **운영현황** 블록이다.
-- 아래 절차는 **한 번도 실행된 적이 없다.** 명령은 검증됐지만 결과는 실측되지 않았다.
+- **§16-4 의 배포 절차는 2026-08-24 에 실행됐다**(preview → 검증 → production → 검증). 나머지 절차
+  (ledger D1 생성 · `0005` · 시크릿 · 정리 Worker)는 **한 번도 실행된 적이 없다.**
+- **롤백 대상과 방법**: 되돌려야 하면 **검증된 안전 source `7477867` 을 새 배포로 다시 올린다**
+  (`npx wrangler pages deploy dist --project-name shhh-app --branch main --commit-hash <전체 SHA> --commit-dirty=false`).
+  ⛔ **옛 위험 세대(`f72f5225` 등)로 되돌리지 않는다** — 그 세대에 위협 52·56 이 살아 있다.
+  ⚠️ 직전 production `19e69dee` 도 계정 라우트가 닫힌 확인된 배포라 후보이지만, 그 세대에는
+  위협 57~65 의 수정이 없다.
 - **공개 OAuth·계정 기능 출시는 No-Go다.** 이 문서를 끝까지 실행해도 그대로다 —
   남은 것은 §9 에 있다.
 - 이 문서의 모든 원격 작업은 **사용자 승인 대상**이다(`CLAUDE.md` §9). Claude 는 실행하지 않는다.
@@ -538,7 +547,52 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<해시>.shhh-app.pages.dev/api
 **검증된 안전 source 를 새 배포로 다시 올린다**(§16-2 의 1~5 를 프로덕션 브랜치로).
 지워진 배포로 되돌리는 길은 이제 없고, 없는 것이 맞다.
 
-### 16-5. 복원 금지 해제 조건 ⑦ 과의 관계
+### 16-5. **실행 기록 — 2026-08-24 안전 동기화** (실측)
+
+⚠️ **계정 기능을 여는 배포가 아니다.** 목적은 위협 57~65 의 수정을 라이브에 올리는 것 하나이고,
+`EDGE_GUARD`·`LEDGER`·`0005`·시크릿·OAuth·Turnstile·WAF·도메인·Access 정책은 **하나도 건드리지 않았다.**
+
+| 항목 | 값 |
+|---|---|
+| Preview 배포 ID | `cae28bf6-e0fc-490a-915f-c991255ee69a` (`cf-pages` · source **`e02e810`**) |
+| Production 배포 ID | **`7362d2f0-a172-404c-8d33-b9d61ffabfef`** (`main` · source **`e02e810`**) |
+| 배포·검증 시각 | 2026-08-24 12:2x~12:35 KST |
+| 직전 production | `19e69dee`(source `7477867`) — 계정 라우트가 닫힌 확인된 배포 |
+| 방법 | `git worktree add --detach` 로 만든 깨끗한 사본에서 빌드·배포(§16-2 의 1~4). `--commit-dirty=false` · `--commit-hash` 로 source 고정 |
+
+**Preview 실측**(Access 인증 세션에서): 비인증 접근 `/`·`/api/*`·내부 파일 **7/7 전부 302 →
+`cloudflareaccess.com`** · 인증 후 PWA 정상 · `GET`·`PUT /api/book` **503** · `/api/login/kakao`·
+`/api/login/naver`·`POST /api/signup/start` **503** · 키 없는 `/api/ready` **503 `diagnostics:false`** ·
+`/api/health` `ready:false`·`providers:[]`·`ledgerBound:false`·`abuseReady:false`·`signupReady:false` ·
+`/api/policies` **200** · `/api/nope` **404** · 내부 파일 **SPA 폴백** · 리소스 16개 중 **실패 0** ·
+앱이 부른 API 는 `/api/health` **하나** · 콘솔 오류 **0**.
+
+**Production 실측**(공개 canonical):
+
+| 확인 | 결과 |
+|---|---|
+| `/` | 200 · Access 대상 아님 |
+| `GET`·`PUT /api/book` · `/api/login/{kakao,naver}` · `POST /api/signup/start` | **전부 503**(두 DB 접근 전) |
+| 키 없는 · 틀린 키 `/api/ready` | **503 `{"ok":true,"ready":false,"diagnostics":false}`** — 진단 비공개 |
+| `/api/health` | `ready:false`·`providers:[]`·`ledgerBound:false`·`abuseReady:false`·`signupReady:false`·`turnstileSiteKey:null` |
+| `/api/policies` | 200 (pv `6c02f2903c0c`) |
+| 없는 주소 `/api/nope` | **404** |
+| 내부 파일 7종 | **전부 SPA 폴백** — sha256 `7d809fa2268d…` · 9,994B, 로컬 `dist/index.html` 과 바이트 동일 |
+| `service-worker.js` · `js/app.js`·`auth.js`·`authApi.js`·`friends.js` | 배포본과 **바이트 동일** |
+| CSP | `frame-ancestors 'none'` 포함 · `challenges.cloudflare.com` 은 `script-src`·`frame-src` 에만 |
+| 브라우저 | PWA 정상 · SW 활성(캐시 `shhh-v11-49af6377e5a1` 하나) · 리소스 19개 중 **실패 0** · 콘솔 오류 **0** · 계정 단정 0건 |
+| 옛 15개 주소 | **15/15 Access 302** · 200·401 **0건** |
+| 새 배포 해시 `7362d2f0.…` | 302 Access (canonical 만 공개) |
+| 주 D1 users·sessions·books·friendships·invite_codes·rate_limits | 배포 **전후 전부 0** · `changes:0` · `rows_written:0` · `changed_db:false` |
+| 원격 migration | `0005` **여전히 미적용** |
+| production 시크릿 | `READY_KEY`·`RL_KEY`·`STATE_KEY` **3개 그대로** |
+
+**롤백 대상과 방법**: 검증된 안전 source **`7477867`** 을 **새 배포로 다시 올린다**(§16-4).
+⛔ 옛 위험 세대로 되돌리지 않는다.
+
+---
+
+### 16-5-1. 복원 금지 해제 조건 ⑦ 과의 관계
 
 ⑦ 은 **「옛 배포 차단 증명」**(설계서 §10-8-1 D1~D12)이고, 이번 삭제는 그 일부다.
 ⚠️ **삭제만으로 ⑦ 이 채워지지 않는다** — D1~D12 는 「지웠다」가 아니라 「닿을 수 없음을

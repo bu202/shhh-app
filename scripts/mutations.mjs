@@ -255,7 +255,7 @@ export const MUTATIONS = [
     id: "D01", file: "docs/HANDOFF.md", suite: "test-docs", kind: "정적",
     what: "운영현황의 현재 라이브를 지운 배포 `f72f5225` 로 되돌린다",
     invariant: "현재 production 배포를 정확히 말한다 — 지운 세대를 라이브라고 적으면 롤백 대상과 검증 대상이 통째로 틀어진다",
-    find: "| **라이브 (production)** | **배포 `19e69dee`**",
+    find: "| **라이브 (production)** | **배포 `7362d2f0`**",
     replace: "| **라이브 (production)** | **배포 `f72f5225`**",
   },
   {
@@ -353,17 +353,17 @@ export const MUTATIONS = [
   },
   {
     id: "D13", file: "docs/HANDOFF.md", suite: "test-docs", kind: "정적",
-    what: "운영현황의 미배포 커밋 행에 「최신 커밋」 해시를 고정한다",
+    what: "운영현황의 배포 지점 행에 「최신 커밋」 해시를 고정한다",
     invariant: "움직이는 HEAD 해시를 문서에 손으로 적지 않는다 — 커밋할 때마다 낡고, 실제로 한 번 낡았다",
-    find: "⛔ **production source 는 `7477867` 에 고정돼 있고, 그 뒤 로컬 커밋은 전부 미배포다.**",
-    replace: "⛔ **최신 세 커밋(`156fd8a`·`41455b6`·`8628e14`)은 production 에 안 올라갔다.**",
+    find: "**production source 는 `e02e810` 이다**(2026-08-24)",
+    replace: "**최신 세 커밋(`156fd8a`·`41455b6`·`8628e14`)은 production 에 안 올라갔다**(2026-08-24)",
   },
   {
     id: "D16", file: "docs/OPS_RUNBOOK.md", suite: "test-docs", kind: "정적",
-    what: "미배포 범위의 위협 끝번호를 낡은 63 으로 되돌린다",
-    invariant: "「그 뒤 로컬 커밋은 전부 미배포다」는 끝이 열린 주장이다 — 범위의 끝은 위협 표의 최신 번호에서 파생한다",
-    find: "위협 57~65 의 수정은 로컬에만 있고",
-    replace: "위협 57~63 의 수정은 로컬에만 있고",
+    what: "배포 경계 범위의 위협 끝번호를 낡은 63 으로 되돌린다",
+    invariant: "「배포 지점 이후」를 가리키는 범위는 끝이 열려 있다 — 끝번호는 위협 표의 최신 번호에서 파생한다(미배포·배포 양쪽 모두)",
+    find: "수정이 여기 들어 있다.",
+    replace: "수정 중 위협 57~63 까지가 여기 들어 있다.",
   },
   {
     id: "D17", file: "docs/STAGE3_SIGNUP_SECURITY_DESIGN.md", suite: "test-docs", kind: "정적",
