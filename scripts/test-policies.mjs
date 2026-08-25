@@ -126,5 +126,68 @@ for (const f of readdirSync(DIR))
     t("js/auth.js 에 「가입 화면을 열 때만」 근거 주석이 없다 — 방침의 범위 주장이 코드에 안 매여 있다"));
 }
 
+// ══ 영속 저장 키는 **전부 방침에 적혀 있어야 한다** (2026-08-25 · §4) ══════
+//
+// 왜: 방침의 「기기 안에만 저장되는 것」 목록은 사람이 손으로 유지한다. 코드가 키를 하나
+// 더하면 그 순간 문서가 조용히 거짓이 된다 — 실제로 `shh-revoke` 가 그렇게 생겼다
+// (위협 69 를 고치면서 새 키가 생겼는데 방침에는 한 줄도 없었다).
+// 그래서 **코드에서 키를 뽑아** 현재 방침 판과 대조한다. 못 찾으면 실패다.
+{
+  const cur = String(await R("policies/" + m.versions.filter((v) => v.kind === "privacy").at(-1).file))
+    .replace(/\s+/g, " ");
+  const src = (await Promise.all(["js/app.js", "js/auth.js", "js/authApi.js", "js/friends.js"]
+    .map((f) => R(f)))).map(String).join("\n");
+  // `const XXX_KEY = "shh-…"` 로 선언된 것만 센다 — 그것이 이 저장소의 영속 키 관용구다.
+  const keys = [...src.matchAll(/const \w*KEY\w* = "(shh-[a-z-]+)"/g)].map((x) => x[1]);
+  assert.ok(keys.length >= 12, t(`영속 저장 키를 못 뽑았다 (${keys.length}개)`));
+
+  // 각 키가 방침의 **어느 문장으로** 설명되는지. 키 이름 자체는 문서에 안 적는다(사용자에게
+  // 뜻이 없다) — 그래서 「이 키를 설명하는 문구」를 여기서 짝지어 둔다.
+  const DISCLOSED = {
+    "shh-wordbook": /단어 목록/, "shh-via": /로그인 상태 표시/, "shh-me": /무작위 번호/,
+    "shh-uid": /무작위 번호/, "shh-name": /별명/, "shh-invite": /초대 링크 코드/,
+    "shh-bookver": /저장 번호/, "shh-dirty": /고친 적이 있는지/, "shh-rev": /고친 적이 있는지/,
+    "shh-nonce": /일회용/, "shh-back": /보고 있던 주소/,
+    "shh-intro-muted": /첫 실행 안내문/, "shh-peek": /둘러보기/, "shh-pro": /프로 이용/,
+    "shh-master": /프로 이용/,
+    // ★ 2026-08-25 신설. 이 줄이 없으면 아래 단언이 실패한다 — 그것이 이 검사의 목적이다.
+    "shh-revoke": /재시도 표식/,
+  };
+  for (const k of new Set(keys)) {
+    assert.ok(DISCLOSED[k],
+      t(`영속 저장 키 '${k}' 가 이 검사의 대조표에 없다 — 방침에 적었는지 아무도 안 본다`));
+    assert.match(cur, DISCLOSED[k],
+      t(`영속 저장 키 '${k}' 를 설명하는 문구가 현재 방침 판에 없다`));
+  }
+
+  // ── `shh-revoke` 의 **제거 조건이 코드와 일치**해야 한다 ──────────────────
+  // 방침은 「끊었다 또는 끊을 세션이 이미 없다」고 적는다. 코드의 terminal 판정이 그것과
+  // 다르면(예: 모든 4xx 를 성공으로 치면) 문서가 거짓이 된다.
+  const api = String(await R("js/authApi.js"));
+  assert.match(api, /const REVOKED = \(status\) => status === 401 \|\| \(status >= 200 && status < 300\);/,
+    t("shh-revoke 의 terminal 판정이 방침에 적은 「끊었다 · 이미 없다」와 다르다"));
+  assert.match(cur, /끊었다.*끊을 세션이 이미 없다|끊을 세션이 이미 없다/,
+    t("방침이 shh-revoke 의 제거 조건(2xx · 401)을 적지 않았다"));
+  assert.match(cur, /정상적으로 새로 로그인/,
+    t("방침이 「새로 로그인하면 지운다」를 적지 않았다 — 코드는 그렇게 한다"));
+  // 담기는 값이 boolean 하나라는 사실도 코드와 맞아야 한다.
+  assert.match(api, /localStorage\.setItem\(REVOKE_PENDING_KEY, "1"\)/,
+    t("shh-revoke 에 '1' 이 아닌 값을 담는다 — 방침 문구와 다르다"));
+
+  // ── 근거 없는 「식별정보가 없다」 단정이 다시 들어오면 실패한다 ───────────
+  // 앱이 통제하지 못하는 것(Cloudflare 가 만드는 토큰의 내용)을 단정하지 않는다.
+  for (const v of m.versions.filter((x) => x.kind === "privacy").slice(-1)) {
+    // ⚠️ **공백을 접어서 본다.** 문구가 줄바꿈을 걸쳐 있으면 그대로 매치하는 검사는
+    //    「문서를 재포맷했다」는 이유만으로 깨지고, 사람이 검사를 느슨하게 고치게 된다.
+    const txt = String(await R("policies/" + v.file)).replace(/\s+/g, " ");
+    assert.ok(!/확인용 값에는 <b>회원님을 가리키는 정보가 들어 있지 않습니다/.test(txt),
+      t("방침이 Turnstile 토큰에 식별정보가 없다고 단정한다 — 앱이 입증할 수 없는 주장이다"));
+    assert.match(txt, /저희 앱은 그 확인용 값에 회원님의 계정 번호/,
+      t("방침이 「앱이 무엇을 넣지 않는가」로 범위를 좁히지 않았다"));
+    assert.match(txt, /그 안에 무엇이 담기는지는 Cloudflare 가 정합니다/,
+      t("방침이 토큰 내용의 결정 주체가 Cloudflare 임을 적지 않았다"));
+  }
+}
+
 console.log(`test-policies: 통과 — 단언 ${n}개 · 판 ${m.versions.length}개 · pv ${m.bundle.pv} · `
   + `필수 이벤트 ${REQUIRED_POLICY_EVENTS}종(${requiredPolicyKinds.map(([k, a]) => k + "/" + a).join(" ")})`);
