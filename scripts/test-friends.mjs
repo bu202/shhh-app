@@ -12,7 +12,8 @@ import "./_workers-shim.mjs";
 import assert from "node:assert";
 import worker, { createAccountWithPolicy, findUser, newSession, pathTemplate,
   routeFor, rlMax, routeBuckets, routeCount, maintenanceAllows, envelopeOk,
-  authRoutes, mkSessionToken, SESSION_ENVELOPE_VERSION } from "../worker/index.js";
+  authRoutes, mkSessionToken, SESSION_ENVELOPE_VERSION,
+  appOrigin, loginPossible } from "../worker/index.js";
 import { makeD1, makeLedger, withLatency } from "./_d1.mjs";
 import { drainState, readMode, MODE_UNBOUND } from "../worker/ledger.js";
 // 옛 배포 세대의 **고정 fixture**. 지금 코드가 아니다 — 그 파일 머리말을 볼 것.
@@ -91,6 +92,11 @@ const call = async (env, token, path, method = "GET", body, extra = {}) => {
   assert.equal((await c(null, "/friends")).status, 401);
 
   // 2. 내 초대 코드는 늘 같다. 바뀌면 예전에 보낸 링크가 죽는다.
+  //   ⚠️ **목록 조회는 만들지 않는다**(2026-08-25 · 위협 68 · T84). 만드는 것은
+  //      `POST /friends/code/ensure` 하나이고, 그 뒤로 GET 은 같은 값을 읽기만 한다.
+  assert.equal((await c(A.token, "/friends")).body.code, null,
+    "코드를 만들기 전인데 목록이 코드를 답했다 — GET 이 쓰고 있다");
+  await c(A.token, "/friends/code/ensure", "POST");
   const a1 = await c(A.token, "/friends"), a2 = await c(A.token, "/friends");
   assert.ok(a1.body.code && a1.body.code === a2.body.code, "초대 코드가 호출마다 바뀐다");
   assert.deepEqual([a1.body.friends, a1.body.in, a1.body.out], [[], [], []]);
@@ -145,7 +151,7 @@ const call = async (env, token, path, method = "GET", body, extra = {}) => {
 
   // 11. 서로 링크를 주고받으면 수락을 기다리지 않고 맺어진다.
   //     (둘 다 "수락 대기"로 멈춰 있으면 사용자는 뭘 눌러야 할지 모른다)
-  const bCode = (await c(B.token, "/friends")).body.code;
+  const bCode = (await c(B.token, "/friends/code/ensure", "POST")).body.code;
   await c(A.token, "/friends", "POST", { code: bCode });
   const mutual = await c(B.token, "/friends", "POST", { code: a1.body.code });
   assert.equal(mutual.body.state, "ok", "서로 보냈는데 친구가 안 됐다");
@@ -186,7 +192,7 @@ function befriend(env, a, b, status = "accepted") {
   const X = await signUp(env, "kakao", "X"), Y = await signUp(env, "kakao", "Y"), Z = await signUp(env, "kakao", "Z");
   const c = (t, p, m, b) => call(env, t, p, m, b);
 
-  const old = (await c(X.token, "/friends")).body.code;
+  const old = (await c(X.token, "/friends/code/ensure", "POST")).body.code;
   await c(Y.token, "/friends", "POST", { code: old });      // Y 는 옛 링크로 친구가 된 사람
   await c(X.token, "/friends/" + Y.uid, "PUT");
 
@@ -460,8 +466,8 @@ function befriend(env, a, b, status = "accepted") {
   const A = await signUp(env, "kakao", "A"), B = await signUp(env, "kakao", "B");
   const c = (t, p, m, b) => call(env, t, p, m, b);
   const rows = () => env.DB._db.prepare("SELECT requester_id, status, pair_key FROM friendships").all();
-  const aCode = (await c(A.token, "/friends")).body.code;
-  const bCode = (await c(B.token, "/friends")).body.code;
+  const aCode = (await c(A.token, "/friends/code/ensure", "POST")).body.code;
+  const bCode = (await c(B.token, "/friends/code/ensure", "POST")).body.code;
 
   // 85. ★ DB 가 직접 막는다. 애플리케이션이 확인을 빠뜨려도 두 줄이 될 수 없다.
   assert.throws(() => env.DB._db
@@ -522,7 +528,7 @@ function befriend(env, a, b, status = "accepted") {
     // (SQLite 의 UNIQUE 는 NULL 을 서로 다르게 보므로 유니크 인덱스도 못 잡았다.)
     befriend(env, A.uid, f.uid);
   }
-  const vCode = (await call(env, V.token, "/friends")).body.code;
+  const vCode = (await call(env, V.token, "/friends/code/ensure", "POST")).body.code;
   assert.equal((await call(env, A.token, "/friends", "POST", { code: vCode })).status, 429, "친구 상한이 없다");
 }
 
@@ -574,7 +580,7 @@ function befriend(env, a, b, status = "accepted") {
 
   await rec(A.token, "/book", "PUT", { words: ["사랑"], name: "가", version: 0 });
   await rec(B.token, "/book", "PUT", { words: ["고맙다"], name: "나", version: 0 });
-  const codeA = (await rec(A.token, "/friends")).body.code;
+  const codeA = (await rec(A.token, "/friends/code/ensure", "POST")).body.code;
   await rec(B.token, "/friends", "POST", { code: codeA });
   await rec(A.token, "/friends");
   await rec(B.token, "/friends");
@@ -706,7 +712,7 @@ function befriend(env, a, b, status = "accepted") {
 {
   const env = makeEnv();
   const A = await signUp(env, "kakao", "A"), B = await signUp(env, "kakao", "B");
-  const codeA = (await call(env, A.token, "/friends")).body.code;
+  const codeA = (await call(env, A.token, "/friends/code/ensure", "POST")).body.code;
   await call(env, B.token, "/friends", "POST", { code: codeA });
 
   // 61. 수락 도중 DB 가 죽으면 **관계는 pending 그대로**다(부분 수락이 없다).
@@ -896,7 +902,7 @@ function befriend(env, a, b, status = "accepted") {
   const env = makeEnv();
   const V = await signUp(env, "kakao", "V"), W = await signUp(env, "kakao", "W");
   // V 에게 W 가 요청을 보낸 뒤에 V 를 상한까지 채운다 — 수락 시점에 이미 꽉 차 있다.
-  const vCode = (await call(env, V.token, "/friends")).body.code;
+  const vCode = (await call(env, V.token, "/friends/code/ensure", "POST")).body.code;
   await call(env, W.token, "/friends", "POST", { code: vCode });
   for (let i = 0; i < 50; i++) befriend(env, V.uid, (await signUp(env, "kakao", "L" + i)).uid);
 
@@ -954,7 +960,7 @@ function befriend(env, a, b, status = "accepted") {
 {
   const env = makeEnv();
   const A = await signUp(env, "kakao", "A"), B = await signUp(env, "kakao", "B");
-  const bCode = (await call(env, B.token, "/friends")).body.code;
+  const bCode = (await call(env, B.token, "/friends/code/ensure", "POST")).body.code;
 
   // 84. 초대 코드로 요청을 보내는 자리가 가장 좁다(유일한 열거 공격면).
   //     정상 사용자는 링크를 눌러 한 번 보낼 뿐이라 20회면 넉넉하다.
@@ -1240,7 +1246,7 @@ function befriend(env, a, b, status = "accepted") {
   const A = await signUp(env, "kakao", "delA"), B = await signUp(env, "kakao", "delB");
   const A2 = await another(env, A.uid);                    // 같은 계정의 다른 기기
   await call(env, A.token, "/book", "PUT", { words: ["사랑"], name: "가", version: 0 });
-  const code = (await call(env, A.token, "/friends")).body.code;
+  const code = (await call(env, A.token, "/friends/code/ensure", "POST")).body.code;
   await call(env, B.token, "/friends", "POST", { code });
   await call(env, A.token, "/friends/" + B.uid, "PUT");
   const n = (sql, ...a) => env.DB._db.prepare(`SELECT COUNT(*) n FROM ${sql}`).get(...a).n;
@@ -1305,12 +1311,16 @@ function befriend(env, a, b, status = "accepted") {
 }
 
 // ══ 25. 초대 코드 — 살아 있는 코드는 사람당 하나다 ════════════════════════
-// `GET /friends` 는 코드가 없으면 만든다. 그래서 **읽기가 쓰기를 유발하고**, 두 탭이 동시에
-// 열리면 둘 다 "없다"를 읽고 각자 만든다 — 나중 것이 앞 것을 폐기하므로 먼저 응답을 받은 탭은
-// **이미 죽은 코드**를 손에 쥔다. 그 링크를 보낸 상대는 「만료됐거나 잘못됐어요」만 본다.
+// **당시 사실(2026-08-16):** `GET /friends` 가 코드가 없으면 만들었다. 그래서 읽기가 쓰기를
+// 유발했고, 두 탭이 동시에 열리면 둘 다 "없다"를 읽고 각자 만들었다 — 나중 것이 앞 것을
+// 폐기하므로 먼저 응답을 받은 탭은 **이미 죽은 코드**를 쥐었다.
 //
-// 고친 방향(사용자 결정 B): GET 의 자동 생성은 그대로 두고, **DB 가 활성 코드 하나를 강제**하게 해
-// 충돌을 "누가 이미 만들었다"로 읽는다. 진 쪽은 이긴 쪽의 코드를 그대로 쓴다(internalUid 와 같은 무늬).
+// 그때 고친 방향(사용자 결정 B): 자동 생성은 그대로 두고 **DB 가 활성 코드 하나를 강제**하게 해
+// 충돌을 "누가 이미 만들었다"로 읽는다. 진 쪽은 이긴 쪽의 코드를 그대로 쓴다.
+//
+// **지금은 자동 생성 자체가 없다**(2026-08-25 · 위협 68 · T84) — 생성은
+// `POST /friends/code/ensure` 하나다. 그래도 **이 제약은 그대로 필요하다**: 경합이 조회에서
+// 생성 요청으로 옮겨갔을 뿐, 두 탭이 동시에 누르는 일은 여전히 일어난다.
 {
   const env = makeEnv();
   const A = await signUp(env, "kakao", "codeA"), B = await signUp(env, "kakao", "codeB");
@@ -1319,7 +1329,7 @@ function befriend(env, a, b, status = "accepted") {
 
   // 107. ★ **DB 가 막는다.** 이게 이번 변경의 전부다 — 나머지는 이 제약을 어떻게 읽느냐일 뿐이다.
   //      전에는 애플리케이션의 성실함이 유일한 방어였고, 실측에서 활성 행 두 개가 그냥 들어갔다.
-  await call(env, A.token, "/friends");
+  await call(env, A.token, "/friends/code/ensure", "POST");
   assert.throws(() => {
     env.DB._db.prepare("INSERT INTO invite_codes (code,user_id,created_at) VALUES (?,?,?)")
       .run("직접넣은코드", A.uid, Date.now());
@@ -1344,8 +1354,10 @@ function befriend(env, a, b, status = "accepted") {
   const live = () => env.DB._db.prepare(
     "SELECT code FROM invite_codes WHERE user_id=? AND revoked_at IS NULL").all(A.uid).map((r) => r.code);
 
-  // 109. ★ 코드가 없는 새 계정의 친구 화면을 **두 탭이 동시에** 연다.
-  const [t1, t2] = await Promise.all([call(env, A.token, "/friends"), call(env, A.token, "/friends")]);
+  // 109. ★ 코드가 없는 새 계정에서 **두 탭이 동시에** 코드 생성을 누른다.
+  //   ⚠️ 예전에는 「친구 화면을 두 탭이 동시에 연다」였다 — 그때는 **목록 조회가 만들었다**.
+  //      지금은 조회가 만들지 않으므로(위협 68 · T84) 경합이 생기는 자리는 여기다.
+  const [t1, t2] = await Promise.all([call(env, A.token, "/friends/code/ensure", "POST"), call(env, A.token, "/friends/code/ensure", "POST")]);
   assert.equal(t1.status, 200); assert.equal(t2.status, 200);
   assert.equal(t1.body.code, t2.body.code, "두 탭이 서로 다른 초대 코드를 받았다 — 한쪽은 곧 죽는다");
   assert.deepEqual(live(), [t1.body.code], "응답으로 준 코드가 지금 살아 있는 코드가 아니다");
@@ -1359,6 +1371,7 @@ function befriend(env, a, b, status = "accepted") {
   //      화면을 여는 것만으로 폐기 행이 생긴다 — 즉 **누군가에게 이미 보낸 링크가 조회 하나로
   //      죽을 수 있다.** 언제 죽일지는 사람이 정하는 것이지 화면을 여는 일이 정하는 게 아니다.
   //      (행 개수로 잰다: 회전을 지났다면 폐기 행이 남는다.)
+  for (let i = 0; i < 5; i++) await call(env, A.token, "/friends/code/ensure", "POST");
   for (let i = 0; i < 5; i++) await call(env, A.token, "/friends");
   const all = env.DB._db.prepare("SELECT revoked_at FROM invite_codes WHERE user_id=?").all(A.uid);
   assert.equal(all.length, 1,
@@ -1372,7 +1385,7 @@ function befriend(env, a, b, status = "accepted") {
   const env = makeEnv();
   env.DB = withLatency(env.DB);
   const A = await signUp(env, "kakao", "rotA"), B = await signUp(env, "kakao", "rotB");
-  await call(env, A.token, "/friends");
+  await call(env, A.token, "/friends/code/ensure", "POST");
   const [x, y] = await Promise.all([
     call(env, A.token, "/friends/code", "POST"),
     call(env, A.token, "/friends/code", "POST"),
@@ -1390,7 +1403,7 @@ function befriend(env, a, b, status = "accepted") {
   const env = makeEnv();
   const A = await signUp(env, "kakao", "rotLimit"), B = await signUp(env, "kakao", "rotOther");
   const codeRows = () => env.DB._db.prepare("SELECT COUNT(*) n FROM invite_codes WHERE user_id=?").get(A.uid).n;
-  await call(env, A.token, "/friends");
+  await call(env, A.token, "/friends/code/ensure", "POST");
 
   // 112. ★ 회전은 **자기 버킷**으로 좁게 센다. 전에는 넉넉한 `write`(분당 120)만 걸려서,
   //      로그인한 계정 **하나**가 분당 240 D1 쓰기 = 하루 34만(무료 한도 10만)을 태울 수 있었다.
@@ -2149,7 +2162,7 @@ function befriend(env, a, b, status = "accepted") {
   {
     const SAMPLE = { "GET": ["/book", "/me", "/friends", "/friends/x/book"],
                      "PUT": ["/book", "/me", "/friends/x"],
-                     "POST": ["/friends", "/friends/code"],
+                     "POST": ["/friends", "/friends/code", "/friends/code/ensure"],
                      "DELETE": ["/session", "/me", "/friends/x"] };
     let n = 0;
     for (const [method, paths] of Object.entries(SAMPLE)) {
@@ -2268,9 +2281,232 @@ function befriend(env, a, b, status = "accepted") {
   }
 }
 
+// ══ T83. 복귀 주소의 **단일 원본** ══════════════════════════════════════
+//
+// 고치기 전(재현): `redirectUri()` 가 네이버에서만 `env.APP_URL` 을 썼는데 그 이름은
+// `loginPossible()` 의 계약에 **없었다.** 그래서 `APP_URL` 만 빠진 배포에서
+//   loginPossible -> true · GET /api/login/naver -> 302
+//   Location: https://nid.naver.com/oauth2.0/authorize?...&redirect_uri=undefined&state=...
+// 가 나갔다 — readiness 는 초록인데 네이버 로그인은 **제공자 화면에서** 깨진다.
+// 두 이름이 같은 사실을 두 벌로 저장하던 것이 원인이라, 이름을 하나로 줄인다.
+{
+  const ORG = "https://app.test";
+  // ── a. `appOrigin()` 이 origin 만 받는다. path·query·fragment·http·끝 슬래시는 전부 거부.
+  for (const [why, v] of [
+    ["없음", undefined], ["빈 값", ""], ["주소가 아님", "app.test"],
+    ["http", "http://app.test"], ["끝 슬래시", "https://app.test/"],
+    ["path", "https://app.test/app"], ["query", "https://app.test?a=1"],
+    ["fragment", "https://app.test#x"],
+  ]) {
+    assert.equal(appOrigin({ APP_ORIGIN: v }), null, `T83-a: ${why} 인 APP_ORIGIN 이 통과했다`);
+    assert.equal(loginPossible({ ...makeEnv(), APP_ORIGIN: v }), false,
+      `T83-a: ${why} 인 APP_ORIGIN 인데 로그인 준비도가 참이다`);
+  }
+  assert.equal(appOrigin({ APP_ORIGIN: ORG }), ORG, "T83-a: 정상 origin 이 거부됐다");
+  assert.equal(appOrigin({ APP_ORIGIN: "https://a.b:8443" }), "https://a.b:8443",
+    "T83-a: 포트가 있는 origin 이 거부됐다");
+
+  // ── b. **`APP_URL` 없이** 네이버 복귀 주소가 APP_ORIGIN 에서 파생된다.
+  {
+    const env = makeEnv({ NAVER_ID: "nid", NAVER_SECRET: "nsec" });
+    delete env.APP_URL;
+    const r = await worker.fetch(new Request("https://api.test/api/login/naver",
+      { headers: { Origin: ORG } }), env);
+    assert.equal(r.status, 302, "T83-b: APP_URL 없이 네이버 로그인이 시작되지 않았다");
+    const loc = new URL(r.headers.get("location"));
+    assert.equal(loc.searchParams.get("redirect_uri"), ORG + "/",
+      "T83-b: 네이버 복귀 주소가 APP_ORIGIN 에서 파생되지 않았다");
+    assert.ok(!/undefined/.test(loc.href), "T83-b: 복귀 주소에 undefined 가 실렸다");
+  }
+
+  // ── c. **`APP_URL` 을 넣어도 아무 영향이 없다.** 남아 있는 옛 설정이 주소를 못 바꾼다.
+  {
+    const env = makeEnv({ NAVER_ID: "nid", NAVER_SECRET: "nsec",
+                          APP_URL: "https://공격자.example/" });
+    const r = await worker.fetch(new Request("https://api.test/api/login/naver",
+      { headers: { Origin: ORG } }), env);
+    const loc = new URL(r.headers.get("location"));
+    assert.equal(loc.searchParams.get("redirect_uri"), ORG + "/",
+      "T83-c: 계약에 없는 APP_URL 이 복귀 주소를 정했다");
+  }
+
+  // ── d. **APP_ORIGIN 이 origin 이 아니면 제공자를 부르기 전에 닫힌다.**
+  {
+    const env = makeEnv({ NAVER_ID: "nid", NAVER_SECRET: "nsec",
+                          APP_ORIGIN: "https://app.test/sub" });
+    const before = env.DB._db.prepare("SELECT COUNT(*) n FROM users").get().n;
+    const r = await worker.fetch(new Request("https://api.test/api/login/naver",
+      { headers: { Origin: ORG } }), env);
+    assert.equal(r.status, 503, "T83-d: 깨진 APP_ORIGIN 인데 제공자로 보냈다");
+    assert.equal(env.DB._db.prepare("SELECT COUNT(*) n FROM users").get().n, before,
+      "T83-d: 거부했는데 주 D1 이 바뀌었다");
+  }
+
+  // ── e. 카카오·구글은 종전대로 **요청이 도착한 주소**의 `/api/cb/<이름>` 이다.
+  for (const name of ["kakao", "google"]) {
+    const env = makeEnv({ [name.toUpperCase() + "_ID"]: "id",
+                          [name.toUpperCase() + "_SECRET"]: "sec" });
+    delete env.APP_URL;
+    const r = await worker.fetch(new Request("https://api.test/api/login/" + name,
+      { headers: { Origin: ORG } }), env);
+    assert.equal(r.status, 302, `T83-e: ${name} 로그인이 시작되지 않았다`);
+    assert.equal(new URL(r.headers.get("location")).searchParams.get("redirect_uri"),
+      "https://api.test/api/cb/" + name, `T83-e: ${name} 복귀 주소가 바뀌었다`);
+  }
+
+  // ── f. **운영 코드가 `APP_URL` 을 읽지 않는다.** 읽는 자리가 남으면 문서·설정이 다시 요구한다.
+  //   ⚠️ 주석은 판정 대상이 아니다 — 옛 결함을 설명하는 문장은 남아야 한다.
+  {
+    const strip = (x) => x.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+    for (const f of ["worker/index.js", "worker/ledger.js", "worker/ops.js", "worker/cleanup/index.js"]) {
+      const src = strip(fs.readFileSync(new URL("../" + f, import.meta.url), "utf8"));
+      assert.ok(!/APP_URL/.test(src),
+        `T83-f: ${f} 가 APP_URL 을 읽는다 — 같은 사실을 두 벌로 저장하지 않는다`);
+    }
+  }
+}
+
+// ══ T84. **GET 은 두 DB 에 논리적 변경 0건** (OAuth 콜백만 예외) ════════
+//
+// 고치기 전(재현): `GET /friends` 가 `myCode()` 를 불렀고, 그 함수는 활성 코드가 없으면
+// 그 자리에서 INSERT 했다. 실측 — `invite_codes` 0행 → **1행**. CSRF 검사는 GET 에
+// 적용되지 않으므로 그 쓰기는 **Origin 없이도** 일어났다(라우트 표의 auth 만 지나면 된다).
+// 라우트 표의 주석도 「GET 이라고 읽기인 것이 아니다」라고 그 사실을 인정하고 있었다.
+//
+// 이제 읽기는 지금 있는 코드를 그대로 답하고(없으면 `null`), 생성은 same-origin 을 지나는
+// **명시적 POST** 하나다. 「최초 생성」과 「회전」을 한 endpoint 에 섞지 않는다 —
+// 회전은 남에게 보낸 링크를 죽이는 파괴적 행위라 실수로 불려서는 안 된다.
+{
+  const icount = (env) => env.DB._db.prepare(
+    "SELECT COUNT(*) n FROM invite_codes").get().n;
+
+  // ── a. 코드가 없는 사용자의 `GET /friends` — **변경 0건 · code: null**.
+  {
+    const env = makeEnv();
+    const A = await signUp(env, "kakao", "t84a");
+    const before = icount(env);
+    const r = await call(env, A.token, "/friends");
+    assert.equal(r.status, 200, "T84-a: 목록 조회가 실패했다");
+    assert.equal(r.body.code, null, "T84-a: 코드가 없는데 값이 나왔다 — GET 이 만들었다");
+    assert.equal(icount(env), before, "T84-a: GET 요청이 invite_codes 에 행을 만들었다");
+  }
+
+  // ── b. **GET 라우트 전수** — 표에서 GET 을 받는 경로가 주 D1 을 안 바꾼다.
+  //   한 자리만 재면 다음에 더해지는 GET 이 검사 밖에 남는다.
+  //
+  //   ⚠️ **딱 하나 예외가 있다: OAuth 콜백(`/cb|exchange/:provider`).** 제공자가 **GET 으로**
+  //      되돌려보내므로 그 자리에서 계정·세션이 만들어진다 — 없앨 수 없는 성질이다.
+  //      그래서 그 라우트는 Origin 이 아니라 **서명된 state + `shh_t` 왕복 쿠키**로 묶인다
+  //      (Origin 검사보다 강하다 — 공격자가 만든 링크는 state 서명을 못 만든다).
+  //      아래 c2 가 「그 예외가 실제로 묶여 있는가」를 잰다 — 예외를 적어 두기만 하고
+  //      재지 않으면 그것이 곧 구멍이다.
+  {
+    const env = makeEnv();
+    const A = await signUp(env, "kakao", "t84b1"), B = await signUp(env, "kakao", "t84b2");
+    const snap = () => ["invite_codes", "users", "books", "friendships", "sessions",
+                        "policy_events"].map((t) =>
+      env.DB._db.prepare(`SELECT COUNT(*) n FROM ${t}`).get().n).join(",");
+    for (const p of ["/health", "/ready", "/policies", "/book", "/me", "/friends",
+                     "/friends/" + B.uid + "/book"]) {
+      const before = snap();
+      await call(env, A.token, p);
+      assert.equal(snap(), before, `T84-b: GET ${p} 이 주 D1 을 바꿨다`);
+    }
+  }
+
+  // ── b2. 그 예외가 **묶여 있는가.** state 없는·위조된 콜백 GET 은 두 DB 를 안 바꾼다.
+  {
+    const env = makeEnv({ KAKAO_ID: "id", KAKAO_SECRET: "sec" });
+    const snap = () => ["users", "sessions", "policy_events"].map((t) =>
+      env.DB._db.prepare(`SELECT COUNT(*) n FROM ${t}`).get().n).join(",");
+    for (const q of ["", "?code=x", "?code=x&state=위조된값", "?state=위조된값"]) {
+      const before = snap();
+      const r = await worker.fetch(new Request("https://api.test/cb/kakao" + q,
+        { headers: { Origin: ORIGIN } }), env);
+      assert.ok(r.status !== 200 || !/login=ok/.test(r.headers.get("location") || ""),
+        `T84-b2: state 없는 콜백(${q || "빈 쿼리"})이 로그인에 성공했다`);
+      assert.equal(snap(), before,
+        `T84-b2: state 없는 콜백(${q || "빈 쿼리"})이 주 D1 을 바꿨다`);
+    }
+  }
+
+  // ── c. **생성은 same-origin POST 만.** Origin 없음·다른 Origin 은 403 이고 변경 0건.
+  for (const [why, extra] of [
+    ["Origin 없음", { Origin: undefined }],
+    ["다른 Origin", { Origin: "https://evil.example" }],
+  ]) {
+    const env = makeEnv();
+    const A = await signUp(env, "kakao", "t84c" + why.length);
+    const before = icount(env);
+    const headers = { "Content-Type": "application/json", Cookie: "shh_s=" + A.token };
+    if (extra.Origin) headers.Origin = extra.Origin;
+    const r = await worker.fetch(new Request("https://api.test/friends/code/ensure",
+      { method: "POST", headers }), env);
+    assert.equal(r.status, 403, `T84-c: ${why} 인데 생성이 허용됐다`);
+    assert.equal(icount(env), before, `T84-c: ${why} 를 막았다면서 코드가 생겼다`);
+  }
+
+  // ── d. same-origin POST 는 만든다. **두 번 불러도 같은 코드** — ensure 는 회전이 아니다.
+  {
+    const env = makeEnv();
+    const A = await signUp(env, "kakao", "t84d");
+    const first = await call(env, A.token, "/friends/code/ensure", "POST");
+    assert.equal(first.status, 200, "T84-d: ensure 가 실패했다");
+    assert.equal(typeof first.body.code, "string", "T84-d: ensure 가 코드를 안 돌려줬다");
+    const again = await call(env, A.token, "/friends/code/ensure", "POST");
+    assert.equal(again.body.code, first.body.code,
+      "T84-d: ensure 가 두 번째에 코드를 바꿨다 — 이미 보낸 링크가 죽는다");
+    assert.equal(env.DB._db.prepare(
+      "SELECT COUNT(*) n FROM invite_codes WHERE revoked_at IS NULL").get().n, 1,
+      "T84-d: 활성 코드가 하나가 아니다");
+    // 그 뒤의 GET 은 같은 코드를 **읽기만** 한다.
+    assert.equal((await call(env, A.token, "/friends")).body.code, first.body.code,
+      "T84-d: 목록이 다른 코드를 답했다");
+  }
+
+  // ── e. **동시 최초 생성 두 건이 같은 코드로 수렴한다**(0004 의 부분 유니크 인덱스).
+  {
+    const env = makeEnv();
+    const A = await signUp(env, "kakao", "t84e");
+    const [x, y] = await Promise.all([
+      call(env, A.token, "/friends/code/ensure", "POST"),
+      call(env, A.token, "/friends/code/ensure", "POST"),
+    ]);
+    assert.equal(x.body.code, y.body.code,
+      "T84-e: 두 탭이 서로 다른 코드를 받았다 — 먼저 받은 쪽 링크가 죽는다");
+    assert.equal(env.DB._db.prepare(
+      "SELECT COUNT(*) n FROM invite_codes WHERE revoked_at IS NULL").get().n, 1,
+      "T84-e: 활성 코드가 둘이 됐다");
+  }
+
+  // ── f. **회전은 종전 의미 그대로다.** 있는 코드를 죽이고 새 것을 준다.
+  {
+    const env = makeEnv();
+    const A = await signUp(env, "kakao", "t84f");
+    const made = (await call(env, A.token, "/friends/code/ensure", "POST")).body.code;
+    const rotated = (await call(env, A.token, "/friends/code", "POST")).body.code;
+    assert.notEqual(rotated, made, "T84-f: 회전했는데 코드가 그대로다");
+    assert.equal((await call(env, A.token, "/friends")).body.code, rotated,
+      "T84-f: 회전 뒤 목록이 옛 코드를 답한다");
+  }
+
+  // ── g. **소스의 GET 목록 처리기가 쓰기 함수를 안 부른다.** 되돌리면 위 a 만으로는
+  //   「이미 코드가 있는 사용자」 경로에서 조용히 통과한다.
+  {
+    const src = fs.readFileSync(new URL("../worker/index.js", import.meta.url), "utf8");
+    const from = src.indexOf('path === "/friends" && req.method === "GET"');
+    const to = src.indexOf('path === "/friends" && req.method === "POST"');
+    assert.ok(from > 0 && to > from, "T84-g: 목록 처리기를 못 찾았다 — 검사기가 낡았다");
+    assert.ok(!/myCode\(/.test(src.slice(from, to)),
+      "T84-g: GET 목록 처리기가 myCode() 를 부른다 — 읽기가 다시 쓰기가 됐다");
+  }
+}
+
 console.log("test-friends: 통과 — 로그인 왕복 표(브라우저 결속) · 친구 쌍 유일성 · 친구 권한(행 하나) · 쿠키 세션 · 세대 무효화 · CSRF(Origin 필수) · 제공자ID 비공개 "
   + "· 버전 충돌 · 수락 트랜잭션(상한 포함) · 무관계 DELETE · 마스터 · 복귀 주소 · 본문 한도 · state 서명 · 코드 회전 · 상한 · 헤더 · readiness(스키마 실질의) · 세션 청소 · 레이트리밋(RL_KEY HMAC · 버킷 분리) · 제공자 응답 상한 · 계정 삭제 원자성(표식·lease) · 활성 초대 코드 1개 · 유지보수/restore_closed 게이트 · 전역 user-data drain(요청당 임차증 1개 · 지연 읽기·쓰기 · TTL 만료 ≠ 해제) "
   + "· LEDGER 미바인딩 fail-closed(계층별) · 라우트 분류(없는 주소·로그인 시작의 쓰기 0) · 임차증 상한 "
   + "· 레이트리밋 버킷 등록(프로토타입 속성 거부) · 아직 못 막는 것(T8-b · 옛 배포 fixture) 고정 "
   + "· T71 세션 envelope(모양·서명·판·만료 · DB 앞 거절 · 서명 ≠ 인증 · 키 전용성·교체 · auth 라우트 전수) "
-  + "· T75 비밀값 비교(요약 32바이트 + timingSafeEqual · await 전수 · 응답 모양 하나 · 어댑터 비배포)");
+  + "· T75 비밀값 비교(요약 32바이트 + timingSafeEqual · await 전수 · 응답 모양 하나 · 어댑터 비배포) "
+  + "· T83 복귀 주소의 단일 원본(APP_ORIGIN 검증 · APP_URL 폐지) "
+  + "· T84 GET 의 무쓰기(OAuth 콜백만 예외 — 서명 state·shh_t 로 묶인다) · 초대 코드 생성은 same-origin POST");

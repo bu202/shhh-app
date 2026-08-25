@@ -62,7 +62,6 @@ const mainWorker :Workers.Worker = (
   compatibilityDate = "2026-08-07",
   bindings = [
     (name = "APP_ORIGIN", text = "https://app.test"),
-    (name = "APP_URL", text = "https://app.test/"),
     (name = "READY_KEY", text = "${READY_KEY}"),
   ],
 );

@@ -76,8 +76,19 @@ const SIM_KEYS = {
 // APP_ORIGIN 은 요청마다 그 호스트로 맞춘다. 두 호스트를 각각 "그 사람의 앱 주소"로 세우는 것이라
 // 운영의 `allowed()` 규칙(앱 주소 하나만 허용)을 **그대로** 쓰면서 두 계정을 열 수 있다.
 const envFor = (origin) => ({
-  APP_ORIGIN: origin, APP_URL: origin + "/",
+  APP_ORIGIN: origin,
   KAKAO_ID: "sim", KAKAO_SECRET: "sim",
+  // ⚠️ **로컬 전용 남용 방어 스위치**(위협 50). 없으면 `guardMode()` 가 `none` 이라 계정
+  //    라우트가 전부 503 이고 `/api/health` 의 `providers` 가 비어 로그인 버튼이 안 그려진다 —
+  //    시뮬레이터로는 아무 흐름도 못 걷는다. ⛔ 배포 가능한 설정 파일에는 절대 넣지 않는다
+  //    (`scripts/test-config.mjs` 가 막는다). 이 값으로는 `/ready` 가 절대 200 이 되지 않는다.
+  DEV_RATE_LIMIT: "1",
+  // ⚠️ **Cloudflare 가 공개한 더미 키다**(문서: Turnstile testing). 위젯을 새로 만든 것이
+  //    아니고 계정에 묶이지도 않는다 — `1x…` 쌍은 「언제나 통과」다. 이게 없으면
+  //    `signupReady:false` 라 가입 화면을 브라우저로 걸어 볼 수가 없다.
+  //    ⛔ 배포 설정에 넣지 않는다. 운영 키는 별도 승인 대상이다.
+  TURNSTILE_SITE_KEY: "1x00000000000000000000AA",
+  TURNSTILE_SECRET: "1x0000000000000000000000000000000AA",
   ...SIM_KEYS, DB, LEDGER,
 });
 

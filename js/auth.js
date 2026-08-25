@@ -926,7 +926,9 @@ if (typeof document !== "undefined") {
     if (m[1] !== "ok") { takeNonce(); toast("로그인에 실패했어요. 다시 시도해 주세요."); return false; }
     const mine = takeNonce();
     if (!mine || n !== mine) {
-      await apiLogoutRaw();   // 쿠키가 이미 심어졌다 — 화면만 되돌리면 서버는 로그인인 채로 남는다
+      // 쿠키가 이미 심어졌다 — 화면만 되돌리면 서버는 로그인인 채로 남는다.
+      // ⚠️ **못 끊으면 표식이 남고 다음 실행이 다시 시도한다**(위협 69 · T85).
+      await revokeSession();
       toast("로그인 정보가 맞지 않아요. 앱에서 다시 로그인해 주세요.");
       return false;
     }
@@ -970,7 +972,7 @@ if (typeof document !== "undefined") {
     if (!mine || r.n !== mine) {
       // 이미 쿠키가 심어졌다. 표시만 안 세우면 화면은 로그아웃인데 서버는 로그인 상태로 남으므로
       // **서버에 알려 그 세션을 끊는다.** 그래야 다음 요청이 남의 계정으로 나가지 않는다.
-      await apiLogoutRaw();
+      await revokeSession();
       toast("로그인 정보가 맞지 않아요. 앱에서 다시 로그인해 주세요.");
       return false;
     }
@@ -982,7 +984,25 @@ if (typeof document !== "undefined") {
   // app.js 의 main() 이 사전을 다 읽은 뒤 부른다 — replaceBook 이 bookItem 을 쓰므로
   // 사전보다 먼저 돌면 담아둔 단어가 통째로 "사전에 없음"으로 버려진다.
   onAppReady(async () => {
+    // ── 못 끊은 세션이 남아 있으면 다시 시도한다 ──────────────────────────
+    // ⚠️ **이번 실행이 로그인 왕복의 복귀 다리면 시도하지 않는다**(위협 69 · T85-e).
+    //    그 자리에서 우리가 쥔 쿠키는 서버가 **방금 심은 새 세션**이라, 지금 DELETE 를 보내면
+    //    끊어야 했던 옛 세션이 아니라 **방금 만든 좋은 세션**이 끊긴다 — 사용자에게는
+    //    「로그인하자마자 풀림」이다. 처음에 「제일 먼저 보내면 된다」로 짰다가 그 오작동을
+    //    T85-e 가 잡았다: `await` 하지 않는 호출이라 순서를 앞에 둬도 왕복과 겹친다.
+    // ⚠️ **await 하지 않는다.** 이 요청 하나 때문에 앱이 안 뜨는 것이 가장 나쁜 결과다.
+    //    실패하면 표식이 그대로 남아 다음 실행이 또 시도한다(무한 대기가 아니라 무한 재시도다).
+    // ⚠️ 복귀 다리가 **실패**로 끝나면(취소·가입 필요) 표식은 그대로 남는다 — 그때는 새 쿠키가
+    //    없으므로 다음 평범한 실행이 옛 세션을 정상적으로 끊는다.
+    const oauthReturn = /[#&]login=/.test(location.hash)
+      || (new URLSearchParams(location.search).has("code")
+          && new URLSearchParams(location.search).has("state"));
+    if (!oauthReturn && revokePending()) revokeSession();
     const fresh = (await takeLoginHash()) || (await takeCodeQuery());
+    // 새 세션이 정상적으로 섰다면 옛 표식은 **뜻이 없다.** 지금 쥔 쿠키는 좋은 세션이고,
+    // 끊어야 했던 그 세션의 토큰은 이 브라우저에 더는 없다 — 남겨 두면 다음 실행이
+    // 좋은 세션을 끊는다.
+    if (fresh) clearRevokePending();
     // 어느 제공자가 실제로 설정돼 있나. **renderAll 보다 먼저** 물어야 버튼이 한 번에 맞게 그려진다.
     const h = await apiHealth();
     // 못 물어봤으면 null 로 남긴다 — loginButtons 가 그걸 보고 "연결 안 됨"이라 말한다.

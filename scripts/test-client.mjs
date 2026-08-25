@@ -1429,6 +1429,166 @@ await T("down → 401: 옛 친구·초대 데이터가 되살아나지 않는다
     "401 로 로그아웃됐는데 초대 링크 버튼이 보인다");
 });
 
+// ══ T84(화면). 초대 코드는 **명시적 POST 로만** 만들어진다 ══════════════
+//
+// 서버가 이제 `GET /friends` 에 `code: null` 을 준다(위협 68). 화면이 그걸 문자열로
+// 단정하고 있으면 목록 전체가 「불러오지 못했어요」로 죽는다 — 실제로 그 모양 검증이 있다.
+{
+  const NO_CODE = { code: null, friends: [], in: [], out: [] };
+
+  await T("코드가 없어도 친구 목록은 정상적으로 그려진다", async () => {
+    const c = await boot({ routes: (m, p) =>
+      (m === "GET" && p === "/friends" ? { status: 200, body: structuredClone(NO_CODE) } : defaultRoutes(m, p)) });
+    const box = openFriends(c);
+    await tick(12);
+    const txt = allText(box);
+    assert.ok(!txt.includes("불러오지 못했어요"),
+      `code: null 을 목록 실패로 읽었다: ${txt.slice(0, 120)}`);
+    assert.ok(txt.includes("아직 친구가 없어요"), "빈 목록 안내가 안 나온다");
+    assert.equal(c.store["shh-invite"], undefined,
+      "코드가 없는데 저장소에 무언가 적혔다");
+  });
+
+  await T("초대 링크를 요청하면 명시적 POST 로 코드를 만든다", async () => {
+    const c = await boot({ routes: (m, p) =>
+      (m === "GET" && p === "/friends" ? { status: 200, body: structuredClone(NO_CODE) }
+       : m === "POST" && p === "/friends/code/ensure" ? { status: 200, body: { code: "made0001" } }
+       : defaultRoutes(m, p)) });
+    openFriends(c); await tick(12);
+    const link = await c.HOOKS.inviteLink();
+    assert.ok(link.endsWith("#f=made0001"), `초대 링크가 안 만들어졌다: ${link}`);
+    assert.equal(c.calls.filter((x) => x.method === "POST" && x.path === "/friends/code/ensure").length, 1,
+      "생성 POST 가 한 번이 아니다");
+    // **회전은 절대 안 부른다** — 그건 남에게 보낸 링크를 죽이는 행위다.
+    assert.equal(c.calls.filter((x) => x.path === "/friends/code").length, 0,
+      "코드를 얻으려고 회전을 불렀다 — 이미 보낸 링크가 죽는다");
+    assert.equal(c.store["shh-invite"], "made0001", "만든 코드가 저장소에 안 남았다");
+  });
+
+  await T("이미 코드가 있으면 생성 POST 를 다시 보내지 않는다", async () => {
+    const c = await boot();          // 기본 픽스처의 code 는 invite000
+    openFriends(c); await tick(12);
+    const link = await c.HOOKS.inviteLink();
+    assert.ok(link.endsWith("#f=invite000"), `있는 코드를 안 썼다: ${link}`);
+    assert.equal(c.calls.filter((x) => x.path === "/friends/code/ensure").length, 0,
+      "코드가 있는데도 생성 POST 를 보냈다");
+  });
+
+  await T("생성이 실패하면 이유를 말하고 다시 시도할 수 있다", async () => {
+    let fail = true;
+    const c = await boot({ routes: (m, p) =>
+      (m === "GET" && p === "/friends" ? { status: 200, body: structuredClone(NO_CODE) }
+       : m === "POST" && p === "/friends/code/ensure"
+         ? (fail ? { status: 503, body: {} } : { status: 200, body: { code: "later001" } })
+       : defaultRoutes(m, p)) });
+    openFriends(c); await tick(12);
+    assert.equal(await c.HOOKS.inviteLink(), "", "실패했는데 링크를 만들어 줬다");
+    assert.ok(c.TOASTS.length, "실패했는데 아무 말도 안 한다");
+    assert.equal(c.store["shh-invite"], undefined, "실패했는데 코드가 저장됐다");
+    fail = false;
+    const link = await c.HOOKS.inviteLink();
+    assert.ok(link.endsWith("#f=later001"), `재시도가 안 된다: ${link}`);
+  });
+}
+
+// ══ T85. 실패한 세션 폐기는 **영속 재시도**된다 ═════════════════════════
+//
+// 고치기 전(재현): `apiLogoutRaw()` 가 timeout·네트워크 오류를 통째로 삼키고,
+// 주석만 「못 끊은 세션은 다음 실행에서 다시 시도된다」고 적혀 있었다 —
+// **그 다음 실행이 없었다.** 영속 표식도 boot 재시도도 코드에 존재하지 않았다.
+// 그동안 쿠키는 이미 심어져 있으므로, 화면은 로그아웃인데 **서버 세션은 180일 산다.**
+{
+  const MISMATCH = { hash: "#login=ok&via=kakao&n=남이-보낸-값" };
+  const PENDING = "shh-revoke";     // 표식 키. boolean 하나 이상은 안 적는다
+  const mismatchBoot = (routes, store = {}) =>
+    boot({ store: { "shh-nonce": "내가-적어둔-값", ...store }, loc: MISMATCH, routes });
+  const del = (resp) => (m, p) => (m === "DELETE" && p === "/session" ? resp : defaultRoutes(m, p));
+
+  // ── a. **못 끊으면 표식이 남는다.** timeout · 네트워크 · 503 · 500 전부.
+  // ⚠️ **403·429 를 반드시 포함한다**(2026-08-25 · 돌연변이 M38 생존). 넷만 재면
+  //    `REVOKED = (status) => status < 500` 이라는 변이가 살아남는다 — 그 배포는 Origin 검사에
+  //    막힌 요청(403)과 한도에 걸린 요청(429)을 「끊었다」로 치고, 그 세션은 영영 남는다.
+  //    서버가 세션을 만지지도 않은 응답을 성공으로 세지 않는다.
+  for (const [label, resp] of [["시간 초과", { throwName: "TimeoutError" }],
+                               ["네트워크 끊김", { throw: true }],
+                               ["403(서버가 세션을 만지지도 않았다)", { status: 403, body: {} }],
+                               ["429(한도)", { status: 429, body: {} }],
+                               ["503", { status: 503, body: {} }],
+                               ["500", { status: 500, body: {} }]]) {
+    await T(`세션 폐기 ${label} — 재시도 표식이 남는다`, async () => {
+      const c = await mismatchBoot(del(resp));
+      assert.ok(c.store[PENDING], `${label} 인데 표식이 없다 — 다음 실행이 재시도할 근거가 없다`);
+      assert.equal(c.store["shh-via"], undefined, "표식과 무관하게 로그인 표시는 서면 안 된다");
+      // 표식에 **개인정보를 담지 않는다.**
+      assert.ok(!/[0-9a-f]{16}|kakao:|shh_s/.test(c.store[PENDING]),
+        `표식에 개인정보처럼 보이는 값이 들어갔다: ${c.store[PENDING]}`);
+    });
+  }
+
+  // ── b. **끝난 상태면 표식을 지운다.** 2xx 와 401(이미 세션이 없다) 둘 다 terminal 이다.
+  for (const [label, resp] of [["2xx", { status: 200, body: { ok: true } }],
+                               ["401(이미 세션 없음)", { status: 401, body: {} }]]) {
+    await T(`세션 폐기 ${label} — 표식을 남기지 않는다`, async () => {
+      const c = await mismatchBoot(del(resp));
+      assert.equal(c.store[PENDING], undefined, `${label} 인데 표식이 남았다 — 영원히 재시도한다`);
+    });
+  }
+
+  // ── c. ★ **다음 실행이 실제로 다시 보낸다.** 여기가 옛 주석이 거짓말이던 자리다.
+  await T("표식이 있으면 다음 앱 실행이 세션 폐기를 다시 보낸다", async () => {
+    const first = await mismatchBoot(del({ throwName: "TimeoutError" }));
+    assert.ok(first.store[PENDING], "사전 조건 실패 — 표식이 없다");
+    // 같은 store 로 앱을 다시 띄운다(= 새로고침). 로그인 왕복 주소는 이제 없다.
+    const second = await boot({ store: first.store, routes: del({ status: 200, body: { ok: true } }) });
+    assert.equal(second.calls.filter((x) => x.method === "DELETE" && x.path === "/session").length, 1,
+      "표식이 있는데 다시 시도하지 않았다 — 「다음 실행에서 재시도」가 주석뿐이다");
+    assert.equal(second.store[PENDING], undefined, "성공했는데 표식이 남았다");
+  });
+
+  await T("재시도가 또 실패하면 표식을 유지한다", async () => {
+    const first = await mismatchBoot(del({ throwName: "TimeoutError" }));
+    const second = await boot({ store: first.store, routes: del({ status: 503, body: {} }) });
+    assert.ok(second.store[PENDING], "재시도가 실패했는데 표식을 지웠다 — 세션이 영영 남는다");
+  });
+
+  // ── d. **재시도가 앱 초기화를 붙잡지 않는다.** 표식이 있어도 화면은 제때 뜬다.
+  await T("표식이 있어도 앱 초기화가 멈추지 않는다", async () => {
+    const store = { [PENDING]: "1" };
+    const done = await Promise.race([
+      boot({ store, routes: del({ throwName: "TimeoutError" }) }),
+      sleep(3000).then(() => null),
+    ]);
+    assert.ok(done, "재시도 때문에 앱 초기화가 영원히 멈췄다");
+  });
+
+  // ── e. ★ **낡은 표식이 새 정상 세션을 끊지 않는다.** 여기가 가장 위험한 오작동이다 —
+  //   재시도가 로그인 뒤에 돌면 방금 만든 좋은 세션을 지운다.
+  await T("낡은 표식이 새로 만든 정상 로그인 세션을 끊지 않는다", async () => {
+    const c = await boot({
+      store: { [PENDING]: "1", "shh-nonce": "n1" },
+      loc: { hash: "#login=ok&via=kakao&n=n1" },     // 이번엔 **맞는** nonce 다
+      routes: del({ status: 200, body: { ok: true } }),
+    });
+    assert.equal(c.store["shh-via"], "kakao", "정상 로그인인데 표시가 안 섰다");
+    assert.equal(c.store[PENDING], undefined, "로그인에 성공했는데 폐기 표식이 남았다");
+    // ⚠️ **한 건도 나가면 안 된다**(2026-08-25 · 돌연변이 M40 생존). 처음에는 「`/health`
+    //    뒤에 없으면 된다」로 쟀는데, 재시도를 로그인 처리 **바로 뒤**로 옮기는 변이가 그
+    //    조건을 그대로 통과했다 — 그 자리에서 나가는 DELETE 는 **방금 심어진 좋은 쿠키**로
+    //    나가므로 정확히 우리가 막으려던 그 오작동이다. 위치가 아니라 **유무**로 잰다.
+    const dels = c.calls.filter((x) => x.method === "DELETE" && x.path === "/session");
+    assert.equal(dels.length, 0,
+      `정상 로그인 왕복에서 세션 폐기가 나갔다(${dels.length}건) — 방금 만든 세션을 끊는다`);
+  });
+
+  // ── f. 재시도는 **한 실행에 한 번**이다. 무한 반복·중복 요청이 없다.
+  await T("재시도는 한 실행에 한 번만 나간다", async () => {
+    const c = await boot({ store: { [PENDING]: "1" }, routes: del({ status: 503, body: {} }) });
+    await tick(20);
+    assert.equal(c.calls.filter((x) => x.method === "DELETE" && x.path === "/session").length, 1,
+      "한 실행에서 폐기를 여러 번 보냈다");
+  });
+}
+
 const failed = RESULTS.filter((r) => !r[0]);
 for (const [pass, name, why] of RESULTS) if (!pass) console.log(`  ✗ ${name}\n      ${why}`);
 if (failed.length) {
@@ -1439,4 +1599,6 @@ console.log(`test-client: ${n}개 통과 — 로그아웃·계정삭제·친구�
   + ` · 친구 목록 로딩/실패/재시도/스키마/중복요청 · 탭 간 편집 세대 · OAuth 왕복 시간 제한`
   + ` · 가입 화면(정책 해시 대조 · 필수 체크 · 실패/재시도 · 연타 잠금 · signup_required 안내`
   + ` · T72 사람 확인 위젯: 토큰 전에는 잠김 · 만료 시 재잠금 · 본문에 토큰 · 위젯 실패 안내)`
-  + ` · 계정 서버 닫힘(503) 3상태: 표시 보존 · 계정 단정 금지 · 동작 숨김 · 복구`);
+  + ` · 계정 서버 닫힘(503) 3상태: 표시 보존 · 계정 단정 금지 · 동작 숨김 · 복구`
+  + ` · T84 초대 코드 생성은 명시적 POST(코드 없음 정상 표시 · 회전 미호출 · 실패·재시도)`
+  + ` · T85 실패한 세션 폐기의 영속 재시도(표식 유지·해제 · 다음 실행 · 초기화 비차단 · 새 세션 보호)`);

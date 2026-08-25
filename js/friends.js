@@ -10,6 +10,7 @@
 // ⚠️ 알림(푸시)은 아직 없다. PWA 는 출시 전 테스트용이라 요청이 와도 상대가 앱을 열어야 안다.
 //    Play 출시(5b) 때 붙일 자리다 — 그때까지는 친구 탭의 빨간 점이 알림 노릇을 한다.
 if (typeof document !== "undefined") {
+  let ENSURING = null;             // 코드 생성 요청이 도는 중이면 그것 하나를 나눠 쓴다
   const CODE_KEY = "shh-invite";   // 내 초대 코드. 링크를 만들 때마다 서버를 부르지 않으려고 둔다.
 
   let VIEW = "mine";               // 단어장 화면의 갈래: mine | friends
@@ -95,7 +96,10 @@ if (typeof document !== "undefined") {
       // 예외가 나고, 그러면 로딩 문구가 지워지지도 채워지지도 않은 채 남는다.
       if (!isList(r.data)) { ERROR = "친구 목록을 불러오지 못했어요."; return; }
       DATA = r.data; ERROR = "";
-      localStorage.setItem(CODE_KEY, r.data.code);
+      // 코드가 없으면 **적어 둘 것도 없다.** 지우는 이유: 회전이나 계정 전환 뒤에 남은
+      // 옛 값이 있으면 그 죽은 코드로 링크를 만들게 된다.
+      if (typeof r.data.code === "string") localStorage.setItem(CODE_KEY, r.data.code);
+      else localStorage.removeItem(CODE_KEY);
     })
       // then 안에서 난 예외(localStorage 가 꽉 찼다 등)도 여기서 받는다.
       // **어떤 이유로도 로딩이 안 끝나는 길을 남기지 않는다.**
@@ -106,7 +110,10 @@ if (typeof document !== "undefined") {
 
   // 서버가 준 것이 정말 목록인가. 화면이 실제로 읽는 네 자리만 본다.
   const isList = (d) => !!d && typeof d === "object" && !Array.isArray(d)
-    && typeof d.code === "string"
+    // ⚠️ **`null` 이 정상이다**(2026-08-25 · 위협 68). 서버는 코드가 없으면 만들지 않고
+    //    `null` 을 준다 — 여기서 문자열로 단정하면 코드가 없는 새 계정의 목록이 통째로
+    //    「불러오지 못했어요」가 된다.
+    && (typeof d.code === "string" || d.code === null)
     && Array.isArray(d.friends) && Array.isArray(d.in) && Array.isArray(d.out);
 
   // 원인이 다르면 사용자가 할 일도 다르다. 다만 **왜 막혔는지까지는 말하지 않는다** —
@@ -130,7 +137,23 @@ if (typeof document !== "undefined") {
     if (!code) {
       await loadFriends();   // 목록을 받는 자리는 하나다 — 여기서도 같은 검증·같은 요청을 쓴다
       code = localStorage.getItem(CODE_KEY);
-      if (!code) { toast(ERROR || "연결이 안 돼요. 잠시 뒤 다시 눌러주세요"); return ""; }
+    }
+    if (!code) {
+      // ⚠️ **여기가 코드를 만드는 유일한 자리다**(2026-08-25 · 위협 68). 예전에는 목록
+      //    조회가 없으면 만들어 줬는데, 그건 GET 하나가 주 D1 에 INSERT 를 내는 길이었고
+      //    CSRF 검사도 안 지났다. 이제 사용자가 「초대 링크」를 누른 이 순간에만 만든다.
+      //    ⛔ **회전(`apiRotateCode`)을 부르지 않는다** — 그건 이미 보낸 링크를 죽인다.
+      if (ENSURING) return ENSURING;                 // 연타를 요청 하나로 모은다
+      ENSURING = apiEnsureCode().then((r) => {
+        if (!r.ok || typeof r.data?.code !== "string") {
+          toast(r.data?.error || failWhy(r));
+          return "";
+        }
+        localStorage.setItem(CODE_KEY, r.data.code);
+        if (DATA) DATA.code = r.data.code;           // 손에 든 목록도 같이 고친다
+        return location.origin + location.pathname + "#f=" + r.data.code;
+      }).finally(() => { ENSURING = null; });
+      return ENSURING;
     }
     return location.origin + location.pathname + "#f=" + code;
   });

@@ -32,7 +32,7 @@ const edgeRL = (limit = 1e9) => {
                seen.set(k, c); return Promise.resolve({ success: c <= limit }); } };
 };
 const makeEnv = (extra = {}) => ({
-  APP_ORIGIN: ORIGIN, APP_URL: ORIGIN + "/", STATE_KEY: "k", RL_KEY: "r",
+  APP_ORIGIN: ORIGIN, STATE_KEY: "k", RL_KEY: "r",
   SIGNUP_STATE_KEY: KEY32, TOMBSTONE_KEY: "tk", DELETION_KEY: "dk", READY_KEY: "operator-key",
   SESSION_ENVELOPE_KEY: "env-key",
   KAKAO_ID: "kid", DB: makeD1(), LEDGER: makeLedger(), ...extra,
@@ -308,7 +308,7 @@ const noLeak = (body, where) => {
 
   // ── a. waf: 커스텀 도메인이면 열린다.
   {
-    const env = makeEnv({ EDGE_GUARD: "waf", APP_ORIGIN: CUSTOM, APP_URL: CUSTOM + "/" });
+    const env = makeEnv({ EDGE_GUARD: "waf", APP_ORIGIN: CUSTOM });
     assert.equal(guardMode(env), "waf", t("T68-a: WAF 를 선언했는데 모드가 waf 가 아니다"));
     const r = await call(env, "/api/book", { headers: { Origin: CUSTOM } });
     assert.equal(r.status, 401, t(`T68-a: WAF 모드인데 계정 경로가 ${r.status} 다 — 골라도 문이 안 열린다`));
@@ -318,7 +318,7 @@ const noLeak = (body, where) => {
 
   // ── b. waf: `*.pages.dev` 로 온 계정 API 는 **403**. WAF 규칙을 지나지 않는 경로다.
   {
-    const env = makeEnv({ EDGE_GUARD: "waf", APP_ORIGIN: CUSTOM, APP_URL: CUSTOM + "/" });
+    const env = makeEnv({ EDGE_GUARD: "waf", APP_ORIGIN: CUSTOM });
     const m = await measure(env, () => call(env, "/api/book",
       { host: "shhh-app.pages.dev", headers: { Origin: CUSTOM } }));
     assert.equal(m.out.status, 403, t(`T68-b: pages.dev 우회가 ${m.out.status} 로 통과했다`));
@@ -328,8 +328,7 @@ const noLeak = (body, where) => {
 
   // ── c. waf 인데 `APP_ORIGIN` 이 아직 `*.pages.dev` 면 **선언해도 none** 이다.
   {
-    const env = makeEnv({ EDGE_GUARD: "waf", APP_ORIGIN: "https://shhh-app.pages.dev",
-                          APP_URL: "https://shhh-app.pages.dev/" });
+    const env = makeEnv({ EDGE_GUARD: "waf", APP_ORIGIN: "https://shhh-app.pages.dev" });
     assert.equal(guardMode(env), "none", t("T68-c: pages.dev 에 WAF 를 걸 수 있다고 판정했다"));
     const r = await call(env, "/api/book", { headers: { Origin: "https://shhh-app.pages.dev" } });
     assert.equal(r.status, 503, t("T68-c: WAF 를 걸 수 없는 조합인데 계정 경로가 열렸다"));

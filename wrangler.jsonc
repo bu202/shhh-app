@@ -40,8 +40,10 @@
   "kv_namespaces": [{ "binding": "KV", "id": "f55a12622af84380a0865dd8ff4824ac" }],
   "vars": {
     // 검증 단계에선 pages.dev. 도메인이 붙으면 **여기와 OAuth 콘솔 3사를 같이** 바꾼다.
-    "APP_ORIGIN": "https://shhh-app.pages.dev",
-    "APP_URL": "https://shhh-app.pages.dev/"
+    // ⚠️ **origin 만 적는다** — https 이고 path·query·fragment·끝 슬래시가 없어야 한다.
+    //    `worker/index.js` 의 `appOrigin()` 이 검증하고, 아니면 계정 라우트가 전부 503 이다.
+    //    네이버 복귀 주소(앱 루트)도 여기서 파생한다 — 별도 `APP_URL` 은 폐지했다(위협 67).
+    "APP_ORIGIN": "https://shhh-app.pages.dev"
     // ⛔ **`EDGE_GUARD` 가 아직 없다. 그래서 이 설정으로 배포하면 계정 라우트가 전부 503 이다.**
     //    값은 `"waf"` 또는 `"ratelimit"` 이고, **모르는 값·빈 값은 전부 `none`** 이다
     //    (위협 52·55 · 설계서 §12-3-1). 그것이 의도된 상태다 — 막지 못하는 채로 열지 않는다.

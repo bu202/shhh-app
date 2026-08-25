@@ -29,7 +29,7 @@ const t = (m) => { n++; return m; };
 
 function makeEnv(extra = {}) {
   return {
-    APP_ORIGIN: ORIGIN, APP_URL: ORIGIN + "/",
+    APP_ORIGIN: ORIGIN,
     STATE_KEY: "test-signing-key", RL_KEY: "test-rl-key",
     // ⚠️ **로컬 전용 남용 방어 스위치**(2026-08-20 · 위협 50). 없으면 계정 라우트가 DB 를
     //    만지기 전에 503 이다 — 그 상태는 `test-stage34-closeout.mjs` T63-a 가 따로 잰다.

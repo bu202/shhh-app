@@ -301,12 +301,46 @@ const apiLogout = () => request("/session", { method: "DELETE" });
 // ⚠️ **시간 제한을 반드시 붙인다.** 이 호출은 onAppReady 안에서 await 되므로, 답이 안 오면
 //    로그인·친구·동기화가 통째로 안 붙은 채 화면만 떠 있다. 세션을 못 끊은 것보다
 //    앱이 아예 안 뜨는 쪽이 훨씬 나쁘다(못 끊은 세션은 다음 실행에서 다시 시도된다).
+//
+// ⚠️ **실패를 삼키지 않는다**(2026-08-25 · 위협 69). 예전에는 catch 가 통째로 삼키고
+//    주석만 「못 끊은 세션은 다음 실행에서 다시 시도된다」고 적었다 — **그 다음 실행이
+//    코드에 없었다.** 영속 표식도 boot 재시도도 존재하지 않았고, 그동안 쿠키는 이미
+//    심어져 있어 화면은 로그아웃인데 **서버 세션은 180일을 살았다**(재현 T85).
+//    그래서 이제 이 함수는 **끝났는지 아닌지**를 돌려주고, 부르는 쪽이 표식을 관리한다.
+//
+// 「끝났다」의 정의는 **서버 계약**에서 온다:
+//   2xx  끊었다
+//   401  이 요청에는 살아 있는 세션이 없다 = 끊을 것이 없다(`DELETE /session` 은 uid 가
+//        없으면 401 이다). 어느 쪽이든 목적은 달성됐다
+//   그 밖(403·429·5xx·오프라인·시간 초과)  **모른다** → 표식을 남기고 다음에 다시 시도한다
+// ⛔ **모든 4xx 를 성공으로 치지 않는다.** 403(Origin)·429(한도)는 서버가 세션을 만지지도
+//    않은 응답이다 — 성공으로 치면 그 세션은 영원히 남는다.
+const REVOKED = (status) => status === 401 || (status >= 200 && status < 300);
 const apiLogoutRaw = async () => {
   const t = timeoutSignal(REQUEST_TIMEOUT);
   try {
-    await fetch(API + "/session", { method: "DELETE", credentials: "same-origin", signal: t.signal });
-  } catch { /* 오프라인·시간 초과 — 어느 쪽이든 여기서 더 할 수 있는 일이 없다 */ }
-  finally { t.done(); }
+    const res = await fetch(API + "/session",
+      { method: "DELETE", credentials: "same-origin", signal: t.signal });
+    return REVOKED(res.status);
+  } catch {
+    return false;                 // 오프라인·시간 초과 — 「모른다」이지 「끝났다」가 아니다
+  } finally { t.done(); }
+};
+
+// ── 못 끊은 세션의 **영속 표식** ────────────────────────────────────────
+// 담는 것은 **`"1"` 하나**다. 토큰·uid·제공자 식별자·시각을 적지 않는다 — 이 값의 쓸모는
+// 「끊어야 할 것이 남았다」 하나뿐이고, 그 이상은 전부 새로 만드는 개인정보다.
+const REVOKE_PENDING_KEY = "shh-revoke";
+const markRevokePending = () => localStorage.setItem(REVOKE_PENDING_KEY, "1");
+const clearRevokePending = () => localStorage.removeItem(REVOKE_PENDING_KEY);
+const revokePending = () => localStorage.getItem(REVOKE_PENDING_KEY) === "1";
+
+// 표식을 남긴 **뒤에** 끊으러 간다. 순서가 반대면 요청이 나간 직후 브라우저가 닫힐 때
+// 표식이 없어 아무도 재시도하지 않는다.
+const revokeSession = async () => {
+  markRevokePending();
+  if (await apiLogoutRaw()) { clearRevokePending(); return true; }
+  return false;
 };
 
 // ── 친구 ──
@@ -320,6 +354,9 @@ const apiAcceptFriend = (uid) => request("/friends/" + encodeURIComponent(uid), 
 // 부르는 쪽이 가려야 목록에서 지울지 말지 정할 수 있다.
 const apiRemoveFriend = (uid) => request("/friends/" + encodeURIComponent(uid), { method: "DELETE" });
 const apiFriendBook = (uid) => request("/friends/" + encodeURIComponent(uid) + "/book");
+// 초대 코드 **최초 생성**(멱등). `GET /friends` 는 이제 코드를 만들지 않는다(위협 68) —
+// 없으면 이 POST 하나가 만든다. 이미 있으면 그대로 돌려주고 **회전하지 않는다**.
+const apiEnsureCode = () => request("/friends/code/ensure", { method: "POST" });
 // 초대 링크 새로 만들기. 옛 코드는 서버에서 그 자리에 죽는다 — 링크가 어디까지 퍼졌는지
 // 모르게 됐을 때 되돌릴 방법이 이것뿐이다. 이미 맺어진 친구는 그대로다.
 const apiRotateCode = () => request("/friends/code", { method: "POST" });

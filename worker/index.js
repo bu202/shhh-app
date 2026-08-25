@@ -77,6 +77,34 @@ const isProvider = (n) => typeof n === "string" && Object.prototype.hasOwnProper
 // 같은 와이파이(카페·기숙사)에 있는 사람이 링크 하나로 남의 계정을 가져갈 수 있다.
 // 켜려면 개발 Worker 에만 `wrangler secret put DEV_ORIGINS`(=1). **wrangler.jsonc 에 적지 않는다** —
 // 비어 있으면 앱 주소 하나만 허용한다(기본값이 안전한 쪽).
+// **앱 주소의 단일 원본.** 값이 origin 인지 여기서 한 번만 검증하고, 복귀 주소·CORS·
+// Turnstile 호스트·WAF 호스트가 전부 이 결과를 쓴다.
+//
+// ⚠️ 예전에는 네이버 복귀 주소만 별도 변수 `APP_URL` 에서 왔고, 그 이름은
+//    `loginPossible()` 의 계약에 **없었다**(2026-08-25 · 위협 67 · 재현 T83). 그래서
+//    `APP_URL` 만 빠진 배포에서 `loginPossible` 이 참인 채로 네이버에
+//    `redirect_uri=undefined` 가 나갔다 — readiness 는 초록인데 로그인은 제공자 화면에서
+//    깨진다. 같은 사실을 두 벌로 저장하면 언제나 한쪽이 먼저 낡는다.
+//
+// **origin 만 받는다**: https 이고 path·query·fragment 가 없어야 한다. 끝 슬래시도 거부다 —
+// 통과시키면 `allowed()` 의 문자열 비교(`origin === env.APP_ORIGIN`)가 브라우저가 보내는
+// Origin 헤더와 영영 안 맞아 CORS 가 조용히 죽는다.
+// ⚠️ **로컬 개발만 `http://localhost`·`http://127.0.0.1` 을 허용한다.** 이 저장소의 브라우저
+//    검증 수단(`scripts/sim-server.mjs`)이 http 로 뜨기 때문이고, 그 예외가 없으면 화면을
+//    실제로 열어 보는 길이 사라진다 — 「검증할 수 없으니 검증했다고 치자」가 가장 나쁜 결과다.
+//    ⛔ **LAN 주소(`192.168.*`)는 여기에 없다.** CORS 쪽 `allowed()` 는 `DEV_ORIGINS` 를 켜면
+//       LAN 을 열지만, 그것은 **어느 Origin 을 받아 주나**이고 이 함수는 **우리가 어디로
+//       되돌려 보내나**다 — 후자를 LAN 으로 열면 로그인 복귀 주소가 남의 기기가 될 수 있다.
+const DEV_HOST = /^http:\/\/(?:localhost|127\.0\.0\.1):\d+$/;
+export const appOrigin = (env) => {
+  const raw = env && env.APP_ORIGIN;
+  if (typeof raw !== "string" || !raw) return null;
+  let u;
+  try { u = new URL(raw); } catch { return null; }
+  if (u.protocol !== "https:" && !DEV_HOST.test(raw)) return null;
+  return u.origin === raw ? u.origin : null;
+};
+
 const allowed = (env, origin) =>
   origin === env.APP_ORIGIN ||
   (env.DEV_ORIGINS === "1" && /^http:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+):\d+$/.test(origin || ""));
@@ -209,7 +237,7 @@ const readyProviders = (env) => Object.keys(P).filter((n) => providerPossible(en
 //   signupPossible  거기에 더해 **가입을 기록하고 나중에 지울 수 있나.** `DELETION_KEY` 가
 //                   여기 있는 이유: 지울 수 없는 계정을 새로 만들면 privacy.html 의 약속이
 //                   만드는 순간 거짓이 된다.
-export const loginPossible = (env) => !!(env.DB && env.LEDGER && env.APP_ORIGIN
+export const loginPossible = (env) => !!(env.DB && env.LEDGER && appOrigin(env)
   && env.STATE_KEY && env.RL_KEY && env.SESSION_ENVELOPE_KEY);
 export const signupPossible = (env) => loginPossible(env)
   && !!(env.SIGNUP_STATE_KEY && env.TOMBSTONE_KEY && env.DELETION_KEY
@@ -239,6 +267,11 @@ export const signupPossible = (env) => loginPossible(env)
 // WAF 규칙을 걸 수 있는 호스트인가. `*.pages.dev` 는 **Cloudflare 소유 존**이라 우리가 규칙을
 // 못 건다 — 그 호스트로 온 요청은 어떤 WAF 설정도 지나지 않는다. 그래서 그 조합에서는
 // 「WAF 를 붙였다」가 성립할 수 없고, 선언을 받아 주면 안 되는 자리다.
+// ⚠️ **여기만 `appOrigin()` 을 안 쓴다.** 이 규칙은 `functions/_middleware.js` 에 **한 벌 더**
+//    있고(Pages 가 정적 요청에 Worker 를 안 태운다), 두 벌이 글자까지 같아야
+//    `scripts/test-dist.mjs` 가 어긋남을 잡는다. 검증을 여기만 강화하면 그 대조가 깨지고,
+//    양쪽에 검증기를 복제하면 이번엔 검증기가 두 벌이 된다. 이 자리는 그래도 안전하다 —
+//    `APP_ORIGIN` 이 origin 이 아니면 `loginPossible()` 이 이미 거짓이라 계정 라우트가 닫힌다.
 export const wafHost = (env) => {
   try {
     const h = new URL(env.APP_ORIGIN).host;
@@ -310,7 +343,7 @@ const health = async (env) => {
   //    「테스트가 통과하니 배포해도 된다」가 된다.
   const abuseReady = works && (guard === "waf" || guard === "ratelimit");
   return { ok: true,
-           ready: !!(keys && env.APP_ORIGIN && env.DB && ledgerBound && abuseReady && providers.length),
+           ready: !!(keys && appOrigin(env) && env.DB && ledgerBound && abuseReady && providers.length),
            providers, ledgerBound, abuseReady,
            // ⚠️ `TURNSTILE_SECRET` 과 site key 도 가입의 전제다(2026-08-22 · 결정 3).
            //    비밀값은 **있나 없나**만, site key 는 **화면이 위젯을 그리는 데 필요**하므로
@@ -867,8 +900,11 @@ async function readBody(req) {
 
 // 제공자가 code 를 어디로 돌려보내는가. 여기서 만든 값과 **똑같은 문자열**을 토큰 교환에도 보내야
 // 한다 — 한 글자만 달라도 제공자가 거부한다. 그래서 두 곳이 이 함수 하나를 부른다.
+// ⚠️ 네이버 몫은 **`APP_ORIGIN` 에서 파생한다**(2026-08-25 · 위협 67). 별도 변수를 두면
+//    그 변수가 준비도 계약 밖에 남아, 빠진 채로 `redirect_uri=undefined` 가 나간다.
+//    `loginPossible()` 이 이미 `appOrigin()` 을 확인하므로 여기 도달하면 null 이 아니다.
 const redirectUri = (env, origin, name) =>
-  P[name].viaApp ? env.APP_URL : origin + "/api/cb/" + name;
+  P[name].viaApp ? appOrigin(env) + "/" : origin + "/api/cb/" + name;
 
 // code → 세션 토큰. /cb(카카오·구글)와 /exchange(네이버) 둘 다 이 함수를 쓴다 —
 // 흐름이 갈려도 **토큰 교환과 사용자 판별은 한 곳**이어야 한쪽만 고치는 실수가 안 난다.
@@ -916,7 +952,8 @@ export const TURNSTILE_ACTION = "signup";
 //    대조하면 「자기가 말한 도메인과 자기가 가져온 토큰이 같다」를 확인하는 셈이 된다.
 // ⚠️ Turnstile 이 돌려주는 `hostname` 에는 포트가 없다(공식 문서: 챌린지가 제공된 호스트명).
 export const turnstileHost = (env) => {
-  try { return new URL(env.APP_ORIGIN).hostname; } catch { return null; }
+  const o = appOrigin(env);
+  return o ? new URL(o).hostname : null;
 };
 
 async function turnstileOk(env, req, token) {
@@ -1115,8 +1152,16 @@ const newCode = () => crypto.randomUUID().replace(/-/g, "").slice(0, 12); // 48�
 const liveCode = (env, uid) => env.DB.prepare(
   "SELECT code FROM invite_codes WHERE user_id = ? AND revoked_at IS NULL").bind(uid).first();
 
-// 내 초대 코드. 없으면 만들어 둔다 — 같은 사람에게 늘 같은 링크가 나가야
+// 내 초대 코드를 **보장한다**(없으면 만든다). 같은 사람에게 늘 같은 링크가 나가야
 // 예전에 보낸 링크가 죽지 않는다. 회전(`POST /friends/code`)은 옛 행에 revoked_at 을 적는다.
+//
+// ⚠️ **이 함수는 `POST /friends/code/ensure` 에서만 부른다**(2026-08-25 · 위협 68).
+//    예전에는 `GET /friends` 가 불렀고, 그래서 목록 조회 하나가 주 D1 에 INSERT 를 냈다 —
+//    CSRF 검사는 GET 에 안 걸리므로 **Origin 없이도** 일어나는 쓰기였다(재현 T84).
+//    「GET 은 두 DB 를 논리적으로 안 바꾼다」가 이제 라우트 전수 불변식이다.
+//    ⚠️ **예외는 OAuth 콜백 하나다** — 제공자가 GET 으로 되돌려보내므로 그 자리에서
+//       계정·세션이 생긴다. 그 라우트는 Origin 이 아니라 **서명된 state + `shh_t` 왕복
+//       쿠키**로 묶인다(T84-b2 가 그 결속을 잰다).
 //
 // ⚠️ **읽고 나서 쓰는 사이가 열려 있었다.** 두 탭이 동시에 친구 화면을 열면 둘 다 "없다"를
 //    읽고 각자 만들었고, 나중 것이 앞 것을 폐기하므로 **먼저 응답을 받은 탭은 이미 죽은 코드를
@@ -1186,8 +1231,10 @@ async function briefOne(env, other, withCount) {
 //   maintenance     DB 를 **쓰는** 라우트 전부 차단. 읽기는 허용
 //   restore_closed  **넷만 허용**: /health · /ready · /policies · (정적 정책 파일은 Worker 를 안 지난다)
 //
-// ⚠️ `GET /friends` 가 `maintenance` 에서도 차단인 이유: 목록 조회가 초대 코드가 없으면
-//    **그 자리에서 만든다**(myCode). GET 이라고 읽기인 것이 아니다.
+// ⚠️ `GET /friends` 는 이제 **쓰기가 아니다**(2026-08-25 · 위협 68). 그런데도 이 목록에
+//    넣지 않는다: 허용 목록은 **필요한 최소**로 둔다. 유지보수는 짧은 창이고, 그 동안
+//    친구 목록을 못 보는 것은 불편이지만, 목록을 열어 두면 복원으로 되살아난 계정의
+//    관계·별명이 재삭제 전에 읽히는 면이 그만큼 넓어진다(위협 36 과 같은 갈래).
 const MAINT_READS = [
   [/^\/book$/, "GET"], [/^\/me$/, "GET"], [/^\/friends\/[^/]+\/book$/, "GET"],
 ];
@@ -1239,9 +1286,11 @@ const ROUTES = [
   [/^\/book$/, ["PUT"], true, "write", true],
   [/^\/me$/, ["GET"], true, "read", true],
   [/^\/me$/, ["PUT", "DELETE"], true, "write", true],
-  // ⚠️ `GET /friends` 는 읽기처럼 보이지만 초대 코드가 없으면 그 자리에서 만든다(myCode).
   [/^\/friends$/, ["GET"], true, "read", true],
   [/^\/friends$/, ["POST"], true, "friends", true],
+  // 초대 코드 **최초 생성**. 회전과 갈라 둔다 — 회전은 남에게 보낸 링크를 죽이는 파괴적
+  // 행위라 실수로 불려서는 안 되고, 생성은 멱등이라 한도도 다르다(위협 68).
+  [/^\/friends\/code\/ensure$/, ["POST"], true, "write", true],
   [/^\/friends\/code$/, ["POST"], true, "rotate", true],
   [/^\/friends\/[^/]+\/book$/, ["GET"], true, "read", true],
   [/^\/friends\/[^/]+$/, ["PUT", "DELETE"], true, "write", true],
@@ -1275,7 +1324,7 @@ export function routeFor(method, path) {
 // "누가 누구와 친구인가"의 기록이 된다 — 우리가 안 받기로 한 정보를 로그가 대신 모으는 꼴이다.
 // export 하는 이유는 테스트가 이 규칙을 직접 재기 위해서다.
 export const pathTemplate = (p) =>
-  p.replace(/^\/api/, "").replace(/^\/friends\/(?!code$)[^/]+/, "/friends/:id");
+  p.replace(/^\/api/, "").replace(/^\/friends\/(?!code(?:\/|$))[^/]+/, "/friends/:id");
 
 // 임차증을 **따지 않는** 라우트(위 표의 `lease:false`). 그 근거는 셋을 다 만족해야 한다:
 //   ① 주 D1 을 읽지도 쓰지도 않는다(리미터 카운터는 2026-08-20 에 ledger 로 갔다)
@@ -1981,8 +2030,11 @@ async function route(req, env, rc) {
       // 목록 + 내 초대 코드
       if (path === "/friends" && req.method === "GET") {
         const rows = await friendRows(env, uid);
+        // ⚠️ **읽기만 한다.** 코드가 없으면 `null` 이고, 만드는 것은
+        //    `POST /friends/code/ensure` 다(2026-08-25 · 위협 68 · T84).
+        const mine = await liveCode(env, uid);
         return json(env, req, {
-          code: await myCode(env, uid),
+          code: mine ? mine.code : null,
           friends: rows.filter((r) => r.status === "accepted").map((r) => briefRow(r, uid, true)),
           in: rows.filter((r) => r.status === "pending" && r.adr === uid).map((r) => briefRow(r, uid, false)),
           out: rows.filter((r) => r.status === "pending" && r.req === uid).map((r) => briefRow(r, uid, false)),
@@ -2057,6 +2109,16 @@ async function route(req, env, rc) {
         if (!made) return json(env, req, { error: "친구가 너무 많아요" }, 429);
         const ok = made.status === "accepted";
         return json(env, req, { state: ok ? "ok" : "sent", friend: await briefOne(env, other, ok) });
+      }
+
+      // 초대 코드 **최초 생성**(멱등). same-origin 과 세션을 지나는 명시적 쓰기다.
+      // ⚠️ **회전과 갈라 둔다**(2026-08-25 · 위협 68). 이미 코드가 있으면 그대로 돌려주고
+      //    **폐기하지 않는다** — 한 endpoint 에 「없으면 만들기」와 「있으면 새로 만들기」를
+      //    섞으면, 화면이 코드를 얻으려고 부른 요청 하나가 남에게 보낸 링크를 죽인다.
+      //    `/friends/code` 보다 **먼저** 와야 한다(아래 m2 정규식과 같은 이유는 아니지만,
+      //    경로가 더 길어 순서가 곧 의미다).
+      if (path === "/friends/code/ensure" && req.method === "POST") {
+        return json(env, req, { code: await myCode(env, uid) });
       }
 
       // 초대 링크 새로 만들기. 옛 코드는 그 자리에서 죽는다 — 링크가 어디까지 퍼졌는지
