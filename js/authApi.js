@@ -337,11 +337,36 @@ const revokePending = () => localStorage.getItem(REVOKE_PENDING_KEY) === "1";
 
 // 표식을 남긴 **뒤에** 끊으러 간다. 순서가 반대면 요청이 나간 직후 브라우저가 닫힐 때
 // 표식이 없어 아무도 재시도하지 않는다.
-const revokeSession = async () => {
+//
+// ⚠️ **single-flight 다**(2026-08-25 · 위협 70). 재시도를 부르는 자리가 셋이 됐다 —
+//    앱 초기화 · `online` 이벤트 · 실패한 OAuth 복귀. 겹치면 같은 세션에 DELETE 가
+//    여러 건 나가고, `online` 이 연달아 뜨는 회선(터널·지하철)에서는 그게 폭주가 된다.
+//    이미 날아간 요청이 있으면 **그 약속을 그대로 돌려준다** — 새로 보내지 않는다.
+let revokeInFlight = null;
+const revokeSession = () => {
+  if (revokeInFlight) return revokeInFlight;
   markRevokePending();
-  if (await apiLogoutRaw()) { clearRevokePending(); return true; }
-  return false;
+  revokeInFlight = apiLogoutRaw()
+    .then((done) => { if (done) clearRevokePending(); return done; })
+    .finally(() => { revokeInFlight = null; });
+  return revokeInFlight;
 };
+
+// ── 재시도 ──────────────────────────────────────────────────────────
+// ⚠️ **로그인 왕복이 도는 동안에는 쉰다.** 그 자리에서 우리가 쥔 쿠키는 서버가 방금 심은
+//    **새 세션**이라, 지금 DELETE 를 보내면 끊어야 했던 옛 세션이 아니라 방금 만든 좋은
+//    세션이 끊긴다 — 사용자에게는 「로그인하자마자 풀림」이다(T85-e 가 잡은 그 오작동).
+//    `online` 이벤트는 언제든 뜰 수 있으므로 자물쇠가 위치가 아니라 **상태**여야 한다.
+let oauthBusy = false;
+const setOauthBusy = (v) => { oauthBusy = !!v; };
+// 끊을 것이 있을 때만 보낸다. 표식이 없으면 아무 일도 하지 않는다.
+const retryRevokeSession = () => {
+  if (oauthBusy || !revokePending()) return null;
+  return revokeSession();
+};
+// 연결이 돌아오면 다시 시도한다. 오프라인에서 실패한 폐기가 **앱을 다시 열 때까지**
+// 방치되지 않게 하는 유일한 길이다. await 하지 않는다 — 이벤트 처리기를 붙잡지 않는다.
+addEventListener("online", () => { retryRevokeSession(); });
 
 // ── 친구 ──
 // 목록은 {code, friends:[{uid,name,count}], in:[…], out:[…]}. 단어는 안 온다 — 목록엔 안 쓴다.

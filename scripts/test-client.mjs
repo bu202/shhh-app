@@ -70,7 +70,17 @@ function loadClient({ store = {}, routes, loc = {} } = {}) {
   };
   // loc 으로 로그인 왕복에서 돌아온 주소(`?code=…&state=…` · `#login=ok…`)를 만들 수 있다.
   const location = { origin: "https://test", pathname: "/", search: "", hash: "", href: "", ...loc };
-  const history = { replaceState() {} };
+  // ⚠️ **replaceState 를 실제로 반영한다**(2026-08-25 · 위협 70). 예전에는 빈 함수라
+  //    「주소를 지웠나」를 아무도 못 쟀다 — 그 눈멂 때문에 불완전한 OAuth 파라미터가
+  //    주소에 영원히 남아 세션 폐기 재시도를 매 실행 억제하는 결함이 통과했다.
+  const replaced = [];
+  const history = {
+    replaceState(_s, _t, url) {
+      const u = new URL(String(url ?? ""), location.origin);
+      location.pathname = u.pathname; location.search = u.search; location.hash = u.hash;
+      replaced.push(String(url ?? ""));
+    },
+  };
   // ⚠️ `subtle` 은 **진짜**를 준다. 가입 화면이 정책 파일 바이트를 직접 해시해 서버 값과
   //    대조하는데, 그 해시를 흉내내면 재려던 것(해시가 다르면 가입 버튼을 안 그린다)을 못 잰다.
   const crypto = { randomUUID: () => "nonce-fixed", subtle: globalThis.crypto.subtle };
@@ -179,8 +189,10 @@ function loadClient({ store = {}, routes, loc = {} } = {}) {
   )(localStorage, location, history, crypto, fetch, document, () => confirmAnswer, addEventListener, window);
 
   return {
-    ...inner, store, calls, document, segs, location, window,
+    ...inner, store, calls, document, segs, location, window, replaced,
     fireStorage: (key, newValue) => { for (const fn of winHandlers.storage || []) fn({ key, newValue }); },
+    fireOnline: () => { for (const fn of winHandlers.online || []) fn({}); },
+    onlineHandlers: () => (winHandlers.online || []).length,
     setTurnstileMode: (m) => { turnstileMode = m; window.turnstile = null; },
     setRoutes: (fn) => { route = fn; },
     setConfirm: (v) => { confirmAnswer = v; },
@@ -1586,6 +1598,207 @@ await T("down → 401: 옛 친구·초대 데이터가 되살아나지 않는다
     await tick(20);
     assert.equal(c.calls.filter((x) => x.method === "DELETE" && x.path === "/session").length, 1,
       "한 실행에서 폐기를 여러 번 보냈다");
+  });
+}
+
+// ══ T86. **불완전한 OAuth 주소가 세션 폐기 재시도를 막지 못한다** ══════════
+//
+// 고치기 전(재현 · 위협 70): 「OAuth 복귀인가」와 「OAuth 결과를 소비했나」가 **서로 다른
+// 느슨한 조건**이었다.
+//   판정: /[#&]login=/ · `has("code") && has("state")`   ← 값이 비어도 참
+//   소비: /[#&]login=([^&]+)/ · `!code || !state → false` ← 값이 비면 **주소를 안 지운다**
+// 그래서 `#login=` · `?code=&state=` · `?code=x&state=` · `?code=&state=x` 는
+// 「복귀다」로 읽혀 재시도를 건너뛰는데, 아무도 그 주소를 지우지 않는다 —
+// **새로고침할 때마다 같은 일이 반복돼 폐기 재시도가 영구히 억제된다.**
+// 그동안 서버 세션은 180일 산다(위협 69 가 닫으려던 바로 그 상태다).
+{
+  const PENDING = "shh-revoke";
+  const del = (resp) => (m, p) => (m === "DELETE" && p === "/session" ? resp : defaultRoutes(m, p));
+  const OK = del({ status: 200, body: { ok: true } });
+  const dels = (c) => c.calls.filter((x) => x.method === "DELETE" && x.path === "/session").length;
+
+  // ── a. ★ 불완전한 OAuth 파라미터는 **재시도를 억제하지 못하고 주소에서 사라진다.**
+  for (const [label, loc] of [
+    ["#login= (값 없음)", { hash: "#login=" }],
+    ["?code=&state= (둘 다 빈 값)", { search: "?code=&state=" }],
+    ["?code=x&state= (state 빈 값)", { search: "?code=x&state=" }],
+    ["?code=&state=x (code 빈 값)", { search: "?code=&state=x" }],
+    ["#login=&via=kakao", { hash: "#login=&via=kakao" }],
+    ["?code=&state=&extra=1", { search: "?code=&state=&extra=1" }],
+  ]) {
+    await T(`불완전한 OAuth 주소 ${label} — 폐기 재시도를 막지 않는다`, async () => {
+      const c = await boot({ store: { [PENDING]: "1" }, loc, routes: OK });
+      assert.equal(dels(c), 1,
+        `${label} 가 폐기 재시도를 삼켰다 — 새로고침해도 매번 삼켜서 세션이 영원히 남는다`);
+      assert.equal(c.store[PENDING], undefined, "폐기에 성공했는데 표식이 남았다");
+    });
+
+    await T(`불완전한 OAuth 주소 ${label} — 주소에서 제거된다`, async () => {
+      const c = await boot({ store: {}, loc, routes: defaultRoutes });
+      assert.ok(!/[#&]login=/.test(c.location.hash),
+        `login= 이 주소에 남았다: ${c.location.hash} — 다음 실행도 같은 오판을 반복한다`);
+      const q = new URLSearchParams(c.location.search);
+      assert.ok(!q.has("code") && !q.has("state"),
+        `code/state 가 주소에 남았다: ${c.location.search}`);
+    });
+
+    await T(`불완전한 OAuth 주소 ${label} — 로그인 표시를 세우지 않는다`, async () => {
+      const c = await boot({ store: {}, loc, routes: defaultRoutes });
+      assert.equal(c.store["shh-via"], undefined, "불완전한 값으로 로그인 표시가 섰다");
+    });
+  }
+
+  // ── b. **정상 복귀는 그대로다.** 새 세션을 끊으면 안 된다(양쪽 제공자 모두).
+  await T("정상 카카오 복귀 — 새 세션을 끊지 않고 표식을 지운다", async () => {
+    const c = await boot({
+      store: { [PENDING]: "1", "shh-nonce": "n1" },
+      loc: { hash: "#login=ok&via=kakao&n=n1" }, routes: OK,
+    });
+    assert.equal(c.store["shh-via"], "kakao", "정상 로그인인데 표시가 안 섰다");
+    assert.equal(dels(c), 0, "정상 로그인 복귀에서 세션 폐기가 나갔다 — 방금 만든 세션을 끊는다");
+    assert.equal(c.store[PENDING], undefined, "로그인 성공인데 표식이 남았다");
+  });
+
+  await T("정상 네이버 복귀 — 새 세션을 끊지 않고 표식을 지운다", async () => {
+    const c = await boot({
+      store: { [PENDING]: "1", "shh-nonce": "n2" },
+      loc: { search: "?code=abc&state=xyz" },
+      routes: (m, p) => (p.startsWith("/exchange/naver")
+        ? { status: 200, body: { ok: true, n: "n2" } }
+        : OK(m, p)),
+    });
+    assert.equal(c.store["shh-via"], "naver", "정상 네이버 로그인인데 표시가 안 섰다");
+    assert.equal(dels(c), 0, "정상 네이버 복귀에서 세션 폐기가 나갔다");
+    assert.equal(c.store[PENDING], undefined, "로그인 성공인데 표식이 남았다");
+  });
+
+  // ── c. **새 세션이 서지 않은 복귀**(취소·가입 필요·약관 만료)는 표식을 그대로 둔다.
+  //   그 자리에서 끊으면 안 된다 — 서버가 쿠키를 심었는지 아닌지 앱이 모른다.
+  //   다음 평범한 실행이 정상적으로 끊는다.
+  for (const [label, loc] of [
+    ["취소", { hash: "#login=denied" }],
+    ["가입 필요", { hash: "#login=signup_required" }],
+    ["약관 만료", { hash: "#login=stale" }],
+    ["실패", { hash: "#login=nope" }],
+  ]) {
+    // 서버는 `#login=ok` 와 네이버 code 교환 성공에서만 세션을 만든다(`newSession` +
+    // `setCookie` 가 그 두 자리뿐이다). 그러니 이 갈래에는 **끊을 새 세션이 없고**,
+    // 미룰 이유도 없다 — 그 자리에서 옛 세션을 끊는다.
+    await T(`복귀 ${label} — 새 세션이 없으므로 그 자리에서 옛 세션을 끊는다`, async () => {
+      const c = await boot({ store: { [PENDING]: "1" }, loc, routes: OK });
+      assert.equal(dels(c), 1, `${label} 복귀가 폐기 재시도를 미뤘다 — 미룰 새 세션이 없는 갈래다`);
+      assert.equal(c.store[PENDING], undefined, "끊는 데 성공했는데 표식이 남았다");
+      assert.equal(c.store["shh-via"], undefined, "실패 복귀인데 로그인 표시가 섰다");
+    });
+
+    await T(`복귀 ${label} — 재시도가 실패하면 표식이 다음 실행으로 넘어간다`, async () => {
+      const first = await boot({ store: { [PENDING]: "1" }, loc, routes: del({ status: 503, body: {} }) });
+      assert.ok(first.store[PENDING], `${label} 재시도가 실패했는데 표식을 지웠다`);
+      const second = await boot({ store: first.store, routes: OK });
+      assert.equal(dels(second), 1, "다음 실행이 재시도하지 않았다");
+      assert.equal(second.store[PENDING], undefined, "재시도에 성공했는데 표식이 남았다");
+    });
+  }
+
+  // ── d. **nonce 불일치**는 그 자리에서 끊는다(쿠키가 이미 심어졌다).
+  await T("nonce 불일치 — 그 자리에서 세션을 끊는다", async () => {
+    const c = await boot({
+      store: { "shh-nonce": "mine" },
+      loc: { hash: "#login=ok&via=kakao&n=남의값" }, routes: OK,
+    });
+    assert.equal(dels(c), 1, "쿠키가 심어졌는데 끊지 않았다");
+    assert.equal(c.store["shh-via"], undefined, "불일치인데 로그인 표시가 섰다");
+    assert.equal(c.store[PENDING], undefined, "끊는 데 성공했는데 표식이 남았다");
+  });
+
+  // ── e. **online 재시도**: 오프라인에서 실패한 폐기는 연결이 돌아오면 다시 나간다.
+  await T("offline → online 이면 폐기를 한 번 더 시도한다", async () => {
+    const c = await boot({ store: { [PENDING]: "1" }, routes: del({ throw: true }) });
+    assert.equal(dels(c), 1, "부팅 시도가 없었다");
+    assert.ok(c.store[PENDING], "실패했는데 표식이 사라졌다");
+    c.setRoutes(OK);
+    c.fireOnline();
+    await tick(20);
+    assert.equal(dels(c), 2, "연결이 돌아왔는데 재시도하지 않았다");
+    assert.equal(c.store[PENDING], undefined, "재시도에 성공했는데 표식이 남았다");
+  });
+
+  await T("online 이 여러 번 나도 폐기 요청은 겹치지 않는다 (single-flight)", async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const c = await boot({
+      store: { [PENDING]: "1" },
+      routes: (m, p) => (m === "DELETE" && p === "/session"
+        ? { status: 503, body: {} } : defaultRoutes(m, p)),
+    });
+    assert.equal(dels(c), 1, "부팅 시도가 없었다");
+    // 답이 느린 상태에서 online 을 연달아 때린다.
+    c.setRoutes(async (m, p) => (m === "DELETE" && p === "/session"
+      ? (await gate, { status: 200, body: { ok: true } }) : defaultRoutes(m, p)));
+    c.fireOnline(); c.fireOnline(); c.fireOnline();
+    await tick(20);
+    assert.equal(dels(c), 2, `online 세 번에 요청이 ${dels(c) - 1}건 나갔다 — 폭주한다`);
+    release();
+    await tick(20);
+    assert.equal(c.store[PENDING], undefined, "성공했는데 표식이 남았다");
+  });
+
+  await T("표식이 없으면 online 이 나도 폐기를 보내지 않는다", async () => {
+    const c = await boot({ store: {}, routes: OK });
+    c.fireOnline(); c.fireOnline();
+    await tick(20);
+    assert.equal(dels(c), 0, "끊을 것이 없는데 폐기 요청이 나갔다");
+  });
+
+  // ── f. **정상 로그인 왕복 중에 online 이 나도 새 세션을 끊지 않는다.**
+  await T("정상 로그인 복귀 중 online 이 나도 새 세션을 끊지 않는다", async () => {
+    const c = await boot({
+      store: { [PENDING]: "1", "shh-nonce": "n1" },
+      loc: { hash: "#login=ok&via=kakao&n=n1" }, routes: OK,
+    });
+    c.fireOnline();
+    await tick(20);
+    assert.equal(dels(c), 0, "정상 로그인 뒤 online 재시도가 새 세션을 끊었다");
+  });
+
+  // ── f-2. ★ **왕복이 도는 도중에** online 이 떠도 새 세션을 끊지 않는다.
+  //   f 는 왕복이 **끝난 뒤**를 재는데, 그때는 표식이 이미 지워져 있어 `oauthBusy` 자물쇠가
+  //   없어도 통과한다 — 실제로 그 자물쇠를 지우는 변이가 f 를 그대로 통과했다(M-d 생존).
+  //   위험한 창은 **code 교환이 날아가 있는 동안**이다: 서버는 곧 쿠키를 심을 참인데
+  //   표식은 아직 남아 있어, 그 순간의 online 재시도가 방금 심어질 세션을 끊는다.
+  await T("code 교환이 도는 도중 online 이 떠도 폐기를 보내지 않는다", async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const c = loadClient({
+      store: { [PENDING]: "1", "shh-nonce": "n3" },
+      loc: { search: "?code=abc&state=xyz" },
+      routes: async (m, p) => {
+        if (p.startsWith("/exchange/naver")) { await gate; return { status: 200, body: { ok: true, n: "n3" } }; }
+        return OK(m, p);
+      },
+    });
+    // **await 하지 않는다** — 교환이 날아가 있는 그 창에서 online 을 때리기 위해서다.
+    const booted = Promise.all(c.HOOKS.ready.map((fn) => fn()));
+    await tick(10);
+    assert.ok(c.store[PENDING], "사전 조건 실패 — 교환 중에 표식이 이미 없다");
+    c.fireOnline(); c.fireOnline();
+    await tick(10);
+    assert.equal(dels(c), 0,
+      `왕복 도중 online 재시도가 ${dels(c)}건 나갔다 — 서버가 막 심는 세션을 끊는다`);
+    release();
+    await booted; await tick(10);
+    assert.equal(c.store["shh-via"], "naver", "정상 네이버 로그인인데 표시가 안 섰다");
+    assert.equal(dels(c), 0, "왕복이 끝난 뒤 새 세션이 끊겼다");
+    assert.equal(c.store[PENDING], undefined, "로그인 성공인데 표식이 남았다");
+  });
+
+  // ── g. online 재시도도 **앱 초기화를 붙잡지 않는다.**
+  await T("online 재시도가 앱 초기화를 막지 않는다", async () => {
+    const done = await Promise.race([
+      boot({ store: { [PENDING]: "1" }, routes: del({ throwName: "TimeoutError" }) }),
+      sleep(3000).then(() => null),
+    ]);
+    assert.ok(done, "재시도 때문에 앱 초기화가 멈췄다");
   });
 }
 

@@ -351,7 +351,7 @@ export const MUTATIONS = [
     // ⚠️ **이 앵커는 개수가 바뀔 때마다 함께 바꾼다**(D21 을 더하며 세 번째로 고쳤다).
     //    자기가 건드리는 숫자를 앵커에 담는 변이라 피할 수 없다 — 대신 낡으면 실행기가
     //    ANCHOR-MISS 로 종료 코드 1 을 내므로 **조용히 썩지는 않는다.**
-    find: "`scripts/mutations.mjs`(목록 66종",
+    find: "`scripts/mutations.mjs`(목록 71종",
     replace: "`scripts/mutations.mjs`(목록 22종",
   },
   {
@@ -452,8 +452,8 @@ export const MUTATIONS = [
     id: "M37", file: "js/authApi.js", suite: "test-client",
     what: "세션 폐기가 실패해도 표식을 지운다",
     invariant: "끊었다는 확인(2xx·401) 없이는 표식을 지우지 않는다 — 지우면 그 세션은 영영 남는다",
-    find: "  if (await apiLogoutRaw()) { clearRevokePending(); return true; }\n  return false;",
-    replace: "  const ok = await apiLogoutRaw();\n  clearRevokePending();\n  return ok;",
+    find: "    .then((done) => { if (done) clearRevokePending(); return done; })",
+    replace: "    .then((done) => { clearRevokePending(); return done; })",
   },
   {
     id: "M38", file: "js/authApi.js", suite: "test-client",
@@ -466,15 +466,19 @@ export const MUTATIONS = [
     id: "M39", file: "js/auth.js", suite: "test-client",
     what: "다음 실행의 재시도를 없앤다",
     invariant: "표식이 남아 있으면 다음 앱 실행이 세션 폐기를 다시 보낸다",
-    find: "    if (!oauthReturn && revokePending()) revokeSession();\n",
+    find: "    if (!plantsSession(ret)) retryRevokeSession();\n",
     replace: "",
   },
   {
     id: "M40", file: "js/auth.js", suite: "test-client",
-    what: "복귀 다리 판정을 없애고 언제나 재시도한다",
-    invariant: "로그인 왕복의 복귀 다리에서는 재시도하지 않는다 — 그 자리의 쿠키는 방금 심어진 새 세션이다",
-    find: "    if (!oauthReturn && revokePending()) revokeSession();",
-    replace: "    if (revokePending()) revokeSession();",
+    what: "왕복 중 자물쇠를 실제 복귀 종류에서 파생하지 않고 언제나 열어 둔다",
+    invariant: "로그인 왕복이 도는 동안에는 재시도가 잠긴다 — 그 자리의 쿠키는 방금 심어진 새 세션이다",
+    // ⚠️ **옛 M40 은 2026-08-25 에 동등 변이가 됐다**(위협 70 을 닫으면서). 그때의 변이는
+    //    부팅 재시도의 조건절 하나를 지웠는데, 이제 그 뒤를 `oauthBusy` 가 받치므로 지워도
+    //    행동이 안 바뀐다 — 살아남은 이유가 「테스트 공백」이 아니라 「같은 프로그램」이었다.
+    //    그래서 자물쇠를 세우는 그 자리를 직접 겨눈다(옛 M24 때와 같은 처리다).
+    find: "    setOauthBusy(plantsSession(ret));",
+    replace: "    setOauthBusy(false);",
   },
   {
     id: "M41", file: "policies/manifest.json", suite: "test-policies", kind: "정적",
@@ -550,7 +554,43 @@ export const MUTATIONS = [
     id: "D21", file: "docs/STAGE3_SIGNUP_SECURITY_DESIGN.md", suite: "test-docs", kind: "정적",
     what: "「종」이 없는 괄호형 내역을 낡은 「정적 21」로 되돌린다",
     invariant: "총계뿐 아니라 **하위 내역**도 MUTATIONS 에서 파생한다 — 「N종」이라고 안 적은 괄호형 내역도 센다(총계만 보면 66 ≠ 40+21 이 남는다)",
-    find: "(동작 40 · 정적 26).",
+    find: "(동작 45 · 정적 26).",
     replace: "(동작 40 · 정적 21).",
+  },
+  // ── 위협 70 · 불완전한 OAuth 주소가 세션 폐기 재시도를 막던 결함의 방어들 ──
+  {
+    id: "M42", file: "js/auth.js", suite: "test-client",
+    what: "모양만 갖춘 OAuth 주소(junk)를 진짜 복귀로 쳐서 재시도를 건너뛴다",
+    invariant: "`#login=` · `?code=&state=` 같은 불완전한 값은 복귀가 아니다 — 재시도를 삼키면 새로고침마다 삼켜서 서버 세션이 영영 남는다",
+    find: "    if (!plantsSession(ret)) retryRevokeSession();",
+    replace: "    if (!ret) retryRevokeSession();",
+  },
+  {
+    id: "M43", file: "js/auth.js", suite: "test-client",
+    what: "불완전한 OAuth 파라미터를 주소에서 지우지 않는다",
+    invariant: "판정이 「복귀 모양」이라 읽은 것은 전부 주소에서 지운다 — 남기면 다음 실행이 같은 오판을 무한히 반복한다",
+    find: "    if (!hm && !hasQ) return null;",
+    replace: "    if (!hm && !hasQ) return null;\n    if (!(hm && hm[1]) && !(q.get(\"code\") && q.get(\"state\"))) return { kind: \"junk\" };",
+  },
+  {
+    id: "M44", file: "js/authApi.js", suite: "test-client",
+    what: "세션 폐기의 single-flight 를 없앤다",
+    invariant: "재시도를 부르는 자리가 셋이라 겹칠 수 있다 — 겹치면 online 이 연달아 뜨는 회선에서 DELETE 가 폭주한다",
+    find: "  if (revokeInFlight) return revokeInFlight;",
+    replace: "  if (false) return revokeInFlight;",
+  },
+  {
+    id: "M45", file: "js/authApi.js", suite: "test-client",
+    what: "로그인 왕복 중 재시도를 재우는 자물쇠를 없앤다",
+    invariant: "왕복이 도는 동안의 재시도는 서버가 막 심는 **새 세션**을 끊는다 — 자물쇠는 위치가 아니라 상태여야 한다",
+    find: "  if (oauthBusy || !revokePending()) return null;",
+    replace: "  if (!revokePending()) return null;",
+  },
+  {
+    id: "M46", file: "js/authApi.js", suite: "test-client",
+    what: "연결 복구(online) 재시도를 없앤다",
+    invariant: "오프라인에서 실패한 폐기는 연결이 돌아오면 그 자리에서 다시 시도한다 — 없으면 앱을 다시 열 때까지 방치된다",
+    find: "addEventListener(\"online\", () => { retryRevokeSession(); });",
+    replace: "",
   },
 ];

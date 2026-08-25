@@ -898,17 +898,59 @@ if (typeof document !== "undefined") {
   //    그 시점에 쿠키는 이미 심어져 있어서 화면은 로그아웃인데 서버는 로그인인 상태가 남았다.
   //    그 상태로 다음 동기화가 돌면 이 기기의 단어장이 **남의 계정으로** 올라간다.
   //    아래 takeCodeQuery 에는 이 처리가 있었는데 여기만 빠져 있었다 — 두 갈래가 같아야 한다.
-  async function takeLoginHash() {
-    const m = location.hash.match(/[#&]login=([^&]+)/);
-    if (!m) return false;
-    const via = (location.hash.match(/[#&]via=(\w+)/) || [])[1];
+  // ── OAuth 복귀 주소는 **한 곳에서** 읽고 지운다 ────────────────────────
+  //
+  // ⚠️ **판정과 소비가 서로 다른 조건을 쓰면 그 틈이 곧 결함이다**(2026-08-25 · 위협 70).
+  //    예전에는 「복귀인가」를 `/[#&]login=/` 와 `has("code") && has("state")` 로 물었고
+  //    「소비」는 `/[#&]login=([^&]+)/` 와 `!code || !state → false` 로 물었다. 값이 비면
+  //    앞은 참인데 뒤는 거짓이라, `#login=` · `?code=&state=` · `?code=x&state=` ·
+  //    `?code=&state=x` 가 **「복귀다」로 읽혀 세션 폐기 재시도를 건너뛰면서 주소에서는
+  //    지워지지 않았다.** 새로고침할 때마다 같은 일이 반복돼 재시도가 **영구히** 막히고,
+  //    그동안 끊어야 할 서버 세션은 180일을 산다(위협 69 가 닫으려던 그 상태다).
+  //
+  // 돌려주는 값은 넷 중 하나다 — **부르는 쪽은 이 판정 하나만 본다.**
+  //   null          OAuth 복귀가 아니다. 평범한 부팅이다
+  //   {kind:"junk"} OAuth 모양이지만 쓸 수 없다. **주소만 지우고** 평범한 부팅을 계속한다
+  //   {kind:"hash"} 서버가 해시로 결과를 알려준 복귀(카카오·구글)
+  //   {kind:"code"} 앱 주소로 code 가 돌아온 복귀(네이버)
+  // 어느 갈래든 **읽은 값은 주소에서 지운다.** 남기면 다음 실행이 같은 오판을 반복한다.
+  function readOauthReturn() {
+    const hash = location.hash;
+    const q = new URLSearchParams(location.search);
+    const hm = hash.match(/[#&]login=([^&]*)/);
+    const hasQ = q.has("code") || q.has("state");
+    if (!hm && !hasQ) return null;
+
+    // ⚠️ **지우기 전에** 다 읽는다. replaceState 뒤에는 이 값들이 없다.
     // safeDecode(app.js) — 반쪽 인코딩(`#login=ok&n=%E0%A4%A`)이면 decodeURIComponent 가 던진다.
     // 여기서 던지면 onAppReady 전체가 멈춰 로그인·친구가 통째로 안 붙는다.
-    const n = safeDecode((location.hash.match(/[#&]n=([^&]*)/) || [])[1] || "");
-    // ⚠️ **해시를 지우기 전에** 읽는다. replaceState 뒤에는 이 값이 없다.
-    const isNew = /[#&]new=1(&|$)/.test(location.hash);
-    history.replaceState(null, "", location.pathname + location.search);
-    if (m[1] === "denied") { takeNonce(); toast("로그인을 취소했어요"); return false; }
+    const status = hm ? hm[1] : "";
+    const via = (hash.match(/[#&]via=(\w+)/) || [])[1];
+    const n = safeDecode((hash.match(/[#&]n=([^&]*)/) || [])[1] || "");
+    const isNew = /[#&]new=1(&|$)/.test(hash);
+    const code = q.get("code") || "", state = q.get("state") || "";
+
+    // 해시 갈래는 해시를 통째로 버린다. code 갈래는 **code·state 만** 뺀다 — 나머지 쿼리와
+    // 공유 해시(`#w=…`)는 사용자의 것이라 우리가 버릴 것이 아니다.
+    const nextHash = hm ? "" : hash;
+    let nextSearch = location.search;
+    if (hasQ) { q.delete("code"); q.delete("state"); const r = q.toString(); nextSearch = r ? "?" + r : ""; }
+    history.replaceState(null, "", location.pathname + nextSearch + nextHash);
+
+    if (status) return { kind: "hash", status, via, n, isNew };
+    if (code && state) return { kind: "code", code, state };
+    return { kind: "junk" };
+  }
+
+  // **쿠키가 심어졌을 수 있는 복귀인가.** 서버는 `#login=ok` 와 네이버 code 교환 성공에서만
+  // 세션을 만든다(`worker/index.js` 의 `newSession` + `setCookie` 는 그 두 자리뿐이다).
+  // 나머지 갈래(denied·signup_required·stale·used·junk)는 세션을 만들지 않으므로,
+  // 그 실행에서 옛 세션 폐기를 재시도해도 **끊을 새 세션 자체가 없다.**
+  const plantsSession = (r) => !!r && (r.kind === "code" || (r.kind === "hash" && r.status === "ok"));
+
+  async function takeLoginHash(r) {
+    const { status, via, n, isNew } = r;
+    if (status === "denied") { takeNonce(); toast("로그인을 취소했어요"); return false; }
     // ⚠️ **「아직 가입 안 했다」를 「실패」로 말하지 않는다.** 사용자가 할 일이 다르다 —
     //    다시 누르는 것이 아니라 가입 화면으로 가야 한다. 예전에는 이 갈래가 아예 없었다
     //    (로그인이 곧 가입이었으므로).
@@ -917,13 +959,13 @@ if (typeof document !== "undefined") {
       used: "이미 처리된 가입 요청이에요. 다시 시작해 주세요.",
       stale: "약관이 새로 바뀌었어요. 새 약관을 확인하고 다시 가입해 주세요.",
     };
-    if (SIGNUP_BACK[m[1]]) {
+    if (SIGNUP_BACK[status]) {
       takeNonce();
       GATE_TAKEN = true;                 // 아래 기본 게이트가 이 화면을 덮지 않게
-      openSignup(SIGNUP_BACK[m[1]]);
+      openSignup(SIGNUP_BACK[status]);
       return false;
     }
-    if (m[1] !== "ok") { takeNonce(); toast("로그인에 실패했어요. 다시 시도해 주세요."); return false; }
+    if (status !== "ok") { takeNonce(); toast("로그인에 실패했어요. 다시 시도해 주세요."); return false; }
     const mine = takeNonce();
     if (!mine || n !== mine) {
       // 쿠키가 이미 심어졌다 — 화면만 되돌리면 서버는 로그인인 채로 남는다.
@@ -939,12 +981,8 @@ if (typeof document !== "undefined") {
 
   // 네이버는 **앱 주소로** 돌아온다(네이버가 서비스 URL 도메인 안의 콜백만 허용해서).
   // 그래서 code 가 쿼리로 들어오고, 앱이 그걸 서버에 넘겨 세션 토큰으로 바꾼다.
-  async function takeCodeQuery() {
-    const q = new URLSearchParams(location.search);
-    const code = q.get("code"), state = q.get("state");
-    if (!code || !state) return false;
-    // code 가 주소창·방문기록에 남지 않게 즉시 지운다. 해시(#w= 같은)는 남긴다.
-    history.replaceState(null, "", location.pathname + location.hash);
+  // 주소는 이미 `readOauthReturn()` 이 읽고 지웠다 — 여기서 다시 읽지 않는다.
+  async function takeCodeQuery({ code, state }) {
     const r = await apiExchange("naver", code, state);
     // 원인이 다르면 할 일도 다르다 — 연결 문제는 인터넷을 확인할 일이고, 서버 거절은 다시 누를 일,
     // **가입 안 함은 가입 화면으로 갈 일**이다. 하나로 뭉개면 사용자가 헛수고를 한다.
@@ -994,15 +1032,25 @@ if (typeof document !== "undefined") {
     //    실패하면 표식이 그대로 남아 다음 실행이 또 시도한다(무한 대기가 아니라 무한 재시도다).
     // ⚠️ 복귀 다리가 **실패**로 끝나면(취소·가입 필요) 표식은 그대로 남는다 — 그때는 새 쿠키가
     //    없으므로 다음 평범한 실행이 옛 세션을 정상적으로 끊는다.
-    const oauthReturn = /[#&]login=/.test(location.hash)
-      || (new URLSearchParams(location.search).has("code")
-          && new URLSearchParams(location.search).has("state"));
-    if (!oauthReturn && revokePending()) revokeSession();
-    const fresh = (await takeLoginHash()) || (await takeCodeQuery());
+    // ⚠️ **판정은 하나다.** `readOauthReturn()` 이 읽고 지운 결과를 그대로 쓴다 — 여기서
+    //    주소를 다시 해석하면 그 순간 두 번째 조건이 생기고, 두 조건이 어긋나는 틈이
+    //    정확히 위협 70 이었다.
+    const ret = readOauthReturn();
+    // 쿠키가 심어질 수 있는 복귀 동안에는 재시도를 재운다. `online` 이벤트도 이 자물쇠를 본다.
+    setOauthBusy(plantsSession(ret));
+    // 쿠키가 심어질 리 없는 실행(평범한 부팅 · junk · 취소 · 가입 필요 · 약관 만료)이면
+    // **그 자리에서** 못 끊은 세션을 다시 끊는다. 다음 실행까지 미룰 이유가 없다.
+    if (!plantsSession(ret)) retryRevokeSession();
+    const fresh = !ret || ret.kind === "junk" ? false
+      : ret.kind === "hash" ? await takeLoginHash(ret)
+      : await takeCodeQuery(ret);
     // 새 세션이 정상적으로 섰다면 옛 표식은 **뜻이 없다.** 지금 쥔 쿠키는 좋은 세션이고,
     // 끊어야 했던 그 세션의 토큰은 이 브라우저에 더는 없다 — 남겨 두면 다음 실행이
     // 좋은 세션을 끊는다.
     if (fresh) clearRevokePending();
+    // 왕복이 끝났다. 이 뒤로는 `online` 재시도가 다시 열린다 — 새 세션이 섰다면 표식이
+    // 이미 없으므로 아무것도 나가지 않고, 못 섰다면 끊어야 할 옛 세션이 남아 있는 것이다.
+    setOauthBusy(false);
     // 어느 제공자가 실제로 설정돼 있나. **renderAll 보다 먼저** 물어야 버튼이 한 번에 맞게 그려진다.
     const h = await apiHealth();
     // 못 물어봤으면 null 로 남긴다 — loginButtons 가 그걸 보고 "연결 안 됨"이라 말한다.
