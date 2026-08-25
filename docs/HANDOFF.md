@@ -333,13 +333,13 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 > | 남용 방어 | **미구성이고, 그래서 계정 라우트가 fail-closed 다**(2026-08-22 · 위협 52~56). Pages Functions 에는 엣지 레이트리밋 바인딩이 없고 `*.pages.dev` 에는 WAF 규칙을 못 건다. `EDGE_GUARD` 선언이 없거나 그 모드의 실재가 검증되지 않으면 `/api/health`·`/api/ready`·`/api/policies` 만 답한다. `/api/ready` 의 진단은 **`READY_KEY` 헤더**를 요구한다(위협 56). **A안(커스텀 도메인 + WAF)으로 확정됐다**(사용자 결정 1 · 2026-08-22). **2026년 9월 진행 예정**이고 **지금은 미구성**이라, 구성 전까지 계정 경로는 fail-closed 다. B안(Workers 전환)은 **보류**, Turnstile 은 **공개 회원가입 보조**, 세션 envelope 은 **사용**한다. ⚠️ **「무엇을 붙일지 선택 대기」가 아니다** — 남은 것은 구성이지 결정이 아니다(`docs/OPS_RUNBOOK.md` §13-2) |
 >
 > 결정 1·2·5(조건부)·6 과 **A(AEAD state)·B(정리 Worker)·C(옛 배포 차단, 조건부)·D(drain 은 법률 후)·E(보유기간 임시값)**
-> 는 확정, **결정 3·4 는 외부 법률 검토(L1~L15)에 종속**되어 있다.
+> 는 확정, **결정 3·4 는 외부 법률 검토(L1~L16)에 종속**되어 있다.
 > 전달 자료는 `docs/PRIVACY_LEGAL_REVIEW_PACKET.md`.
 >
 > ⚠️ **「로컬 구현이 끝났다」만으로 출시가 열리지 않는다.** 남은 순서는 넷이고 중간을 건너뛰지 않는다:
 > **원격 자원(ledger D1·미등록 시크릿 5개) 별도 승인 → 배포 → 출시 검증 → 옛 배포 차단(D1~D12).**
 > **⛔ 검증 가능한 전역 user-data drain 이 구현되기 전까지 주 D1 restore 금지**(설계서 §10-8-0).
-> 외부 법률 검토(L1~L15)는 **구현 착수 게이트에서는 빠졌지만**(프로젝트 결정 E)
+> 외부 법률 검토(L1~L16)는 **구현 착수 게이트에서는 빠졌지만**(프로젝트 결정 E)
 > **공개 출시 조건에는 그대로 남는다.**
 > **배포와 공개 OAuth·계정 출시는 계속 No-Go** 다.
 > 로컬 구현 완료는 법률 검토 완료도, 운영 반영 완료도, 출시 준비 완료도 아니다.
@@ -390,7 +390,7 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 | 테스트 | **26개 스위트** 통과(2026-08-22 실측, exit 0). `test-workerd` 가 진짜 workerd 를 띄워 운영 경로를 밟는다. 4단계에서 `test-policies` · `test-signup` · `test-deletion-ledger` · `test-cleanup` 이 늘었다. 개수의 원본은 `package.json` 의 `test` 스크립트이고 `scripts/test-docs.mjs` 가 거기서 읽어 문서와 대조한다 |
 | 돌연변이 | `node scripts/mutate.mjs` 로 **다시 돌릴 수 있다**. 목록의 원본은 `scripts/mutations.mjs`. 개수를 여기 적지 않는다 — 실행기 출력이 원본이다 |
 | 배포본 | 파일 수·선캐시 수·캐시 이름은 **빌드가 정한다** — `npm run build` 의 마지막 줄과 `scripts/test-dist.mjs` 의 출력이 원본이다. 손으로 적으면 다음 빌드에 낡는다(2026-08-20 정정: 여기 적혀 있던 「57개」는 그때 이미 58개였다). 내부 파일 0개는 `test-dist` 가 매번 검사한다 |
-| **라이브 (production)** | **배포 `7362d2f0`**(Production / branch `main` / source **`e02e810`**) — 2026-08-24 안전 동기화. 위협 57~65 의 수정이 여기 들어 있다. 2026-08-24 12:35 KST 실측: 계정 API 전부 **503**(두 DB 를 만지기 전 · `GET`·`PUT /book` · `/login/{kakao,naver}` · `POST /signup/start`) · 키 없는·틀린 키 `/api/ready` **503 `{"ok":true,"ready":false,"diagnostics":false}`** · `/api/health` `ready:false`·`providers:[]`·`ledgerBound:false`·`abuseReady:false`·`signupReady:false` · `/api/policies` **200** · `/` **200** · 없는 주소 **404** · 내부 파일 7종 **SPA 폴백**(sha256 `7d809fa2268d…`) · SW·핵심 JS 4개가 빌드와 **바이트 동일** · 브라우저 리소스 19개 중 실패 0 · 콘솔 오류 0. ⚠️ **계정 기능을 여는 배포가 아니다** — `EDGE_GUARD` 부재가 그대로다. 실측 원본은 `docs/OPS_RUNBOOK.md` §16-5 |
+| **라이브 (production)** | **배포 `7362d2f0`**(Production / branch `main` / source **`e02e810`**) — 2026-08-24 안전 동기화. 위협 57~69 의 수정이 여기 들어 있다. 2026-08-24 12:35 KST 실측: 계정 API 전부 **503**(두 DB 를 만지기 전 · `GET`·`PUT /book` · `/login/{kakao,naver}` · `POST /signup/start`) · 키 없는·틀린 키 `/api/ready` **503 `{"ok":true,"ready":false,"diagnostics":false}`** · `/api/health` `ready:false`·`providers:[]`·`ledgerBound:false`·`abuseReady:false`·`signupReady:false` · `/api/policies` **200** · `/` **200** · 없는 주소 **404** · 내부 파일 7종 **SPA 폴백**(sha256 `7d809fa2268d…`) · SW·핵심 JS 4개가 빌드와 **바이트 동일** · 브라우저 리소스 19개 중 실패 0 · 콘솔 오류 0. ⚠️ **계정 기능을 여는 배포가 아니다** — `EDGE_GUARD` 부재가 그대로다. 실측 원본은 `docs/OPS_RUNBOOK.md` §16-5 |
 | **남은 배포** | **넷이다**(2026-08-24 실측) — `7362d2f0`(Production · source `e02e810`) · `cae28bf6`(Preview / `cf-pages` · source `e02e810`) · `19e69dee`(옛 Production · source `7477867`) · `8e16c92e`(옛 Preview · source `7f9078a`). ⚠️ **옛 둘을 지우지 않았다** — `19e69dee` 는 검증된 안전 롤백 후보다. 넷 다 계정 라우트가 닫힌 세대이고, `<해시>` 주소는 전부 Access 뒤에 있다 |
 | **옛 배포 — 제어면** | ✅ **15개 삭제 완료 2026-08-22.** `deployment list` 에 없고 개별 조회는 `8000009 does not exist` 다 |
 | **옛 배포 — 공개 접근** | ✅ **Access 로 차단 2026-08-23 10:23 KST.** 프리뷰 액세스(`*.shhh-app.pages.dev`)를 켜서 옛 해시 **15개 전부가 302 → `cloudflareaccess.com`** 이 됐다(적용 전에는 전부 401). 정책은 **Allow · 운영자 이메일 1개**이고 Everyone·Bypass 가 아니다. 브라우저로도 「Sign in ・ Cloudflare Access」 화면을 확인했다(`auth_status: NONE`). ⚠️ **404 가 아니다** — 배포는 여전히 존재하고 Access 뒤에서 실행될 수 있다. ⚠️ **가역적이다** — 끄면 다시 401 이다. ⛔ **제어면 삭제 · 공개 접근 차단 · 404 는 서로 다른 세 사건이다.** 복원 금지 해제 조건 ⑦(D1~D12) 충족 여부는 **별도 검토 대상**이고 이 실험이 답하지 않는다 |
@@ -404,7 +404,7 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 | **ledger D1** | **아직 없다**(`d1 list` 에 `shhh-ledger` 가 없다). 스키마·migration 은 `worker/ledger-schema.sql` · `migrations-ledger/0001`·`0002` 에 있고, 생성·바인딩은 **별도 승인** 사항이다. 바인딩이 없으면 `readMode()` 가 `unbound` 라 사용자 데이터 API 가 전부 503 이다 |
 | 정리 크론 | **로컬 구현만 · 미배포.** `worker/cleanup/` 에 있고, 설정은 **템플릿(`wrangler.example.jsonc`)과 실제 설정(`wrangler.jsonc`)으로 갈라져 있다**(2026-08-19). 실제 설정은 저장소에 없고(`.gitignore`) `docs/OPS_RUNBOOK.md` §3 이 만든다 — **배포 가능한 설정 파일에 placeholder 가 들어갈 수 없는 구조다**(`scripts/test-config.mjs` 가 잰다). 실패·경보는 2026-08-18 에 마감했다: 실패한 회차는 `ctx.waitUntil()` Promise 를 **거부해** Cron Trigger 에 실패로 남고, 확정 안 된 삭제 표식·연속 실패 3회는 `/api/ready` 의 **`cleanupAlert`** boolean 으로 나온다. **외부 알림(Slack·이메일 등)은 붙이지 않았다.** ⚠️ **배포 전까지 운영에서는 아무도 만료 데이터를 안 치운다** |
 | legacy KV | **아직 살아 있다.** 5개(`b:1 c:1 s:2 u:1`, 접두사 개수만 확인 — **이번에 재조회하지 않았다**). 새 코드는 쓰지 않는다. 폐기 방향은 승인, **실행은 별도 승인**이고 **이번 범위에서 제외**다 |
-| **배포된 source 와 로컬** | **production source 는 `e02e810` 이다**(2026-08-24). 위협 57~65 의 수정이 배포됐다. ⚠️ **여기에 「최신 커밋」 해시를 적지 않는다** — HEAD 는 커밋할 때마다 움직여서 손으로 유지하면 반드시 낡는다(실제로 한 번 낡았다). 확인은 `git rev-parse HEAD` · `git log -1 --oneline` 이 원본이고, 배포 지점과의 차이는 `git log --oneline e02e810..HEAD` 로 본다. **push 0건**은 그대로다 |
+| **배포된 source 와 로컬** | **production source 는 `e02e810` 이다**(2026-08-24). 위협 57~69 의 수정이 배포됐다. ⚠️ **여기에 「최신 커밋」 해시를 적지 않는다** — HEAD 는 커밋할 때마다 움직여서 손으로 유지하면 반드시 낡는다(실제로 한 번 낡았다). 확인은 `git rev-parse HEAD` · `git log -1 --oneline` 이 원본이고, 배포 지점과의 차이는 `git log --oneline e02e810..HEAD` 로 본다. **push 0건**은 그대로다 |
 | 2단계(회원가입·개인정보) | **정책 결정 완료 2026-08-17 · 처리 근거·국외 처리·연령·CASCADE 확정 2026-08-18(프로젝트 결정)** → `docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md`. ⚠️ **외부 법률 검토 미완료** — 사용자가 공식 자료를 보고 내린 운영 결정이지 변호사 검토 결과가 아니다 |
 | 4단계(구현) | **로컬 구현 완료 2026-08-22 · 2026-08-23~24 재검증 세 차례로 다시 마감(위협 64·65).** ✅ **그 코드가 2026-08-24 에 배포됐다**(production `7362d2f0` · source `e02e810` · preview `cae28bf6`). ⛔ **계정 인프라는 하나도 안 했다** — 위 행들이 각각 답한다. **push 0건**은 그대로다 |
 | wrangler | `4.123.0` 을 devDependency 로 **고정**. OAuth 토큰은 살아 있음(`whoami` 실측) |
@@ -489,7 +489,7 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 | ~~복원 사전점검 우회~~ ✅ | **완료 2026-08-19.** 코드가 소유한 조건은 인자로 못 바꾸고, 재개방 판정은 대상 집합을 스스로 만든다. ⚠️ **앱 코드는 복원을 막지 못한다** — `restoreAllowed` 는 언제나 `false` 다 (T7-b·H1-b · 위협 42) | — |
 | ~~운영 절차서 부재~~ ✅ | **완료 2026-08-19.** `docs/OPS_RUNBOOK.md` 가 원격 순서·중단 기준·`/api/ready` 기대값을 담는다. 설정·시크릿 계약은 `scripts/test-config.mjs` 가 코드에서 읽어 대조한다 | — |
 | ~~개인정보 정책 설계~~ ✅ | **완료 2026-08-17** → `docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md` | — |
-| **개인정보 법률 검토** | 처리 근거(제15조 제1항 제1호 vs 제4호) · 국외 이전(제28조의8 제1호 vs 제3호) · 만 14세 · 정책 이벤트 보존 · 삭제 표식의 성격과 보유기간(L9-1~L9-6) · **정책 행위 시각(L11)** · **가입 state 소비 표식(L12)** · **제공자 식별자 성질(L13)** · **백업과 표식 보유기간 동기화(L14)** · **가입 정보의 제공자 URL 통과(L15)** | **법률 판단은 AI 가 하지 않는다.** 전달 자료는 `docs/PRIVACY_LEGAL_REVIEW_PACKET.md`(**L1~L15**). 사용자 몫 |
+| **개인정보 법률 검토** | 처리 근거(제15조 제1항 제1호 vs 제4호) · 국외 이전(제28조의8 제1호 vs 제3호) · 만 14세 · 정책 이벤트 보존 · 삭제 표식의 성격과 보유기간(L9-1~L9-6) · **정책 행위 시각(L11)** · **가입 state 소비 표식(L12)** · **제공자 식별자 성질(L13)** · **백업과 표식 보유기간 동기화(L14)** · **가입 정보의 제공자 URL 통과(L15)** · **사람 확인 Turnstile 의 외부 처리(L16)** | **법률 판단은 AI 가 하지 않는다.** 전달 자료는 `docs/PRIVACY_LEGAL_REVIEW_PACKET.md`(**L1~L16**). 사용자 몫 |
 | ~~3단계 기술 상세 설계~~ ✅ | **완료 2026-08-19(6판)** → `docs/STAGE3_SIGNUP_SECURITY_DESIGN.md`. 설계가 끝났다는 뜻이고 **구현·법률·출시는 각각 별개다.** **6판이 닫은 것**: `LEDGER` 미바인딩 fail-open(위협 39) · 없는 주소의 쓰기 증폭(위협 40) · 미등록 리미터 버킷(위협 41) · 복원 사전점검 우회(위협 42) · 「복원을 막는다」는 표현 정정. 5판이 닫은 것: **복원 중 읽기 노출**(위협 36 · Critical) · **ledger 자기복원**(위협 37 · Critical) · **가입 정보 평문 통과**(§5-4) · **정리 수단 부재**(위협 38) · **옛 배포 차단 합격 조건**(§10-8-1) | — |
 | ~~3단계 결정 1·2·5·6~~ ✅ | C안 · 임시 상태 제거(**4판 정정**: `pending_signups` 는 여전히 없고, OAuth 검증 **후의** replay tombstone `consumed_signup_states` 만 추가) · 별도 D1(조건부, 조건 C1~C8 반영 완료) · saga 실패 응답 + **reconciliation 은 promote-only 이고 활성 deletion lease 0건에서만** | — |
 | ~~3단계 결정 3·4~~ ✅ | 정책 이벤트 법적 분기 · CASCADE 여부 | **확정 2026-08-18(프로젝트 결정 A·B).** 근거는 제15조 제1항 제4호 → `privacy` 는 `presented`. `policy_events` 는 **CASCADE**. migration `0005` 를 만들었다. ⚠️ 이것은 **사용자의 운영 결정**이지 외부 법률 검토 결과가 아니다 |

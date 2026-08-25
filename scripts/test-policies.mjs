@@ -100,5 +100,31 @@ for (const f of readdirSync(DIR))
   assert.equal(new Set(files).size, files.length, t("manifest 에 같은 파일이 두 번 등록됐다"));
 }
 
+// 11. **현재 방침 판이 실제 외부 요청을 전부 설명하는가**(2026-08-25 · 결함 C).
+//     코드는 가입 화면에서 `challenges.cloudflare.com` 스크립트를 받고 서버는 Turnstile
+//     siteverify 를 부른다. 그 사실이 방침에 없으면 **문서가 실제 동작보다 좁다** —
+//     「다른 회사의 서버로 나가지 않습니다」 같은 포괄 문구와 정면으로 충돌한다.
+//     ⚠️ **옛 판은 검사하지 않는다.** 그때는 그 동작이 없었고, 옛 판은 그때 본 바이트다.
+{
+  const cur = String(await R(POLICY_BUNDLE.docs.privacy.path));
+  const REQUIRED = [
+    [/Turnstile/, "Turnstile 이라는 이름"],
+    [/challenges\.cloudflare\.com/, "브라우저가 요청을 보내는 주소"],
+    [/가입 화면/, "언제 불러오는지(가입 화면일 때만)"],
+    [/자동화/, "무엇을 막으려는 처리인지"],
+  ];
+  for (const [re, why] of REQUIRED)
+    assert.match(cur, re, t(`현재 방침 판에 ${why} 가 없다 — 실제 외부 요청이 설명되지 않는다`));
+  // 코드가 실제로 그 주소를 부르는가. 문서만 고치고 코드가 다른 곳을 부르면 둘이 갈린다.
+  const client = String(await R("js/auth.js")), server = String(await R("worker/index.js"));
+  assert.ok(client.includes("challenges.cloudflare.com"),
+    t("js/auth.js 가 방침에 적힌 주소를 안 쓴다 — 문서와 코드가 갈렸다"));
+  assert.ok(server.includes("challenges.cloudflare.com"),
+    t("worker/index.js 가 방침에 적힌 주소를 안 쓴다"));
+  // **로그인 전용 경로에는 위젯이 없다.** 「가입 화면에서만」이라는 문장의 근거다.
+  assert.ok(/가입 화면을 \*\*열 때만\*\*/.test(client) || /가입 화면을 열 때만/.test(client),
+    t("js/auth.js 에 「가입 화면을 열 때만」 근거 주석이 없다 — 방침의 범위 주장이 코드에 안 매여 있다"));
+}
+
 console.log(`test-policies: 통과 — 단언 ${n}개 · 판 ${m.versions.length}개 · pv ${m.bundle.pv} · `
   + `필수 이벤트 ${REQUIRED_POLICY_EVENTS}종(${requiredPolicyKinds.map(([k, a]) => k + "/" + a).join(" ")})`);

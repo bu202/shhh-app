@@ -49,7 +49,7 @@
   - ⚠️ **404 가 아니다 · 삭제가 아니다 · 배포 비실행을 증명한 것이 아니다.** 배포는 Access 뒤에 여전히 존재한다.
   - ⚠️ **가역적이다** — 프리뷰 액세스를 끄면 그 자리에서 다시 401 이다. 끄지 않는다(§16-1 의 1번).
   - ⛔ **복원 금지 해제 조건 ⑦(옛 배포 차단 D1~D12)과는 별개다.** 공개 접근 차단 하나로 대체되지 않는다.
-- **배포된 source 는 `e02e810` 이다**(2026-08-24 · production `7362d2f0` · 아래 §16-5 가 실측 기록이다). 위협 57~65 의
+- **배포된 source 는 `e02e810` 이다**(2026-08-24 · production `7362d2f0` · 아래 §16-5 가 실측 기록이다). 위협 57~69 의
   수정이 여기 들어 있다. **현재 HEAD 해시를 여기 적지 않는다** — `git rev-parse HEAD` 가 원본이고,
   배포 지점과의 차이는 `git log --oneline e02e810..HEAD` 로 본다.
   실측값의 원본은 `docs/HANDOFF.md` §2 **운영현황** 블록이다.
@@ -59,7 +59,7 @@
   (`npx wrangler pages deploy dist --project-name shhh-app --branch main --commit-hash <전체 SHA> --commit-dirty=false`).
   ⛔ **옛 위험 세대(`f72f5225` 등)로 되돌리지 않는다** — 그 세대에 위협 52·56 이 살아 있다.
   ⚠️ 직전 production `19e69dee` 도 계정 라우트가 닫힌 확인된 배포라 후보이지만, 그 세대에는
-  위협 57~65 의 수정이 없다.
+  위협 57~69 의 수정이 없다.
 - **공개 OAuth·계정 기능 출시는 No-Go다.** 이 문서를 끝까지 실행해도 그대로다 —
   남은 것은 §9 에 있다.
 - 이 문서의 모든 원격 작업은 **사용자 승인 대상**이다(`CLAUDE.md` §9). Claude 는 실행하지 않는다.
@@ -82,7 +82,7 @@
 | 시크릿 | `KAKAO_ID` `KAKAO_SECRET` `NAVER_ID` `NAVER_SECRET` `GOOGLE_ID` `GOOGLE_SECRET` | Pages | 그 제공자 버튼이 안 뜬다 |
 | 시크릿 | `MASTER_UIDS` | Pages | 아무도 마스터가 아니다 |
 | 시크릿 | `DEV_ORIGINS` | **개발 Worker 에만** | 로컬·LAN 로그인이 안 된다. ⛔ **운영에 넣지 않는다** — 넣으면 `/api/login/kakao?return=http://192.168.…` 로 세션이 같은 와이파이의 남의 서버로 간다 |
-| 변수 | `APP_ORIGIN` `APP_URL` | `wrangler.jsonc` | 복귀 주소 검증이 안 선다 |
+| 변수 | `APP_ORIGIN` | `wrangler.jsonc` | 복귀 주소 검증이 안 선다. **origin 만** — 네이버 복귀 주소도 여기서 파생한다(별도 `APP_URL` 폐지) |
 | 변수 | **`EDGE_GUARD`** (`waf` 또는 `ratelimit`) | `wrangler.jsonc` | **계정 라우트가 전부 503** — 선언되지 않은 방어를 있다고 보지 않는다(위협 52·55). 모드별 절차는 §13-2 |
 | 바인딩 | `RL`(엣지 레이트리밋) | `wrangler.jsonc` | `EDGE_GUARD="ratelimit"` 인데 없거나 `limit()` 이 함수가 아니면 **`none` 으로 떨어져 계정 라우트 503**. ⚠️ **Pages Functions 에는 못 붙인다**(§13) |
 | 시크릿 | **`READY_KEY`** | Pages | `/api/ready` 의 **진단을 아무도 못 본다**(키 없는 호출은 DB 를 만지지 않고 503). 없다고 전부 공개로 돌아가지 않는다(위협 56) |
@@ -328,7 +328,7 @@ npx wrangler d1 execute shhh-ledger --remote --command \
 | 세션 쿠키를 DB 없이 검증하기 | 지금 리미터는 인증 **앞**이라 신원이 IP 뿐이고, 그래서 공유 IP(CGNAT)가 버킷을 나눠 쓴다. uid 별로 되돌리려면 **서명된 세션 envelope**(전용 시크릿 하나 추가 · 기존 세션 전부 무효)가 필요하다. 지금은 사용자 0명이라 값싸지만, **바꾸는 순간 시크릿이 하나 더 는다** — 별도 결정 |
 | ~~`rate_limits` 를 ledger D1 로 옮기기~~ | ✅ **2026-08-20 에 옮겼다**(위협 49 · migration `migrations-ledger/0003`). 「주 D1 은 임차증 안에서만 만진다」에 예외가 없어졌다. ⚠️ 주 D1 의 옛 표는 **그대로 둔다** — 파괴적 migration 은 별도 승인이고 안 쓰는 표는 해가 없다 |
 | **엣지 남용 방어 자체** | 지금은 붙일 수단이 없다 — Pages Functions 지원 바인딩에 ratelimits 가 없고 `*.pages.dev` 에는 WAF 규칙을 못 건다. 그래서 **계정 라우트가 fail-closed 다**(위협 50). 선택지·비용은 §13 |
-| 외부 법률 검토 L1~L15 | `docs/PRIVACY_LEGAL_REVIEW_PACKET.md`. Claude 가 법적 적합성을 판정하지 않는다 |
+| 외부 법률 검토 L1~L16 | `docs/PRIVACY_LEGAL_REVIEW_PACKET.md`. Claude 가 법적 적합성을 판정하지 않는다 |
 | 네이버·카카오 재승인 | 절차는 `docs/OAUTH_REAPPROVAL_RUNBOOK.md`. **배포와 `/api/ready` 확인이 끝난 뒤에** 낸다 — 검수자가 여는 화면이 최신이어야 한다 |
 | 설치형 PWA 실검증 | iOS Safari · Android Chrome 에서 **설치한 뒤** 오프라인·업데이트를 직접 본다. Node 목이 통과했다고 오프라인이 되는 것이 아니다 |
 | 바깥 origin 수형 그림의 오프라인 | `<img>` 로 받는 응답은 opaque(성공·실패 구분 불가)라 캐시하지 않는다. 하려면 그림을 우리 origin 으로 옮기거나 CORS 를 요청해야 한다(`service-worker.js` 의 `cacheable`) |
@@ -387,7 +387,7 @@ WAF 로도, 우리 코드로도 못 막습니다. D 를 고르면 그 1,000번�
 
 **A(waf)**
 1. 도메인을 Cloudflare 존에 붙이고 Pages 프로젝트에 커스텀 도메인을 연결한다.
-2. `wrangler.jsonc` 의 `APP_ORIGIN`·`APP_URL` 을 새 도메인으로 바꾼다.
+2. `wrangler.jsonc` 의 `APP_ORIGIN` 을 새 도메인으로 바꾼다(**origin 하나뿐**이다 — 네이버 복귀 주소는 여기서 파생한다).
    ⚠️ **`*.pages.dev` 인 채로 `EDGE_GUARD="waf"` 를 선언하면 코드가 `none` 으로 떨어뜨린다** —
    그 조합에서는 WAF 규칙을 걸 수 없기 때문이다.
 3. `"vars": { "EDGE_GUARD": "waf" }` 를 추가한다.
@@ -551,7 +551,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<해시>.shhh-app.pages.dev/api
 
 ### 16-5. **실행 기록 — 2026-08-24 안전 동기화** (실측)
 
-⚠️ **계정 기능을 여는 배포가 아니다.** 목적은 위협 57~65 의 수정을 라이브에 올리는 것 하나이고,
+⚠️ **계정 기능을 여는 배포가 아니다.** 목적은 위협 57~69 의 수정을 라이브에 올리는 것 하나이고,
 `EDGE_GUARD`·`LEDGER`·`0005`·시크릿·OAuth·Turnstile·WAF·도메인·Access 정책은 **하나도 건드리지 않았다.**
 
 | 항목 | 값 |

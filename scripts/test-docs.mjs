@@ -38,7 +38,11 @@ const LIVE = (() => {
   if (!m) { bad("CLAUDE.md 「현재 라이브」에서 production 배포 ID·source 를 못 읽었다 — 그 줄의 모양이 바뀌었다"); return null; }
   // preview 도 같은 블록이 원본이다 — 현재 상태 블록이 옛 preview 를 적으면 검사 29 가 잡는다.
   const pv = R("CLAUDE.md").match(/preview 는 \*\*`([0-9a-f]{8})`\*\*/);
-  return { deploy: m[1], source: m[2], preview: pv ? pv[1] : null };
+  // **배포 날짜**도 원본에서 읽는다. 검사 30 이 「그 수정이 배포보다 앞인가」를 가리는 데 쓴다 —
+  // 배포 뒤에 새로 고친 것은 「로컬 완료 · 배포 안 함」이 **참**이다.
+  const dt = R("CLAUDE.md").match(/\*\*현재 라이브 \((\d{4}-\d{2}-\d{2}) 배포/);
+  if (!dt) bad("CLAUDE.md 「현재 라이브」 제목에서 배포 날짜를 못 읽었다 — 그 줄의 모양이 바뀌었다");
+  return { deploy: m[1], source: m[2], preview: pv ? pv[1] : null, date: dt ? dt[1] : null };
 })();
 if (!LIVE) { console.error("test-docs: 실패"); process.exit(1); }
 const RE_LIVE = new RegExp(LIVE.deploy);
@@ -170,6 +174,25 @@ for (const f of [PACKET, STAGE2, "CLAUDE.md", "docs/HANDOFF.md"]) {
   if (e !== null && e > EDITION) bad(`${f} 가 아직 없는 ${e}판을 말한다 — 설계서는 ${EDITION}판이다`);
 }
 ok(`설계서 ${EDITION}판 · 앞서 나간 판 번호 0건`);
+
+// ── 3-b. **체크리스트의 「현재 판정」 줄이 말하는 판**도 EDITION 에서 파생한다 ────
+//
+// 재현(2026-08-25 · 돌연변이 D06): 그 줄의 `11판` 을 `10판` 으로 되돌려도 `npm test` 가
+// **그대로 통과했다.** 검사 3 은 `CLAUDE.md`·`HANDOFF` 만 보고, 체크리스트는 문서 어딘가에
+// `11판` 이 한 번이라도 있으면 되는 검사들만 스치고 있었다 — 그래서 이 회차에 내가
+// 다른 줄에 `11판` 을 하나 더 적자마자 D06 이 살아남았다.
+// **사람이 「지금 어디까지 왔나」를 읽는 줄이 정확히 이 줄이다.** 그 줄만 겨눈다.
+{
+  const line = R("docs/SECURITY_RELEASE_CHECKLIST.md").split("\n").find((ln) => /^\*\*현재 판정:/.test(ln));
+  if (!line) bad(`docs/SECURITY_RELEASE_CHECKLIST.md 에 「**현재 판정:」 줄이 없다 — 그 줄의 모양이 바뀌었다`);
+  else {
+    if (!new RegExp(`3단계 설계 ${EDITION}판`).test(line))
+      bad(`docs/SECURITY_RELEASE_CHECKLIST.md 의 현재 판정 줄이 설계 ${EDITION}판을 말하지 않는다\n      "${line.slice(0, 110)}…"`);
+    if (new RegExp(`3단계 설계 ${EDITION - 1}판`).test(line))
+      bad(`docs/SECURITY_RELEASE_CHECKLIST.md 의 현재 판정 줄이 낡은 ${EDITION - 1}판을 말한다`);
+  }
+}
+ok(`체크리스트 현재 판정 줄의 설계 판 == ${EDITION}판`);
 
 // ── 6. 반드시 있어야 할 heading ───────────────────────────────────────────
 const REQUIRED = [
@@ -495,7 +518,39 @@ const PACKET_FACTS = [
   const t = R(PACKET);
   for (const [re, what] of PACKET_FACTS) if (!re.test(t)) bad(`${PACKET} 에 ${what} 가 없다`);
 }
-ok("법률 자료가 현재 운영 사실 3건을 담고 있다");
+ok(`법률 자료가 현재 운영 사실 ${PACKET_FACTS.length}건을 담고 있다`);
+
+// ── 12-b. **「설계만 있고 코드가 없다」가 현재형으로 되살아나지 않았나** ──
+//   (2026-08-25 · 결함 B · 돌연변이 D22). 그 표현은 5판까지 이 문서에 있었고, 그 목록은
+//   2026-08-18 에 전부 구현됐다. 되살아나면 외부 검토자가 **없는 것을 전제로** 검토한다.
+//   ⚠️ 정정 맥락(「~라고 적혀 있었다」)은 통과시킨다 — 기록은 지우면 안 된다.
+{
+  const t = R(PACKET);
+  const NOW_FALSE = [
+    [/설계만 있고 코드가 없다/, "「설계만 있고 코드가 없다」"],
+    [/아직 구현 없음/, "「아직 구현 없음」"],
+    [/현재는 회원가입 절차가 없다/, "「현재는 회원가입 절차가 없다」"],
+    [/internalUid/, "삭제된 함수 internalUid"],
+  ];
+  const lines = t.split("\n");
+  for (const [re, what] of NOW_FALSE) {
+    for (let i = 0; i < lines.length; i++) {
+      if (!re.test(lines[i])) continue;
+      // 앞뒤 3줄에 정정·역사 표식이 있으면 그것은 기록이다.
+      const near = lines.slice(Math.max(0, i - 3), i + 4).join("\n");
+      if (/정정|당시|판까지|적혀 있었다|없어졌다|삭제됐다|보존/.test(near)) continue;
+      bad(`${PACKET}:${i + 1} 이 ${what} 를 현재 사실로 말한다 — 그 목록은 구현됐다`);
+    }
+  }
+  // 반대 방향: 세 상태를 갈라 적은 절이 실제로 있어야 한다.
+  for (const [re, what] of [
+    [/① 로컬 코드에 구현돼 있다/, "「로컬 코드에 구현돼 있다」 구분"],
+    [/② 원격에 구성되지 않았다/, "「원격에 구성되지 않았다」 구분"],
+    [/③ 법률 판단이 필요하다/, "「법률 판단이 필요하다」 구분"],
+    [/challenges\.cloudflare\.com/, "가입 화면이 부르는 외부 주소"],
+  ]) if (!re.test(t)) bad(`${PACKET} 에 ${what} 가 없다`);
+}
+ok("법률 자료 — 낡은 「코드 없음」 현재형 0건 · 세 상태 구분 · 외부 요청 등재");
 
 // ── 13. 인수인계·법률 자료의 현재형 문구가 다시 낡지 않았나 ──────────────
 const handoff = R("docs/HANDOFF.md");
@@ -1377,11 +1432,39 @@ ok(`현재 상태 블록의 배포 ID == 현재 라이브 ${LIVE.deploy}`);
 //    Pages 배포로 나가지 않는다 — 지금도 진짜 미배포다.
 {
   const LOCAL_DONE = /로컬\s*(?:구현\s*)?(?:수정\s*)?완료|로컬 구현만/;
+  // ⚠️ **배포 뒤에 고친 것은 면제다**(2026-08-25). 이 검사의 원래 전제는 「문서가 「로컬
+  //    완료」라고 적은 수정은 전부 배포보다 앞이다」였는데, 그 전제는 **다음 재감사가
+  //    시작되는 순간 깨진다** — 배포 뒤에 새로 고친 것은 「로컬 완료 · 배포 안 함」이
+  //    정확한 현재 사실이다. 그래서 **줄에 적힌 날짜**로 가른다.
+  //    ⛔ 날짜가 없으면 면제하지 않는다 — 날짜를 안 적고 빠져나가는 길을 만들지 않는다.
+  //
+  // ⚠️ **이 술어에는 자기검사가 붙는다**(바로 아래). 검사 코드의 면제 규칙은 그 검사 자신이
+  //    잡을 수 없다 — 넓히는 변이는 「아무것도 실패하지 않음」으로 조용히 통과한다.
+  //    그래서 규칙을 **함수로 꺼내고 합성 입력으로 직접 잰다.**
+  const exemptByDate = (ln) => !!LIVE.date
+    && [...ln.matchAll(/(\d{4}-\d{2}-\d{2})/g)].some((d) => d[1] > LIVE.date);
+
+  // 자기검사 — 배포일 전/후/무날짜 세 경우.
+  {
+    const before = LIVE.date.replace(/(\d{2})$/, (d) => String(+d - 1).padStart(2, "0"));
+    const after = LIVE.date.replace(/(\d{2})$/, (d) => String(+d + 1).padStart(2, "0"));
+    if (exemptByDate(`로컬 완료 ${before} · 배포 안 함`))
+      bad(`검사 30 의 면제가 배포일(${LIVE.date}) 이전 날짜(${before})까지 면제한다 — `
+        + "그러면 배포된 수정이 「미배포」를 달고 통과한다");
+    if (!exemptByDate(`로컬 완료 ${after} · 배포 안 함`))
+      bad(`검사 30 의 면제가 배포일 이후 날짜(${after})를 면제하지 않는다 — `
+        + "배포 뒤에 새로 고친 것은 「미배포」가 참이다");
+    if (exemptByDate("로컬 완료 · 배포 안 함"))
+      bad("검사 30 의 면제가 날짜 없는 줄까지 면제한다 — 날짜를 안 적고 빠져나가는 길이 생긴다");
+    if (exemptByDate(`로컬 완료 ${LIVE.date} · 배포 안 함`))
+      bad(`검사 30 의 면제가 배포일 당일(${LIVE.date})을 면제한다 — 그날 배포된 수정이다`);
+  }
   const NOT_DEPLOYED = /배포 안 함|배포하지 않음|배포하지 않았다|배포되지 않았|미배포|로컬에만/g;
   const SEPARATE = /정리\s*(?:전용\s*)?(?:Worker|크론)|cleanup/;   // 별도 배포 대상
   for (const f of DOCS) {
     R(f).split("\n").forEach((ln, i) => {
       if (!LOCAL_DONE.test(ln)) return;
+      if (exemptByDate(ln)) return;
       for (const m of ln.matchAll(NOT_DEPLOYED)) {
         const near = ln.slice(Math.max(0, m.index - 80), m.index + 80);
         if (HISTORY_MARK.test(near) || SEPARATE.test(near)) continue;

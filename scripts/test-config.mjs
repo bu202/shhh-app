@@ -31,6 +31,9 @@ const ROOT = "wrangler.jsonc";
 const CLEANUP_TEMPLATE = "worker/cleanup/wrangler.example.jsonc";
 const CLEANUP_REAL = "worker/cleanup/wrangler.jsonc";
 const RUNBOOK = "docs/OPS_RUNBOOK.md";
+// OAuth 재승인 순서서. **`/api/ready` 200 을 만드는 순서를 적은 문서**라, 코드가 요구하는
+// 이름이 하나라도 빠지면 그 순서만 밟은 사람은 200 을 못 본다(2026-08-25 · 결함 D).
+const OAUTH_RUNBOOK = "docs/OAUTH_REAPPROVAL_RUNBOOK.md";
 
 // ══ 1. 설정이 가리키는 파일이 실제로 있나 ════════════════════════════════
 // 없는 파일을 가리키는 설정은 다음 사람에게 「어딘가 다른 설정이 있다」는 착각을 만든다.
@@ -121,7 +124,7 @@ const RUNBOOK = "docs/OPS_RUNBOOK.md";
   //    「없다는 사실이 문서에 적혀 있어야 한다」다. 아래 6-b 가 값까지 검사한다.
   // ⚠️ `TURNSTILE_SITE_KEY` 는 **공개 값**이다(브라우저에 박히도록 설계된 값). 비밀은
   //    `TURNSTILE_SECRET` 쪽이라 그쪽만 시크릿으로 검사한다.
-  const VARS = new Set(["APP_ORIGIN", "APP_URL", "EDGE_GUARD", "TURNSTILE_SITE_KEY"]);
+  const VARS = new Set(["APP_ORIGIN", "EDGE_GUARD", "TURNSTILE_SITE_KEY"]);
   // **로컬 전용 스위치.** 문서 셋에는 적혀 있어야 하고(있는 줄 모르면 아무도 못 쓴다),
   // **배포 가능한 설정 파일에는 절대 없어야 한다** — 있으면 남용 방어 없이 계정 라우트가
   // 열린 채로 배포된다(위협 50). 그래서 시크릿과 **다르게** 검사한다.
@@ -133,8 +136,10 @@ const RUNBOOK = "docs/OPS_RUNBOOK.md";
   for (const p of providers) { names.add(p.toUpperCase() + "_ID"); names.add(p.toUpperCase() + "_SECRET"); }
 
   const secrets = [...names].filter((x) => !BINDINGS.has(x) && !VARS.has(x) && !LOCAL_ONLY.has(x)).sort();
-  // 문서 넷이 같은 말을 해야 한다. 하나라도 빠지면 그 문서만 보고 배포한 사람이 빠뜨린다.
-  const DOCS = ["README.md", "worker/SETUP.md", RUNBOOK, ROOT];
+  // 문서 다섯이 같은 말을 해야 한다. 하나라도 빠지면 그 문서만 보고 배포한 사람이 빠뜨린다.
+  // ⚠️ `OAUTH_RUNBOOK` 이 2026-08-25 에 들어왔다 — 그전까지 그 문서는 「새 시크릿 3개」만
+  //    적고 있었고, 그 순서만 밟아서는 `/api/ready` 가 **절대 200 이 되지 않았다**(결함 D).
+  const DOCS = ["README.md", "worker/SETUP.md", RUNBOOK, OAUTH_RUNBOOK, ROOT];
   for (const s of secrets) {
     for (const d of DOCS) {
       assert.ok(R(d).includes(s), t(`${d} 에 ${s} 가 없다 — 코드는 이 값을 요구한다`));
@@ -164,6 +169,48 @@ const RUNBOOK = "docs/OPS_RUNBOOK.md";
       assert.ok(!new RegExp(`\\b${stale}\\b`).test(R(d)) || /지웠|없앴|옛/.test(R(d)),
         t(`${d} 가 코드에 없는 ${stale} 를 아직 요구한다`));
     }
+  }
+}
+
+// ══ 4-b. 제공자 검수 자료가 **코드가 만드는 복귀 주소**를 그대로 적었나 ══
+//
+// 왜(2026-08-25 · 결함 D·F): 콘솔에 등록하는 Redirect URI 는 `redirectUri()` 가 만드는 문자열과
+// **한 글자도 다르면 안 된다** — 다르면 제공자가 거부한다(카카오 `KOE006`). 그 문자열의
+// 원본이 `APP_URL` 에서 `APP_ORIGIN` 파생으로 바뀌었으므로, 두 벌이 갈리는지 여기서 잰다.
+// ⚠️ **비밀값 목록을 이 문서들에 요구하지 않는다.** 여기는 「남의 콘솔에 무엇을 넣나」이고,
+//    우리 시크릿 이름을 적으면 제출 자료가 그만큼 새는 쪽으로 나빠진다.
+{
+  const origin = JSON.parse(R(ROOT).replace(/^\s*\/\/.*$/gm, "")).vars.APP_ORIGIN;
+  assert.ok(/^https:\/\/[^/?#]+$/.test(origin),
+    t(`wrangler.jsonc 의 APP_ORIGIN 이 origin 모양이 아니다: ${origin} — appOrigin() 이 거부한다`));
+
+  // 네이버만 앱 주소로 돌아온다(`P.naver.viaApp`). 나머지는 `<origin>/api/cb/<이름>` 이다.
+  const EXPECT = [
+    ["brand/NAVER-REVIEW.md", origin + "/"],
+    ["brand/KAKAO-REVIEW.md", origin + "/api/cb/kakao"],
+  ];
+  for (const [doc, uri] of EXPECT)
+    assert.ok(R(doc).includes(uri),
+      t(`${doc} 에 코드가 만드는 복귀 주소(${uri})가 없다 — 콘솔에 옛 값을 넣게 된다`));
+
+  // 폐지된 이름을 다시 요구하지 않는다. 여기 남으면 「wrangler.jsonc 에 APP_URL 도 넣어라」가 된다.
+  for (const d of [...EXPECT.map(([x]) => x), "worker/SETUP.md", RUNBOOK, OAUTH_RUNBOOK,
+                   "README.md", "docs/SECURITY_RELEASE_CHECKLIST.md", ROOT]) {
+    const src = R(d);
+    for (const ln of src.split("\n")) {
+      if (!ln.includes("APP_URL")) continue;
+      assert.ok(/폐지|없앴|지웠|파생|예전|옛/.test(ln),
+        t(`${d} 가 폐지된 APP_URL 을 아직 요구한다: ${ln.trim().slice(0, 80)}`));
+    }
+  }
+
+  // 카카오 비즈앱 필요 여부를 **어느 문서도 단정하지 않는다**(2026-08-25 정정).
+  // 공식 자료로 확정한 적이 없고, brand/KAKAO-REVIEW.md 는 「확인 필요」로 두고 있었다.
+  for (const d of ["worker/SETUP.md", "brand/KAKAO-REVIEW.md", OAUTH_RUNBOOK]) {
+    const src = R(d);
+    assert.ok(!/비즈\s*앱?\s*전환[도은는]?[^.\n]{0,20}필요\s*(가\s*)?없다/.test(src)
+              || /단정하지 않는다|정정/.test(src),
+      t(`${d} 가 카카오 비즈앱이 필요 없다고 단정한다 — 공식 자료로 확정한 적이 없다`));
   }
 }
 
@@ -266,5 +313,5 @@ const RUNBOOK = "docs/OPS_RUNBOOK.md";
 }
 
 console.log(`test-config: ${n}개 통과 — 설정이 가리키는 파일 실재 · 배포 설정에 placeholder 0건 · `
-  + `정리 Worker 바인딩·cron·비공개 · 코드의 env 이름이 설정과 문서 4곳에 전부 등재 · `
-  + `필수 바인딩 없이 배포 준비됨으로 안 읽힘 · runbook 필수 절차 15종`);
+  + `정리 Worker 바인딩·cron·비공개 · 코드의 env 이름이 설정과 문서 5곳에 전부 등재 · `
+  + `필수 바인딩 없이 배포 준비됨으로 안 읽힘 · runbook 필수 절차 15종 · 제공자 검수 자료의 복귀 주소 = redirectUri() · 폐지된 APP_URL 요구 0건 · 카카오 비즈앱 단정 0건`);

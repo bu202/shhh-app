@@ -85,6 +85,11 @@ try {
                   detail: "대상 코드를 못 찾았다 — 목록이 낡았다" });
       continue;
     }
+    // ⚠️ **두 파일을 함께 바꾸는 변이 기능(`also`)을 만들었다가 지웠다**(2026-08-25).
+    //    쓰려던 곳은 「검사를 무력화하고 그 검사가 막던 조건을 되살린다」였는데, 그런 변이는
+    //    **원리적으로 죽지 않는다** — 없앤 방어가 곧 유일한 관측 수단이라 「아무것도 실패하지
+    //    않음」이 나온다. 답은 기능이 아니라 **검사 쪽에 자기검사를 붙이는 것**이었다
+    //    (`test-docs` 의 `exemptByDate` 합성 입력). 안 쓰는 기능은 남기지 않는다.
     writeFileSync(p, mutated);
     const r = spawnSync("node", [`scripts/${m.suite}.mjs`], { cwd: dir, encoding: "utf8" });
     writeFileSync(p, src);

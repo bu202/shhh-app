@@ -3,7 +3,8 @@
 > **이 문서는 순서다.** 무엇을 적을지는 `brand/NAVER-REVIEW.md` · `brand/KAKAO-REVIEW.md` 가
 > 답한다. 여기서는 **어떤 순서로, 어디서 승인을 받고, 무엇을 확인하고 다음으로 넘어가는가**만 다룬다.
 >
-> **2026-08-19 기준 실행한 것: 0건.** 콘솔 변경도, 검수 요청도, 배포도 하지 않았다.
+> **제공자 콘솔 변경·검수 요청: 0건**(2026-08-25 기준 그대로다). 앱 배포는 그 뒤에 있었지만
+> (`7362d2f0` · 계정 라우트가 닫힌 세대), **이 문서의 9~12 는 하나도 실행되지 않았다.**
 >
 > ⚠️ **1~6 의 실행 명령·중단 기준은 `docs/OPS_RUNBOOK.md` 가 원본이다**(2026-08-19 신설).
 > 여기 표는 「제공자 검수와 어떤 순서로 맞물리는가」이고, 같은 절차를 두 곳에 적지 않는다.
@@ -30,8 +31,10 @@
 | 1 | ~~전역 user-data drain 방식 결정·구현~~ ✅ | 사용자 결정 | **완료 2026-08-18(결정 A′).** T6·T6b·T6c·T47b·T47d 통과 |
 | 1b | ~~4단계 재감사 결함 4건~~ ✅ | — | **완료 2026-08-19.** `LEDGER` fail-closed · 쓰기 증폭 · 리미터 버킷 · 복원 사전점검(위협 39~42) |
 | 2 | ledger D1 생성 · `LEDGER` 바인딩 · migration | **별도 승인**(원격·되돌리기 어려움) | `/api/ready` 의 `ledgerBound:true` **와** `ledger:true`(바인딩과 스키마는 다른 말이다). ⚠️ 없으면 **사용자 데이터 API 가 전부 503** 이고 `/health` 가 `providers: []` 를 준다 |
-| 3 | 새 시크릿 3개 등록 (`SIGNUP_STATE_KEY`·`TOMBSTONE_KEY`·`DELETION_KEY`) | **별도 승인** | `/api/ready` 의 `signupReady:true`. 값은 출력하지 않는다 |
-| 4 | 원격 D1 에 `0005` 적용 | **별도 승인** | 적용 후 `policy_events`·`consumed_signup_states` 존재. `/api/ready` 200 |
+| 3 | **가입·세션·삭제 시크릿 등록** | **별도 승인** | 아래 §1-1 이 이름의 원본이다. **여기 개수를 적지 않는다** — `scripts/test-config.mjs` 가 코드의 `env.*` 와 대조한다. 값은 출력하지 않는다 |
+| 3b | **커스텀 도메인 + WAF** (`EDGE_GUARD`·`APP_ORIGIN`) | **별도 승인**(DNS·외부) | `/api/ready` 의 `abuseReady:true`. ⚠️ `APP_ORIGIN` 이 `*.pages.dev` 면 **선언해도 `none`** 이다(그 존에는 규칙을 못 건다) |
+| 3c | **Turnstile 위젯 생성** (`TURNSTILE_SITE_KEY`·`TURNSTILE_SECRET`) | **별도 승인**(외부) | `/api/health` 의 `turnstileSiteKey` 가 값이고 `signupReady:true` |
+| 4 | 원격 D1 에 `0005` 적용 | **별도 승인** | 적용 후 `policy_events`·`consumed_signup_states` 존재 |
 | 5 | 정리 Worker 배포 (`worker/cleanup/`) | **별도 승인** | 한 주기 뒤 `/api/ready` 의 `cleanupStale:false` |
 | 6 | 앱 배포 | **별도 승인** | `docs/HANDOFF.md` §4-4 의 smoke test |
 | 7 | 배포 후 브라우저 확인 (OAuth 없이 되는 것까지) | — | 아래 §2 |
@@ -45,6 +48,70 @@
 
 > 구글은 **요청 범위가 안 바뀌었다**(`scope: "openid"`). 근거 없이 재승인 절차를 만들지 않는다.
 > 바꿔야 할 것이 생기면 그때 이 표에 행을 더한다.
+> ⚠️ 다만 **「구글 민감범위 심사가 필요 없다」고 단정하지 않는다** — 심사 요건은 구글이 정한다.
+> 우리가 코드에서 확인할 수 있는 것은 지금 `scope` 가 `openid` 하나라는 사실까지다.
+
+---
+
+## 1-1. `/api/ready` 가 200 이 되는 조건 — **코드가 원본이다**
+
+⚠️ **2026-08-25 정정.** 예전 §1 은 「새 시크릿 3개」만 적었고, 그 순서만 밟아서는
+`/api/ready` 가 **절대 200 이 되지 않았다.** 아래는 `worker/index.js` 의 `health()` 를 그대로
+옮긴 것이고, **판정의 원본은 코드다** — 이 목록이 낡으면 `scripts/test-config.mjs` 가 잡는다.
+
+`ready` 는 **다음이 전부 참일 때만** 참이다.
+
+| 무엇이 | 어디가 정하나 | 없으면 |
+|---|---|---|
+| `DB` · `LEDGER` 바인딩 | `wrangler.jsonc` | 계정 라우트가 두 DB 를 만지기 전에 503 |
+| `APP_ORIGIN` 이 **유효한 origin** | `wrangler.jsonc` | `appOrigin()` 이 거부 → `loginPossible` 거짓. **origin 만** — https·path 없음·끝 슬래시 없음 |
+| `loginPossible()` 의 시크릿 전부 | Pages 시크릿 | 제공자 목록이 **빈 배열**이라 버튼이 안 그려진다 |
+| `signupPossible()` 의 시크릿 전부 | Pages 시크릿 + `TURNSTILE_SITE_KEY`(vars) | `signupReady:false` — 로그인은 되고 가입만 막힌다 |
+| `abuseReady` (`EDGE_GUARD` = `waf` 또는 `ratelimit` **이고 실재가 검증됨**) | `wrangler.jsonc` + 외부 구성 | 계정 라우트 503. ⚠️ `DEV_RATE_LIMIT` 은 **로컬 전용이고 `ready` 를 절대 참으로 만들지 않는다** |
+| 제공자가 **하나 이상** 설정됨 | OAuth 시크릿 | `providers: []` |
+
+### 코드가 이름으로 요구하는 것
+
+⛔ **개수를 적지 않는다.** 예전에 「8개」·「3개」로 적었다가 두 번 낡았다. 이름의 실제 원본은
+`worker/index.js` 의 `loginPossible()`·`signupPossible()`·`guardMode()` 이고, 이 표가 그것과
+같은지는 `scripts/test-config.mjs` 가 **코드에서 `env.*` 를 읽어** 대조한다 —
+빠뜨리면 `npm test` 가 실패한다.
+
+| 이름 | 어디에 | 언제 필요한가 |
+|---|---|---|
+| `DB` | `wrangler.jsonc` 바인딩 | 언제나 |
+| `LEDGER` | `wrangler.jsonc` 바인딩 | 언제나. 없으면 사용자 데이터 API 전부 503 |
+| `APP_ORIGIN` | `wrangler.jsonc` vars | 언제나. **origin 만**(https · path 없음 · 끝 슬래시 없음) |
+| `EDGE_GUARD` | `wrangler.jsonc` vars | 계정 라우트를 열려면. `"waf"` 또는 `"ratelimit"` |
+| `TURNSTILE_SITE_KEY` | `wrangler.jsonc` vars (**공개 값**) | 가입 화면이 위젯을 그리려면 |
+| `STATE_KEY` | 시크릿 | 로그인 왕복 서명 |
+| `RL_KEY` | 시크릿 | 레이트리밋 키 HMAC. 없으면 세지 않는다 |
+| `SESSION_ENVELOPE_KEY` | 시크릿 | 세션 서명. 없으면 **쓸 수 없는 계정**이 만들어진다 |
+| `SIGNUP_STATE_KEY` | 시크릿 | 가입 state AEAD |
+| `TOMBSTONE_KEY` | 시크릿 | 가입 state 소비 표식 |
+| `DELETION_KEY` | 시크릿 | 삭제 표식. 없으면 **지울 수 없는 계정**이 된다 |
+| `TURNSTILE_SECRET` | 시크릿 | 서버가 Turnstile 토큰을 검증할 때 |
+| `READY_KEY` | 시크릿 | `/api/ready` 진단을 여는 운영자 키 |
+| `KAKAO_ID` · `KAKAO_SECRET` | 시크릿 | 카카오만 **secret 이 선택**이다(콘솔에서 끄면 없이도 교환된다) |
+| `NAVER_ID` · `NAVER_SECRET` | 시크릿 | 네이버 |
+| `GOOGLE_ID` · `GOOGLE_SECRET` | 시크릿 | 구글 |
+| `MASTER_UIDS` · `DEV_ORIGINS` | 시크릿(선택) | 마스터 계정 · 로컬 개발 origin |
+| `DEV_RATE_LIMIT` | **로컬 전용** | ⛔ 배포 가능한 설정 파일에 넣지 않는다. `ready` 를 참으로 만들지 못한다 |
+
+⚠️ **`APP_URL` 은 폐지됐다**(2026-08-25 · 위협 67). 네이버 복귀 주소는 `APP_ORIGIN` 에서
+파생한다 — 콘솔에 등록하는 Callback URL 은 그대로 `<APP_ORIGIN>/` 이다.
+
+**서로 다른 다섯 가지를 한 단계로 뭉치지 않는다:**
+
+1. **원격 계정 인프라** — ledger D1 생성·바인딩·원격 `0005`·정리 Worker 배포
+2. **커스텀 도메인 + WAF** — `EDGE_GUARD="waf"` 는 `*.pages.dev` 에서 성립하지 않는다
+3. **Turnstile** — 공개 site key(vars)와 비밀키(시크릿)는 **다른 값이고 다른 자리**다
+4. **OAuth 시크릿** — 제공자별 `<NAME>_ID`/`<NAME>_SECRET`
+5. **제공자 콘솔** — Redirect URI·서비스 URL·동의항목. 우리 배포가 아니라 **남의 콘솔**이다
+
+⚠️ **가입 화면 코드는 이미 프로덕션 정적 자산에 들어 있다**(배포 `7362d2f0`). 화면이 안 열리는
+이유는 「기능이 없어서」가 아니라 **위 준비도가 모자라 계정 라우트가 fail-closed 이기 때문**이다.
+그 둘을 같은 말로 적지 않는다 — 「배포하면 열린다」로 읽히면 위 1~5 를 건너뛰게 된다.
 
 ---
 
@@ -57,7 +124,9 @@ OAuth 가 꺼져 있어도 여기까지는 라이브에서 확인된다.
 3. 「가입하기」를 누르면 약관을 불러오는 동안 **로딩 문구**가 뜨고, 뜬 뒤 화면이 **맨 위에서**
    시작한다(중간부터 보이면 안 된다).
 4. 체크 전에는 제공자 버튼이 **눌리지 않는다.** 두 개를 다 켜야 열린다.
-5. `/api/ready` 가 200 이고 `db`·`ledgerBound`·`ledger` 가 `true` 다. `cleanupStale`·`cleanupAlert` 는 `false` 다.
+5. `/api/ready` 가 200 이고 `db`·`ledgerBound`·`ledger`·`abuseReady` 가 `true` 다.
+   `cleanupStale`·`cleanupAlert` 는 `false` 다. **조건 전체는 §1-1 이 답한다** —
+   이 줄만 보고 「나머지는 없어도 된다」로 읽지 않는다.
 6. `/privacy.html` · `/policies/` 가 열린다.
 7. 콘솔에 오류가 없다.
 

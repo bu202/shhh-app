@@ -297,14 +297,14 @@ export const MUTATIONS = [
     id: "D07", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "재감사 결함 합계와 위협 범위를 22건 · 39~60 으로 되돌린다",
     invariant: "결함 합계와 위협 범위는 설계서의 위협 표에서 파생된다 — 낡은 숫자는 「이미 다 봤다」는 착각을 만든다",
-    find: "차례로 재현했다(위협 **39~65** · **여섯 판 연속**",
+    find: "차례로 재현했다(위협 **39~69** · **여섯 판 연속**",
     replace: "차례로 재현했다(위협 39~60 · 다섯 판 연속",
   },
   {
     id: "D08", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "재감사 결함 합계만 22건으로 되돌린다(위협 범위는 그대로 둔다)",
     invariant: "합계는 판별 문형(`4+5+…건` · `N건을 차례로 재현`) 어느 쪽으로 적어도 파생값과 같아야 한다",
-    find: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4+3+1+1건 = **27건** 수정",
+    find: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4+3+1+1+4건 = **31건** 수정",
     replace: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4건 = **22건** 수정",
   },
   {
@@ -351,7 +351,7 @@ export const MUTATIONS = [
     // ⚠️ **이 앵커는 개수가 바뀔 때마다 함께 바꾼다**(D21 을 더하며 세 번째로 고쳤다).
     //    자기가 건드리는 숫자를 앵커에 담는 변이라 피할 수 없다 — 대신 낡으면 실행기가
     //    ANCHOR-MISS 로 종료 코드 1 을 내므로 **조용히 썩지는 않는다.**
-    find: "`scripts/mutations.mjs`(목록 47종",
+    find: "`scripts/mutations.mjs`(목록 66종",
     replace: "`scripts/mutations.mjs`(목록 22종",
   },
   {
@@ -368,11 +368,161 @@ export const MUTATIONS = [
     find: "수정이 여기 들어 있다.",
     replace: "수정 중 위협 57~63 까지가 여기 들어 있다.",
   },
+  // ── 2026-08-25 재마감: drain 결속 · 복귀 주소 · GET 무쓰기 · 세션 폐기 재시도 ──
+  {
+    // ⚠️ **두 층을 함께 없앤다.** 처음에는 이른 return 하나만 지웠는데 SQL 의 `mode <> 'open'`
+    //    이 남아 결과가 같았다 — **동등 변이**라 생존이 공백의 증거가 아니었다(2026-08-25 실측).
+    //    open 거부는 실제로 두 겹이고, 한 겹만 빼는 변이는 그 사실을 재지 못한다.
+    id: "M27", file: "worker/ops.js", suite: "test-deletion-ledger",
+    what: "open 모드 거부를 두 층 모두 없앤다 (이른 return + SQL 조건)",
+    invariant: "요청이 자유롭게 들어오는 상태에서 「멈췄다」를 적지 않는다",
+    transform: (src) => src
+      .replace("  if (cur.mode === \"open\")\n"
+        + "    return { drained: false, why: \"open 에서는 drain 을 인증하지 않는다 — 요청이 자유롭게 들어온다\" };\n", "")
+      .replace("AND mode <> 'open'\n        AND NOT EXISTS", "\n        AND NOT EXISTS"),
+  },
+  {
+    id: "M28", file: "worker/ops.js", suite: "test-deletion-ledger",
+    what: "markDrained 의 mode·epoch CAS 를 없앤다",
+    invariant: "판정에 쓴 게이트가 그대로일 때만 drain 증거를 적는다 (읽고 나서 쓰면 그 사이가 창이다)",
+    find: "      WHERE id = 1 AND mode = ? AND epoch = ? AND mode <> 'open'\n"
+        + "        AND NOT EXISTS (SELECT 1 FROM write_leases)`)\n"
+        + "    .bind(now, cur.mode, cur.epoch).run();",
+    replace: "      WHERE id = 1`)\n    .bind(now).run();",
+  },
+  {
+    id: "M29", file: "worker/ops.js", suite: "test-deletion-ledger",
+    what: "markDrained 의 NOT EXISTS write_leases 조건을 없앤다",
+    invariant: "도는 작업이 하나라도 있으면 drain 증거를 적지 않는다 — 같은 문장 안에서 확인한다",
+    find: "AND mode <> 'open'\n        AND NOT EXISTS (SELECT 1 FROM write_leases)`)",
+    replace: "AND mode <> 'open'`)",
+  },
+  {
+    id: "M30", file: "worker/ledger.js", suite: "test-deletion-ledger",
+    what: "drain 인증 뒤에도 신규 임차증을 내준다",
+    invariant: "drain 이 인증된 epoch 에서는 새 작업이 못 들어온다 (증거가 그 자리에서 거짓이 되면 안 된다)",
+    find: "      WHERE m.mode IN (${marks}) AND m.drained_at IS NULL`)",
+    replace: "      WHERE m.mode IN (${marks})`)",
+  },
+  {
+    id: "M31", file: "worker/ops.js", suite: "test-deletion-ledger",
+    what: "reconcile 의 drain 증거 검사를 없앤다",
+    invariant: "두 DB 를 훑는 승격 판정은 이 epoch 의 drain 증거를 요구한다 (한 문장으로 못 만드는 판정이다)",
+    find: "  if (gate.drained_at == null)\n"
+        + "    return { ok: false, why: \"이 epoch 의 drain 증거가 없다 — markDrained() 로 먼저 인증한다\" };",
+    replace: "",
+  },
+  {
+    id: "M32", file: "worker/ops.js", suite: "test-deletion-ledger",
+    what: "setMode 가 전환할 때 drained_at 을 그대로 둔다",
+    invariant: "모드 전환은 이전 drain 증거를 무효화한다 — 새 epoch 에서는 다시 인증해야 한다",
+    find: "            closed_at = CASE WHEN ? = 'open' THEN NULL ELSE ? END,\n            drained_at = NULL",
+    replace: "            closed_at = CASE WHEN ? = 'open' THEN NULL ELSE ? END",
+  },
+  {
+    id: "M33", file: "worker/index.js", suite: "test-friends",
+    what: "네이버 복귀 주소를 다시 env.APP_URL 에 의존시킨다",
+    invariant: "복귀 주소의 원본은 준비도 계약 안의 APP_ORIGIN 하나다 (계약 밖 변수는 빠져도 readiness 가 초록이다)",
+    find: "  P[name].viaApp ? appOrigin(env) + \"/\" : origin + \"/api/cb/\" + name;",
+    replace: "  P[name].viaApp ? env.APP_URL : origin + \"/api/cb/\" + name;",
+  },
+  {
+    id: "M34", file: "worker/index.js", suite: "test-friends",
+    what: "appOrigin 이 origin 모양을 확인하지 않고 그대로 돌려준다",
+    invariant: "APP_ORIGIN 은 https 이고 path·query·fragment·끝 슬래시가 없어야 한다",
+    find: "  return u.origin === raw ? u.origin : null;",
+    replace: "  return raw;",
+  },
+  {
+    id: "M35", file: "worker/index.js", suite: "test-friends",
+    what: "GET /friends 가 다시 초대 코드를 만든다",
+    invariant: "OAuth 콜백을 뺀 모든 GET 은 주 D1·ledger D1 에 논리적 변경 0건이다 (콜백은 제공자가 GET 으로 되돌려보내므로 없앨 수 없는 예외이고, 서명 state + shh_t 로 묶인다)",
+    find: "        const mine = await liveCode(env, uid);\n"
+        + "        return json(env, req, {\n          code: mine ? mine.code : null,",
+    replace: "        return json(env, req, {\n          code: await myCode(env, uid),",
+  },
+  {
+    id: "M36", file: "worker/index.js", suite: "test-friends",
+    what: "초대 코드 생성 POST 를 라우트 표에서 뺀다 (= 404 로 만든다)",
+    invariant: "코드 생성은 라우트 표에 등재된 same-origin·인증 POST 하나다",
+    find: "  [/^\\/friends\\/code\\/ensure$/, [\"POST\"], true, \"write\", true],\n",
+    replace: "",
+  },
+  {
+    id: "M37", file: "js/authApi.js", suite: "test-client",
+    what: "세션 폐기가 실패해도 표식을 지운다",
+    invariant: "끊었다는 확인(2xx·401) 없이는 표식을 지우지 않는다 — 지우면 그 세션은 영영 남는다",
+    find: "  if (await apiLogoutRaw()) { clearRevokePending(); return true; }\n  return false;",
+    replace: "  const ok = await apiLogoutRaw();\n  clearRevokePending();\n  return ok;",
+  },
+  {
+    id: "M38", file: "js/authApi.js", suite: "test-client",
+    what: "모든 4xx 를 「끊었다」로 친다",
+    invariant: "403·429 는 서버가 세션을 만지지도 않은 응답이다 — 성공으로 치면 그 세션이 남는다",
+    find: "const REVOKED = (status) => status === 401 || (status >= 200 && status < 300);",
+    replace: "const REVOKED = (status) => status < 500;",
+  },
+  {
+    id: "M39", file: "js/auth.js", suite: "test-client",
+    what: "다음 실행의 재시도를 없앤다",
+    invariant: "표식이 남아 있으면 다음 앱 실행이 세션 폐기를 다시 보낸다",
+    find: "    if (!oauthReturn && revokePending()) revokeSession();\n",
+    replace: "",
+  },
+  {
+    id: "M40", file: "js/auth.js", suite: "test-client",
+    what: "복귀 다리 판정을 없애고 언제나 재시도한다",
+    invariant: "로그인 왕복의 복귀 다리에서는 재시도하지 않는다 — 그 자리의 쿠키는 방금 심어진 새 세션이다",
+    find: "    if (!oauthReturn && revokePending()) revokeSession();",
+    replace: "    if (revokePending()) revokeSession();",
+  },
+  {
+    id: "M41", file: "policies/manifest.json", suite: "test-policies", kind: "정적",
+    what: "번들의 privacy 판을 Turnstile 설명이 없는 옛 판으로 되돌린다",
+    invariant: "현재 방침 판은 실제로 나가는 외부 요청을 전부 설명한다 (가입 화면의 challenges.cloudflare.com)",
+    find: "        \"path\": \"policies/privacy-bdb5b38f1baf.html\",",
+    replace: "        \"path\": \"policies/privacy-1d3d2d870876.html\",",
+  },
+  {
+    id: "D22", file: "docs/PRIVACY_LEGAL_REVIEW_PACKET.md", suite: "test-docs", kind: "정적",
+    what: "법률 자료를 다시 「설계만 있고 코드가 없다」로 되돌린다",
+    invariant: "법률 검토 전달 자료는 현재 코드 사실을 말한다 — 없는 것을 전제로 검토하게 하면 검토가 헛돈다",
+    find: "| **① 로컬 코드에 구현돼 있다** |",
+    replace: "| **설계만 있고 코드가 없다** | 회원가입 화면 · policy_events · 삭제 표식 ledger |\n| **코드에 실제로 존재한다** |",
+  },
+  {
+    id: "D23", file: "docs/OAUTH_REAPPROVAL_RUNBOOK.md", suite: "test-config", kind: "정적",
+    what: "runbook 에서 SESSION_ENVELOPE_KEY 행을 지운다",
+    invariant: "코드가 요구하는 이름은 배포 순서를 적은 문서 전부에 등재된다 (빠지면 그 순서로는 /api/ready 가 200 이 안 된다)",
+    find: "| `SESSION_ENVELOPE_KEY` | 시크릿 | 세션 서명. 없으면 **쓸 수 없는 계정**이 만들어진다 |\n",
+    replace: "",
+  },
+  {
+    // ⚠️ **문서 전체에서 지운다.** 처음에는 표의 한 줄만 지웠는데 같은 이름이 §1 의 3c 행에도
+    //    있어 검사가 그대로 통과했다 — **동등 변이**였다(2026-08-25 실측). 검사가 재는 것은
+    //    「그 이름이 이 문서에 있나」이므로, 변이도 그 단위로 만들어야 재는 것과 맞는다.
+    id: "D24", file: "docs/OAUTH_REAPPROVAL_RUNBOOK.md", suite: "test-config", kind: "정적",
+    what: "runbook 에서 TURNSTILE_SECRET 이라는 이름을 전부 지운다",
+    invariant: "코드가 요구하는 이름은 배포 순서 문서 전부에 등재된다 — 공개 site key 와 비밀키는 다른 값이고 둘 다 가입의 전제다",
+    transform: (src) => src.replaceAll("TURNSTILE_SECRET", "(가입 비밀키)"),
+  },
+  {
+    // ⚠️ **처음에는 「면제를 넓히고 조건을 되살리는」 두 조각짜리로 짰는데 살아남았다**
+    //    (2026-08-25 실측). 당연했다 — 검사를 무력화하는 변이는 **그 검사 자신이 잡을 수 없다.**
+    //    없앤 방어가 곧 유일한 관측 수단이면 「아무것도 실패하지 않음」이 나온다.
+    //    그래서 면제 규칙을 술어(`exemptByDate`)로 꺼내고 **합성 입력으로 직접 재는 자기검사**를
+    //    붙였다. 이제 규칙을 넓히는 변이는 그 자기검사가 잡는다.
+    id: "D25", file: "scripts/test-docs.mjs", suite: "test-docs", kind: "정적",
+    what: "검사 30 의 면제를 「날짜만 있으면 통과」로 넓힌다",
+    invariant: "「로컬 완료 · 배포 안 함」 면제는 **배포일보다 뒤에 고친 것**에만 준다 — 날짜가 있다는 사실만으로 면제하지 않는다",
+    find: "    && [...ln.matchAll(/(\\d{4}-\\d{2}-\\d{2})/g)].some((d) => d[1] > LIVE.date);",
+    replace: "    && /(\\d{4}-\\d{2}-\\d{2})/.test(ln);",
+  },
   {
     id: "D17", file: "docs/STAGE3_SIGNUP_SECURITY_DESIGN.md", suite: "test-docs", kind: "정적",
     what: "§13-6 매핑 합계를 낡은 79 로 되돌린다",
     invariant: "매핑 절의 「N건 전부 연결됐다」는 표의 최대 T 번호에서 파생한다 — 표만 늘리고 합계를 안 고치면 검사가 그것을 잡아야 한다",
-    find: "**81건 전부 실행 가능한 단언으로 연결됐다.**",
+    find: "**85건 전부 실행 가능한 단언으로 연결됐다.**",
     replace: "**79건 전부 실행 가능한 단언으로 연결됐다.**",
   },
   {
@@ -398,9 +548,9 @@ export const MUTATIONS = [
   },
   {
     id: "D21", file: "docs/STAGE3_SIGNUP_SECURITY_DESIGN.md", suite: "test-docs", kind: "정적",
-    what: "「종」이 없는 괄호형 내역을 낡은 「정적 17」로 되돌린다",
-    invariant: "총계뿐 아니라 **하위 내역**도 MUTATIONS 에서 파생한다 — 「N종」이라고 안 적은 괄호형 내역도 센다(총계만 보면 46 ≠ 26+17 이 남는다)",
-    find: "(동작 26 · 정적 21).",
-    replace: "(동작 26 · 정적 17).",
+    what: "「종」이 없는 괄호형 내역을 낡은 「정적 21」로 되돌린다",
+    invariant: "총계뿐 아니라 **하위 내역**도 MUTATIONS 에서 파생한다 — 「N종」이라고 안 적은 괄호형 내역도 센다(총계만 보면 66 ≠ 40+21 이 남는다)",
+    find: "(동작 40 · 정적 26).",
+    replace: "(동작 40 · 정적 21).",
   },
 ];

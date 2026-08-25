@@ -14,6 +14,12 @@
     },
     {
       "kind": "privacy",
+      "file": "privacy-bdb5b38f1baf.html",
+      "hash": "bdb5b38f1baf8513b2a9f75421631755e905a7f9fcfc0e4f4c860c684b9f10ca",
+      "added": "2026-08-25"
+    },
+    {
+      "kind": "privacy",
       "file": "privacy-c77d72a0ea60.html",
       "hash": "c77d72a0ea60db7fbf12693b17632ec1da52784dfe8674fe4d5518e74cfc12f2",
       "added": "2026-08-18"
@@ -32,15 +38,15 @@
     }
   ],
   "bundle": {
-    "pv": "6c02f2903c0c",
+    "pv": "005d06cd3411",
     "docs": {
       "age14": {
         "path": "policies/age14-2303810b39a1.txt",
         "hash": "2303810b39a19391051142bcb2ca2f7cec81ff5ea0a9f2a051596af2c8c108b1"
       },
       "privacy": {
-        "path": "policies/privacy-1d3d2d870876.html",
-        "hash": "1d3d2d870876cd4c5390fdcb5e99d5624bacbd9f79761f6e4db6cb1cc70699b7"
+        "path": "policies/privacy-bdb5b38f1baf.html",
+        "hash": "bdb5b38f1baf8513b2a9f75421631755e905a7f9fcfc0e4f4c860c684b9f10ca"
       },
       "summary": {
         "path": "policies/summary-d474a58df31c.txt",
