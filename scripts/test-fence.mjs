@@ -205,6 +205,20 @@ const EXCEPTIONS = [
     t("fence: setFenceEpoch 가 export 됐다 — 일반 코드가 fence 를 임의로 옮길 수 있다"));
 }
 
+// ══ 5-1. ★ `_raw` 탈출구는 **fence 자신만** 쓴다 ═══════════════════════════
+// `withFence()` 가 감싼 바인딩에 `_raw` 를 남겨 뒀다(fence 행 자체를 읽어야 하므로).
+// 그 이름을 아무 데서나 쓰면 **모든 술어를 건너뛰는 우회로**가 된다 — 한 줄이면 충분하다.
+{
+  const uses = [];
+  for (const f of Object.keys(CLASSIFIED)) {
+    const src = stripComments(R(f));
+    for (const m of src.matchAll(/\._raw\b/g))
+      uses.push(`${f}:${src.slice(0, m.index).split("\n").length}`);
+  }
+  assert.ok(uses.every((u) => u.startsWith("worker/fence.js")),
+    t(`fence: fence.js 밖에서 _raw 를 쓴다 (${uses.join(", ")}) — 술어를 통째로 건너뛰는 길이다`));
+}
+
 // ══ 6. 요청 경로가 **감싼 env** 를 넘긴다 ══════════════════════════════════
 {
   const src = stripComments(R("worker/index.js"));
@@ -517,9 +531,39 @@ const makeEnv = () => ({ DB: makeD1(), LEDGER: makeLedger() });
   }
 }
 
+// ══ 12. 검사 파일 자체에 **보이지 않는 제어문자**가 없다 ═══════════════════
+//
+// 왜 이것을 재나: 2026-08-25 에 5-1 검사의 정규식이 `/\._raw\b/` 로 보였는데 실제 바이트에는
+// `\b` 자리에 **백스페이스(0x08)** 가 들어 있었다(문자열을 만든 도구가 `\b` 를 이스케이프로
+// 해석했다). 그래서 그 검사는 **아무것도 매치하지 않으면서 통과**했다 — diff 로도, 터미널
+// 출력으로도 보이지 않는다. 우회로를 막으라고 만든 검사가 조용히 죽어 있는 것이
+// 우회로 자체보다 나쁘다.
+// ⛔ 허용하는 것은 데이터 수집 스크립트의 **의도된 NUL 구분자** 하나뿐이다.
+{
+  // ⚠️ 돌연변이 실행기의 사본에는 `.git` 이 없다 — 원본 저장소 경로를 넘겨받는다
+  //    (`scripts/deployed.mjs` 와 같은 규약). 목록은 원본에서 얻고 **내용은 여기서** 읽으므로,
+  //    변이가 넣은 제어문자도 그대로 걸린다.
+  const { execFileSync } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const repo = process.env.SHHH_GIT_ROOT || fileURLToPath(new URL("..", import.meta.url));
+  const files = execFileSync("git", ["ls-files"], { encoding: "utf8", cwd: repo })
+    .trim().split("\n");
+  const ALLOW = new Set(["scripts/fetch-ksl.mjs"]);   // 합성 키의 NUL 구분자 — 의도된 것이다
+  const offenders = [];
+  for (const f of files) {
+    if (ALLOW.has(f) || /\.(png|jpg|jpeg|gif|webp|ico|woff2?|pdf|zip)$/i.test(f)) continue;
+    let src; try { src = R(f); } catch { continue; }
+    const hits = [...src.matchAll(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g)];
+    if (hits.length) offenders.push(`${f} (${hits.length}개)`);
+  }
+  assert.deepEqual(offenders, [],
+    t(`fence: 추적 파일에 보이지 않는 제어문자가 있다 — 정규식이 조용히 죽는다: ${offenders.join(", ")}`));
+}
+
 console.log(`test-fence: ${n}개 통과 — worker/ 전수 분류 · 사용자 데이터 문장의 {FENCE} 전수 ·`
   + ` 예외 실재와 이유 · cleanup 동적 디스패치 · write_fence 쓰기 1곳(미export) ·`
-  + ` 요청 경로의 withFence · 옛 epoch 은 읽기·쓰기·batch 전부 차단 ·`
+  + ` _raw 는 fence.js 안에서만 · 요청 경로의 withFence · 옛 epoch 은 읽기·쓰기·batch 전부 차단 ·`
   + ` 정상 0행은 오류가 아님(멱등 유지) · {FENCE} 누락은 예외 · 전환 프로토콜 재개(3단계) ·`
+  + ` 검사 파일의 제어문자 0건 ·`
   + ` stale 해제 10조건(open 거부 · live lease · 완충 · epoch 불일치 · 전환 중 · 사유·라벨 ·`
   + ` 최소 기록과 37일 · 경합 시 원자적 실패 · ledger 장애 fail-closed · 크론 자동삭제 없음)`);

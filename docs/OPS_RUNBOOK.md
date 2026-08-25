@@ -208,9 +208,87 @@ npx wrangler d1 execute shhh-db --remote --command \
 
 **중단 기준:** ③이 실패하면 ④를 하지 않고 멈춘다. `users` 수가 변했으면 즉시 멈추고 조사한다.
 
+## 6-1. 주 D1 에 `0006` 적용 — 쓰기 fence (2026-08-25)
+
+`0006` 은 주 D1 에 `write_fence` 한 행을 만든다. 이것이 ledger 의 `maintenance.epoch` 을
+주 D1 안으로 복제한 값이고, 사용자 데이터를 만지는 **모든 문장**이 이 값을 술어로 들고 나간다.
+
+⚠️ **적용 직후에는 일부러 어긋나 있다.** `0006` 은 `epoch = 0` 을 넣는데 ledger 쪽은
+그동안 전환한 만큼 올라가 있다. 그 어긋남이 곧 fail-closed 이고, **§6-2 의 동기화를 돌리기
+전까지 계정 라우트는 전부 503 이며 `/api/ready` 가 `fenceSynced:false` 다.** 그것이 정상이다.
+
+```bash
+# 1) 적용 전 — 표가 아직 없어야 한다
+npx wrangler d1 execute shhh-db --remote --command \
+  "SELECT name FROM sqlite_master WHERE type='table' AND name='write_fence'"
+# 2) 적용
+npx wrangler d1 execute shhh-db --remote --file migrations/0006_write_fence.sql
+# 3) 적용 후 — 행 하나 · epoch 0
+npx wrangler d1 execute shhh-db --remote --command "SELECT * FROM write_fence"
+```
+
+## 6-2. ledger 에 `0004` 적용 + 두 DB 동기화 (2026-08-25)
+
+`0004` 는 `maintenance.pending_transition` 컬럼과 `transitions`·`lease_resolutions` 두 표를
+더한다. ⚠️ **`ALTER TABLE ADD COLUMN` 은 `IF NOT EXISTS` 를 못 쓴다** — 두 번 돌리면 실패한다.
+이미 적용됐는지는 컬럼 목록으로 확인한다.
+
+```bash
+# 1) 이미 적용됐나
+npx wrangler d1 execute shhh-ledger --remote --command "PRAGMA table_info(maintenance)"
+#    → pending_transition 이 보이면 건너뛴다
+# 2) 적용
+npx wrangler d1 execute shhh-ledger --remote --file migrations-ledger/0004_transition_and_lease_resolution.sql
+# 3) 확인
+npx wrangler d1 execute shhh-ledger --remote --command \
+  "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('transitions','lease_resolutions')"
+```
+
+**그 다음 두 DB 를 맞춘다.** 맞추는 것은 SQL 이 아니라 **전환 프로토콜**이다 — 신규 lease 를
+막고, 주 D1 fence 를 올리고, ledger 를 확정하는 세 단계다(`worker/ops.js` 의 `setMode`).
+⚠️ **손으로 `UPDATE write_fence` 를 치지 않는다.** 그러면 신규 lease 차단 단계를 건너뛰어,
+그 창에 들어온 요청이 옛 epoch 을 들고 나가 곧바로 막힌다(사용자에게는 이유 없는 503 이다).
+
+**중단 기준:** ③ 의 두 표가 안 보이면 배포하지 않는다. 동기화 뒤 `/api/ready` 의
+`fenceSynced` 가 `true` 가 아니면 **계정 라우트를 열지 않는다** — 그 상태에서는 어차피
+모든 사용자 데이터 문장이 0행이다.
+
+## 6-3. stale write lease 사고 대응 (2026-08-25)
+
+**증상:** `/api/ready` 가 정상인데 `drainState()` 의 `stale` 이 0 이 아니고, 그래서
+`markDrained()` 와 reconciliation 이 계속 거부된다. 원인은 요청이나 크론이 해제 전에 끝난 것이다.
+
+⛔ **`DELETE FROM write_leases` 를 손으로 치지 않는다.** 그 행이 「아직 안 끝났다」의 유일한
+증거이고, 지우면 복원 금지가 저절로 풀린다.
+
+⛔ **「시간이 지났으니 죽었을 것」을 근거로 삼지 않는다.** Workers 의 CPU 제한과 HTTP 요청의
+wall-clock 수명은 다른 것이고, 클라이언트 연결이 유지되는 동안 요청은 하드 제한 없이 살아
+있을 수 있다. 안전 근거는 **구조적 fencing** 이다 — 옛 epoch 의 요청은 두 DB 어디에도
+한 줄도 쓸 수 없다.
+
+절차는 `resolveStaleLeases()` 하나이고, 아홉 조건을 **코드가** 확인한다(강제 진행 플래그가 없다).
+
+1. `setMode(env, "maintenance")` — 또는 복원 준비 중이면 `restore_closed`
+2. 전환이 끝났는지 확인: `/api/ready` 의 `fenceSynced === true`
+3. `resolveStaleLeases(env, { operatorRef: "ops-YYYY-MM-DD", reasonCode: "<열거값>" })`
+   - `reasonCode` 는 `worker_terminated` · `release_failed` · `ledger_unavailable` ·
+     `unknown_after_incident` 넷 중 하나다. **자유 입력이 아니다.**
+   - `operatorRef` 는 **비식별 라벨**이다. 이메일·이름을 적지 않는다.
+4. 결과가 `ok:false` 면 `why` 를 읽고 **그 조건을 먼저 해결한다.** 우회로가 없다.
+5. 해제 뒤 `drainState()` 의 `drained` 가 참이 되는지 확인한다.
+
+**남는 기록:** `lease_resolutions` 에 lease_id·epoch·시각·사유코드·운영자 라벨만 37일 보관된다.
+IP·UID·요청 경로·자유 입력 사유는 저장하지 않는다(사용자 결정 1 · 2026-08-25).
+기한이 지나도 남아 있으면 `/api/ready` 의 `cleanupAlert` 가 참이 된다.
+
 ## 7. 배포 — 순서가 곧 방어다
 
 **순서를 바꾸지 않는다.** 앞의 것이 없으면 뒤의 것이 사용자에게 오류로 보인다.
+
+⚠️ **배포가 끝나면 `scripts/deployed.mjs` 의 `DEPLOYED_SOURCE` 를 그 source 커밋으로 바꾼다.**
+그 한 줄이 「무엇이 배포됐나」의 원본이고, 나머지 숫자는 전부 git 에서 파생된다. 갱신을 잊으면
+`scripts/test-docs.mjs` 가 배포 주장을 **옛 커밋**과 대조하므로 시끄럽게 실패한다 —
+조용히 낡지는 않는다.
 
 1. §2 ledger D1 생성 + migration
 2. §5 시크릿 등록
