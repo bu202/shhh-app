@@ -17,7 +17,7 @@ import {
   deletionMark, DELETION_KEY_VERSION, acquireLease, leaseAlive, releaseLease, activeLeases,
   markPending, markConfirmed, sweepConfirmed, pendingAlertCount, pendingTotalCount,
   CONFIRMED_RETENTION, PENDING_ALERT,
-  drainState, rememberDeletionKey,
+  drainState, rememberDeletionKey, LEASE_MODES_REQUEST, LEASE_MODES_CLEANUP,
 } from "../worker/ledger.js";
 import {
   setMode, markDrained, reconcile, removeStalePending, mergeDeletions, restoreTargets,
@@ -32,7 +32,7 @@ const t = (m) => { n++; return m; };
 const KEY32 = Buffer.from(Uint8Array.from({ length: 32 }, (_, i) => i + 3)).toString("base64url");
 
 function makeEnv(extra = {}) {
-  return { APP_ORIGIN: ORIGIN, APP_URL: ORIGIN + "/", STATE_KEY: "k", RL_KEY: "r",
+  return { APP_ORIGIN: ORIGIN, STATE_KEY: "k", RL_KEY: "r",
            DEV_RATE_LIMIT: "1",   // 로컬 전용 남용 방어 스위치(위협 50). 없으면 계정 라우트가 503
            SIGNUP_STATE_KEY: KEY32, TOMBSTONE_KEY: "tk", DELETION_KEY: "dk",
            SESSION_ENVELOPE_KEY: "env-key",
@@ -217,6 +217,10 @@ const call = (env, token, path, method = "GET") => worker.fetch(new Request("htt
   await releaseLease(env, lease);
   env.DB._db.exec(`DELETE FROM users WHERE id = '${A.uid}'`);
   await setMode(env, "maintenance");
+  // ⚠️ **reconcile 은 이 epoch 의 drain 증거를 요구한다**(2026-08-25 · T82-f). 두 DB 를
+  //    페이지 단위로 훑는 판정이라 한 문장으로 못 만들고, 훑는 동안 아무도 안 돈다는
+  //    근거가 이것뿐이다.
+  assert.equal((await markDrained(env)).drained, true, t("T36: 조용한데 drain 인증이 거부됐다"));
   const r = await reconcile(env);
   assert.equal(r.promoted, 1, t("T36: 계정이 없는 pending 이 승격되지 않았다"));
   const row = lrows(env, "SELECT * FROM deletions")[0];
@@ -236,6 +240,7 @@ const call = (env, token, path, method = "GET") => worker.fetch(new Request("htt
   const before = { l: JSON.stringify(lrows(env, "SELECT * FROM deletions")), u: ucount(env),
                    b: env.DB._db.prepare("SELECT COUNT(*) n FROM books").get().n,
                    f: env.DB._db.prepare("SELECT COUNT(*) n FROM friendships").get().n };
+  assert.equal((await markDrained(env)).drained, true, t("T37: 조용한데 drain 인증이 거부됐다"));
   const r = await reconcile(env);
   assert.equal(r.ok, true, t("T37: reconciliation 이 실행되지 않았다"));
   assert.equal(r.promoted, 0, t("T37: 살아 있는 계정의 pending 이 승격됐다"));
@@ -607,7 +612,162 @@ const call = (env, token, path, method = "GET") => worker.fetch(new Request("htt
   }
 }
 
+// ══ J. drain 증거가 mode·epoch·신규 lease 와 결속돼 있나 (T82) ═══════════
+//
+// 고치기 전(재현): `markDrained()` 는 `activeLeases()` 를 **읽은 뒤** 조건 없는
+// `UPDATE maintenance SET drained_at = ?` 를 던졌고, `acquireLease()` 는 `drained_at` 을
+// 보지 않았으며, `reconcile()` 도 보지 않았다. 그래서 넷이 한꺼번에 성립했다:
+//   ① `mode='open'` 인 채로 drained_at 이 적혔다 — 요청이 자유롭게 도는 상태의 「멈췄다」
+//   ② lease 0 을 읽은 직후 다른 운영자가 전환해도 그 값이 새 epoch 에 그대로 적혔다
+//   ③ 적힌 직후 신규 임차증이 나가 증거가 **그 자리에서** 거짓이 됐다
+//   ④ 증거가 없어도 reconcile 이 승격 판정을 돌렸다
+// 실측 출력: `markDrained -> {"drained":true}` · 게이트 `{"mode":"open","drained_at":<수>}` ·
+//            drain 인증 뒤 `acquireLease -> <uuid>` · `drainState -> {"open":1,"drained":false}`
+{
+  // ── T82-a. **open 에서는 거부한다.** 「지금 아무 요청도 안 왔다」는 「멈췄다」가 아니다.
+  {
+    const env = makeEnv();
+    const r = await markDrained(env);
+    assert.equal(r.drained, false, t("T82-a: open 모드인데 drain 인증이 통과했다"));
+    const g = lrows(env, "SELECT mode, drained_at FROM maintenance WHERE id = 1")[0];
+    assert.equal(g.drained_at, null,
+      t("T82-a: open 인데 drained_at 이 적혔다 — 요청이 도는 상태의 「멈췄다」는 거짓 증거다"));
+  }
+
+  // ── T82-b. **활성 lease 가 있으면 거부하고 아무것도 안 적는다.**
+  {
+    const env = makeEnv();
+    await setMode(env, "maintenance");
+    const lease = await acquireLease(env);
+    assert.ok(lease, t("T82-b: maintenance 에서 임차증을 못 땄다"));
+    const r = await markDrained(env);
+    assert.equal(r.drained, false, t("T82-b: lease 가 살아 있는데 drain 됐다고 한다"));
+    assert.equal(lrows(env, "SELECT drained_at FROM maintenance WHERE id = 1")[0].drained_at, null,
+      t("T82-b: 거부했다면서 drained_at 이 적혔다"));
+  }
+
+  // ── T82-b2. ★ **읽은 뒤·쓰기 전에 임차증이 생기면 그 문장이 실패한다.**
+  //   위 b 는 「시작할 때 이미 있었다」를 잰다. 그것만 재면 `activeLeases()` 라는 **앞선 읽기**
+  //   하나로 통과하고, `NOT EXISTS (write_leases)` 를 UPDATE 에서 빼도 살아남는다(실측:
+  //   그 변이가 M29 로 생존했다). 재려는 것은 **읽기와 쓰기 사이의 창**이다.
+  {
+    const env = makeEnv();
+    await setMode(env, "maintenance");
+    // `activeLeases()` 가 던지는 그 SELECT 가 끝나는 순간에 다른 요청이 들어온 상황을 만든다.
+    let armed = true;
+    const real = env.LEDGER.prepare.bind(env.LEDGER);
+    env.LEDGER = { ...env.LEDGER, prepare: (sql) => {
+      const st = real(sql);
+      if (!armed || !/COUNT\(\*\) AS open/.test(sql)) return st;
+      const first = st.first.bind(st);
+      return { ...st, bind: (...a) => { st.bind(...a); return st === null ? st : Object.assign({}, st, {
+        first: async (...c) => { const r = await first(...c); armed = false;
+          await acquireLease(env, LEASE_MODES_REQUEST); return r; } }); } };
+    } };
+    const r = await markDrained(env);
+    assert.equal(r.drained, false,
+      t("T82-b2: 읽은 뒤 임차증이 생겼는데 drain 이 인증됐다 — 읽기와 쓰기 사이가 창이다"));
+    assert.equal(lrows(env, "SELECT drained_at FROM maintenance WHERE id = 1")[0].drained_at, null,
+      t("T82-b2: 그 사이에 들어온 작업이 있는데 drained_at 이 적혔다"));
+  }
+
+  // ── T82-c. **lease 0 을 읽은 뒤 게이트가 바뀌면 CAS 로 실패한다.**
+  //   `markDrained` 가 읽은 mode·epoch 을 UPDATE 조건에 넣지 않으면, 사람이 본 근거와
+  //   실제 상태가 갈린 채로 증거가 적힌다.
+  //   ⚠️ **운영 코드에 테스트용 인자를 만들지 않는다.** 처음에는 `markDrained(env, now, {gate})`
+  //      로 낡은 게이트를 밀어넣게 짰는데, 이 저장소는 「판정에 쓰는 값을 인자로 받는」 무늬로
+  //      두 번 뚫렸다(`restoreGate(state)` · `reopenReport(markFns)`). 그래서 경합은
+  //      **저장소 계층을 가로채서** 만든다 — T82-b2 와 같은 방법이다.
+  {
+    const env = makeEnv();
+    await setMode(env, "maintenance");
+    // lease 수를 읽은 직후 다른 운영자가 전환한 상황: epoch 이 한 칸 움직인다.
+    let armed = true;
+    const real = env.LEDGER.prepare.bind(env.LEDGER);
+    env.LEDGER = { ...env.LEDGER, prepare: (sql) => {
+      const st = real(sql);
+      if (!armed || !/COUNT\(\*\) AS open/.test(sql)) return st;
+      const first = st.first.bind(st);
+      return Object.assign({}, st, {
+        bind: (...a) => { st.bind(...a); return Object.assign({}, st, {
+          first: async (...c) => {
+            const r = await first(...c);
+            armed = false;
+            // 게이트만 한 칸 움직인다(임차증은 그대로 0이다) — 재려는 것이 **CAS** 다.
+            env.LEDGER._db.prepare("UPDATE maintenance SET epoch = epoch + 1 WHERE id = 1").run();
+            return r;
+          } }); },
+      });
+    } };
+    const r = await markDrained(env);
+    assert.equal(r.drained, false,
+      t("T82-c: 판정 뒤 게이트가 바뀌었는데 drain 이 기록됐다 — CAS 가 없다"));
+    assert.equal(lrows(env, "SELECT drained_at FROM maintenance WHERE id = 1")[0].drained_at, null,
+      t("T82-c: CAS 가 실패했는데 drained_at 이 적혔다"));
+  }
+
+  // ── T82-d. **drain 이 인증된 epoch 에서는 신규 임차증이 안 나간다.**
+  //   여기가 위 ③ 이다 — 증거를 적은 다음 순간에 새 작업이 들어오면 증거는 이미 거짓이다.
+  {
+    const env = makeEnv();
+    await setMode(env, "maintenance");
+    assert.equal((await markDrained(env)).drained, true, t("T82-d: 조용한 maintenance 에서 drain 이 거부됐다"));
+    assert.equal(await acquireLease(env, LEASE_MODES_REQUEST), null,
+      t("T82-d: drain 인증 뒤에 요청 임차증이 나갔다 — 증거가 그 자리에서 거짓이 됐다"));
+    assert.equal(await acquireLease(env, LEASE_MODES_CLEANUP), null,
+      t("T82-d: drain 인증 뒤에 정리 크론 임차증이 나갔다"));
+    assert.equal((await drainState(env)).drained, true, t("T82-d: 증거를 적었는데 drain 이 깨졌다"));
+  }
+
+  // ── T82-e. **모드 전환은 이전 증거를 무효화한다.** 새 epoch 에서는 다시 인증해야 하고,
+  //   그래야 임차증이 다시 나간다(막는 쪽만 재면 「늘 거부」로 고쳐도 통과한다).
+  {
+    const env = makeEnv();
+    await setMode(env, "maintenance");
+    await markDrained(env);
+    await setMode(env, "open");
+    assert.equal(lrows(env, "SELECT drained_at FROM maintenance WHERE id = 1")[0].drained_at, null,
+      t("T82-e: 모드를 옮겼는데 옛 drain 증거가 남았다"));
+    assert.ok(await acquireLease(env, LEASE_MODES_REQUEST),
+      t("T82-e: 증거가 무효화됐는데 임차증이 계속 막힌다"));
+  }
+
+  // ── T82-f. **증거가 없으면 reconcile 이 거부한다.** reconcile 은 두 DB 를 페이지 단위로
+  //   훑어서 한 문장으로 못 만든다 — 훑는 동안 계정이 바뀌지 않았다는 근거가 drain 증거다.
+  {
+    const env = makeEnv();
+    const A = await mkUser(env, "t82f");
+    const lease = await acquireLease(env);
+    const mark = await deletionMark(env, A.uid);
+    await markPending(env, lease, mark);
+    await releaseLease(env, lease);
+    await setMode(env, "maintenance");
+    env.DB._db.exec(`DELETE FROM users WHERE id = '${A.uid}'`);
+    const no = await reconcile(env);
+    assert.equal(no.ok, false, t("T82-f: drain 증거 없이 승격 판정이 돌았다"));
+    assert.match(no.why, /drain/, t("T82-f: 거부 사유가 drain 증거가 아니다"));
+    assert.equal(lrows(env, "SELECT confirmed_at FROM deletions WHERE mark = ?", mark)[0].confirmed_at, null,
+      t("T82-f: 거부했는데 승격됐다"));
+    // 반대쪽 — 인증하면 돈다.
+    assert.equal((await markDrained(env)).drained, true, t("T82-f: 조용한데 drain 인증이 거부됐다"));
+    const yes = await reconcile(env);
+    assert.equal(yes.ok, true, t("T82-f: 증거가 있는데 reconcile 이 거부됐다"));
+    assert.equal(yes.promoted, 1, t("T82-f: 승격이 안 일어났다"));
+  }
+
+  // ── T82-g. **증거가 있어도 복원은 계속 금지다.** drain 은 사전점검의 한 줄일 뿐이다.
+  {
+    const env = makeEnv();
+    await setMode(env, "maintenance");
+    await markDrained(env);
+    const pre = await restorePreflight(env);
+    assert.equal(pre.restoreAllowed, false, t("T82-g: drain 을 인증했더니 복원이 허용됐다"));
+    assert.equal(pre.preflightPassed, false, t("T82-g: 미충족 조건이 남았는데 사전점검을 통과했다"));
+  }
+}
+
 console.log(`test-deletion-ledger: ${n}개 통과 — 표식 HMAC · saga 실패 매트릭스 · lease/epoch fencing · `
   + `promote-only reconciliation · stale pending 5조건 · ledger 병합(방향·충돌·검증) · `
   + `재삭제 대상 고유 UID · 복원 금지 gate 9조건(질의로만 참이 되는 noActiveLeases 포함) · confirmed 만 정리 · `
-  + `T78 pending 도 fencing · 확정은 일회성(보유기간이 안 밀린다)`);
+  + `T78 pending 도 fencing · 확정은 일회성(보유기간이 안 밀린다) · `
+  + `T82 drain 증거가 mode·epoch·신규 lease 와 결속`);

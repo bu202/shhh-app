@@ -60,7 +60,8 @@ export async function setMode(env, mode, { now = Date.now() } = {}) {
 }
 
 // 게이트 한 줄. 여러 함수가 같은 질의를 하고 있었다 — 한 곳으로 모은다.
-const gateRow = (env) => env.LEDGER.prepare("SELECT mode, epoch FROM maintenance WHERE id = 1").first();
+const gateRow = (env) => env.LEDGER.prepare(
+  "SELECT mode, epoch, drained_at FROM maintenance WHERE id = 1").first();
 
 // ⚠️ **보고서에 유효기간을 두지 않는다.** 두려던 이유는 「사람이 보고서를 들고 있다가 나중에
 //    쓰는 것」을 막기 위해서였는데, 그건 애초에 보고서를 **받아서 믿을 때만** 생기는 위험이다.
@@ -74,10 +75,41 @@ const gateRow = (env) => env.LEDGER.prepare("SELECT mode, epoch FROM maintenance
 // ⚠️ **옛 주석은 「이것은 삭제 saga 의 drain 이다」였다.** 그때는 그게 사실이었고, 그 값을
 //    「모든 쓰기가 멈췄다」로 읽은 것이 위협 32 였다. 지금은 범위가 넓어졌지만 **결론은 같다** —
 //    `drained_at` 을 적는다고 주 D1 복원이 허용되지 않는다. restoreGate() 를 보라.
+//
+// ⚠️ **증거는 게이트 한 줄에 결속된다**(2026-08-25 · 위협 66). 고치기 전에는 `activeLeases()`
+//    를 읽은 뒤 **조건 없는** UPDATE 를 던졌고, `acquireLease()` 는 `drained_at` 을 보지
+//    않았다. 그래서 셋이 한꺼번에 성립했다(재현 T82):
+//      ① `mode='open'` 인 채로 「멈췄다」가 적혔다 — 요청이 자유롭게 도는 상태다
+//      ② lease 0 을 읽은 직후 다른 운영자가 전환해도 그 값이 **새 epoch** 에 그대로 적혔다
+//      ③ 적힌 **다음 순간** 신규 임차증이 나가 증거가 그 자리에서 거짓이 됐다
+//    「그때 0이었다」는 증거가 아니다. 증거는 **「지금도 0이고, 앞으로도 안 들어온다」**여야 한다.
+//
+// 그래서 한 문장 안에서 넷을 함께 확인한다 — 읽고 나서 쓰면 그 사이가 곧 창이다.
+//   · `mode <> 'open'`                    요청이 막히는 상태여야 한다
+//   · `mode = ?` `epoch = ?`  (CAS)       판정에 쓴 게이트가 그대로여야 한다
+//   · `NOT EXISTS (write_leases)`         도는 작업이 하나도 없어야 한다(만료 미해제 포함)
+//   · 변경 행 수가 정확히 1
+// 그리고 **앞으로도 안 들어오는 것**은 `acquireLease()` 가 진다 — 같은 행의 `drained_at IS NULL`
+// 을 INSERT 조건에 넣어, 증거가 적힌 epoch 에서는 신규 획득이 원자적으로 0행이 된다.
+//
+// ⛔ **판정에 쓰는 값을 인자로 받지 않는다.** 처음에는 테스트가 경합을 만들기 쉽게 `gate` 를
+//    받게 짰다. 그 인자는 실제로 완화되지 않았지만(틀린 값을 주면 CAS 가 닫는 쪽으로 실패한다)
+//    이 저장소는 **같은 무늬로 두 번 뚫렸다** — `restoreGate(state)` 와 `reopenReport(markFns)`.
+//    「이번엔 안전하다」는 다음 사람이 조건을 하나 더 얹을 때 무너진다. 경합은 테스트가
+//    **저장소 계층을 가로채서** 만든다(T82-b2·T82-c) — 운영 코드에 문을 내지 않는다.
 export async function markDrained(env, now = Date.now()) {
+  const cur = await gateRow(env);
+  if (cur.mode === "open")
+    return { drained: false, why: "open 에서는 drain 을 인증하지 않는다 — 요청이 자유롭게 들어온다" };
   const n = await activeLeases(env, now);
   if (n !== 0) return { drained: false, activeLeases: n };
-  await env.LEDGER.prepare("UPDATE maintenance SET drained_at = ? WHERE id = 1").bind(now).run();
+  const r = await env.LEDGER.prepare(
+    `UPDATE maintenance SET drained_at = ?
+      WHERE id = 1 AND mode = ? AND epoch = ? AND mode <> 'open'
+        AND NOT EXISTS (SELECT 1 FROM write_leases)`)
+    .bind(now, cur.mode, cur.epoch).run();
+  if (!(r.meta && r.meta.changes === 1))
+    return { drained: false, why: "drain 인증이 경합했다 — 게이트가 바뀌었거나 작업이 다시 돈다" };
   return { drained: true, activeLeases: 0, drainedAt: now };
 }
 
@@ -103,6 +135,15 @@ export async function reconcile(env, { now = Date.now(), pageSize = 500 } = {}) 
   if (gate.mode === "open") return { ok: false, why: "maintenance 가 open 이다" };
   const n = await activeLeases(env, now);
   if (n !== 0) return { ok: false, why: `활성 deletion lease ${n}건 — drain 되지 않았다` };
+  // ⚠️ **지금 epoch 의 drain 증거를 요구한다**(2026-08-25 · 위협 66). 위 lease 검사는
+  //    「이 한 순간 0이었다」이고, 이 함수는 두 DB 를 **페이지 단위로 훑어** 그 뒤에 승격을
+  //    쓴다 — 훑는 동안 계정이 지워지면 살아 있다고 본 계정이 사실은 없고, 그 반대도 난다.
+  //    한 문장으로 만들 수 없는 판정이라 **문장 밖의 정지 증거**가 필요하다.
+  //    `setMode()` 가 전환마다 `drained_at` 을 NULL 로 되돌리므로 옛 epoch 의 증거는 못 쓴다.
+  //    ⛔ `removeStalePending()` 에는 이걸 요구하지 않는다 — 거기는 검사와 삭제가 **같은
+  //       문장 안**이라(`NOT EXISTS write_leases` + mode·epoch CAS) 문장 밖 증거보다 강하다.
+  if (gate.drained_at == null)
+    return { ok: false, why: "이 epoch 의 drain 증거가 없다 — markDrained() 로 먼저 인증한다" };
   // 인자를 막아도 **env 의 키가 다른 배포**에서는 같은 착시가 난다. 그건 표식으로 검증할 수
   // 없으므로 삭제 때 적어 둔 검사값과 대조한다 — 안 맞으면 **아무것도 하지 않는다**.
   const usable = await deletionEvidenceUsable(env);

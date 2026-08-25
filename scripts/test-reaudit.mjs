@@ -14,7 +14,7 @@ import {
   deletionMark, DELETION_KEY_VERSION, acquireLease, releaseLease,
   markPending, pendingTotalCount, pendingAlertCount, PENDING_ALERT, CONFIRMED_RETENTION,
 } from "../worker/ledger.js";
-import { setMode, reconcile, removeStalePending, reopenReport, restorePreflight } from "../worker/ops.js";
+import { setMode, markDrained, reconcile, removeStalePending, reopenReport, restorePreflight } from "../worker/ops.js";
 import { makeD1, makeLedger } from "./_d1.mjs";
 
 const ORIGIN = "https://app.test";
@@ -23,7 +23,7 @@ const t = (m) => { n++; return m; };
 const KEY32 = Buffer.from(Uint8Array.from({ length: 32 }, (_, i) => i + 3)).toString("base64url");
 
 const makeEnv = (extra = {}) => ({
-  APP_ORIGIN: ORIGIN, APP_URL: ORIGIN + "/", STATE_KEY: "k", RL_KEY: "r",
+  APP_ORIGIN: ORIGIN, STATE_KEY: "k", RL_KEY: "r",
   DEV_RATE_LIMIT: "1",   // 로컬 전용 남용 방어 스위치(위협 50). 없으면 계정 라우트가 503
   SIGNUP_STATE_KEY: KEY32, TOMBSTONE_KEY: "tk", DELETION_KEY: "dk",
   SESSION_ENVELOPE_KEY: "env-key",
@@ -249,6 +249,9 @@ async function rememberKey(env) {
     "SELECT COUNT(*) n FROM deletions WHERE confirmed_at IS NULL").get().n;
   assert.equal(pending(), 1, t("R4: 준비 상태가 틀렸다"));
   assert.equal(env.DB._db.prepare("SELECT COUNT(*) n FROM users").get().n, 1, t("R4: 사용자가 없다"));
+  // reconcile 은 이 epoch 의 drain 증거를 요구한다(2026-08-25 · T82-f). 여기서 재는 것은
+  // **키 판정**이므로 그 앞 조건은 미리 채워 둔다 — 안 채우면 아래 거부가 다른 이유로 통과한다.
+  assert.equal((await markDrained(env)).drained, true, t("R4: 조용한데 drain 인증이 거부됐다"));
 
   // ── R4-a. ★ 호출자가 넘긴 함수로는 승격 판정을 바꿀 수 없다.
   for (const [label, fn] of [

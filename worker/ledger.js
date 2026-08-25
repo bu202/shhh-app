@@ -149,6 +149,13 @@ const LEASABLE_MODES = new Set([...LEASE_MODES_REQUEST, ...LEASE_MODES_CLEANUP])
 // 게이트 확인과 INSERT 가 **한 문장**이다. 읽고 나서 쓰면 전환 직후의 작업이 창을 빠져나간다.
 // 행이 안 생기면 = 지금 이 모드에서는 새 작업을 받지 않는다.
 //
+// ⚠️ **`drained_at IS NULL` 도 같은 문장 안에 있다**(2026-08-25 · 위협 66). 없을 때 무슨 일이
+//    났나(재현 T82-d): 운영자가 「다 멈췄다」를 인증한 **다음 순간** 새 임차증이 그대로 나가서
+//    `drainState()` 가 곧바로 `open:1` 로 돌아왔다 — 증거를 적자마자 거짓이 되는 증거다.
+//    운영자는 그 값을 근거로 다음 단계를 진행한다. 그래서 인증은 **문을 닫는 행위**여야 한다:
+//    이 epoch 에서는 더 이상 아무도 못 들어온다. 다시 열려면 `setMode()` 로 전환하면 되고,
+//    전환이 `drained_at` 을 NULL 로 되돌린다(같은 함수가 epoch 도 올린다).
+//
 // 언제 딴다: **주 D1 의 사용자 데이터에 처음 닿기 전.** 세션 인증(`sessions`·`users` 조회)도
 // 그 안에 든다 — 인증이 먼저 지나가면 그 조회는 추적 밖에서 일어난다.
 // 언제 푼다: 그 작업의 **모든 DB 작업이 끝난 뒤**, 가장 바깥 `finally` 에서.
@@ -161,7 +168,8 @@ export async function acquireLease(env, modes = LEASE_MODES_REQUEST, now = Date.
   const marks = modes.map((_, i) => `?${i + 4}`).join(",");
   const r = await env.LEDGER.prepare(
     `INSERT INTO write_leases (lease_id, epoch, started_at, expires_at)
-     SELECT ?1, m.epoch, ?2, ?3 FROM maintenance m WHERE m.mode IN (${marks})`)
+     SELECT ?1, m.epoch, ?2, ?3 FROM maintenance m
+      WHERE m.mode IN (${marks}) AND m.drained_at IS NULL`)
     .bind(id, now, now + LEASE_TTL, ...modes).run();
   return r.meta && r.meta.changes ? id : null;
 }
