@@ -351,7 +351,7 @@ export const MUTATIONS = [
     // ⚠️ **이 앵커는 개수가 바뀔 때마다 함께 바꾼다**(D21 을 더하며 세 번째로 고쳤다).
     //    자기가 건드리는 숫자를 앵커에 담는 변이라 피할 수 없다 — 대신 낡으면 실행기가
     //    ANCHOR-MISS 로 종료 코드 1 을 내므로 **조용히 썩지는 않는다.**
-    find: "`scripts/mutations.mjs`(목록 71종",
+    find: "`scripts/mutations.mjs`(목록 73종",
     replace: "`scripts/mutations.mjs`(목록 22종",
   },
   {
@@ -401,8 +401,8 @@ export const MUTATIONS = [
     id: "M30", file: "worker/ledger.js", suite: "test-deletion-ledger",
     what: "drain 인증 뒤에도 신규 임차증을 내준다",
     invariant: "drain 이 인증된 epoch 에서는 새 작업이 못 들어온다 (증거가 그 자리에서 거짓이 되면 안 된다)",
-    find: "      WHERE m.mode IN (${marks}) AND m.drained_at IS NULL`)",
-    replace: "      WHERE m.mode IN (${marks})`)",
+    find: "      WHERE m.mode IN (${marks}) AND m.drained_at IS NULL\n     RETURNING epoch",
+    replace: "      WHERE m.mode IN (${marks})\n     RETURNING epoch",
   },
   {
     id: "M31", file: "worker/ops.js", suite: "test-deletion-ledger",
@@ -554,7 +554,7 @@ export const MUTATIONS = [
     id: "D21", file: "docs/STAGE3_SIGNUP_SECURITY_DESIGN.md", suite: "test-docs", kind: "정적",
     what: "「종」이 없는 괄호형 내역을 낡은 「정적 21」로 되돌린다",
     invariant: "총계뿐 아니라 **하위 내역**도 MUTATIONS 에서 파생한다 — 「N종」이라고 안 적은 괄호형 내역도 센다(총계만 보면 66 ≠ 40+21 이 남는다)",
-    find: "(동작 45 · 정적 26).",
+    find: "(동작 47 · 정적 26).",
     replace: "(동작 40 · 정적 21).",
   },
   // ── 위협 70 · 불완전한 OAuth 주소가 세션 폐기 재시도를 막던 결함의 방어들 ──
@@ -592,5 +592,20 @@ export const MUTATIONS = [
     invariant: "오프라인에서 실패한 폐기는 연결이 돌아오면 그 자리에서 다시 시도한다 — 없으면 앱을 다시 열 때까지 방치된다",
     find: "addEventListener(\"online\", () => { retryRevokeSession(); });",
     replace: "",
+  },
+  // ── 원칙 5 · lease context(ledger 가 발급한 epoch) ──
+  {
+    id: "M47", file: "worker/ledger.js", suite: "test-deletion-ledger",
+    what: "lease context 검사를 무력화해 문자열 lease_id 를 통과시킨다",
+    invariant: "lease 를 받는 함수는 { id, epoch } 만 받는다 — 문자열을 받으면 그 경로는 epoch 을 모른 채 돌고 주 D1 fencing 을 걸 수 없다",
+    find: "  if (!lease || typeof lease !== \"object\"",
+    replace: "  if (false && (!lease || typeof lease !== \"object\")",
+  },
+  {
+    id: "M48", file: "worker/ledger.js", suite: "test-deletion-ledger",
+    what: "발급 epoch 을 ledger 가 돌려준 값이 아니라 상수로 만든다",
+    invariant: "epoch 은 ledger 가 INSERT ... RETURNING 으로 발급한다 — 코드가 정한 값은 그 행의 값이 아니다",
+    find: "  return Object.freeze({ id, epoch: Number(row.epoch) });",
+    replace: "  return Object.freeze({ id, epoch: 1 });",
   },
 ];

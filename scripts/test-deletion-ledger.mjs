@@ -766,8 +766,74 @@ const call = (env, token, path, method = "GET") => worker.fetch(new Request("htt
   }
 }
 
+// ══ T87. lease context — epoch 은 **ledger 가 발급한다** ═══════════════════
+//
+// 원칙 5(2026-08-25 사용자 지시): 호출자가 epoch 을 임의로 지정하거나 위조할 수 없어야 한다.
+// 고치기 전: `acquireLease()` 는 **문자열 lease_id 하나**만 돌려줬다. 그래서 주 D1 쓰기·읽기가
+// 자기 epoch 을 알 방법이 없었고, 구조적 fencing 을 걸려면 호출자가 epoch 을 따로 읽어
+// 인자로 넘겨야 했다 — 그 인자가 곧 우회로다(위협 42·44 와 같은 무늬).
+{
+  const env = makeEnv();
+
+  // ── 발급된 epoch 은 maintenance 행과도, 실제 lease 행과도 같다.
+  const epochNow = () => env.LEDGER._db.prepare("SELECT epoch FROM maintenance WHERE id = 1").get().epoch;
+  const g0 = epochNow();
+  const l0 = await acquireLease(env);
+  assert.ok(l0 && typeof l0 === "object", t("T87: lease context 가 객체가 아니다"));
+  assert.equal(typeof l0.id, "string", t("T87: lease id 가 문자열이 아니다"));
+  assert.equal(l0.epoch, g0, t("T87: 발급 epoch 이 maintenance 행과 다르다"));
+  assert.equal(l0.epoch,
+    env.LEDGER._db.prepare("SELECT epoch FROM write_leases WHERE lease_id = ?").get(l0.id).epoch,
+    t("T87: 돌려준 epoch 이 실제 행의 epoch 과 다르다"));
+
+  // ── 전환하면 새 lease 는 새 epoch 을 달고, 옛 lease 는 죽는다.
+  await setMode(env, "maintenance");
+  const l1 = await acquireLease(env);
+  assert.ok(l1.epoch > l0.epoch, t("T87: 전환 뒤 발급 epoch 이 안 올랐다"));
+  assert.equal(await leaseAlive(env, l0), false, t("T87: 옛 epoch lease 가 아직 살아 있다"));
+  assert.equal(await leaseAlive(env, l1), true, t("T87: 새 epoch lease 가 죽어 있다"));
+  await releaseLease(env, l0);
+  await releaseLease(env, l1);
+  env.LEDGER._db.prepare("UPDATE maintenance SET mode = 'open' WHERE id = 1").run();
+
+  // ── ★ 손으로 만든 값은 통과하지 못한다. 문자열을 조용히 받아 주면 그 경로만 epoch 을
+  //    모르는 채 남고, epoch 을 모르면 주 D1 fencing 을 걸 수 없다.
+  const good = await acquireLease(env);
+  for (const [label, bad] of [
+    ["문자열 lease_id", good.id],
+    ["null", null],
+    ["epoch 없음", { id: good.id }],
+    ["epoch 이 문자열", { id: good.id, epoch: "1" }],
+    ["epoch 이 소수", { id: good.id, epoch: 1.5 }],
+    ["id 가 없음", { epoch: 1 }],
+  ]) {
+    for (const [fname, call] of [
+      ["leaseAlive", () => leaseAlive(env, bad)],
+      ["releaseLease", () => releaseLease(env, bad)],
+      ["markPending", () => markPending(env, bad, "m-x")],
+      ["markConfirmed", () => markConfirmed(env, bad, "m-x")],
+    ]) {
+      await assert.rejects(call, /lease context required/,
+        t(`T87: ${fname} 가 ${label} 을 받아들였다 — 그 경로는 epoch 을 모른 채 돈다`));
+    }
+  }
+  await releaseLease(env, good);
+
+  // ── ⚠️ epoch 을 인자로 받는 함수가 하나도 없어야 한다. 있으면 그 자리가 우회로다.
+  {
+    const fs2 = await import("node:fs");
+    const src = fs2.readFileSync(new URL("../worker/ledger.js", import.meta.url), "utf8");
+    const offenders = [...src.matchAll(/export (?:async )?function (\w+)\(([^)]*)\)/g)]
+      .filter(([, , args]) => /lease/i.test(args) && /\bepoch\b/.test(args))
+      .map(([, name]) => name);
+    assert.deepEqual(offenders, [],
+      t(`T87: epoch 을 인자로 받는 함수가 있다: ${offenders.join(", ")}`));
+  }
+}
+
 console.log(`test-deletion-ledger: ${n}개 통과 — 표식 HMAC · saga 실패 매트릭스 · lease/epoch fencing · `
   + `promote-only reconciliation · stale pending 5조건 · ledger 병합(방향·충돌·검증) · `
   + `재삭제 대상 고유 UID · 복원 금지 gate 9조건(질의로만 참이 되는 noActiveLeases 포함) · confirmed 만 정리 · `
   + `T78 pending 도 fencing · 확정은 일회성(보유기간이 안 밀린다) · `
-  + `T82 drain 증거가 mode·epoch·신규 lease 와 결속`);
+  + `T82 drain 증거가 mode·epoch·신규 lease 와 결속 · `
+  + `T87 lease context(ledger 발급 epoch · 문자열·위조 거부 · epoch 인자 0개)`);

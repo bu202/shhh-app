@@ -159,6 +159,12 @@ const LEASABLE_MODES = new Set([...LEASE_MODES_REQUEST, ...LEASE_MODES_CLEANUP])
 // 언제 딴다: **주 D1 의 사용자 데이터에 처음 닿기 전.** 세션 인증(`sessions`·`users` 조회)도
 // 그 안에 든다 — 인증이 먼저 지나가면 그 조회는 추적 밖에서 일어난다.
 // 언제 푼다: 그 작업의 **모든 DB 작업이 끝난 뒤**, 가장 바깥 `finally` 에서.
+// 돌려주는 것은 **문자열이 아니라 lease context** 다(2026-08-25 · 원칙 5).
+//   { id, epoch }  — epoch 은 **ledger 가 발급한다**(`RETURNING`), 호출자가 못 고른다.
+// 왜 epoch 을 함께 주나: 주 D1 의 쓰기·읽기가 이 epoch 을 **문장 안의 술어로** 들고 가야
+// 구조적 fencing 이 성립한다(§10-10). 호출자가 epoch 을 인자로 지정할 수 있으면 그 인자가
+// 곧 우회로다 — 위협 42·44 에서 이미 같은 무늬를 겪었다(호출자가 넘긴 값이 안전 판정을 정했다).
+// ⚠️ **어느 함수도 epoch 을 인자로 받지 않는다.** 받는 순간 그 자리가 우회로가 된다.
 export async function acquireLease(env, modes = LEASE_MODES_REQUEST, now = Date.now()) {
   // ⚠️ 모드 문자열은 **신뢰된 상수만** 통과한다. 통과한 뒤에도 SQL 에 보간하지 않고
   //    placeholder 로만 넣는다 — 검증과 파라미터화 중 하나만 믿지 않는다.
@@ -166,12 +172,26 @@ export async function acquireLease(env, modes = LEASE_MODES_REQUEST, now = Date.
   for (const m of modes) if (!LEASABLE_MODES.has(m)) throw new Error("unknown lease mode");
   const id = crypto.randomUUID();
   const marks = modes.map((_, i) => `?${i + 4}`).join(",");
-  const r = await env.LEDGER.prepare(
+  // `RETURNING epoch` — 넣은 행이 실제로 가진 값을 그대로 받는다. 우리가 따로 SELECT 하면
+  // 그 사이에 전환이 끼어들어 **행의 epoch 과 손에 든 epoch 이 갈릴 수 있다.**
+  const row = await env.LEDGER.prepare(
     `INSERT INTO write_leases (lease_id, epoch, started_at, expires_at)
      SELECT ?1, m.epoch, ?2, ?3 FROM maintenance m
-      WHERE m.mode IN (${marks}) AND m.drained_at IS NULL`)
-    .bind(id, now, now + LEASE_TTL, ...modes).run();
-  return r.meta && r.meta.changes ? id : null;
+      WHERE m.mode IN (${marks}) AND m.drained_at IS NULL
+     RETURNING epoch`)
+    .bind(id, now, now + LEASE_TTL, ...modes).first();
+  if (!row) return null;
+  return Object.freeze({ id, epoch: Number(row.epoch) });
+}
+
+// lease context 인가. **문자열을 받지 않는다** — 옛 코드가 문자열을 넘기면 그 자리는 epoch 을
+// 모르는 자리이고, epoch 을 모르면 주 D1 fencing 을 걸 수 없다. 조용히 통과시키면 그 경로만
+// 방어 밖에 남으므로 **던진다.**
+export function assertLeaseContext(lease) {
+  if (!lease || typeof lease !== "object"
+      || typeof lease.id !== "string" || !Number.isInteger(lease.epoch))
+    throw new Error("lease context required — { id, epoch } from acquireLease()");
+  return lease;
 }
 
 // fencing. 이 조각을 **모든 ledger 쓰기의 WHERE 에** 붙인다 — 유지보수로 전환된 뒤에도
@@ -182,7 +202,8 @@ const FENCE = `EXISTS (SELECT 1 FROM write_leases l JOIN maintenance m ON m.id =
 const fenced = (sql) => sql.replace(/\?LEASE/g, "?").replace(/\?NOW/g, "?");
 
 export async function leaseAlive(env, lease, now = Date.now()) {
-  const r = await env.LEDGER.prepare(`SELECT 1 AS ok WHERE ${fenced(FENCE)}`).bind(lease, now).first();
+  assertLeaseContext(lease);
+  const r = await env.LEDGER.prepare(`SELECT 1 AS ok WHERE ${fenced(FENCE)}`).bind(lease.id, now).first();
   return !!r;
 }
 
@@ -194,7 +215,8 @@ export async function leaseAlive(env, lease, now = Date.now()) {
 // ⚠️ **미해제 행은 여전히 안 지운다** — 그게 「끝났는지 모른다」의 유일한 증거다(stale).
 //    그래서 이 표에 **남아 있다 = 아직 안 끝났다**이고, `released_at` 컬럼은 없다(2026-08-18).
 export async function releaseLease(env, lease) {
-  await env.LEDGER.prepare("DELETE FROM write_leases WHERE lease_id = ?").bind(lease).run();
+  assertLeaseContext(lease);
+  await env.LEDGER.prepare("DELETE FROM write_leases WHERE lease_id = ?").bind(lease.id).run();
 }
 
 // drain 상태. **이것이 「모든 사용자 데이터 요청이 끝났나」의 유일한 답이다.**
@@ -222,6 +244,7 @@ export async function activeLeases(env, now = Date.now()) {
 // ── 삭제 표식 ────────────────────────────────────────────────────────────
 // pending 을 남긴다. 같은 사람이 두 번 눌러도 행은 하나다.
 export async function markPending(env, lease, mark, now = Date.now()) {
+  assertLeaseContext(lease);
   // **키 검사값을 먼저 세운다.** 표식을 남기기 전에 「지금 키가 그때 그 키인가」를 확정해 둬야
   // 나중에 reconciliation 이 그 표식을 믿고 판정할 수 있다. 다르면 던진다 — 어긋나는 키로
   // 표식을 더하면 두 벌의 증거가 영원히 대조되지 않는다(위협 44).
@@ -230,7 +253,7 @@ export async function markPending(env, lease, mark, now = Date.now()) {
     `INSERT INTO deletions (mark, key_version, pending_at, pending_alert_at, expires_at)
      SELECT ?, ?, ?, ?, ? WHERE ${fenced(FENCE)}
      ON CONFLICT (mark) DO NOTHING`)
-    .bind(mark, DELETION_KEY_VERSION, now, now + PENDING_ALERT, now + CONFIRMED_RETENTION, lease, now).run();
+    .bind(mark, DELETION_KEY_VERSION, now, now + PENDING_ALERT, now + CONFIRMED_RETENTION, lease.id, now).run();
   // **넣었는지 다시 묻는다.** 내가 넣었는지 앞선 시도가 넣었는지 가릴 이유가 없다 —
   // 필요한 답은 「지금 표식이 있나」 하나뿐이다.
   return !!(await env.LEDGER.prepare("SELECT 1 AS ok FROM deletions WHERE mark = ?").bind(mark).first());
@@ -238,10 +261,11 @@ export async function markPending(env, lease, mark, now = Date.now()) {
 
 // 확정. **expires_at 을 확정 시점 기준으로 다시 계산한다** — pending 때의 값은 임시값이다.
 export async function markConfirmed(env, lease, mark, now = Date.now()) {
+  assertLeaseContext(lease);
   const r = await env.LEDGER.prepare(
     `UPDATE deletions SET confirmed_at = ?, expires_at = ?
       WHERE mark = ? AND confirmed_at IS NULL AND ${fenced(FENCE)}`)
-    .bind(now, now + CONFIRMED_RETENTION, mark, lease, now).run();
+    .bind(now, now + CONFIRMED_RETENTION, mark, lease.id, now).run();
   return !!(r.meta && r.meta.changes);
 }
 
