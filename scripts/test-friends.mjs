@@ -15,6 +15,7 @@ import worker, { createAccountWithPolicy, findUser, newSession, pathTemplate,
   authRoutes, mkSessionToken, SESSION_ENVELOPE_VERSION,
   appOrigin, loginPossible } from "../worker/index.js";
 import { makeD1, makeLedger, withLatency, asRequest } from "./_d1.mjs";
+import { readFileSync } from "node:fs";
 import { drainState, readMode, MODE_UNBOUND } from "../worker/ledger.js";
 // 옛 배포 세대의 **고정 fixture**. 지금 코드가 아니다 — 그 파일 머리말을 볼 것.
 import legacy from "./fixtures/legacy-worker.mjs";
@@ -22,6 +23,13 @@ import legacy from "./fixtures/legacy-worker.mjs";
 const RL_MAX_LOGIN = 10;
 import { beginRestore, drainReport, restoreGate } from "../worker/ops.js";
 import fs from "node:fs";
+
+// 사용자 도메인 표 목록. **스키마에서 파생한다** — 손으로 적으면 표가 늘 때마다 낡는다.
+// `write_fence` 는 사용자 데이터가 아니라 fence 자신이라 뺀다.
+const USER_TABLES = [...readFileSync(new URL("../worker/schema.sql", import.meta.url), "utf8")
+  .matchAll(/CREATE TABLE IF NOT EXISTS (\w+)/g)].map((m) => m[1]).filter((x) => x !== "write_fence");
+// ledger 에서 **인증된 GET 이 건드려도 되는** 표. 이 둘 말고는 아무것도 바뀌면 안 된다.
+const LEDGER_GET_ALLOWED = ["rate_limits", "write_leases"];
 
 const ORIGIN = "https://app.test";
 
@@ -2368,7 +2376,20 @@ function befriend(env, a, b, status = "accepted") {
   }
 }
 
-// ══ T84. **GET 은 두 DB 에 논리적 변경 0건** (OAuth 콜백만 예외) ════════
+// ══ T84. **GET 은 주 D1 의 사용자 도메인 행을 바꾸지 않는다** ══════════════
+//        (OAuth 콜백만 예외 · ledger 부수효과는 아래 g 가 따로 잰다)
+//
+// ⛔ **옛 제목은 「두 DB 에 논리적 변경 0건」이었고 그것은 거짓이었다**(2026-08-25 정정).
+//    두 가지로 틀렸다:
+//    ① 주 D1 쪽은 손으로 적은 **6개 표만** 스냅샷했다 — `consumed_signup_states` 가 빠져 있었고,
+//       표가 늘면 새 표는 자동으로 검사 밖이었다. 이제 **스키마에서 파생**한다.
+//    ② **ledger 는 아예 보지 않았다.** 그런데 인증된 GET 은 ledger 에 **의도적으로** 쓴다 —
+//       레이트리밋 카운터(`rate_limits`)와 요청 임차증(`write_leases`)이다. 재지도 않은 것을
+//       「변경 0건」이라고 적으면, 나중에 누가 ledger 에 무엇을 더해도 이 이름이 그것을 덮는다.
+//    정확한 계약은 이것이다:
+//      · 주 D1 의 **사용자 도메인 행**은 바뀌지 않는다(콜백 제외).
+//      · ledger 의 남용 방어·임차증 기록은 **의도된 제한적 부수효과**이고, 허용 목록과
+//        상한·정리 조건을 **별도 불변식**(g)으로 검사한다.
 //
 // 고치기 전(재현): `GET /friends` 가 `myCode()` 를 불렀고, 그 함수는 활성 코드가 없으면
 // 그 자리에서 INSERT 했다. 실측 — `invite_codes` 0행 → **1행**. CSRF 검사는 GET 에
@@ -2405,9 +2426,10 @@ function befriend(env, a, b, status = "accepted") {
   {
     const env = makeEnv();
     const A = await signUp(env, "kakao", "t84b1"), B = await signUp(env, "kakao", "t84b2");
-    const snap = () => ["invite_codes", "users", "books", "friendships", "sessions",
-                        "policy_events"].map((t) =>
-      env.DB._db.prepare(`SELECT COUNT(*) n FROM ${t}`).get().n).join(",");
+    // ⚠️ **표 목록을 손으로 적지 않는다.** 적으면 표가 늘 때마다 낡고, 낡은 자리는
+    //    검사 밖이다(옛 T84 는 6개만 적어 `consumed_signup_states` 를 빠뜨렸다).
+    const snap = () => USER_TABLES.map((tb) =>
+      env.DB._db.prepare(`SELECT COUNT(*) n FROM ${tb}`).get().n).join(",");
     for (const p of ["/health", "/ready", "/policies", "/book", "/me", "/friends",
                      "/friends/" + B.uid + "/book"]) {
       const before = snap();
@@ -2492,6 +2514,47 @@ function befriend(env, a, b, status = "accepted") {
       "T84-f: 회전 뒤 목록이 옛 코드를 답한다");
   }
 
+  // ── g0. ★ **ledger 부수효과의 별도 불변식** (2026-08-25 정정).
+  //   인증된 GET 은 ledger 에 **의도적으로** 쓴다 — 레이트리밋 카운터와 요청 임차증이다.
+  //   그것을 「변경 0건」이라고 뭉뚱그리면 나중에 무엇을 더해도 그 이름이 덮어 준다.
+  //   그래서 **허용 목록·상한·정리 조건**을 여기서 따로 잰다.
+  {
+    const env = makeEnv();
+    const A = await signUp(env, "kakao", "t84g");
+    const lsnap = () => Object.fromEntries(
+      env.LEDGER._db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all()
+        .map((r) => r.name)
+        .filter((nm) => !nm.startsWith("sqlite_"))
+        .map((nm) => [nm, env.LEDGER._db.prepare(`SELECT COUNT(*) n FROM ${nm}`).get().n]));
+
+    const before = lsnap();
+    await call(env, A.token, "/friends");
+    const after = lsnap();
+
+    for (const [tb, n] of Object.entries(after)) {
+      if (LEDGER_GET_ALLOWED.includes(tb)) continue;
+      assert.equal(n, before[tb],
+        `T84-g: 인증된 GET 이 ledger 의 '${tb}' 를 바꿨다 — 허용 목록에 없는 부수효과다`);
+    }
+    // ① 임차증은 **요청이 끝나면 남지 않는다**(해제가 행 DELETE 다). 남으면 그것이 stale 이다.
+    assert.equal(after.write_leases, before.write_leases,
+      "T84-g: GET 이 끝났는데 임차증 행이 남았다 — 그 하나가 drain 을 영원히 막는다");
+    // ② 리미터 행은 **버킷당 하나**다. 요청마다 늘면 그것이 곧 증폭 통로다.
+    assert.ok(after.rate_limits - before.rate_limits <= 1,
+      `T84-g: GET 하나가 리미터 행을 ${after.rate_limits - before.rate_limits}개 만들었다`);
+    const mid = lsnap();
+    for (let i = 0; i < 5; i++) await call(env, A.token, "/friends");
+    assert.equal(lsnap().rate_limits, mid.rate_limits,
+      "T84-g: 같은 창의 반복 요청이 리미터 행을 계속 만든다 — 상한이 없다");
+    // ③ 그 행에는 **만료가 있고** 정리 대상이다(보유기간이 지켜지는 유일한 근거).
+    const rl = env.LEDGER._db.prepare("SELECT expires_at FROM rate_limits LIMIT 1").get();
+    assert.ok(rl && Number(rl.expires_at) > 0,
+      "T84-g: 리미터 행에 만료가 없다 — 아무도 지울 수 없다");
+    assert.ok(/DELETE FROM rate_limits WHERE bucket IN/.test(
+      readFileSync(new URL("../worker/cleanup/index.js", import.meta.url), "utf8")),
+      "T84-g: 정리 크론이 리미터 행을 지우지 않는다");
+  }
+
   // ── g. **소스의 GET 목록 처리기가 쓰기 함수를 안 부른다.** 되돌리면 위 a 만으로는
   //   「이미 코드가 있는 사용자」 경로에서 조용히 통과한다.
   {
@@ -2511,4 +2574,4 @@ console.log("test-friends: 통과 — 로그인 왕복 표(브라우저 결속) 
   + "· T71 세션 envelope(모양·서명·판·만료 · DB 앞 거절 · 서명 ≠ 인증 · 키 전용성·교체 · auth 라우트 전수) "
   + "· T75 비밀값 비교(요약 32바이트 + timingSafeEqual · await 전수 · 응답 모양 하나 · 어댑터 비배포) "
   + "· T83 복귀 주소의 단일 원본(APP_ORIGIN 검증 · APP_URL 폐지) "
-  + "· T84 GET 의 무쓰기(OAuth 콜백만 예외 — 서명 state·shh_t 로 묶인다) · 초대 코드 생성은 same-origin POST");
+  + "· T84 GET 은 주 D1 사용자 도메인 행을 안 바꾼다(표 목록은 스키마에서 파생 · OAuth 콜백만 예외 — 서명 state·shh_t 로 묶인다 · ledger 부수효과는 허용 목록·상한·정리로 따로 검사) · 초대 코드 생성은 same-origin POST");
