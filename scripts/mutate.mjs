@@ -62,7 +62,8 @@ try {
   //    안 그러면 아래의 「죽었다」는 변이 때문인지 원래 빨간지 구분이 안 된다.
   const suites = [...new Set(list.map((m) => m.suite))];
   for (const s of suites) {
-    const r = spawnSync("node", [`scripts/${s}.mjs`], { cwd: dir, encoding: "utf8" });
+    const r = spawnSync("node", [`scripts/${s}.mjs`],
+      { cwd: dir, encoding: "utf8", env: { ...process.env, SHHH_GIT_ROOT: ROOT } });
     if (r.status !== 0) {
       baselineFail++;
       console.error(`⛔ 기준선 실패: ${s} 가 변이 없이도 실패한다 (exit ${r.status})`);
@@ -91,7 +92,8 @@ try {
     //    않음」이 나온다. 답은 기능이 아니라 **검사 쪽에 자기검사를 붙이는 것**이었다
     //    (`test-docs` 의 `exemptByDate` 합성 입력). 안 쓰는 기능은 남기지 않는다.
     writeFileSync(p, mutated);
-    const r = spawnSync("node", [`scripts/${m.suite}.mjs`], { cwd: dir, encoding: "utf8" });
+    const r = spawnSync("node", [`scripts/${m.suite}.mjs`],
+      { cwd: dir, encoding: "utf8", env: { ...process.env, SHHH_GIT_ROOT: ROOT } });
     writeFileSync(p, src);
     const out = (r.stderr || "") + (r.stdout || "");
     const why = out.split("\n").find((l) => /AssertionError|✗/.test(l)) || "";

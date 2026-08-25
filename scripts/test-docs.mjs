@@ -148,6 +148,9 @@ const claim = (t, re, actual, what, file) => {
     if (+m[1] !== actual) bad(`${file} "${m[0]}" 라고 적혀 있는데 실제는 ${actual}${what}`);
   }
 };
+const { deployedRanges, deployedIsAncestorOfHead, commitsSinceDeploy, DEPLOYED_SOURCE } =
+  await import("./deployed.mjs");
+
 const maxT = tests[tests.length - 1], maxL = ls[ls.length - 1], maxTh = threats[threats.length - 1];
 for (const f of DOCS) {
   const t = R(f);
@@ -1330,28 +1333,88 @@ ok("돌연변이 개수 — 문서의 주장이 MUTATIONS 목록과 일치");
 // ⚠️ **일부러 좁다.** 「미배포·로컬에만」을 말하는 줄에서만 본다 — 특정 감사 회차를 가리키는
 //    범위(「위협 43~47 을 닫았다」)는 그 회차의 사실이라 바뀌면 안 된다.
 {
-  // 「그 뒤는 전부 미배포다」와 「그 수정이 배포본에 들어 있다」는 **같은 모양의 주장**이다 —
-  // 둘 다 배포 지점과 지금 사이의 **열린 구간**을 가리키므로 끝은 언제나 최신 위협 번호다.
-  const SPAN = /미배포|로컬에만|배포하지 않았다|배포된 source|여기 들어 있다/;
+  // ⛔ **옛 검사가 거짓을 강제하고 있었다**(2026-08-25 정정). 그것은 「배포된 source」를 말하는
+  //    줄과 「미배포」를 말하는 줄을 **같은 주장**으로 묶고, 둘 다 범위 끝이 **최신 위협 번호**
+  //    여야 한다고 요구했다. 그래서 세 문서가 `e02e810` 에 위협 57~69 가 들어 있다고 적었고,
+  //    **66~69 는 그 커밋에 없다.** 검사를 통과하려면 거짓을 적어야 했다.
+  //
+  // 두 축은 **다른 사실**이므로 따로 잰다:
+  //   배포됨   → 끝번호는 **배포 시점**의 최대 위협 번호여야 한다
+  //   미배포   → 시작은 배포 시점 +1, 끝은 **지금**의 최대 위협 번호여야 한다
+  //
+  // ⚠️ 두 숫자 다 **손으로 적지 않는다.** 배포 시점 값은 `git show <SOURCE>:설계서` 를 파싱해
+  //    얻는다(`scripts/deployed.mjs`) — 그 파일이 드는 것은 **source 해시 하나**뿐이다.
+  const { maxThreat: depTh } = deployedRanges();
+
+  if (!deployedIsAncestorOfHead())
+    bad(`배포 지점 ${DEPLOYED_SOURCE} 이 HEAD 의 조상이 아니다 — 배포 경계 주장 전체가 뜻을 잃는다`);
+  if (depTh >= maxTh && commitsSinceDeploy().length)
+    bad(`배포 시점 위협 최대(${depTh})가 지금(${maxTh}) 이상인데 로컬 커밋이 있다 — 둘 중 하나가 낡았다`);
+
+  // 한 줄이 어느 축의 주장인지. **미배포 표현이 있으면 미배포 쪽으로 읽는다** — 「배포됐다.
+  // 그 뒤는 미배포다」처럼 한 줄이 둘 다 담으면 더 좁은(닫는) 쪽으로 판정한다.
+  const DEPLOYED = /배포된 source|여기 들어 있다|수정이 배포됐다/;
+  const UNRELEASED = /미배포|로컬에만|배포하지 않았다|배포되지 않았다|로컬 커밋/;
+  // ⚠️ **먼저 나오는 판정어를 따른다.** 뒤따르는 90자 안에 두 축이 다 있을 수 있다
+  //    (「…의 수정이 여기 들어 있다. 그 뒤는 로컬 커밋뿐이다」) — 그때 이 범위를 설명하는 것은
+  //    **가장 가까운** 쪽이다. 고정 우선순위를 두면 그 줄이 통째로 오판된다(실제로 그랬다).
+  const verdictFor = (after, lo, hi) => {
+    const d = after.search(DEPLOYED), u = after.search(UNRELEASED);
+    const isUnreleased = u >= 0 && (d < 0 || u < d);
+    if (isUnreleased) {
+      if (lo !== depTh + 1 || hi !== maxTh)
+        return `미배포 주장의 범위는 ${depTh + 1}~${maxTh} 여야 한다`;
+    } else if (d >= 0) {
+      if (hi !== depTh)
+        return `배포 주장의 끝번호는 배포 시점의 ${depTh} 여야 한다`;
+    }
+    return null;
+  };
+
+  // ⚠️ **줄 단위로 보지 않는다.** 한 줄이 두 축을 함께 담을 수 있고(「…배포됐다. 그 뒤는
+  //    배포되지 않았다」), 반대로 한 문장이 **줄을 걸칠 수도** 있다(runbook 이 그렇다).
+  //    그래서 문서 전체에서 찾고, 판정은 **범위 바로 뒤에 오는 말**에 귀속시킨다 —
+  //    한국어에서 판정어("…의 수정이 배포됐다" · "…는 배포하지 않았다")가 범위 뒤에 온다.
   for (const f of DOCS) {
-    R(f).split("\n").forEach((ln, i) => {
-      if (!SPAN.test(ln)) return;
-      for (const m of ln.matchAll(/위협\s*\*{0,2}(\d+)~(\d+)\*{0,2}/g)) {
-        // ⚠️ **면제는 주장 바로 옆에서만 본다**(2026-08-24). 줄 전체에서 찾았더니, 머리에
-        //    현재형 판정을 담고 꼬리에 「당시 …」를 단 긴 표 행이 통째로 빠져나갔다 —
-        //    체크리스트 20번이 배포 뒤에도 「배포하지 않았다」를 현재형으로 달고 통과했다.
-        //    검사 19-c 에서 이미 한 번 고친 무늬를 여기서 되풀이했다.
-        const near = ln.slice(Math.max(0, m.index - 70), m.index + 70);
-        if (HISTORY_MARK.test(near)) continue;
-        if (+m[2] !== maxTh)
-          bad(`${f}:${i + 1} 배포 경계 범위를 「${m[0].trim()}」이라고 적었다 — `
-            + `배포 지점 이후를 가리키는 주장이면 끝은 최신 위협 번호 ${maxTh} 여야 한다\n`
-            + `      "${ln.trim().slice(0, 90)}"`);
+    const text = R(f);
+    for (const m of text.matchAll(/위협\s*\*{0,2}(\d+)~(\d+)\*{0,2}/g)) {
+      const after = text.slice(m.index, m.index + 90).replace(/\s+/g, " ");
+      if (!DEPLOYED.test(after) && !UNRELEASED.test(after)) continue;   // 판정 불가는 건너뛴다
+      // ⚠️ **면제는 주장 바로 옆에서만 본다**(2026-08-24). 줄 전체에서 찾았더니, 머리에
+      //    현재형 판정을 담고 꼬리에 「당시 …」를 단 긴 표 행이 통째로 빠져나갔다.
+      const near = text.slice(Math.max(0, m.index - 70), m.index + 70);
+      if (HISTORY_MARK.test(near)) continue;
+      const why = verdictFor(after, +m[1], +m[2]);
+      if (why) {
+        const line = text.slice(0, m.index).split("\n").length;
+        bad(`${f}:${line} 배포 경계 범위를 「${m[0].trim()}」이라고 적었다 — ${why}\n`
+          + `      "${after.slice(0, 90)}"`);
       }
-    });
+    }
+  }
+
+  // ── **독립 self-test.** 이 검사 하나에 기대지 않는다 (2026-08-25 · §5) ──
+  // 위 판정을 무력화하는 변이가 「아무 줄도 안 걸리니 통과」로 조용히 살아남으면 안 된다.
+  // 그래서 **합성 입력**을 직접 먹여 본다 — 실제 문서와 무관하게, 판정이 살아 있는지만 잰다.
+  {
+    const cases = [
+      ["배포된 source 는 X 다. 위협 57~" + maxTh + " 의 수정이 여기 들어 있다", true,
+       "배포 주장에 최신 끝번호를 적었는데 안 걸렸다"],
+      ["배포된 source 는 X 다. 위협 57~" + depTh + " 의 수정이 여기 들어 있다", false,
+       "올바른 배포 주장이 걸렸다"],
+      ["위협 " + (depTh + 1) + "~" + maxTh + " 는 배포하지 않았다", false,
+       "올바른 미배포 주장이 걸렸다"],
+      ["위협 57~" + maxTh + " 는 배포하지 않았다", true,
+       "미배포 주장이 배포된 번호까지 끌어안았는데 안 걸렸다"],
+    ];
+    for (const [line, shouldFail, why] of cases) {
+      const m = [...line.matchAll(/위협\s*(\d+)~(\d+)/g)][0];
+      const got = !!verdictFor(line, +m[1], +m[2]);
+      if (got !== shouldFail) bad(`배포 경계 self-test: ${why} (입력: "${line}")`);
+    }
   }
 }
-ok(`배포 경계 범위의 위협 끝번호 == ${maxTh}`);
+ok(`배포 경계 — 배포 주장은 ${deployedRanges().maxThreat} · 미배포 주장은 ${deployedRanges().maxThreat + 1}~${maxTh} (self-test 4건 포함)`);
 
 // ── 28. **매핑 절의 「N건 전부 연결됐다」는 실제 최대 T 번호와 같아야 한다** (2026-08-24 신설) ──
 //
@@ -1517,5 +1580,5 @@ ok("「로컬 완료 · 미배포」 현재형 서술 0건");
 
 console.log(fails
   ? `test-docs: 실패 ${fails}건`
-  : "test-docs: 통과 — 낡은 문구 · 죽은 § 참조 · 번호 연속성 · 선언된 개수 · 판 번호 · 필수 절 · 완료 범위 · 보유기간 단정 · 스위트 수 · 낡은 운영 상태 · 단계 상태 일치 · 주 D1 접근 분류 등재 · 법률 자료 현재 사실 · 인수인계 현재성 · 현재 상태 구간의 낡은 drain·구현·lease·T6 서술 · drain 미구현 0건 · 정리 대상 개수 = 코드 · 2단계 결정서 현재성 · 재검증 후 현재 사실 9종 · 모순 5종 · 운영현황 실측값 · 날짜별 운영 기록 · 움직이는 해시 · Access 이후 현재형 401 · 돌연변이 개수=MUTATIONS · 배포 경계 범위의 위협 끝번호 · §13-6 매핑 합계=maxT · 현재 상태 블록의 배포 ID · 「로컬 완료·미배포」 현재형 0건 · timing-safe 서술=구현");
+  : "test-docs: 통과 — 낡은 문구 · 죽은 § 참조 · 번호 연속성 · 선언된 개수 · 판 번호 · 필수 절 · 완료 범위 · 보유기간 단정 · 스위트 수 · 낡은 운영 상태 · 단계 상태 일치 · 주 D1 접근 분류 등재 · 법률 자료 현재 사실 · 인수인계 현재성 · 현재 상태 구간의 낡은 drain·구현·lease·T6 서술 · drain 미구현 0건 · 정리 대상 개수 = 코드 · 2단계 결정서 현재성 · 재검증 후 현재 사실 9종 · 모순 5종 · 운영현황 실측값 · 날짜별 운영 기록 · 움직이는 해시 · Access 이후 현재형 401 · 돌연변이 개수=MUTATIONS · 배포 경계(배포=git 파생 · 미배포=현재 · self-test) · §13-6 매핑 합계=maxT · 현재 상태 블록의 배포 ID · 「로컬 완료·미배포」 현재형 0건 · timing-safe 서술=구현");
 process.exit(fails ? 1 : 0);
