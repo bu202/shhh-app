@@ -47,6 +47,12 @@ const JOBS = [
   ["deletions", "LEDGER",
    `${DELETIONS_SWEEP_SQL} AND mark IN (SELECT mark FROM deletions
       WHERE confirmed_at IS NOT NULL AND expires_at < ? LIMIT ${LIMIT})`, 2],
+  // C5 — stale 해제 기록의 보유기간(2026-08-25 · 사용자 결정 1). 확정 삭제 표식과 **같은 규칙**
+  //      (37일)이고, `expires_keep` 은 기록할 때 이미 계산돼 있다.
+  //      ⚠️ 지우지 못한 채 기한이 지난 것은 **경보 대상**이다(`/api/ready` 의 `cleanupAlert`).
+  ["lease_resolutions", "LEDGER",
+   `DELETE FROM lease_resolutions WHERE lease_id IN
+      (SELECT lease_id FROM lease_resolutions WHERE expires_keep < ? LIMIT ${LIMIT})`],
   // ⛔ **`write_leases` 를 지우는 대상은 없다.** 해제는 행을 지우므로(결정 A′) 표에 남아 있는
   //    행은 전부 **진행 중이거나 stale** 이고, 둘 다 「아직 안 끝났다」는 증거다. 시간이 지났다는
   //    이유로 지우면 그 증거가 사라져 복원 금지가 저절로 풀린다.

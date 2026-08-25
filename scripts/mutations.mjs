@@ -144,7 +144,7 @@ export const MUTATIONS = [
     transform: (src) => {
       const a = src.indexOf("    if (rt.bucket) {\n      const v = await countVerdict");
       const b = src.indexOf("    // ── 0-1-1. 요청 임차증 ──");
-      const anchor = "    try {\n      return await route(req, env, { url, path, gate, lease, rt });";
+      const anchor = "    try {\n      return await route(req, denv, { url, path, gate, lease, rt });";
       if (a < 0 || b < 0 || b < a || !src.includes(anchor)) return null;
       const lim = src.slice(a, b);
       return (src.slice(0, a) + src.slice(b)).replace(anchor, lim + anchor);
@@ -180,8 +180,8 @@ export const MUTATIONS = [
     id: "M19", file: "worker/index.js", suite: "test-signup",
     what: "소비 표식 충돌을 무시한다(INSERT OR IGNORE)",
     invariant: "같은 가입 state 는 두 번 쓰이지 않는다",
-    find: "    env.DB.prepare(\"INSERT INTO consumed_signup_states (state_hash, key_version, expires_at) VALUES (?, ?, ?)\")",
-    replace: "    env.DB.prepare(\"INSERT OR IGNORE INTO consumed_signup_states (state_hash, key_version, expires_at) VALUES (?, ?, ?)\")",
+    find: "  const stmts = [\n    env.DB.prepare(\n      `INSERT INTO consumed_signup_states",
+    replace: "  const stmts = [\n    env.DB.prepare(\n      `INSERT OR IGNORE INTO consumed_signup_states",
   },
 
   // ── 삭제 표식 ledger ───────────────────────────────────────────────────
@@ -351,7 +351,7 @@ export const MUTATIONS = [
     // ⚠️ **이 앵커는 개수가 바뀔 때마다 함께 바꾼다**(D21 을 더하며 세 번째로 고쳤다).
     //    자기가 건드리는 숫자를 앵커에 담는 변이라 피할 수 없다 — 대신 낡으면 실행기가
     //    ANCHOR-MISS 로 종료 코드 1 을 내므로 **조용히 썩지는 않는다.**
-    find: "`scripts/mutations.mjs`(목록 73종",
+    find: "`scripts/mutations.mjs`(목록 83종",
     replace: "`scripts/mutations.mjs`(목록 22종",
   },
   {
@@ -401,8 +401,8 @@ export const MUTATIONS = [
     id: "M30", file: "worker/ledger.js", suite: "test-deletion-ledger",
     what: "drain 인증 뒤에도 신규 임차증을 내준다",
     invariant: "drain 이 인증된 epoch 에서는 새 작업이 못 들어온다 (증거가 그 자리에서 거짓이 되면 안 된다)",
-    find: "      WHERE m.mode IN (${marks}) AND m.drained_at IS NULL\n     RETURNING epoch",
-    replace: "      WHERE m.mode IN (${marks})\n     RETURNING epoch",
+    find: "      WHERE m.mode IN (${marks}) AND m.drained_at IS NULL",
+    replace: "      WHERE m.mode IN (${marks})",
   },
   {
     id: "M31", file: "worker/ops.js", suite: "test-deletion-ledger",
@@ -554,7 +554,7 @@ export const MUTATIONS = [
     id: "D21", file: "docs/STAGE3_SIGNUP_SECURITY_DESIGN.md", suite: "test-docs", kind: "정적",
     what: "「종」이 없는 괄호형 내역을 낡은 「정적 21」로 되돌린다",
     invariant: "총계뿐 아니라 **하위 내역**도 MUTATIONS 에서 파생한다 — 「N종」이라고 안 적은 괄호형 내역도 센다(총계만 보면 66 ≠ 40+21 이 남는다)",
-    find: "(동작 47 · 정적 26).",
+    find: "(동작 57 · 정적 26).",
     replace: "(동작 40 · 정적 21).",
   },
   // ── 위협 70 · 불완전한 OAuth 주소가 세션 폐기 재시도를 막던 결함의 방어들 ──
@@ -607,5 +607,81 @@ export const MUTATIONS = [
     invariant: "epoch 은 ledger 가 INSERT ... RETURNING 으로 발급한다 — 코드가 정한 값은 그 행의 값이 아니다",
     find: "  return Object.freeze({ id, epoch: Number(row.epoch) });",
     replace: "  return Object.freeze({ id, epoch: 1 });",
+  },
+  // ── 원칙 1~9 · 주 D1 구조적 fencing / 전환 프로토콜 / stale 해제 ──
+  {
+    id: "M49", file: "worker/fence.js", suite: "test-fence",
+    what: "fence 술어를 항상 참으로 만든다",
+    invariant: "옛 epoch 을 든 요청은 주 D1 에 한 줄도 못 쓴다 — 술어가 참이면 유지보수 전환이 아무것도 막지 못한다",
+    find: "const FENCE_SQL = \"EXISTS (SELECT 1 FROM write_fence WHERE id = 1 AND epoch = ?)\";",
+    replace: "const FENCE_SQL = \"(? IS NOT NULL)\";",
+  },
+  {
+    id: "M50", file: "worker/fence.js", suite: "test-fence",
+    what: "fence 불일치를 정상 0행으로 삼킨다",
+    invariant: "0행의 두 뜻을 가른다 — 불일치를 정상으로 읽으면 막힌 요청이 성공으로 보고된다",
+    find: "  if (!(await fenceCurrent(raw, epoch))) throw new FenceMismatch();",
+    replace: "  if (false) throw new FenceMismatch();",
+  },
+  {
+    id: "M51", file: "worker/ledger.js", suite: "test-fence",
+    what: "전환 중에도 신규 임차증을 내준다",
+    invariant: "전환은 두 DB 를 건드리므로 먼저 문을 닫는다 — 열려 있으면 그 창의 요청이 옛 epoch 을 들고 나간다",
+    find: "        AND m.pending_transition IS NULL",
+    replace: "",
+  },
+  {
+    id: "M52", file: "worker/ops.js", suite: "test-fence",
+    what: "전환에서 주 D1 fence 옮기기를 건너뛴다",
+    invariant: "fence 를 안 옮기면 옛 epoch 요청이 계속 쓴다 — 전환이 이름만 남는다",
+    find: "  if (tr.state === \"started\") {",
+    replace: "  if (false) {",
+  },
+  {
+    id: "M53", file: "worker/ops.js", suite: "test-fence",
+    what: "stale 해제가 만료·완충을 안 보고 대상으로 삼는다",
+    invariant: "만료되지 않은 임차증은 stale 이 아니다 — 아직 도는 작업의 증거를 지우는 것이다",
+    // ⚠️ **옛 M53 은 2026-08-25 에 동등 변이였다.** 그때의 변이는 `epoch < ?` 를 `epoch <= ?` 로
+    //    바꾸는 것이었는데, 바로 앞 단계가 「현재 epoch 이상인 임차증 0건」을 이미 요구하고
+    //    신규 획득은 자물쇠로 막혀 있어서 두 조건이 **같은 집합**을 고른다 — 살아남은 이유가
+    //    테스트 공백이 아니라 「같은 프로그램」이었다(옛 M24·M40 과 같은 처리).
+    //    그래서 겹치지 않는 조건인 만료·완충을 겨눈다.
+    find: "        WHERE epoch < ? AND expires_at <= ?`).bind(g2.epoch, cutoff).all();",
+    replace: "        WHERE epoch < ? AND expires_at > -1`).bind(g2.epoch, cutoff).all();",
+  },
+  {
+    id: "M54", file: "worker/ops.js", suite: "test-fence",
+    what: "open 모드에서도 stale 해제를 허용한다",
+    invariant: "open 에서는 새 요청이 계속 들어온다 — 그 상태에서 해제하면 증거가 그 자리에서 거짓이 된다",
+    find: "  if (gate.mode !== \"maintenance\" && gate.mode !== \"restore_closed\")",
+    replace: "  if (false)",
+  },
+  {
+    id: "M55", file: "worker/ops.js", suite: "test-fence",
+    what: "live lease 가 있어도 stale 해제를 진행한다",
+    invariant: "현재 epoch 의 임차증이 하나라도 있으면 아무것도 해제하지 않는다",
+    find: "    if (Number(live && live.n) > 0)",
+    replace: "    if (false)",
+  },
+  {
+    id: "M56", file: "worker/ops.js", suite: "test-fence",
+    what: "두 DB 의 epoch 이 어긋나도 stale 해제를 허용한다",
+    invariant: "fence 와 ledger epoch 이 같아야 「옛 epoch 은 못 쓴다」의 전제가 성립한다",
+    find: "  if (!(await fenceInSync(env)))",
+    replace: "  if (false)",
+  },
+  {
+    id: "M57", file: "worker/fence.js", suite: "test-fence",
+    what: "fenceInSync 가 진행 중인 전환을 무시한다",
+    invariant: "전환이 중간에 멈춘 상태는 fail-closed 여야 한다 — 정상으로 읽으면 그 상태로 해제·배포가 통과한다",
+    find: "    return Number(g.epoch) === (await fenceEpoch(env)) && !g.pending_transition;",
+    replace: "    return Number(g.epoch) === (await fenceEpoch(env));",
+  },
+  {
+    id: "M58", file: "worker/ops.js", suite: "test-fence",
+    what: "식별 가능한 운영자 라벨을 허용한다",
+    invariant: "operator_ref 는 비식별 라벨이다 — 자유 입력 칸은 개인정보 유입구다",
+    find: "  if (typeof operatorRef !== \"string\" || !OPERATOR_REF.test(operatorRef))",
+    replace: "  if (false)",
   },
 ];

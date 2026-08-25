@@ -27,6 +27,7 @@
 
 import { POLICY_BUNDLE } from "./policies.js";
 import { withFence, FenceMismatch, fenceInSync } from "./fence.js";
+import { overdueResolutions } from "./ledger.js";
 import {
   deletionMark, DELETION_KEY_VERSION, readMode, ledgerAnswers, drainState,
   acquireLease, leaseAlive, releaseLease, LEASE_MODES_REQUEST,
@@ -1585,8 +1586,12 @@ async function route(req, env, rc) {
       //       이 응답은 인증 없이 열려 있고, 그 숫자들은 운영 정보다(D1 직접 조회로 본다).
       //    ⚠️ **못 읽으면 참이다.** ledger 는 붙어 있는데 상태를 못 읽는 것을 「괜찮다」로
       //       읽지 않는다 — 그러면 표가 깨진 배포가 조용히 정상으로 보인다.
+      // 보유기간이 지났는데 아직 남아 있는 해제 기록. **사용자 결정 1**: 「37일 후 삭제 실패는
+      // 운영 경보」. 못 읽으면 경보 쪽으로 기운다(fail-closed).
+      let overdue = 1;
+      try { overdue = env.LEDGER ? await overdueResolutions(env) : 0; } catch { overdue = 1; }
       const cleanupAlert = !!env.LEDGER
-        && (!cl || cl.open_pending > 0 || cl.fail_streak >= CLEANUP_FAIL_ALERT);
+        && (!cl || cl.open_pending > 0 || cl.fail_streak >= CLEANUP_FAIL_ALERT || overdue > 0);
       // 두 DB 의 epoch 이 맞고 전환이 진행 중이 아닌가. 못 읽으면 **거짓**이다(fail-closed).
       const fenceSynced = await fenceInSync(env);
       const r = {

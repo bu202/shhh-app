@@ -637,19 +637,23 @@ ok(`현재 상태 구간 ${CURRENT_REGIONS.length}곳 — 낡은 drain·구현·
   }
   // 정리 대상 개수는 **코드에서 읽는다.** 문서에 적은 숫자와 `JOBS` 의 길이가 어긋나면 실패한다 —
   // 사람이 양쪽을 기억해야 맞는 숫자는 언젠가 어긋난다.
+  // ⚠️ **숫자를 여기 적지 않는다**(2026-08-25). 예전에는 주석에 「코드에서 읽는다」고 써 놓고
+  //    실제로는 리터럴 `4` 와 비교했다 — 대상이 하나 늘자 코드·문서·검사 셋이 동시에 어긋났다.
+  //    이제 개수는 `JOBS` 에서만 나오고, 문서가 그 수를 말하는지만 본다.
   const jobs = (R("worker/cleanup/index.js").match(/^\s*\["[a-z_]+",\s*"(?:DB|LEDGER)"/gm) || []).length;
-  if (jobs !== 4) bad(`worker/cleanup/index.js 의 정리 대상이 ${jobs}개다 — 문서의 「삭제 대상 4개」와 어긋난다`);
   const s3t = R(STAGE3);
-  if (!s3t.includes("**삭제 대상 4개**")) {
-    bad(`${STAGE3} 가 정리 Worker 의 「삭제 대상 4개」를 말하지 않는다 — pending 집계는 삭제가 아니다`);
+  if (!s3t.includes(`**삭제 대상 ${jobs}개**`)) {
+    bad(`${STAGE3} 가 정리 Worker 의 「삭제 대상 ${jobs}개」를 말하지 않는다 — `
+      + `JOBS 는 ${jobs}개다(pending 집계는 삭제가 아니라 세지 않는다)`);
   }
   for (const m of s3t.matchAll(/^.*?(\d)가지 대상.*$/gm)) {
     if (HISTORY_MARK.test(m[0])) continue;
-    bad(`${STAGE3} 「${m[1]}가지 대상」 — 정리 Worker 는 **삭제 대상 4개 + pending 경보 집계 1개**다. `
+    if (Number(m[1]) === jobs) continue;
+    bad(`${STAGE3} 「${m[1]}가지 대상」 — 정리 Worker 는 **삭제 대상 ${jobs}개 + pending 경보 집계 1개**다. `
       + `해제된 lease 는 대상이 아니다(해제가 행 DELETE 라 남은 행은 전부 진행 중이거나 stale)`);
   }
 }
-ok("drain 미구현 서술 0건 · 정리 대상 개수가 코드(JOBS 4개)와 일치");
+ok("drain 미구현 서술 0건 · 정리 대상 개수가 코드(JOBS)에서 파생돼 문서와 일치");
 
 // ── 16. 2단계 결정서의 「현재 상태」가 따로 낡지 않았나 ────────────────────
 //

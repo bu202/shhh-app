@@ -558,3 +558,119 @@ export async function scanUserMarks(env, markFns, pageSize = 500) {
   }
   return out;
 }
+
+// ── stale lease 의 안전한 해제 (2026-08-25 · 원칙 7) ──────────────────────
+//
+// **왜 필요한가.** 해제(`releaseLease`)는 행을 지우는 것이라, 요청이 해제 전에 죽거나 해제
+// 문장이 실패하면 행이 남는다. 남은 행은 만료돼도 `stale` 로 계속 세어지고(그게 맞다 —
+// 「시간이 지났다」는 「끝났다」가 아니다), 그 하나 때문에 `drained` 가 영원히 거짓이며
+// `markDrained()` 와 reconciliation 이 **영구히 막힌다.** fail-closed 방향은 옳지만,
+// 한 번 생기면 복구할 길이 없는 것은 운영 결함이다.
+//
+// ⛔ **시간 경과를 안전 근거로 쓰지 않는다**(2026-08-25 사용자 정정). Workers 의 CPU 제한과
+//    HTTP 요청의 wall-clock 수명은 다른 것이고, 클라이언트 연결이 유지되는 동안 요청은 하드
+//    제한 없이 살아 있을 수 있다. 그래서 안전 근거는 **구조적 fencing** 이다:
+//    `lease.epoch < maintenance.epoch` 인 요청은 주 D1 에도 ledger 에도 **한 줄도 못 쓴다.**
+//    `expires_at + 15분` 은 그 위에 얹는 **운영 완충**일 뿐이다.
+//
+// ⚠️ 강제 진행 플래그가 없다. 조건 하나라도 불확실하면 `ok:false` 다.
+export const LEASE_RESOLUTION_REASONS = Object.freeze([
+  "worker_terminated",       // 배포 교체·런타임 종료로 해제 전에 끝났다
+  "release_failed",          // 해제 문장이 실패했다(ledger 일시 장애)
+  "ledger_unavailable",      // 해제 시점에 ledger 가 답하지 않았다
+  "unknown_after_incident",  // 사고 조사 후에도 원인을 특정하지 못했다
+]);
+// 구조적 fencing **이후의** 운영 완충. ⛔ 이 값을 안전 근거로 문서에 적지 않는다.
+export const RESOLUTION_GRACE = 15 * 60e3;
+// 운영자 라벨의 모양. **비식별 라벨만** — 이메일·이름이 들어오면 그 칸이 개인정보 유입구가 된다.
+const OPERATOR_REF = /^[a-z0-9][a-z0-9-]{2,39}$/;
+
+const no = (why) => ({ ok: false, why, resolved: 0 });
+
+export async function resolveStaleLeases(env, opts = {}) {
+  const { operatorRef, reasonCode, now = Date.now() } = opts;
+  // ① 운영자 확인과 허용된 reason_code. **자유 입력 사유를 받지 않는다.**
+  if (!LEASE_RESOLUTION_REASONS.includes(reasonCode))
+    return no(`reason_code 가 허용 목록에 없다 (${LEASE_RESOLUTION_REASONS.join(" · ")})`);
+  if (typeof operatorRef !== "string" || !OPERATOR_REF.test(operatorRef))
+    return no("operator_ref 가 비식별 라벨 모양이 아니다 (예: ops-2026-09-01)");
+  if (!env.LEDGER || !env.DB) return no("두 DB 바인딩이 모두 필요하다");
+
+  // ② 모드. `open` 에서는 절대 해제하지 않는다 — 그 상태는 새 요청이 계속 들어온다.
+  let gate;
+  try { gate = await gateRow(env); } catch { return no("게이트를 못 읽었다"); }
+  if (!gate) return no("maintenance 행이 없다");
+  if (gate.mode !== "maintenance" && gate.mode !== "restore_closed")
+    return no(`모드가 ${gate.mode} 다 — maintenance 또는 restore_closed 에서만 해제한다`);
+
+  // ③ 전환 프로토콜이 끝났고 두 DB 의 epoch 이 같은가. **어긋나면 구조적 fencing 의 전제가
+  //    성립하지 않는다** — 옛 epoch 이 정말 못 쓰는지 확신할 수 없다.
+  if (!(await fenceInSync(env)))
+    return no("주 D1 fence 와 ledger epoch 이 다르거나 전환이 진행 중이다 — 먼저 전환을 끝낸다");
+
+  // ④ 신규 lease 를 **막는다.** `maintenance` 는 읽기를 허용하는 상태라 그냥 두면 해제하는
+  //    동안에도 새 임차증이 들어온다. 같은 자물쇠(`pending_transition`)를 원자적으로 문다.
+  const rid = "resolve-" + crypto.randomUUID();
+  const claimed = await env.LEDGER.prepare(
+    `UPDATE maintenance SET pending_transition = ?
+      WHERE id = 1 AND mode = ? AND epoch = ? AND pending_transition IS NULL`)
+    .bind(rid, gate.mode, gate.epoch).run();
+  if (!(claimed.meta && claimed.meta.changes))
+    return no("신규 lease 를 막지 못했다 — 다른 전환이나 해제가 진행 중이다");
+
+  try {
+    // ⑤ 판정에 쓴 게이트가 그대로인가(막은 뒤 다시 읽는다).
+    const g2 = await gateRow(env);
+    if (!g2 || g2.epoch !== gate.epoch || g2.mode !== gate.mode)
+      return no("막는 사이에 게이트가 바뀌었다 — 다시 판정한다");
+
+    // ⑥ **live lease 0건.** 현재 epoch 의 임차증은 지금도 쓸 수 있는 요청이다 —
+    //    하나라도 있으면 아무것도 해제하지 않는다.
+    const live = await env.LEDGER.prepare(
+      "SELECT COUNT(*) AS n FROM write_leases WHERE epoch >= ?").bind(g2.epoch).first();
+    if (Number(live && live.n) > 0)
+      return no(`현재 epoch 의 임차증이 ${live.n}건 살아 있다 — 그 요청들이 끝나야 한다`);
+
+    // ⑦ 대상: **이전 epoch** 이고 만료 + 완충이 지난 것.
+    const cutoff = now - RESOLUTION_GRACE;
+    const { results } = await env.LEDGER.prepare(
+      `SELECT lease_id, epoch, started_at, expires_at FROM write_leases
+        WHERE epoch < ? AND expires_at <= ?`).bind(g2.epoch, cutoff).all();
+    const targets = results || [];
+    if (!targets.length) return { ok: true, resolved: 0, why: "해제할 stale 임차증이 없다" };
+
+    // ⑧ 기록과 삭제를 **한 batch** 로. ledger 는 한 DB 라 이 둘은 실제로 원자적이다.
+    //    ⚠️ DELETE 의 WHERE 에 판정 조건을 그대로 다시 넣는다 — 판정과 삭제 사이에 무언가
+    //       바뀌면 0행이 되고, 아래에서 그것을 알아채 실패로 끝난다.
+    const keep = now + CONFIRMED_RETENTION;
+    const stmts = [];
+    for (const l of targets) {
+      stmts.push(env.LEDGER.prepare(
+        `INSERT INTO lease_resolutions
+           (lease_id, epoch, started_at, expires_at, resolved_at, reason_code, operator_ref, expires_keep)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (lease_id) DO NOTHING`)
+        .bind(l.lease_id, l.epoch, l.started_at, l.expires_at, now, reasonCode, operatorRef, keep));
+      stmts.push(env.LEDGER.prepare(
+        `DELETE FROM write_leases
+          WHERE lease_id = ? AND epoch < ? AND expires_at <= ?
+            AND EXISTS (SELECT 1 FROM maintenance WHERE id = 1 AND epoch = ? AND pending_transition = ?)`)
+        .bind(l.lease_id, g2.epoch, cutoff, g2.epoch, rid));
+    }
+    const rs = await env.LEDGER.batch(stmts);
+    // 삭제 문장은 홀수 번째다. 하나라도 0행이면 그 사이에 상태가 바뀐 것이다.
+    const deleted = rs.filter((_, i) => i % 2 === 1).map((r) => (r.meta && r.meta.changes) || 0);
+    if (deleted.some((c) => c !== 1))
+      return no("해제 도중 상태가 바뀌었다 — 아무것도 확정하지 않는다");
+    return { ok: true, resolved: targets.length, epoch: g2.epoch, reasonCode, operatorRef };
+  } catch {
+    return no("해제 중 오류가 났다");     // 둘 중 하나를 못 읽어도 fail-closed 다
+  } finally {
+    // ⑨ 자물쇠를 반드시 푼다. 안 풀면 새 임차증이 영원히 안 나온다.
+    try {
+      await env.LEDGER.prepare(
+        "UPDATE maintenance SET pending_transition = NULL WHERE id = 1 AND pending_transition = ?")
+        .bind(rid).run();
+    } catch { /* 다음 실행이 같은 조건으로 다시 판정한다 */ }
+  }
+}

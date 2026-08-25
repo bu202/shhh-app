@@ -18,9 +18,11 @@ import "./_workers-shim.mjs";
 import assert from "node:assert";
 import { readFileSync, readdirSync } from "node:fs";
 import { makeD1, makeLedger, asRequest } from "./_d1.mjs";
-import { acquireLease, releaseLease } from "../worker/ledger.js";
+import { acquireLease, releaseLease, LEASE_TTL } from "../worker/ledger.js";
 import { withFence, FenceMismatch, FENCE_MARK } from "../worker/fence.js";
-import { setMode, fenceEpoch, fenceInSync, resumeTransition } from "../worker/ops.js";
+import { setMode, fenceEpoch, fenceInSync, resumeTransition,
+         resolveStaleLeases, RESOLUTION_GRACE } from "../worker/ops.js";
+import { drainState, CONFIRMED_RETENTION } from "../worker/ledger.js";
 
 let n = 0;
 const t = (m) => { n++; return m; };
@@ -361,7 +363,163 @@ const makeEnv = () => ({ DB: makeD1(), LEDGER: makeLedger() });
   await releaseLease(env, l);
 }
 
+// ══ 11. stale lease 의 안전한 해제 (원칙 7) ════════════════════════════════
+//
+// 재현(고치기 전): 해제가 실패해 남은 행 하나가 `stale` 로 영원히 세어져 `drained` 가 계속
+// 거짓이고 `markDrained()`·reconciliation 이 **영구히 막혔다.** fail-closed 방향은 옳지만
+// 복구할 길이 없는 것은 운영 결함이다. 그런데 해제의 근거가 「시간이 지났다」면 안 된다 —
+// 그건 증명이 아니라 가정이다. 근거는 **구조적 fencing**(옛 epoch 은 두 DB 어디에도 못 쓴다)이고,
+// `expires_at + 15분` 은 그 위의 운영 완충일 뿐이다.
+{
+  const GRACE = RESOLUTION_GRACE;
+  // stale 임차증 하나를 **실제로** 만든다: 임차증을 딴 뒤 해제가 실패한 상황.
+  const withStale = async () => {
+    const env = makeEnv();
+    const lease = await acquireLease(env);
+    await setMode(env, "maintenance");              // epoch 이 오른다 → 이 임차증은 옛 epoch 이다
+    // 해제 실패를 흉내내지 않고 **그냥 안 푼다** — 그것이 stale 의 정의다.
+    return { env, lease };
+  };
+  const leaseCount = (env) => env.LEDGER._db.prepare("SELECT COUNT(*) n FROM write_leases").get().n;
+  const resCount = (env) => env.LEDGER._db.prepare("SELECT COUNT(*) n FROM lease_resolutions").get().n;
+  const ok = { operatorRef: "ops-2026-09-01", reasonCode: "worker_terminated" };
+  // 만료(획득 + LEASE_TTL)에 운영 완충까지 지난 시점.
+  // ⚠️ 이 값은 **테스트가 시계를 앞당기는 것**이지 안전 근거가 아니다 — 안전 근거는 epoch 이다.
+  const past = () => Date.now() + LEASE_TTL + GRACE + 1000;
+
+  // ── a. ★ `open` 에서는 절대 해제하지 않는다.
+  {
+    const env = makeEnv();
+    const l = await acquireLease(env);
+    const r = await resolveStaleLeases(env, { ...ok, now: past() });
+    assert.equal(r.ok, false, t("fence: open 인데 stale 해제가 실행됐다"));
+    assert.match(r.why, /모드가 open/, t("fence: open 거부 사유가 모드가 아니다"));
+    assert.equal(leaseCount(env), 1, t("fence: 거부했는데 임차증이 사라졌다"));
+    await releaseLease(env, l);
+  }
+
+  // ── b. ★ live lease 가 있으면 거부한다.
+  {
+    const { env } = await withStale();
+    const live = await acquireLease(env);            // 현재 epoch 의 임차증
+    assert.ok(live, t("fence: maintenance 에서 임차증을 못 땄다"));
+    const r = await resolveStaleLeases(env, { ...ok, now: past() });
+    assert.equal(r.ok, false, t("fence: live lease 가 있는데 해제했다"));
+    assert.match(r.why, /살아 있다/, t("fence: 거부 사유가 live lease 가 아니다"));
+    assert.equal(resCount(env), 0, t("fence: 거부했는데 기록이 남았다"));
+    await releaseLease(env, live);
+  }
+
+  // ── c. ★ 완충이 안 지났으면 대상이 아니다.
+  {
+    const { env } = await withStale();
+    const r = await resolveStaleLeases(env, { ...ok, now: Date.now() });
+    assert.equal(r.ok, true, t("fence: 대상이 없는 것은 실패가 아니다"));
+    assert.equal(r.resolved, 0, t("fence: 완충 전인데 해제됐다"));
+    assert.equal(leaseCount(env), 1, t("fence: 완충 전인데 임차증이 사라졌다"));
+  }
+
+  // ── d. ★ 두 DB 의 epoch 이 어긋나면 거부한다 (전환이 안 끝난 상태).
+  {
+    const { env } = await withStale();
+    env.DB._db.prepare("UPDATE write_fence SET epoch = epoch + 5 WHERE id = 1").run();
+    const r = await resolveStaleLeases(env, { ...ok, now: past() });
+    assert.equal(r.ok, false, t("fence: 두 DB 가 어긋났는데 해제했다"));
+    assert.match(r.why, /fence|전환/, t("fence: 거부 사유가 fence 불일치가 아니다"));
+  }
+
+  // ── e. ★ 전환이 진행 중이면 거부한다.
+  {
+    const { env } = await withStale();
+    env.LEDGER._db.prepare("UPDATE maintenance SET pending_transition = 'tr-x' WHERE id = 1").run();
+    const r = await resolveStaleLeases(env, { ...ok, now: past() });
+    assert.equal(r.ok, false, t("fence: 전환 중인데 해제했다"));
+  }
+
+  // ── f. ★ 허용되지 않은 reason_code · 식별 가능한 operator_ref 는 거부한다.
+  {
+    const { env } = await withStale();
+    for (const bad of ["", "그냥", "worker terminated", "custom-reason", null, undefined]) {
+      const r = await resolveStaleLeases(env, { operatorRef: "ops-x1", reasonCode: bad, now: past() });
+      assert.equal(r.ok, false, t(`fence: 허용되지 않은 reason_code 가 통과했다: ${bad}`));
+    }
+    for (const bad of ["someone@example.com", "홍길동", "a", "", null, "OPS-2026", "x".repeat(60)]) {
+      const r = await resolveStaleLeases(env, { operatorRef: bad, reasonCode: "release_failed", now: past() });
+      assert.equal(r.ok, false, t(`fence: 비식별 라벨이 아닌 operator_ref 가 통과했다: ${bad}`));
+    }
+    assert.equal(resCount(env), 0, t("fence: 거부했는데 기록이 남았다"));
+  }
+
+  // ── g. ★ 조건이 모두 맞으면 해제되고, **최소 항목만** 기록된다.
+  {
+    const { env, lease } = await withStale();
+    const before = env.LEDGER._db.prepare("SELECT * FROM write_leases").get();
+    const r = await resolveStaleLeases(env, { ...ok, now: past() });
+    assert.equal(r.ok, true, t(`fence: 조건이 맞는데 해제가 거부됐다: ${r.why}`));
+    assert.equal(r.resolved, 1, t("fence: 해제 건수가 1이 아니다"));
+    assert.equal(leaseCount(env), 0, t("fence: 해제했는데 임차증이 남았다"));
+
+    const row = env.LEDGER._db.prepare("SELECT * FROM lease_resolutions").get();
+    assert.equal(row.lease_id, lease.id, t("fence: 기록의 lease_id 가 다르다"));
+    assert.equal(row.epoch, before.epoch, t("fence: 기록의 epoch 이 그 lease 의 epoch 이 아니다"));
+    assert.equal(row.reason_code, ok.reasonCode, t("fence: reason_code 가 안 적혔다"));
+    assert.equal(row.operator_ref, ok.operatorRef, t("fence: operator_ref 가 안 적혔다"));
+    // ⚠️ **보유 만료가 확정 표식과 같은 규칙(37일)이다.**
+    assert.equal(row.expires_keep - row.resolved_at, CONFIRMED_RETENTION,
+      t("fence: 해제 기록의 보유기간이 CONFIRMED_RETENTION 과 다르다"));
+    // ⛔ **개인정보가 될 수 있는 칸이 없다.** 표 정의 자체를 검사한다 — 나중에 컬럼을 더하면
+    //    여기서 걸린다.
+    const cols = env.LEDGER._db.prepare("PRAGMA table_info(lease_resolutions)").all().map((c) => c.name);
+    assert.deepEqual(cols.sort(),
+      ["epoch", "expires_at", "expires_keep", "lease_id", "operator_ref", "reason_code", "resolved_at", "started_at"],
+      t("fence: 해제 기록의 컬럼 구성이 승인된 최소 항목과 다르다"));
+    for (const banned of ["ip", "uid", "user", "path", "note", "reason_text", "request"])
+      assert.ok(!cols.some((c) => c.includes(banned)),
+        t(`fence: 해제 기록에 '${banned}' 를 담는 칸이 생겼다 — 승인 범위 밖이다`));
+
+    // ★ 해제한 **뒤에야** drain 이 된다.
+    assert.equal((await drainState(env)).drained, true,
+      t("fence: stale 을 해제했는데 여전히 drain 이 아니다 — 복구가 안 된 것이다"));
+    // 자물쇠는 풀려 있어야 한다.
+    assert.equal(
+      env.LEDGER._db.prepare("SELECT pending_transition p FROM maintenance WHERE id = 1").get().p, null,
+      t("fence: 해제 뒤에 신규 lease 자물쇠가 안 풀렸다"));
+  }
+
+  // ── h. ★ 처리 도중 경합하면 **아무것도 확정하지 않는다.**
+  {
+    const { env } = await withStale();
+    const realBatch = env.LEDGER.batch.bind(env.LEDGER);
+    env.LEDGER.batch = async (stmts) => {
+      // 판정과 삭제 사이에 다른 운영자가 전환했다.
+      env.LEDGER._db.prepare("UPDATE maintenance SET epoch = epoch + 1 WHERE id = 1").run();
+      return realBatch(stmts);
+    };
+    const r = await resolveStaleLeases(env, { ...ok, now: past() });
+    env.LEDGER.batch = realBatch;
+    assert.equal(r.ok, false, t("fence: 처리 도중 경합했는데 성공으로 끝났다"));
+    assert.equal(leaseCount(env), 1, t("fence: 경합했는데 임차증이 지워졌다"));
+  }
+
+  // ── i. ★ ledger 가 답하지 않으면 fail-closed 다.
+  {
+    const { env } = await withStale();
+    const broken = { ...env, LEDGER: { prepare: () => { throw new Error("ledger down"); } } };
+    const r = await resolveStaleLeases(broken, { ...ok, now: past() });
+    assert.equal(r.ok, false, t("fence: ledger 가 죽었는데 해제가 통과했다"));
+  }
+
+  // ── j. cleanup 이 stale lease 를 **자동으로 지우지 않는다**(운영자 명령만).
+  {
+    const src = R("worker/cleanup/index.js");
+    assert.ok(!/DELETE FROM write_leases/.test(src),
+      t("fence: 정리 크론이 stale 임차증을 자동으로 지운다 — 증거가 시간으로 사라진다"));
+  }
+}
+
 console.log(`test-fence: ${n}개 통과 — worker/ 전수 분류 · 사용자 데이터 문장의 {FENCE} 전수 ·`
   + ` 예외 실재와 이유 · cleanup 동적 디스패치 · write_fence 쓰기 1곳(미export) ·`
   + ` 요청 경로의 withFence · 옛 epoch 은 읽기·쓰기·batch 전부 차단 ·`
-  + ` 정상 0행은 오류가 아님(멱등 유지) · {FENCE} 누락은 예외 · 전환 프로토콜 재개(3단계)`);
+  + ` 정상 0행은 오류가 아님(멱등 유지) · {FENCE} 누락은 예외 · 전환 프로토콜 재개(3단계) ·`
+  + ` stale 해제 10조건(open 거부 · live lease · 완충 · epoch 불일치 · 전환 중 · 사유·라벨 ·`
+  + ` 최소 기록과 37일 · 경합 시 원자적 실패 · ledger 장애 fail-closed · 크론 자동삭제 없음)`);

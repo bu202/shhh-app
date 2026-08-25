@@ -338,3 +338,11 @@ export async function ledgerAnswers(env) {
     return false;
   }
 }
+
+// 보유기간이 지난 해제 기록이 남아 있나. **경보 대상**이다(사용자 결정 1 · 2026-08-25):
+// 「37일 후 삭제 실패는 운영 경보」.
+export async function overdueResolutions(env, now = Date.now()) {
+  const r = await env.LEDGER.prepare(
+    "SELECT COUNT(*) AS n FROM lease_resolutions WHERE expires_keep < ?").bind(now).first();
+  return Number(r && r.n) || 0;
+}
