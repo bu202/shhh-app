@@ -22,6 +22,8 @@ const dc = (env, table, where = "") => env.DB._db.prepare(`SELECT COUNT(*) n FRO
 const lcT = (env, table, where = "") => env.LEDGER._db.prepare(`SELECT COUNT(*) n FROM ${table} ${where}`).get().n;
 
 // 대상마다 「만료된 것 1개 · 안 만료된 것 1개」를 심는다. 만료된 것만 사라져야 한다.
+const lcD = (env, tbl) => env.DB._db.prepare(`SELECT COUNT(*) n FROM ${tbl}`).get().n;
+
 function seed(env, now) {
   const L = env.LEDGER._db, D = env.DB._db;
   const del = (mark, confirmed, exp) => L.exec(
@@ -206,9 +208,18 @@ function seed(env, now) {
   assert.ok(restoreGate(rep).missing.some((x) => x.startsWith("noActiveLeases")),
     t("T47b: 미충족 사유에 noActiveLeases 가 없다 — 다른 조건에 가려 이 경합이 안 보인다"));
 
-  // ④ 끝난 뒤에**만** 0 이 된다.
+  // ④ ★ **전환 뒤에는 그 크론이 주 D1 에 한 줄도 못 쓴다**(2026-08-25 · 원칙 1·9).
+  //    예전에는 여기서 멈춰 있던 DELETE 가 그대로 실행됐다 — 임차증은 「도는 중」을 셀 뿐
+  //    쓰기를 막지 못했기 때문이다. 이제 문장 안의 fence 술어가 0행으로 만들고,
+  //    통로가 그것을 fence 불일치로 가려 던진다. 회차는 실패로 끝나고 다음 시간에 다시 돈다.
+  const cssBefore = lcD(env, "consumed_signup_states");
   release();
-  await running;
+  await assert.rejects(() => running, (e) => e.name === "FenceMismatch",
+    t("T47b: 전환 뒤에도 크론이 주 D1 쓰기를 끝냈다 — 구조적 fencing 이 안 걸렸다"));
+  assert.equal(lcD(env, "consumed_signup_states"), cssBefore,
+    t("T47b: 전환 뒤에 멈춰 있던 DELETE 가 실제로 행을 지웠다"));
+
+  // 실패로 끝나도 **임차증은 풀린다**(가장 바깥 finally). 안 그러면 stale 이 하나 남는다.
   assert.equal((await drainState(env, now)).open, 0,
     t("T47b: 크론이 끝났는데 임차증이 남아 있다 — 해제가 가장 바깥 finally 에 없다"));
 

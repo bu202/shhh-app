@@ -15,7 +15,7 @@
 // 않았다** — 아래 「행+인덱스」 열은 **현재 스키마 기반 추정 상한**이고 실측값이 아니다.
 // 두 숫자를 한 칸에 섞어 적지 않는다: 기본 행 변경 수와 인덱스 포함 추정치는 다른 값이다.
 import worker, { createAccountWithPolicy, newSession } from "../worker/index.js";
-import { makeD1, makeLedger } from "./_d1.mjs";
+import { makeD1, makeLedger, asRequest } from "./_d1.mjs";
 
 const ORIGIN = "https://app.test";
 const KEY32 = Buffer.from(Uint8Array.from({ length: 32 }, (_, i) => i + 1)).toString("base64url");
@@ -61,10 +61,10 @@ const env0 = () => ({
 
 async function measure(label, withLedger) {
   const env = env0();
-  const uid = await createAccountWithPolicy(env, "kakao", "cost-" + label, {
+  const uid = await asRequest(env, (fe) => createAccountWithPolicy(fe, "kakao", "cost-" + label, {
     stateHash: "s-" + label, stateExp: Date.now() + 600e3, occurredAt: Date.now(),
-  });
-  const token = await newSession(env, uid);
+  }));
+  const token = await asRequest(env, (fe) => newSession(fe, uid));
   const ledger = counting(env.LEDGER);
   const run = { ...env, LEDGER: withLedger ? ledger : undefined };
   // 측정 대상: 자동저장 한 번(가장 뜨거운 경로)

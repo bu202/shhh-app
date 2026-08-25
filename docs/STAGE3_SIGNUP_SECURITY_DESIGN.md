@@ -2423,6 +2423,15 @@ CREATE INDEX write_leases_active ON write_leases(released_at, expires_at);
 | **A. 온라인 workload** | 사람의 요청이나 cron 이 부르면 도는 것 — HTTP Worker(A-1) · Scheduled Cleanup(A-2) | **필수** | `acquireLease()` → 주 D1 첫 접근 **전** 획득 → 가장 바깥 `finally` 에서 DELETE 해제 |
 | **B. 복원·운영 명령** | `worker/ops.js`. **HTTP 라우트가 아니다** — 사람이 실행하고 사람이 판정한다 | **씌우지 않는다** | 함수 자체의 선행조건. 일반 요청 임차증을 무조건 씌우면 `restore_closed` 에서 복원 작업 자체가 자기 게이트에 막힌다 |
 | **C. 공개 상태 확인 예외** | `/health` · `/ready` · `/policies` (`LEASE_FREE`) | 없음 | 사용자 **행 내용을 응답하지 않는다**. 복원 중에도 답해야 하는 유일한 창구다 |
+| **D. fence 통로** | `worker/fence.js`. **스스로 정책을 정하지 않는다** — A 가 든 임차증의 epoch 을 받아 주 D1 문장에 술어로 붙이는 통로다 | A 의 임차증을 **받아서 쓴다** | 문장 안의 `EXISTS (write_fence …)`. 여기를 지나지 않는 주 D1 접근은 `scripts/test-fence.mjs` 가 전수로 거부한다 |
+
+> **D 를 왜 따로 두나** (2026-08-25 · 원칙 1~9). A 의 임차증은 「몇 개가 도나」를 **세는** 장치일
+> 뿐 주 D1 쓰기를 막지 못했다 — ledger 쓰기에는 `FENCE` 가 붙어 있었지만 주 D1 접근 중 lease
+> 유효성을 다시 보는 자리는 **삭제 saga 하나뿐**이었다. 그래서 유지보수 전환 뒤에도 살아 있는
+> 요청이 주 D1 에 계속 쓸 수 있었고, stale lease 해제의 근거가 **경과 시간밖에** 없었다.
+> ⛔ **경과 시간은 근거가 못 된다** — Workers 의 CPU 제한과 HTTP 요청의 wall-clock 수명은 다른
+> 것이고, 클라이언트 연결이 유지되는 동안 요청은 하드 제한 없이 살아 있을 수 있다.
+> D 는 그 방어를 **구조**로 바꾼다: 검사와 쓰기가 같은 DB 의 같은 문장이라 사이에 창이 없다.
 
 ##### A-1. HTTP Worker (`worker/index.js`) — 주 D1 쓰기 **10개** (8판: 리미터가 빠졌다)
 

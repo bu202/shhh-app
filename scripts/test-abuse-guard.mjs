@@ -16,7 +16,7 @@ import "./_workers-shim.mjs";
 import assert from "node:assert";
 import worker, { rlMax, routeBuckets, routeCount, guardMode, routeFor,
                  createAccountWithPolicy, newSession } from "../worker/index.js";
-import { makeD1, makeLedger } from "./_d1.mjs";
+import { makeD1, makeLedger, asRequest } from "./_d1.mjs";
 
 const ORIGIN = "https://app.test";
 const KEY32 = Buffer.from(Uint8Array.from({ length: 32 }, (_, i) => i + 7)).toString("base64url");
@@ -47,9 +47,9 @@ const call = (env, path, { method = "GET", ip = "1.2.3.4", host, token, headers 
 // 세션 envelope 서명이 그보다 앞에서 우리 것이 아닌 쿠키를 버리기 때문이다.
 let uSeq = 0;
 const session = async (env) => {
-  const uid = await createAccountWithPolicy(env, "kakao", "ag" + ++uSeq,
-    { stateHash: "s-" + Math.random(), stateExp: Date.now() + 600e3, occurredAt: Date.now() });
-  return await newSession(env, uid);
+  const uid = await asRequest(env, (fe) => createAccountWithPolicy(fe, "kakao", "ag" + ++uSeq,
+    { stateHash: "s-" + Math.random(), stateExp: Date.now() + 600e3, occurredAt: Date.now() }));
+  return await asRequest(env, (fe) => newSession(fe, uid));
 };
 // 그 라우트가 세션을 요구하나. 표가 원본이다 — 여기서 손으로 나열하면 표가 바뀔 때 낡는다.
 const needsAuth = (path, method = "GET") => !!routeFor(method, path.replace(/^\/api/, "")).auth;

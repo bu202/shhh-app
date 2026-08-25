@@ -14,7 +14,7 @@ import worker, { createAccountWithPolicy, findUser, newSession, pathTemplate,
   routeFor, rlMax, routeBuckets, routeCount, maintenanceAllows, envelopeOk,
   authRoutes, mkSessionToken, SESSION_ENVELOPE_VERSION,
   appOrigin, loginPossible } from "../worker/index.js";
-import { makeD1, makeLedger, withLatency } from "./_d1.mjs";
+import { makeD1, makeLedger, withLatency, asRequest } from "./_d1.mjs";
 import { drainState, readMode, MODE_UNBOUND } from "../worker/ledger.js";
 // 옛 배포 세대의 **고정 fixture**. 지금 코드가 아니다 — 그 파일 머리말을 볼 것.
 import legacy from "./fixtures/legacy-worker.mjs";
@@ -58,12 +58,12 @@ export const SIGNUP_KEY_B64 = Buffer.from(
 //    **같은 트랜잭션**에서만 일어나므로, 테스트도 그 진짜 경로를 쓴다.
 let stateSeq = 0;
 async function signUp(env, provider, subject) {
-  const uid = await createAccountWithPolicy(env, provider, subject, {
+  const uid = await asRequest(env, (fe) => createAccountWithPolicy(fe, provider, subject, {
     stateHash: `test-state-${++stateSeq}`, stateExp: Date.now() + 600e3, occurredAt: Date.now(),
-  });
-  return { uid, token: await newSession(env, uid) };
+  }));
+  return { uid, token: await asRequest(env, (fe) => newSession(fe, uid)) };
 }
-const another = (env, uid) => newSession(env, uid);   // 같은 계정의 다른 기기
+const another = (env, uid) => asRequest(env, (fe) => newSession(fe, uid));  // 같은 계정의 다른 기기
 
 const call = async (env, token, path, method = "GET", body, extra = {}) => {
   // ⚠️ **운영자 키를 늘 싣는다**(2026-08-22 · 위협 56). `/ready` 의 진단은 이 헤더가 있어야
@@ -373,8 +373,8 @@ function befriend(env, a, b, status = "accepted") {
   //    「표(txn) 결속」이므로 계정은 **미리 있어야** 한다 — 없으면 표가 맞아도 `signup_required`
   //    로 돌아간다. 그 성질 자체는 scripts/test-signup.mjs 가 따로 잰다.
   for (const p of ["kakao", "naver", "google"]) {
-    await createAccountWithPolicy(env, p, "u1",
-      { stateHash: `pre-${p}`, stateExp: Date.now() + 600e3, occurredAt: Date.now() });
+    await asRequest(env, (fe) => createAccountWithPolicy(fe, p, "u1",
+      { stateHash: `pre-${p}`, stateExp: Date.now() + 600e3, occurredAt: Date.now() }));
   }
   const sessions = () => env.DB._db.prepare("SELECT COUNT(*) n FROM sessions").get().n;
   // ⚠️ 이 블록이 재는 것은 **표(txn) 결속**이지 레이트리밋이 아니다. 그런데 로그인 왕복이
@@ -602,16 +602,16 @@ function befriend(env, a, b, status = "accepted") {
   assert.equal(env.DB._db.prepare("SELECT provider_subject FROM users WHERE id = ?").get(A.uid).provider_subject, "1234567");
 
   // 47. 같은 제공자 계정은 **늘 같은 내부 id** 다. 매번 새로 만들면 로그인할 때마다 빈 단어장이 된다.
-  assert.equal(await findUser(env, "kakao", "1234567"), A.uid, "같은 제공자 계정이 다른 번호를 받았다");
+  assert.equal(await asRequest(env, (fe) => findUser(fe, "kakao", "1234567")), A.uid, "같은 제공자 계정이 다른 번호를 받았다");
   // 48. **조회는 만들지 않는다.** 예전 `internalUid()` 는 없으면 그 자리에서 계정을 만들었고,
   //     그래서 로그인 경로가 지나가는 것만으로 가입이 됐다. 이제 없으면 null 이다.
   const before = env.DB._db.prepare("SELECT COUNT(*) n FROM users").get().n;
-  assert.equal(await findUser(env, "kakao", "9999"), null, "없는 계정을 조회했는데 값이 나왔다");
+  assert.equal(await asRequest(env, (fe) => findUser(fe, "kakao", "9999")), null, "없는 계정을 조회했는데 값이 나왔다");
   assert.equal(env.DB._db.prepare("SELECT COUNT(*) n FROM users").get().n, before,
     "조회만 했는데 계정이 늘었다 — 조회와 생성이 다시 붙었다");
   // 49. 다른 사람은 다른 번호.
-  const other = await createAccountWithPolicy(env, "kakao", "9999",
-    { stateHash: "s-9999", stateExp: Date.now() + 600e3, occurredAt: Date.now() });
+  const other = await asRequest(env, (fe) => createAccountWithPolicy(fe, "kakao", "9999",
+    { stateHash: "s-9999", stateExp: Date.now() + 600e3, occurredAt: Date.now() }));
   assert.notEqual(other, A.uid, "다른 계정이 같은 번호를 받았다");
 }
 
@@ -924,7 +924,7 @@ function befriend(env, a, b, status = "accepted") {
   const A = await signUp(env, "kakao", "A");
   env.DB._db.prepare("UPDATE sessions SET expires_at = 1 WHERE user_id = ?").run(A.uid);
   // 80. 다음 로그인이 지난 행을 치운다(청소용 크론이 없으니 드문 자리에 붙였다).
-  await newSession(env, A.uid);
+  await asRequest(env, (fe) => newSession(fe, A.uid));
   assert.equal(env.DB._db.prepare("SELECT COUNT(*) n FROM sessions WHERE expires_at < ?").get(Date.now()).n, 0,
     "만료된 세션 행이 그대로 남았다");
   // 81. 살아 있는 세션은 안 건드린다.
@@ -1148,8 +1148,8 @@ function befriend(env, a, b, status = "accepted") {
   // 이 블록이 재는 것은 **제공자 응답의 크기 상한**이다. 로그인 경로가 계정을 만들지 않게
   // 바뀐 뒤로는 계정이 미리 있어야 그 지점까지 간다 — 없으면 상한 검사 앞에서 끝나 버린다.
   for (const sub of ["u-ok", "u-odd"]) {
-    await createAccountWithPolicy(env, "kakao", sub,
-      { stateHash: `pre-${sub}`, stateExp: Date.now() + 600e3, occurredAt: Date.now() });
+    await asRequest(env, (fe) => createAccountWithPolicy(fe, "kakao", sub,
+      { stateHash: `pre-${sub}`, stateExp: Date.now() + 600e3, occurredAt: Date.now() }));
   }
 
   // 제공자를 갈아끼우고 콜백을 한 번 돈다. 로그를 함께 모은다 —
@@ -1927,8 +1927,10 @@ function befriend(env, a, b, status = "accepted") {
   assert.equal((await call(broken, null, "/health")).status, 200, "T8-a2: ledger 가 죽었다고 /health 까지 막혔다");
   // `maintenance` 행이 통째로 없는 경우(migration 을 절반만 건 ledger).
   const empty = makeEnv();
-  empty.LEDGER._db.exec("DELETE FROM maintenance");
+  // ⚠️ **계정을 먼저 만들고 나서 행을 지운다.** 순서가 반대면 가입 자체가 임차증을 못 따서
+  //    재려던 것(행이 없을 때 읽기가 막히나)이 아니라 준비 단계에서 죽는다.
   const B = await signUp(empty, "kakao", "norow");
+  empty.LEDGER._db.exec("DELETE FROM maintenance");
   assert.equal((await call(empty, B.token, "/book")).status, 503, "T8-a2: maintenance 행이 없는데 통과했다");
 }
 
@@ -2112,7 +2114,7 @@ function befriend(env, a, b, status = "accepted") {
 
   // T71-c. ★ **서명이 맞아도 인증이 아니다.** DB 에 없는 세션은 401 이다.
   {
-    const orphan = await newSession(env, A.uid);
+    const orphan = await asRequest(env, (fe) => newSession(fe, A.uid));
     env.DB._db.prepare("DELETE FROM sessions WHERE user_id = ?").run(A.uid);
     assert.equal(await envelopeOk(env, orphan), true, "T71-c: 우리가 만든 토큰인데 서명이 안 맞는다");
     assert.equal((await call(env, orphan, "/book")).status, 401,

@@ -300,7 +300,7 @@ npm test
 npm audit
 ```
 
-- `npm test`가 빌드와 `dist/` 공개 파일 검사까지 수행한다. **26개 스위트**다.
+- `npm test`가 빌드와 `dist/` 공개 파일 검사까지 수행한다. **27개 스위트**다.
 - **`scripts/test-workerd.mjs` 는 진짜 workerd 프로세스를 띄운다.** 나머지 스위트는 `worker/index.js` 를
   Node 에서 돌리므로 **런타임이 다르다** — Node 에 없는 API(`crypto.subtle.timingSafeEqual`)를 운영
   코드가 부르면 Node 쪽은 어댑터(`scripts/_workers-shim.mjs`)로 채워지고 진짜 Workers 경로는

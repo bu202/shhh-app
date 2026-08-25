@@ -5,6 +5,8 @@
 //
 // ⚠️ 여기에는 **강제 진행 플래그가 없다.** `force`·`fallback`·`skipChecks` 를 만들지 않는다 —
 //    한 번 만들면 급할 때 쓰이고, 급할 때가 정확히 쓰면 안 되는 때다.
+import { fenceEpoch, fenceInSync } from "./fence.js";
+export { fenceEpoch, fenceInSync };
 import { activeLeases, drainState, pendingTotalCount, DELETION_KEY_VERSION, CONFIRMED_RETENTION,
          DELETION_MARKERS, deletionEvidenceUsable } from "./ledger.js";
 
@@ -27,9 +29,30 @@ const markerFns = (env) => [...DELETION_MARKERS.values()].map((f) => (uid) => f(
 const READS_USER_DATA = new Set(["open", "maintenance"]);
 const MODES = ["open", "maintenance", "restore_closed"];
 
+// ── 주 D1 fence 를 옮기는 **유일한 자리** (2026-08-25 · 원칙 6) ──────────
+// ⚠️ 일반 코드는 이 함수를 부르지 않는다. 사용자 데이터 문장은 전부 `withFence()` 가 감싼
+//    바인딩으로 나가고, 그 바인딩은 fence 를 **읽기만** 한다. 여기만 raw 바인딩으로 쓴다.
+//    아키텍처 검사(`scripts/test-fence.mjs`)가 raw 쓰기의 사용처를 이 함수 하나로 한정한다.
+// ⚠️ **인자로 받은 epoch 을 그대로 적지 않는다** — 부르는 쪽은 전환 프로토콜뿐이고,
+//    그 값은 `transitions` 행에 이미 영속화된 target_epoch 이다.
+async function setFenceEpoch(env, targetEpoch) {
+  await env.DB.prepare("UPDATE write_fence SET epoch = ? WHERE id = 1").bind(targetEpoch).run();
+}
+
+
 export async function setMode(env, mode, { now = Date.now() } = {}) {
   if (!MODES.includes(mode)) throw new Error("unknown mode: " + mode);
   const cur = await gateRow(env);
+
+  // ── 0. 중간에 죽은 전환이 있으면 **그것부터 끝낸다.** ────────────────────
+  // 이어서 끝내지 않고 새 전환을 시작하면 fence 와 ledger 가 어긋난 채로 겹친다.
+  const open = await env.LEDGER.prepare(
+    "SELECT * FROM transitions WHERE state <> 'committed' ORDER BY started_at LIMIT 1").first();
+  if (open) {
+    await resumeTransition(env, open, now);
+    return await setMode(env, mode, { now });     // 정리됐으니 원래 요청을 다시 판정한다
+  }
+
   if (cur && cur.mode === "restore_closed" && READS_USER_DATA.has(mode)) {
     // ⚠️ **보고서를 받아서 믿지 않는다. 여기서 다시 돌린다.** 받아서 믿으면 `{canReopen:true}`
     //    한 줄이 곧 통과다 — 검사를 인자로 우회하는 그 무늬가 정확히 restoreGate 에서
@@ -45,23 +68,65 @@ export async function setMode(env, mode, { now = Date.now() } = {}) {
       throw new Error("restore_closed 에서는 open 으로만 나간다 — "
         + `${mode} 로 가려면 open 을 거친다(읽기가 열리는 전환은 한 길뿐이다)`);
   }
+
+  // ── 1. 신규 lease 를 먼저 막는다 (원칙 2) ────────────────────────────────
+  // ⚠️ **fence 를 옮기기 전에 문을 닫는다.** 순서가 반대면 문이 열린 채로 fence 가 움직여,
+  //    그 창에서 새로 들어온 요청이 옛 epoch 을 들고 나가 곧바로 fence 에 막힌다(사용자에게는
+  //    이유 없는 503 이다). 닫고 옮기면 그런 요청 자체가 생기지 않는다.
   // ⚠️ **판정에 쓴 게이트가 그 사이에 바뀌었으면 쓰지 않는다(CAS).** 재개방 판정은 질의 여러
   //    번이라 그 동안 다른 운영자가 전환할 수 있고, 그러면 사람이 본 근거와 실제 상태가 갈린다.
-  //    `mode` 와 `epoch` 을 함께 조건에 넣어 **닫히는 쪽으로** 실패시킨다.
-  const r = await env.LEDGER.prepare(
-    `UPDATE maintenance SET mode = ?, epoch = epoch + 1,
-            closed_at = CASE WHEN ? = 'open' THEN NULL ELSE ? END,
-            drained_at = NULL
-      WHERE id = 1 AND mode = ? AND epoch = ?`)
-    .bind(mode, mode, now, cur.mode, cur.epoch).run();
-  if (!(r.meta && r.meta.changes))
+  const tid = crypto.randomUUID();
+  const target = cur.epoch + 1;
+  const claimed = await env.LEDGER.prepare(
+    `UPDATE maintenance SET pending_transition = ?
+      WHERE id = 1 AND mode = ? AND epoch = ? AND pending_transition IS NULL`)
+    .bind(tid, cur.mode, cur.epoch).run();
+  if (!(claimed.meta && claimed.meta.changes))
     throw new Error("유지보수 전환이 경합했다 — 판정에 쓴 epoch 이 이미 바뀌었다. 다시 판정한다");
+  await env.LEDGER.prepare(
+    `INSERT INTO transitions (transition_id, source_epoch, target_epoch, target_mode, state, started_at, updated_at)
+     VALUES (?, ?, ?, ?, 'started', ?, ?)`)
+    .bind(tid, cur.epoch, target, mode, now, now).run();
+
+  await resumeTransition(env,
+    { transition_id: tid, source_epoch: cur.epoch, target_epoch: target, target_mode: mode, state: "started" },
+    now);
+  return await gateRow(env);
+}
+
+// 전환을 **그 단계부터** 이어서 끝낸다. 각 단계는 멱등이라 몇 번을 다시 돌려도 같은 결과다.
+// ⛔ 이 함수는 조건을 다시 판정하지 않는다 — 판정은 `setMode` 가 이미 했고, 그 결정이
+//    `transitions` 행에 영속화돼 있다. 여기서 다시 판정하면 「중간에 죽은 전환」이 판정 결과가
+//    달라졌다는 이유로 **영원히 안 끝나는** 상태가 된다.
+export async function resumeTransition(env, tr, now = Date.now()) {
+  const { transition_id: tid, target_epoch: target, target_mode: mode } = tr;
+  // ① 주 D1 fence 를 올린다. **이 순간부터 옛 epoch 의 요청은 주 D1 에 한 줄도 못 쓴다.**
+  if (tr.state === "started") {
+    await setFenceEpoch(env, target);
+    await env.LEDGER.prepare(
+      "UPDATE transitions SET state = 'fence_set', updated_at = ? WHERE transition_id = ?")
+      .bind(now, tid).run();
+  }
+  // ② ledger 의 mode·epoch 을 확정하고 문을 다시 연다.
+  //    ⚠️ 여기까지 못 오면 fence 와 ledger 가 **어긋난 채** 남는다 — 그 상태는 모든 사용자
+  //       데이터 접근과 `/api/ready` 가 fail-closed 다(`fenceInSync`).
+  await env.LEDGER.prepare(
+    `UPDATE maintenance SET mode = ?, epoch = ?,
+            closed_at = CASE WHEN ? = 'open' THEN NULL ELSE ? END,
+            drained_at = NULL, pending_transition = NULL
+      WHERE id = 1 AND pending_transition = ?`)
+    .bind(mode, target, mode, now, tid).run();
+  await env.LEDGER.prepare(
+    "UPDATE transitions SET state = 'committed', updated_at = ? WHERE transition_id = ?")
+    .bind(now, tid).run();
   return await gateRow(env);
 }
 
 // 게이트 한 줄. 여러 함수가 같은 질의를 하고 있었다 — 한 곳으로 모은다.
+// ⚠️ **`pending_transition` 도 함께 읽는다**(2026-08-25 · 원칙 4). 빼면 `fenceInSync()` 가
+//    「전환이 중간에 멈춘 상태」를 정상으로 읽어 fail-closed 가 통째로 무력해진다.
 const gateRow = (env) => env.LEDGER.prepare(
-  "SELECT mode, epoch, drained_at FROM maintenance WHERE id = 1").first();
+  "SELECT mode, epoch, drained_at, pending_transition FROM maintenance WHERE id = 1").first();
 
 // ⚠️ **보고서에 유효기간을 두지 않는다.** 두려던 이유는 「사람이 보고서를 들고 있다가 나중에
 //    쓰는 것」을 막기 위해서였는데, 그건 애초에 보고서를 **받아서 믿을 때만** 생기는 위험이다.

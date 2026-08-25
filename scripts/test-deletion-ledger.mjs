@@ -24,7 +24,7 @@ import {
   scanUserMarks, restoreGate, beginRestore, RESTORE_CONDITIONS, RESTORE_STATE, reopenReport,
   drainReport, restorePreflight,
 } from "../worker/ops.js";
-import { makeD1, makeLedger } from "./_d1.mjs";
+import { makeD1, makeLedger, asRequest } from "./_d1.mjs";
 
 const ORIGIN = "https://app.test";
 let n = 0;
@@ -43,9 +43,9 @@ const lcount = (env, where = "") => env.LEDGER._db.prepare(`SELECT COUNT(*) n FR
 const ucount = (env) => env.DB._db.prepare("SELECT COUNT(*) n FROM users").get().n;
 let seq = 0;
 const mkUser = async (env, sub = "u" + ++seq) => {
-  const uid = await createAccountWithPolicy(env, "kakao", sub,
-    { stateHash: "s-" + sub + Math.random(), stateExp: Date.now() + 600e3, occurredAt: Date.now() });
-  return { uid, token: await newSession(env, uid) };
+  const uid = await asRequest(env, (fe) => createAccountWithPolicy(fe, "kakao", sub,
+    { stateHash: "s-" + sub + Math.random(), stateExp: Date.now() + 600e3, occurredAt: Date.now() }));
+  return { uid, token: await asRequest(env, (fe) => newSession(fe, uid)) };
 };
 const call = (env, token, path, method = "GET") => worker.fetch(new Request("https://api.test" + path, {
   method, headers: { Origin: ORIGIN, "Content-Type": "application/json",

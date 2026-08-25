@@ -26,6 +26,7 @@
 // `curl` 반복만으로 무료 한도를 태울 수 있다 — 서명해서 들려 보낸다(makeState).
 
 import { POLICY_BUNDLE } from "./policies.js";
+import { withFence, FenceMismatch, fenceInSync } from "./fence.js";
 import {
   deletionMark, DELETION_KEY_VERSION, readMode, ledgerAnswers, drainState,
   acquireLease, leaseAlive, releaseLease, LEASE_MODES_REQUEST,
@@ -628,9 +629,10 @@ export async function newSession(env, userId) {
   //    이라 DB 가 새도 남의 세션을 쓸 수 없다. 만료는 envelope 와 `sessions.expires_at` 둘 다에
   //    있고, **DB 쪽이 최종 판정**이다(관리자가 행을 지우면 그 순간 끝나야 하므로).
   const token = await mkSessionToken(env, expires);
-  const u = await env.DB.prepare("SELECT session_version FROM users WHERE id = ?").bind(userId).first();
+  const u = await env.DB.prepare("SELECT session_version FROM users WHERE id = ? AND {FENCE}")
+    .bind(userId).first();
   await env.DB.prepare(
-    "INSERT INTO sessions (token_hash, user_id, session_version, expires_at) VALUES (?, ?, ?, ?)")
+    "INSERT INTO sessions (token_hash, user_id, session_version, expires_at) SELECT ?, ?, ?, ? WHERE {FENCE}")
     .bind(await sha256(token), userId, u ? u.session_version : 0, expires).run();
   // ⚠️ **죽은 행을 여기서 치운다.** whoAmI 는 만료를 판정에서만 걸러내고 행은 그대로 뒀다 —
   //    그래서 다시 오지 않는 사용자의 세션 행이 영원히 남았다. 방침(180일 뒤 만료)이 거짓말은
@@ -642,7 +644,8 @@ export async function newSession(env, userId) {
   // ⚠️ 리미터 행 청소는 여기 없다 — 카운터가 **ledger 로 갔다**(2026-08-20 · 위협 49).
   //    ledger 쪽 만료 행은 정리 크론의 C4 가 지운다.
   try {
-    await env.DB.prepare("DELETE FROM sessions WHERE expires_at < ? OR revoked_at IS NOT NULL")
+    await env.DB.prepare(
+      "DELETE FROM sessions WHERE (expires_at < ? OR revoked_at IS NOT NULL) AND {FENCE}")
       .bind(now).run();
   } catch { /* 청소 실패는 로그인을 막지 않는다 */ }
   return token;
@@ -655,7 +658,7 @@ async function whoAmI(env, token) {
   const row = await env.DB.prepare(
     `SELECT s.user_id AS uid FROM sessions s JOIN users u ON u.id = s.user_id
       WHERE s.token_hash = ? AND s.revoked_at IS NULL AND s.expires_at > ?
-        AND s.session_version = u.session_version`)
+        AND s.session_version = u.session_version AND {FENCE}`)
     .bind(await sha256(token), Date.now()).first();
   return row ? row.uid : null;
 }
@@ -668,8 +671,8 @@ async function whoAmI(env, token) {
 // 행 삭제는 청소일 뿐이고 **판정은 세대가 한다**(그래서 삭제가 실패해도 안전하다).
 async function killSessions(env, uid) {
   await env.DB.batch([
-    env.DB.prepare("UPDATE users SET session_version = session_version + 1 WHERE id = ?").bind(uid),
-    env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(uid),
+    env.DB.prepare("UPDATE users SET session_version = session_version + 1 WHERE id = ? AND {FENCE}").bind(uid),
+    env.DB.prepare("DELETE FROM sessions WHERE user_id = ? AND {FENCE}").bind(uid),
   ]);
 }
 
@@ -1031,7 +1034,8 @@ async function verifyProvider(env, origin, name, code, state) {
 
 // 조회만 한다. 없으면 null — **만들지 않는다.**
 export async function findUser(env, provider, subject) {
-  const r = await env.DB.prepare("SELECT id FROM users WHERE provider = ? AND provider_subject = ?")
+  const r = await env.DB.prepare(
+    "SELECT id FROM users WHERE provider = ? AND provider_subject = ? AND {FENCE}")
     .bind(provider, subject).first();
   return r ? r.id : null;
 }
@@ -1054,11 +1058,13 @@ export async function createAccountWithPolicy(env, provider, subject, opts) {
   const { stateHash, stateExp, occurredAt, bundle = POLICY_BUNDLE, now = Date.now() } = opts;
   const id = crypto.randomUUID().replace(/-/g, "");
   const stmts = [
-    env.DB.prepare("INSERT INTO consumed_signup_states (state_hash, key_version, expires_at) VALUES (?, ?, ?)")
+    env.DB.prepare(
+      `INSERT INTO consumed_signup_states (state_hash, key_version, expires_at)
+       SELECT ?, ?, ? WHERE {FENCE}`)
       .bind(stateHash, TOMBSTONE_KEY_VERSION, stateExp),
     env.DB.prepare(
       `INSERT INTO users (id, provider, provider_subject, session_version, created_at)
-       VALUES (?, ?, ?, 0, ?) ON CONFLICT (provider, provider_subject) DO NOTHING`)
+       SELECT ?, ?, ?, 0, ? WHERE {FENCE} ON CONFLICT (provider, provider_subject) DO NOTHING`)
       .bind(id, provider, subject, now),
   ];
   for (const [kind, action] of requiredPolicyKinds) {
@@ -1067,7 +1073,7 @@ export async function createAccountWithPolicy(env, provider, subject, opts) {
     if (!doc) throw new Error("policy bundle missing kind: " + kind);
     stmts.push(env.DB.prepare(
       `INSERT INTO policy_events (user_id, kind, action, document_version, occurred_at, recorded_at)
-       SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM users WHERE id = ?)`)
+       SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM users WHERE id = ?) AND {FENCE}`)
       .bind(id, kind, action, doc.hash, occurredAt, now, id));
   }
   await env.DB.batch(stmts);
@@ -1078,7 +1084,9 @@ export async function createAccountWithPolicy(env, provider, subject, opts) {
 // 이미 계정이 있는 사람이 가입 state 를 들고 왔을 때. 계정도 기록도 만들지 않지만
 // **표식은 남긴다** — 같은 state 가 두 번 통하면 안 되는 것은 이 경우에도 같다.
 export async function consumeSignupState(env, stateHash, stateExp) {
-  await env.DB.prepare("INSERT INTO consumed_signup_states (state_hash, key_version, expires_at) VALUES (?, ?, ?)")
+  await env.DB.prepare(
+    `INSERT INTO consumed_signup_states (state_hash, key_version, expires_at)
+     SELECT ?, ?, ? WHERE {FENCE}`)
     .bind(stateHash, TOMBSTONE_KEY_VERSION, stateExp).run();
 }
 
@@ -1086,7 +1094,8 @@ export async function consumeSignupState(env, stateHash, stateExp) {
 // 실패를 삼킨다 — 청소가 안 되는 것과 가입이 안 되는 것은 무게가 다르다.
 async function sweepSignupStates(env, now) {
   try {
-    await env.DB.prepare("DELETE FROM consumed_signup_states WHERE expires_at < ?").bind(now).run();
+    await env.DB.prepare("DELETE FROM consumed_signup_states WHERE expires_at < ? AND {FENCE}")
+      .bind(now).run();
   } catch { /* 청소 실패는 가입을 막지 않는다 */ }
 }
 
@@ -1094,7 +1103,8 @@ async function sweepSignupStates(env, now) {
 // 단어를 행으로 쪼개지 않는다. 통째로 읽고 통째로 쓰는 게 전부라 조인할 일이 없어서,
 // JSON 한 칸이 맞다(쪼개면 저장할 때마다 지우고 다시 넣는 짓을 하게 된다).
 async function getBook(env, uid) {
-  const r = await env.DB.prepare("SELECT words, nickname, version, updated_at FROM books WHERE user_id = ?")
+  const r = await env.DB.prepare(
+    "SELECT words, nickname, version, updated_at FROM books WHERE user_id = ? AND {FENCE}")
     .bind(uid).first();
   if (!r) return { words: [], name: "", updated: 0, version: 0 };
   let words = [];
@@ -1129,7 +1139,7 @@ async function friendRows(env, uid) {
        FROM friendships f
        LEFT JOIN books b
          ON b.user_id = CASE WHEN f.requester_id = ?1 THEN f.addressee_id ELSE f.requester_id END
-      WHERE f.requester_id = ?1 OR f.addressee_id = ?1`).bind(uid).all();
+      WHERE (f.requester_id = ?1 OR f.addressee_id = ?1) AND {FENCE}`).bind(uid).all();
   return results || [];
 }
 
@@ -1150,7 +1160,7 @@ function briefRow(row, uid, withCount) {
 const newCode = () => crypto.randomUUID().replace(/-/g, "").slice(0, 12); // 48비트 — 찍어서 못 맞힌다
 // 지금 살아 있는 코드. 사람당 하나라는 것은 **DB 가 강제한다**(0004 의 부분 유니크 인덱스).
 const liveCode = (env, uid) => env.DB.prepare(
-  "SELECT code FROM invite_codes WHERE user_id = ? AND revoked_at IS NULL").bind(uid).first();
+  "SELECT code FROM invite_codes WHERE user_id = ? AND revoked_at IS NULL AND {FENCE}").bind(uid).first();
 
 // 내 초대 코드를 **보장한다**(없으면 만든다). 같은 사람에게 늘 같은 링크가 나가야
 // 예전에 보낸 링크가 죽지 않는다. 회전(`POST /friends/code`)은 옛 행에 revoked_at 을 적는다.
@@ -1172,7 +1182,8 @@ async function myCode(env, uid) {
   const had = await liveCode(env, uid);
   if (had) return had.code;
   await env.DB.prepare(
-    "INSERT INTO invite_codes (code, user_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING")
+    `INSERT INTO invite_codes (code, user_id, created_at)
+     SELECT ?, ?, ? WHERE {FENCE} ON CONFLICT DO NOTHING`)
     .bind(newCode(), uid, Date.now()).run();
   // **DB 에 다시 묻는다.** 내가 넣었는지 남이 넣었는지 가릴 이유가 없다 — 답은 하나뿐이다.
   return (await liveCode(env, uid)).code;
@@ -1184,10 +1195,13 @@ async function rotateCode(env, uid) {
     // ⚠️ **지난 회전의 찌꺼기를 여기서 치운다.** 폐기 행을 지우는 자리가 어디에도 없어서
     //    회전할 때마다 영구히 쌓였다(실측: 분당 120행까지). 폐기된 코드로 할 수 있는 일은
     //    아무것도 없다 — 조회가 전부 `revoked_at IS NULL` 이라 있으나 없으나 404 다.
-    env.DB.prepare("DELETE FROM invite_codes WHERE user_id = ? AND revoked_at IS NOT NULL").bind(uid),
-    env.DB.prepare("UPDATE invite_codes SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL")
+    env.DB.prepare(
+      "DELETE FROM invite_codes WHERE user_id = ? AND revoked_at IS NOT NULL AND {FENCE}").bind(uid),
+    env.DB.prepare(
+      "UPDATE invite_codes SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL AND {FENCE}")
       .bind(now, uid),
-    env.DB.prepare("INSERT INTO invite_codes (code, user_id, created_at) VALUES (?, ?, ?)")
+    env.DB.prepare(
+      `INSERT INTO invite_codes (code, user_id, created_at) SELECT ?, ?, ? WHERE {FENCE}`)
       .bind(newCode(), uid, now),
   ]);
   // ⚠️ **내가 만든 코드가 아니라 지금 살아 있는 코드를 돌려준다.** 두 기기에서 동시에 회전을
@@ -1471,9 +1485,21 @@ export default {
           503, { "Retry-After": "60" });
     }
 
+    // ⚠️ **여기부터 주 D1 은 fence 를 지난다**(2026-08-25 · 원칙 1·3). lease 를 든 요청은
+    //    감싼 env 를 받고, 그 env 로 나가는 모든 문장은 `{FENCE}` 를 들고 있어야 한다.
+    //    감싸지 않은 raw env 로 그 SQL 을 보내면 `{FENCE}` 가 그대로 나가 **SQL 오류로 죽는다** —
+    //    조용한 우회가 아니라 시끄러운 실패다.
+    //    lease 가 없는 라우트(`/health`·`/ready`·`/policies`·로그인 시작)는 사용자 데이터를
+    //    만지지 않으므로 감싸지 않는다(그 넷은 ROUTES 에서 `lease:false` 다).
+    const denv = lease ? withFence(env, lease) : env;
     try {
-      return await route(req, env, { url, path, gate, lease, rt });
+      return await route(req, denv, { url, path, gate, lease, rt });
     } catch (e) {
+      // fence 불일치는 **사용자 오류가 아니다.** 그 사이에 유지보수 전환이 있었다는 뜻이라
+      // 503 으로 답하고 다시 오게 한다. 이 요청이 쓴 것은 없다(문장 안의 술어가 막았다).
+      if (e instanceof FenceMismatch)
+        return json(env, req, { error: "잠시 점검 중이에요. 조금 뒤에 다시 시도해 주세요" }, 503,
+          { "Retry-After": "60" });
       // ⚠️ **경로를 그대로 찍지 않는다.** `/friends/<uid>` 에는 계정 id 가 들어 있어서
       //    운영 로그가 곧 "누가 누구와 친구인가"의 기록이 된다. 고치는 데 필요한 건 어느 **종류**의
       //    요청이 죽었나뿐이라 id 자리를 `:id` 로 바꿔 찍는다. 예외 메시지도 200자에서 자른다
@@ -1561,6 +1587,8 @@ async function route(req, env, rc) {
       //       읽지 않는다 — 그러면 표가 깨진 배포가 조용히 정상으로 보인다.
       const cleanupAlert = !!env.LEDGER
         && (!cl || cl.open_pending > 0 || cl.fail_streak >= CLEANUP_FAIL_ALERT);
+      // 두 DB 의 epoch 이 맞고 전환이 진행 중이 아닌가. 못 읽으면 **거짓**이다(fail-closed).
+      const fenceSynced = await fenceInSync(env);
       const r = {
         ok: true, mode: publicMode(gate.mode), configReady: h.ready, db,
         // ⚠️ **바인딩이 없다**와 **붙었는데 스키마가 없다**를 한 값으로 말하지 않는다.
@@ -1570,9 +1598,16 @@ async function route(req, env, rc) {
         // 남용 방어가 붙었나 · 삭제 증거를 지금 키로 쓸 수 있나. **둘 다 `ready` 를 내린다** —
         // 전자는 열면 D1 이 타고, 후자는 되돌릴 수 없는 오판을 만든다.
         abuseReady, deletionEvidence, diagnostics: true,
+        // ⚠️ **두 DB 가 서로를 가리키고 있나**(2026-08-25 · 원칙 4). 주 D1 의 `write_fence.epoch`
+        //    과 ledger 의 `maintenance.epoch` 이 다르거나 전환이 중간에 멈춰 있으면, 사용자
+        //    데이터 문장은 전부 0행이 되어 **어차피 아무도 앱을 못 쓴다.** 그 상태를 초록으로
+        //    보여 주면 배포가 통과하고 사용자의 첫 요청에서만 드러난다.
+        //    ⛔ 값(어느 epoch 인지)은 내보내지 않는다 — 참/거짓만이다.
+        fenceSynced,
         // ⚠️ `cleanupAlert` 도 `ready` 를 내리지 않는다 — `cleanupStale` 과 같은 판단이다.
         //    정리가 밀린 것은 보유기간 문제이지 사용자가 앱을 못 쓰는 상태가 아니다.
-        ready: h.ready && abuseReady && db && ledger && deletionEvidence && gate.mode === "open",
+        ready: h.ready && abuseReady && db && ledger && deletionEvidence
+               && fenceSynced && gate.mode === "open",
       };
       return json(env, req, r, r.ready ? 200 : 503);
     }
@@ -1929,7 +1964,8 @@ async function route(req, env, rc) {
         // 다른 기기에서 담은 단어를 조용히 지웠다 — 시각은 권한 판정에 쓸 값이 아니다.
         // 이제 버전은 **서버가 센다.** 손에 든 버전이 지금 것과 다르면 409 로 거절하고 현재
         // 레코드를 같이 준다. 앱은 그걸 받아 합쳐서 다시 올린다(어느 쪽도 조용히 안 버린다).
-        const prev = await env.DB.prepare("SELECT version FROM books WHERE user_id = ?").bind(uid).first();
+        const prev = await env.DB.prepare("SELECT version FROM books WHERE user_id = ? AND {FENCE}")
+          .bind(uid).first();
         const now = prev ? prev.version : 0;
         // 버전을 안 보낸 요청은 **처음 저장할 때만** 받는다. 레코드가 이미 있으면 거절한다 —
         // 안 그러면 옛 앱이 버전을 빼고 보내는 것만으로 이 방어가 통째로 무효가 된다.
@@ -1942,9 +1978,10 @@ async function route(req, env, rc) {
         // ⚠️ `WHERE version = ?` 을 조건에 넣는다. 위에서 읽고 여기서 쓰는 사이에 다른 기기가
         //    먼저 저장하면 위 검사만으로는 못 막는다 — 조건을 문장 안에 넣어야 원자적이다.
         const upd = await env.DB.prepare(
-          `INSERT INTO books (user_id, words, nickname, version, updated_at) VALUES (?1, ?2, ?3, 1, ?4)
+          `INSERT INTO books (user_id, words, nickname, version, updated_at)
+           SELECT ?1, ?2, ?3, 1, ?4 WHERE {FENCE}
            ON CONFLICT (user_id) DO UPDATE SET words = ?2, nickname = ?3,
-             version = books.version + 1, updated_at = ?4 WHERE books.version = ?5`)
+             version = books.version + 1, updated_at = ?4 WHERE books.version = ?5 AND {FENCE}`)
           .bind(uid, JSON.stringify(words), name, updated, now).run();
         if (!upd.meta || upd.meta.changes === 0)
           return json(env, req, { error: "다른 기기에서 먼저 저장했어요", conflict: true,
@@ -2004,9 +2041,10 @@ async function route(req, env, rc) {
               { "Retry-After": "60" });
           // **한 문장.** users 를 지우면 sessions·books·friendships·invite_codes·policy_events 가
           // 외래키 CASCADE 로 같이 사라진다 — 중간 상태가 존재할 수 없다.
-          await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(uid).run();
+          await env.DB.prepare("DELETE FROM users WHERE id = ? AND {FENCE}").bind(uid).run();
           // 지운 행이 0 이어도 성공이다(다른 탭이 먼저 지웠다). 확인하는 것은 **부재**다.
-          const still = await env.DB.prepare("SELECT 1 AS x FROM users WHERE id = ?").bind(uid).first();
+          const still = await env.DB.prepare("SELECT 1 AS x FROM users WHERE id = ? AND {FENCE}")
+            .bind(uid).first();
           if (still) return failDelete();          // 있을 수 없는 상태. 재시도 + 조사 대상
           // 여기부터는 **계정이 실제로 없다.** 아래가 실패해도 사용자에게는 성공이다.
           try {
@@ -2051,7 +2089,7 @@ async function route(req, env, rc) {
         const body = await readBody(req);
         const code = typeof (body && body.code) === "string" ? body.code.trim().slice(0, 64) : "";
         const owner = code && (await env.DB.prepare(
-          "SELECT user_id FROM invite_codes WHERE code = ? AND revoked_at IS NULL").bind(code).first());
+          "SELECT user_id FROM invite_codes WHERE code = ? AND revoked_at IS NULL AND {FENCE}").bind(code).first());
         const other = owner && owner.user_id;
         if (!other) return json(env, req, { error: "초대 링크가 만료됐거나 잘못됐어요" }, 404);
         if (other === uid) return json(env, req, { error: "자기 자신은 추가할 수 없어요" }, 400);
@@ -2059,7 +2097,7 @@ async function route(req, env, rc) {
         // 지금 이 둘 사이에 무엇이 있나. **쌍 이름으로** 찾는다 — 방향을 신경 쓸 자리가 없어진다.
         const key = pairKey(uid, other);
         const rel = await env.DB.prepare(
-          "SELECT requester_id AS req, status FROM friendships WHERE pair_key = ?").bind(key).first();
+          "SELECT requester_id AS req, status FROM friendships WHERE pair_key = ? AND {FENCE}").bind(key).first();
         if (rel && rel.status === "accepted")
           return json(env, req, { state: "ok", friend: await briefOne(env, other, true) });
         // **내가 이미 보낸 요청이면 아무것도 쓰지 않는다.** 같은 사람이 링크를 두 번 눌렀을 뿐이다.
@@ -2078,7 +2116,8 @@ async function route(req, env, rc) {
         if (!rel) {
           const cnt = await env.DB.prepare(
             `SELECT (SELECT COUNT(*) FROM friendships WHERE requester_id = ?1 OR addressee_id = ?1) AS mine,
-                    (SELECT COUNT(*) FROM friendships WHERE requester_id = ?2 OR addressee_id = ?2) AS theirs`)
+                    (SELECT COUNT(*) FROM friendships WHERE requester_id = ?2 OR addressee_id = ?2) AS theirs
+               WHERE {FENCE}`)
             .bind(uid, other).first();
           if (cnt.mine >= MAX_FRIENDS || cnt.theirs >= MAX_FRIENDS)
             return json(env, req, { error: "친구가 너무 많아요" }, 429);
@@ -2097,13 +2136,15 @@ async function route(req, env, rc) {
            SELECT ?1, ?2, ?3, 'pending', ?4
             WHERE (SELECT COUNT(*) FROM friendships WHERE requester_id = ?1 OR addressee_id = ?1) < ?5
               AND (SELECT COUNT(*) FROM friendships WHERE requester_id = ?2 OR addressee_id = ?2) < ?5
+              AND {FENCE}
            ON CONFLICT (pair_key) DO UPDATE SET status = 'accepted', accepted_at = ?4
-             WHERE friendships.status = 'pending' AND friendships.requester_id = ?2`)
+             WHERE friendships.status = 'pending' AND friendships.requester_id = ?2 AND {FENCE}`)
           .bind(uid, other, key, now, MAX_FRIENDS).run();
 
         // 무엇이 됐는지는 **DB 에 다시 묻는다.** 위 문장이 넣었는지 고쳤는지 아무것도 안 했는지를
         // changes 로 갈라 보면 세 갈래가 또 생긴다 — 결과 한 줄이면 충분하다.
-        const made = await env.DB.prepare("SELECT status FROM friendships WHERE pair_key = ?").bind(key).first();
+        const made = await env.DB.prepare(
+          "SELECT status FROM friendships WHERE pair_key = ? AND {FENCE}").bind(key).first();
         // 행이 없다 = 위 WHERE 가 상한에서 막았다는 뜻이다. 여기서 잡지 않으면
         // "요청을 보냈어요"라고 말해놓고 아무것도 안 보낸 화면이 나온다.
         if (!made) return json(env, req, { error: "친구가 너무 많아요" }, 429);
@@ -2153,7 +2194,8 @@ async function route(req, env, rc) {
                LEFT JOIN books b ON b.user_id = ?2
               WHERE f.status = 'accepted'
                 AND ((f.requester_id = ?1 AND f.addressee_id = ?2)
-                  OR (f.requester_id = ?2 AND f.addressee_id = ?1))`).bind(uid, other).first();
+                  OR (f.requester_id = ?2 AND f.addressee_id = ?1))
+                AND {FENCE}`).bind(uid, other).first();
           if (!row) return json(env, req, { error: "친구가 아니에요" }, 403);
           let words = [];
           try { words = JSON.parse(row.words || "[]") || []; } catch { /* 깨진 행은 빈 단어장 */ }
@@ -2172,13 +2214,15 @@ async function route(req, env, rc) {
               WHERE requester_id = ?2 AND addressee_id = ?3 AND status = 'pending'
                 AND (SELECT COUNT(*) FROM friendships f2
                       WHERE (f2.requester_id = ?3 OR f2.addressee_id = ?3)
-                        AND f2.status = 'accepted') < ?4`)
+                        AND f2.status = 'accepted') < ?4
+                AND {FENCE}`)
             .bind(Date.now(), other, uid, MAX_FRIENDS).run();
           // changes 가 0 인 이유가 둘이다: 받은 요청이 아니거나, 상한에 걸렸거나.
           // **실패한 뒤에만** 한 번 더 세어 문구를 가른다(정상 경로에는 질의를 늘리지 않는다).
           if (!r.meta || r.meta.changes === 0) {
             const cnt = await env.DB.prepare(
-              "SELECT COUNT(*) AS n FROM friendships WHERE (requester_id = ?1 OR addressee_id = ?1) AND status = 'accepted'")
+              `SELECT COUNT(*) AS n FROM friendships
+                WHERE (requester_id = ?1 OR addressee_id = ?1) AND status = 'accepted' AND {FENCE}`)
               .bind(uid).first();
             return cnt.n >= MAX_FRIENDS
               ? json(env, req, { error: "친구가 너무 많아요" }, 429)
@@ -2192,7 +2236,8 @@ async function route(req, env, rc) {
         if (req.method === "DELETE") {
           const r = await env.DB.prepare(
             `DELETE FROM friendships
-              WHERE (requester_id = ?1 AND addressee_id = ?2) OR (requester_id = ?2 AND addressee_id = ?1)`)
+              WHERE ((requester_id = ?1 AND addressee_id = ?2) OR (requester_id = ?2 AND addressee_id = ?1))
+                AND {FENCE}`)
             .bind(uid, other).run();
           if (!r.meta || r.meta.changes === 0) return json(env, req, { error: "친구가 아니에요" }, 404);
           return json(env, req, { ok: true });

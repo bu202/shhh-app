@@ -149,6 +149,9 @@ const LEASABLE_MODES = new Set([...LEASE_MODES_REQUEST, ...LEASE_MODES_CLEANUP])
 // 게이트 확인과 INSERT 가 **한 문장**이다. 읽고 나서 쓰면 전환 직후의 작업이 창을 빠져나간다.
 // 행이 안 생기면 = 지금 이 모드에서는 새 작업을 받지 않는다.
 //
+// ⚠️ **`pending_transition IS NULL` 도 같은 문장 안에 있다**(2026-08-25 · 원칙 2). 전환은 두 DB 를
+//    건드리므로 한 문장으로 못 끝낸다 — 그래서 **먼저 문을 닫고** 주 D1 fence 를 옮긴 뒤 확정한다.
+//    닫기 전에 fence 를 옮기면 그 창에 들어온 요청이 옛 epoch 을 들고 나가 곧바로 막힌다.
 // ⚠️ **`drained_at IS NULL` 도 같은 문장 안에 있다**(2026-08-25 · 위협 66). 없을 때 무슨 일이
 //    났나(재현 T82-d): 운영자가 「다 멈췄다」를 인증한 **다음 순간** 새 임차증이 그대로 나가서
 //    `drainState()` 가 곧바로 `open:1` 로 돌아왔다 — 증거를 적자마자 거짓이 되는 증거다.
@@ -178,6 +181,7 @@ export async function acquireLease(env, modes = LEASE_MODES_REQUEST, now = Date.
     `INSERT INTO write_leases (lease_id, epoch, started_at, expires_at)
      SELECT ?1, m.epoch, ?2, ?3 FROM maintenance m
       WHERE m.mode IN (${marks}) AND m.drained_at IS NULL
+        AND m.pending_transition IS NULL
      RETURNING epoch`)
     .bind(id, now, now + LEASE_TTL, ...modes).first();
   if (!row) return null;

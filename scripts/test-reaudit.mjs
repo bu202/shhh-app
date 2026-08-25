@@ -15,7 +15,7 @@ import {
   markPending, pendingTotalCount, pendingAlertCount, PENDING_ALERT, CONFIRMED_RETENTION,
 } from "../worker/ledger.js";
 import { setMode, markDrained, reconcile, removeStalePending, reopenReport, restorePreflight } from "../worker/ops.js";
-import { makeD1, makeLedger } from "./_d1.mjs";
+import { makeD1, makeLedger, asRequest } from "./_d1.mjs";
 
 const ORIGIN = "https://app.test";
 let n = 0;
@@ -31,9 +31,9 @@ const makeEnv = (extra = {}) => ({
 });
 let seq = 0;
 const mkUser = async (env, sub = "u" + ++seq) => {
-  const uid = await createAccountWithPolicy(env, "kakao", sub,
-    { stateHash: "s-" + sub + Math.random(), stateExp: Date.now() + 600e3, occurredAt: Date.now() });
-  return { uid, token: await newSession(env, uid) };
+  const uid = await asRequest(env, (fe) => createAccountWithPolicy(fe, "kakao", sub,
+    { stateHash: "s-" + sub + Math.random(), stateExp: Date.now() + 600e3, occurredAt: Date.now() }));
+  return { uid, token: await asRequest(env, (fe) => newSession(fe, uid)) };
 };
 const call = (env, token, path, method = "GET", extra = {}) =>
   worker.fetch(new Request("https://api.test" + path, {
@@ -124,7 +124,11 @@ async function rememberKey(env) {
     let armed = true;
     e.LEDGER.prepare = (sql) => {
       // 재개방 판정이 끝나고 **UPDATE 직전**에 운영자 하나가 더 전환한 상황.
-      if (armed && /UPDATE maintenance SET mode/.test(sql)) {
+      // ⚠️ **전환 프로토콜의 CAS 자리는 `pending_transition` 을 무는 문장이다**(2026-08-25 ·
+      //    원칙 4). 두 DB 를 한 문장으로 못 바꾸므로 전환은 「문 닫기 → fence 옮기기 → 확정」
+      //    셋으로 나뉘었고, 판정과 실제 변경 사이의 경합을 막는 자물쇠가 **첫 문장**으로 옮겨졌다.
+      //    옛 `SET mode` 를 가로채면 그 자물쇠보다 뒤라 아무것도 못 잰다.
+      if (armed && /UPDATE maintenance SET pending_transition/.test(sql)) {
         armed = false;
         e.LEDGER._db.prepare("UPDATE maintenance SET mode = 'restore_closed', epoch = epoch + 1 WHERE id = 1").run();
       }

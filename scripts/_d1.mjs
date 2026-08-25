@@ -93,3 +93,27 @@ export function withLatency(d1, ms = 3) {
     batch: async (stmts) => { await tick(); return d1.batch(stmts.map((s) => s._stmt || s)); },
   };
 }
+
+// 테스트는 **동기화된 배포**에서 시작한다. 운영에서 이 일을 하는 것은 전환 프로토콜
+// (`worker/ops.js` 의 `setMode`/`resumeTransition`)이고, 여기서는 그 결과 상태만 만든다.
+// ⚠️ 새로 만든 두 스키마는 일부러 어긋나 있다(ledger `maintenance.epoch = 1` · 주 D1
+//    `write_fence.epoch = 0`). 그 어긋남이 곧 fail-closed 이고, 맞추는 것은 운영자의 명령이다.
+//    테스트가 이 한 줄을 부르지 않으면 모든 사용자 데이터 접근이 503 이 된다 — 그것이 정상이다.
+export const syncFenceForTest = (DB, LEDGER) => {
+  const e = LEDGER._db.prepare("SELECT epoch FROM maintenance WHERE id = 1").get().epoch;
+  DB._db.prepare("UPDATE write_fence SET epoch = ? WHERE id = 1").run(e);
+};
+
+// 테스트에서 주 D1 을 만질 때는 **운영과 같은 경로**를 지난다: lease 를 따고, fence 를 지나고,
+// 끝나면 푼다. 이 우회로를 만들지 않고 raw env 를 그대로 넘기면 `{FENCE}` 가 SQL 로 나가
+// 그 자리에서 죽는다 — 그 시끄러운 실패가 방어의 일부다.
+// ⚠️ **fence 를 건너뛰는 헬퍼를 만들지 않는다.** 만드는 순간 테스트는 운영이 밟지 않는
+//    경로를 재게 되고, 그러면 재려던 것을 아무것도 못 잰다.
+export async function asRequest(env, fn) {
+  const { acquireLease, releaseLease } = await import("../worker/ledger.js");
+  const { withFence } = await import("../worker/fence.js");
+  const lease = await acquireLease(env);
+  if (!lease) throw new Error("asRequest: lease 를 못 땄다 — 게이트가 닫혀 있거나 전환 중이다");
+  try { return await fn(withFence(env, lease), lease); }
+  finally { await releaseLease(env, lease); }
+}

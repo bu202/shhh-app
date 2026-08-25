@@ -147,3 +147,35 @@ CREATE TABLE IF NOT EXISTS consumed_signup_states (
   expires_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS consumed_signup_states_exp ON consumed_signup_states(expires_at);
+
+-- ── 주 D1 쓰기·읽기 fence (2026-08-25 · 원칙 1~9) ────────────────────────
+-- **행 하나.** ledger 의 `maintenance.epoch` 을 이 DB 안으로 복제한 값이다.
+--
+-- 왜 필요한가: lease 는 「지금 몇 개가 도나」를 세는 장치일 뿐 **주 D1 의 쓰기를 막지 못했다.**
+-- `FENCE`(ledger.js)는 ledger 쓰기에만 붙고, 주 D1 접근 중 lease 유효성을 다시 보는 자리는
+-- 삭제 saga 하나뿐이었다. 그래서 유지보수로 전환한 뒤에도 아직 살아 있는 요청은 주 D1 에
+-- 계속 쓸 수 있었고, 「그 요청은 이미 끝났다」의 근거가 **경과 시간밖에** 없었다.
+--
+-- ⚠️ **경과 시간은 근거가 못 된다**(2026-08-25 사용자 정정). Workers 의 CPU 제한과 HTTP 요청의
+--    wall-clock 수명은 다른 것이고, 클라이언트 연결이 유지되는 동안 요청은 하드 제한 없이
+--    살아 있을 수 있다. 그래서 방어는 **구조**여야 한다.
+--
+-- 어떻게 막나: 사용자 데이터를 만지는 모든 문장이 `AND EXISTS (SELECT 1 FROM write_fence
+-- WHERE id = 1 AND epoch = ?)` 를 **같은 문장 안에** 들고 간다. 검사와 쓰기가 같은 DB 의 같은
+-- 문장이라 그 사이에 창이 없다. 옛 epoch 을 든 요청은 0행을 쓴다.
+--
+-- ⚠️ **이 행을 바꾸는 자리는 `worker/ops.js` 의 `setFenceEpoch()` 하나뿐이다.** 일반 코드가
+--    부를 수 있으면 그 자리가 곧 우회로다 — 아키텍처 검사가 예외를 그 함수 하나로 한정한다.
+CREATE TABLE IF NOT EXISTS write_fence (
+  id    INTEGER PRIMARY KEY CHECK (id = 1),
+  epoch INTEGER NOT NULL
+);
+-- ⚠️ **초기값 1 은 `migrations/0006` 의 0 과 일부러 다르다.** 둘은 다른 상황을 만든다:
+--    · 이 파일은 **갓 만든 데이터베이스**의 기준선이다. 같이 만들어지는 ledger 의
+--      `maintenance.epoch` 도 1 이므로, 새 배포는 **구성상 이미 동기화**돼 있다.
+--    · `migrations/0006` 은 **이미 돌고 있던 데이터베이스**에 얹힌다. 그쪽 ledger 의 epoch 은
+--      그동안 전환한 횟수만큼 올라가 있어 1 이라는 보장이 없다 — 그래서 0 으로 넣어
+--      **일부러 어긋나게** 두고, 운영자가 전환 프로토콜을 한 번 돌려 맞출 때까지 fail-closed 다.
+--    두 값이 같아야 한다고 착각해 한쪽을 고치면, 고친 방향에 따라 새 배포가 통째로 막히거나
+--    (0 으로 맞추면) 기존 배포가 검증 없이 열린다(1 로 맞추면). 다른 것이 맞다.
+INSERT OR IGNORE INTO write_fence (id, epoch) VALUES (1, 1);

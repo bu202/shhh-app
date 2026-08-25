@@ -346,7 +346,7 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 >
 > <!-- 현재상태:끝 -->
 
-`npm test` **26개 스위트** 전부 통과한다(2026-08-22 실측, exit 0). 단, **테스트 통과는 보안 완료가 아니다** —
+`npm test` **27개 스위트** 전부 통과한다(2026-08-22 실측, exit 0). 단, **테스트 통과는 보안 완료가 아니다** —
 이 저장소는 "초록불인데 P0 가 살아 있던" 사고를 **두 번** 겪었다(§5 참고). 두 번째가 더 중요하다:
 96개 서버 테스트가 통과하는 동안 **클라이언트 실패 처리 경로에는 테스트가 하나도 없었고**,
 계정 삭제가 500 이어도 "계정을 지웠어요"라고 말하고 있었다.
@@ -387,7 +387,7 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 | 항목 | 상태 |
 |---|---|
 | 브랜치 | `cf-pages`. ⚠️ **push 되지 않은 로컬 커밋이 있다** — 개수는 자주 바뀌니 `git status --short --branch` 로 본다 |
-| 테스트 | **26개 스위트** 통과(2026-08-22 실측, exit 0). `test-workerd` 가 진짜 workerd 를 띄워 운영 경로를 밟는다. 4단계에서 `test-policies` · `test-signup` · `test-deletion-ledger` · `test-cleanup` 이 늘었다. 개수의 원본은 `package.json` 의 `test` 스크립트이고 `scripts/test-docs.mjs` 가 거기서 읽어 문서와 대조한다 |
+| 테스트 | **27개 스위트** 통과(2026-08-22 실측, exit 0). `test-workerd` 가 진짜 workerd 를 띄워 운영 경로를 밟는다. 4단계에서 `test-policies` · `test-signup` · `test-deletion-ledger` · `test-cleanup` 이 늘었다. 개수의 원본은 `package.json` 의 `test` 스크립트이고 `scripts/test-docs.mjs` 가 거기서 읽어 문서와 대조한다 |
 | 돌연변이 | `node scripts/mutate.mjs` 로 **다시 돌릴 수 있다**. 목록의 원본은 `scripts/mutations.mjs`. 개수를 여기 적지 않는다 — 실행기 출력이 원본이다 |
 | 배포본 | 파일 수·선캐시 수·캐시 이름은 **빌드가 정한다** — `npm run build` 의 마지막 줄과 `scripts/test-dist.mjs` 의 출력이 원본이다. 손으로 적으면 다음 빌드에 낡는다(2026-08-20 정정: 여기 적혀 있던 「57개」는 그때 이미 58개였다). 내부 파일 0개는 `test-dist` 가 매번 검사한다 |
 | **라이브 (production)** | **배포 `7362d2f0`**(Production / branch `main` / source **`e02e810`**) — 2026-08-24 안전 동기화. 위협 57~69 의 수정이 여기 들어 있다. 2026-08-24 12:35 KST 실측: 계정 API 전부 **503**(두 DB 를 만지기 전 · `GET`·`PUT /book` · `/login/{kakao,naver}` · `POST /signup/start`) · 키 없는·틀린 키 `/api/ready` **503 `{"ok":true,"ready":false,"diagnostics":false}`** · `/api/health` `ready:false`·`providers:[]`·`ledgerBound:false`·`abuseReady:false`·`signupReady:false` · `/api/policies` **200** · `/` **200** · 없는 주소 **404** · 내부 파일 7종 **SPA 폴백**(sha256 `7d809fa2268d…`) · SW·핵심 JS 4개가 빌드와 **바이트 동일** · 브라우저 리소스 19개 중 실패 0 · 콘솔 오류 0. ⚠️ **계정 기능을 여는 배포가 아니다** — `EDGE_GUARD` 부재가 그대로다. 실측 원본은 `docs/OPS_RUNBOOK.md` §16-5 |
@@ -762,7 +762,7 @@ AI 는 후보를 좁힐 뿐 **최종 수어 판정을 하지 않는다**. 문장
 ```bash
 python3 scripts/serve.py 8000        # 정적 화면만
 npm run build && npx wrangler pages dev dist   # Functions + 로컬 D1
-npm test                              # 26개 스위트 (빌드·dist·workerd 검사 포함)
+npm test                              # 27개 스위트 (빌드·dist·workerd 검사 포함)
 node scripts/mutate.mjs               # 돌연변이 검증 (목록: scripts/mutations.mjs)
 npm audit
 ```

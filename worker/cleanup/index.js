@@ -13,6 +13,7 @@
 // ⚠️ **이 Worker 도 주 D1 을 만지는 「온라인 workload」다.** HTTP 요청과 같은 임차증을 든다 —
 //    2026-08-18 재현에서 이것이 빠져 있어 크론이 지우는 도중에 `drainState()` 가
 //    `drained:true` 라고 답했다(T47b). 「크론이니까 예외」가 정확히 그 구멍이었다.
+import { withFence } from "../fence.js";
 import { DELETIONS_SWEEP_SQL, acquireLease, releaseLease, LEASE_MODES_CLEANUP,
          pendingAlertCount } from "../ledger.js";
 
@@ -30,11 +31,13 @@ const JOBS = [
   // ⚠️ C1 — **만료 전에 지우면 그 순간 replay 창이 다시 열린다.**
   ["consumed_signup_states", "DB",
    `DELETE FROM consumed_signup_states WHERE state_hash IN
-      (SELECT state_hash FROM consumed_signup_states WHERE expires_at < ? LIMIT ${LIMIT})`],
+      (SELECT state_hash FROM consumed_signup_states WHERE expires_at < ? LIMIT ${LIMIT})
+      AND {FENCE}`],
   // C3 — 로그인 자리의 청소를 **옮기는 게 아니라 더한다**(둘 다 있어도 무해하다).
   ["sessions", "DB",
    `DELETE FROM sessions WHERE token_hash IN
-      (SELECT token_hash FROM sessions WHERE expires_at < ? OR revoked_at IS NOT NULL LIMIT ${LIMIT})`],
+      (SELECT token_hash FROM sessions WHERE expires_at < ? OR revoked_at IS NOT NULL LIMIT ${LIMIT})
+      AND {FENCE}`],
   // C4 — **2026-08-20 부터 ledger 다**(위협 49 · migration `0003`). 주 D1 의 같은 이름 표는
   //      남아 있지만 아무도 쓰지 않는다.
   ["rate_limits", "LEDGER",
@@ -66,9 +69,19 @@ export async function runCleanup(env, now = Date.now()) {
   // 임차증은 **주 D1 작업이 전부 끝날 때까지** 유지된다. 문장마다 따고 푸는 것이 아니다 —
   // 그러면 문장 사이의 틈에서 drain 이 0 이 되어 복원이 시작될 수 있다.
   try {
+    // ⚠️ **주 D1 은 fence 를 지난다**(2026-08-25 · 원칙 1·9). 크론도 온라인 workload 이고
+    //    (§10-9-6 A-2), 전환 뒤에도 살아 있으면 요청과 똑같이 위험하다. 「크론은 우리 코드니까
+    //    괜찮다」는 근거가 아니다 — 2026-08-18 에 크론이 임차증 밖에 있어서 지우는 도중에
+    //    `drainState()` 가 `drained:true` 를 답한 적이 있다(T47b).
+    //    ⛔ `env[binding]` 은 **정규식 검사가 통째로 놓치는 모양**이라, `test-fence` 가 JOBS 의
+    //       값까지 따라가 주 D1 대상에 `{FENCE}` 가 있는지 전수로 본다.
+    const fenced = withFence(env, lease);
+    const bind = (b) => (b === "DB" ? fenced.DB : env[b]);
     const counts = {};
     for (const [name, binding, sql, nArgs = 1] of JOBS) {
-      const r = await env[binding].prepare(sql).bind(...Array(nArgs).fill(now)).run();
+      // 지울 것이 없으면 0행이다 — 그것은 **정상**이고 fence 불일치가 아니다.
+      // 둘을 가르는 것은 fence 통로가 한다(0행일 때만 fence 를 다시 읽는다).
+      const r = await bind(binding).prepare(sql).bind(...Array(nArgs).fill(now)).run();
       counts[name] = (r.meta && r.meta.changes) || 0;
     }
     // ⛔ C6 — 확정되지 않은 pending 은 **지우지 않는다. 세어서 알린다.**

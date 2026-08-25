@@ -14,7 +14,7 @@ import worker, {
 } from "../worker/index.js";
 import { POLICY_BUNDLE } from "../worker/policies.js";
 import { TURNSTILE_ACTION, providerPossible } from "../worker/index.js";
-import { makeD1, makeLedger, withLatency } from "./_d1.mjs";
+import { makeD1, makeLedger, withLatency, asRequest } from "./_d1.mjs";
 import { createHash } from "node:crypto";
 
 // 서버가 state 에 싣는 표 해시와 **같은 계산**이다(b64u(SHA-256(txn))).
@@ -286,8 +286,8 @@ const hashOf = (loc) => (String(loc).split("#")[1] || "");
   //      **같은 순간에 가입한 두 번째 사람이 막힌다.**
   const t0 = Date.now();
   for (const sub of ["same-ms-A", "same-ms-B"]) {
-    const uid = await createAccountWithPolicy(env, "naver", sub,
-      { stateHash: "tomb-" + sub, stateExp: t0 + 600e3, occurredAt: t0, now: t0 });
+    const uid = await asRequest(env, (fe) => createAccountWithPolicy(fe, "naver", sub,
+      { stateHash: "tomb-" + sub, stateExp: t0 + 600e3, occurredAt: t0, now: t0 }));
     assert.ok(uid, t(`T48: ${sub} 가입이 실패했다 — 같은 순간의 두 번째 가입이 막힌다`));
   }
   assert.equal(count(env, "users"), 3, t("T48: 계정이 3행이 아니다"));
@@ -319,8 +319,8 @@ function failOn(db, needle) {
   //   ⚠️ 표식만 남고 계정이 없으면 **사용자가 영영 그 state 로 가입하지 못한다.**
   const env = makeEnv();
   env.DB = failOn(env.DB, "INSERT INTO policy_events");
-  await assert.rejects(() => createAccountWithPolicy(env, "kakao", "atomic-1",
-    { stateHash: "tomb-atomic", stateExp: Date.now() + 600e3, occurredAt: Date.now() }),
+  await assert.rejects(() => asRequest(env, (fe) => createAccountWithPolicy(fe, "kakao", "atomic-1",
+    { stateHash: "tomb-atomic", stateExp: Date.now() + 600e3, occurredAt: Date.now() })),
     t("T19: 이벤트가 실패했는데 예외가 안 났다"));
   assert.equal(count(env, "users"), 0, t("T19: 이벤트가 실패했는데 계정이 남았다"));
   assert.equal(count(env, "policy_events"), 0, t("T19: 부분 성공한 이벤트가 남았다"));
@@ -464,8 +464,8 @@ function failOn(db, needle) {
   //   붙이면 인증 없는 자리의 쓰기가 되살아나 DoS 표면이 커진다.
   //   ⚠️ 이 테스트가 「실패」로 바뀌면 그건 **설계 변경**이지 버그 수정이 아니다.
   const env = makeEnv();
-  await createAccountWithPolicy(env, "kakao", "login-1",
-    { stateHash: "pre-login", stateExp: Date.now() + 600e3, occurredAt: Date.now() });
+  await asRequest(env, (fe) => createAccountWithPolicy(fe, "kakao", "login-1",
+    { stateHash: "pre-login", stateExp: Date.now() + 600e3, occurredAt: Date.now() }));
   const before = { u: count(env, "users"), e: count(env, "policy_events") };
   const r = await worker.fetch(new Request("https://api.test/login/kakao?n=x", { headers: asBrowser() }), env);
   const state = new URL(r.headers.get("Location")).searchParams.get("state");
@@ -505,8 +505,8 @@ function failOn(db, needle) {
   assert.equal(count(env, "users"), 0, t("F2: /exchange 가 계정을 만들었다"));
 
   // F3. **이미 계정이 있는 사람이 가입 state 로 와도** 계정이 늘지 않는다(세션만 발급).
-  await createAccountWithPolicy(env, "kakao", "already",
-    { stateHash: "pre-already", stateExp: Date.now() + 600e3, occurredAt: Date.now() });
+  await asRequest(env, (fe) => createAccountWithPolicy(fe, "kakao", "already",
+    { stateHash: "pre-already", stateExp: Date.now() + 600e3, occurredAt: Date.now() }));
   const evBefore = count(env, "policy_events"), tombBefore = count(env, "consumed_signup_states");
   const s = await startSignup(env);
   const dup = await withProvider("already", () => cb(env, s.state, s.txn));
@@ -799,7 +799,8 @@ function failOn(db, needle) {
   //      않는다」가 지켜야 할 성질이기 때문이다 — 나중에 서명 방식을 바꿔 길이 0 이 통과하는
   //      원시함수를 쓰게 되면 이 단언이 먼저 깨진다.
   {
-    await assert.rejects(() => newSession({ ...makeEnv(), SESSION_ENVELOPE_KEY: undefined }, "u1"),
+    const noKey = { ...makeEnv(), SESSION_ENVELOPE_KEY: undefined };
+    await assert.rejects(() => asRequest(noKey, (fe) => newSession(fe, "u1")),
       t("T73-e: 세션 서명 키가 없는데 토큰이 만들어졌다"));
     n += 1;
   }

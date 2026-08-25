@@ -6,7 +6,7 @@
 // 밟는다.** 그 상태가 정확히 「테스트는 통과하는데 배포하면 터진다」이다.
 //
 // 그래서 여기서는 어댑터를 **일부러 안 쓴다.** `node_modules` 의 workerd 바이너리를 직접
-// 띄우고, 배포되는 것과 **같은 파일**(`worker/index.js`·`policies.js`·`ledger.js`)을 그대로
+// 띄우고, 배포되는 것과 **같은 파일**(`worker/index.js`·`policies.js`·`ledger.js`·`fence.js`)을 그대로
 // 모듈로 넣어 HTTP 로 두드린다.
 //
 // ⚠️ **건너뛰지 않는다.** workerd 가 없으면 실패한다 — 「환경이 없어서 안 쟀다」가 조용히
@@ -36,7 +36,7 @@ try {
   // 배포되는 것과 **같은 파일**을 넣는다. 이름을 `worker/*.js` 로 두면 `./policies.js` 같은
   // 상대 import 가 그대로 풀린다 — 번들러를 끼우지 않는 이유다(끼우면 그 번들이 또 다른 갈래다).
   mkdirSync(join(dir, "worker"));
-  for (const f of ["index.js", "policies.js", "ledger.js"])
+  for (const f of ["index.js", "policies.js", "ledger.js", "fence.js"])
     copyFileSync(join(root, "worker", f), join(dir, "worker", f));
   // ⚠️ **진입 모듈을 따로 둔다.** workerd 는 진입 모듈의 **named export 를 전부 엔트리포인트
   //    후보로 훑는데**, `worker/index.js` 는 테스트가 쓰라고 상수·함수를 여럿 내보낸다
@@ -58,6 +58,7 @@ const mainWorker :Workers.Worker = (
     (name = "worker/index.js", esModule = embed "worker/index.js"),
     (name = "worker/policies.js", esModule = embed "worker/policies.js"),
     (name = "worker/ledger.js", esModule = embed "worker/ledger.js"),
+    (name = "worker/fence.js", esModule = embed "worker/fence.js"),
   ],
   compatibilityDate = "2026-08-07",
   bindings = [

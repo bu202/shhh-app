@@ -45,7 +45,10 @@ CREATE TABLE IF NOT EXISTS maintenance (
   epoch      INTEGER NOT NULL,
   closed_at  INTEGER,
   -- **drain 이 0 이 된 시각.** 이것이 곧 증거다. `/api/ready` 의 503 은 「막기 시작했다」일 뿐이다.
-  drained_at INTEGER
+  drained_at INTEGER,
+  -- 진행 중인 전환의 id. **NULL 이 아니면 새 lease 를 내주지 않는다**(전환 1단계).
+  -- 두 DB 에 걸친 전환은 한 문장으로 못 하므로, 먼저 문을 닫고 나서 옮긴다.
+  pending_transition TEXT
 );
 INSERT OR IGNORE INTO maintenance (id, mode, epoch) VALUES (1, 'open', 1);
 
@@ -114,3 +117,48 @@ CREATE TABLE IF NOT EXISTS rate_limits (
   expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS rate_limits_expires ON rate_limits(expires_at);
+
+
+-- ── 두 DB 에 걸친 전환의 진행 기록 (2026-08-25 · 원칙 4) ──────────────────
+-- ⛔ **주 D1 과 ledger D1 을 한 SQL 문장으로 원자적으로 바꿀 수는 없다.** 서로 다른 D1
+--    바인딩이고 공통 트랜잭션이 없다. 그래서 「원자적 전환」이 아니라 **중간에 죽어도 이어서
+--    끝낼 수 있는 프로토콜**이 필요하다. 이 표가 그 진행 상태를 영속화한다.
+--
+-- 순서(각 단계는 멱등이다):
+--   started    새 lease 를 막았다(maintenance.pending_transition). 아직 아무것도 안 옮겼다
+--   fence_set  주 D1 의 write_fence.epoch 을 target_epoch 으로 올렸다
+--              ⚠️ 이 순간부터 **옛 epoch 의 요청은 주 D1 에 한 줄도 못 쓴다**(구조적 fencing)
+--   committed  ledger 의 mode·epoch 을 확정하고 문을 다시 열었다
+--
+-- 중간에 Worker 가 죽으면 같은 명령을 다시 실행한다 — 어느 단계에서 멈췄든 그 다음부터 잇는다.
+-- ⚠️ `fence_set` 과 `committed` 사이에서 죽으면 **주 D1 fence 와 ledger epoch 이 어긋난 채**
+--    남는다. 그 상태에서는 모든 사용자 데이터 접근과 `/api/ready` 가 fail-closed 다.
+CREATE TABLE IF NOT EXISTS transitions (
+  transition_id TEXT PRIMARY KEY,
+  source_epoch  INTEGER NOT NULL,
+  target_epoch  INTEGER NOT NULL,
+  target_mode   TEXT NOT NULL CHECK (target_mode IN ('open', 'maintenance', 'restore_closed')),
+  state         TEXT NOT NULL CHECK (state IN ('started', 'fence_set', 'committed')),
+  started_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS transitions_open ON transitions(state);
+
+-- ── stale lease 해제 기록 (2026-08-25 · 사용자 결정 1) ────────────────────
+-- 최소 기록만 남긴다. **IP·사용자 UID·요청 경로·요청 내용·자유 입력 사유는 저장하지 않는다.**
+-- 보유기간은 확정 삭제 표식과 같은 규칙(`CONFIRMED_RETENTION` = 37일)이고 정리 크론이 지운다.
+-- 37일 뒤 삭제가 실패하면 운영 경보 대상이다.
+--
+-- ⚠️ `reason_code` 는 **열거값**이다. 자유 입력이면 그 칸이 곧 개인정보 유입구가 된다.
+-- ⚠️ `operator_ref` 는 **비식별 라벨**이다(예: `ops-2026-09-01`). 이메일·이름을 적지 않는다.
+CREATE TABLE IF NOT EXISTS lease_resolutions (
+  lease_id     TEXT PRIMARY KEY,
+  epoch        INTEGER NOT NULL,   -- 그 lease 가 발급받았던 epoch
+  started_at   INTEGER NOT NULL,   -- lease 행이 갖고 있던 값 그대로
+  expires_at   INTEGER NOT NULL,
+  resolved_at  INTEGER NOT NULL,
+  reason_code  TEXT NOT NULL,
+  operator_ref TEXT NOT NULL,
+  expires_keep INTEGER NOT NULL    -- 이 기록 자체의 보유 만료(resolved_at + CONFIRMED_RETENTION)
+);
+CREATE INDEX IF NOT EXISTS lease_resolutions_keep ON lease_resolutions(expires_keep);
