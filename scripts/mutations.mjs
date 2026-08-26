@@ -351,7 +351,7 @@ export const MUTATIONS = [
     // ⚠️ **이 앵커는 개수가 바뀔 때마다 함께 바꾼다**(D21 을 더하며 세 번째로 고쳤다).
     //    자기가 건드리는 숫자를 앵커에 담는 변이라 피할 수 없다 — 대신 낡으면 실행기가
     //    ANCHOR-MISS 로 종료 코드 1 을 내므로 **조용히 썩지는 않는다.**
-    find: "`scripts/mutations.mjs`(목록 87종",
+    find: "`scripts/mutations.mjs`(목록 102종",
     replace: "`scripts/mutations.mjs`(목록 22종",
   },
   {
@@ -486,7 +486,7 @@ export const MUTATIONS = [
     invariant: "현재 방침 판은 실제로 나가는 외부 요청을 전부 설명한다 (가입 화면의 challenges.cloudflare.com)",
     // ⚠️ **앵커는 「현재 번들의 privacy 경로」다.** 새 판이 나올 때마다 여기를 갱신한다 —
     //    안 하면 앵커 실패로 `mutate.mjs` 가 0 이 아닌 코드로 끝난다(조용히 통과하지 않는다).
-    find: "        \"path\": \"policies/privacy-e85d8eff300f.html\",",
+    find: "        \"path\": \"policies/privacy-8935ff1fddc2.html\",",
     replace: "        \"path\": \"policies/privacy-1d3d2d870876.html\",",
   },
   {
@@ -558,7 +558,7 @@ export const MUTATIONS = [
     id: "D17", file: "docs/STAGE3_SIGNUP_SECURITY_DESIGN.md", suite: "test-docs", kind: "정적",
     what: "§13-6 매핑 합계를 낡은 79 로 되돌린다",
     invariant: "매핑 절의 「N건 전부 연결됐다」는 표의 최대 T 번호에서 파생한다 — 표만 늘리고 합계를 안 고치면 검사가 그것을 잡아야 한다",
-    find: "**89건 전부 실행 가능한 단언으로 연결됐다.**",
+    find: "**91건 전부 실행 가능한 단언으로 연결됐다.**",
     replace: "**79건 전부 실행 가능한 단언으로 연결됐다.**",
   },
   {
@@ -586,7 +586,7 @@ export const MUTATIONS = [
     id: "D21", file: "docs/STAGE3_SIGNUP_SECURITY_DESIGN.md", suite: "test-docs", kind: "정적",
     what: "「종」이 없는 괄호형 내역을 낡은 「정적 21」로 되돌린다",
     invariant: "총계뿐 아니라 **하위 내역**도 MUTATIONS 에서 파생한다 — 「N종」이라고 안 적은 괄호형 내역도 센다(총계만 보면 66 ≠ 40+21 이 남는다)",
-    find: "(동작 57 · 정적 30).",
+    find: "(동작 64 · 정적 38).",
     replace: "(동작 40 · 정적 21).",
   },
   // ── 위협 70 · 불완전한 OAuth 주소가 세션 폐기 재시도를 막던 결함의 방어들 ──
@@ -715,5 +715,111 @@ export const MUTATIONS = [
     invariant: "operator_ref 는 비식별 라벨이다 — 자유 입력 칸은 개인정보 유입구다",
     find: "  if (typeof operatorRef !== \"string\" || !OPERATOR_REF.test(operatorRef))",
     replace: "  if (false)",
+  },
+  // ── 2026-08-26 2단계 재마감: 결정이 코드·방침에서 되살아나지 않는가 ──────
+  {
+    id: "M61", file: "worker/index.js", suite: "test-policies",
+    what: "세션 절대 유효기간을 옛 180일로 되돌린다",
+    invariant: "세션 기간의 원본은 상수 하나이고 방침이 같은 값을 적는다 — 한쪽만 바뀌면 방침이 거짓이 된다",
+    find: "export const SESSION_DAYS = 90;",
+    replace: "export const SESSION_DAYS = 180;",
+  },
+  {
+    id: "M62", file: "worker/ledger.js", suite: "test-policies",
+    what: "확정 표식 보유기간을 옛 37일로 되돌린다",
+    invariant: "보유기간은 실제 요금제(Free · Time Travel 7일)에서 계산한다 — 가정값으로 되돌리면 방침의 숫자가 근거를 잃는다",
+    find: "export const CONFIRMED_RETENTION = 15 * 86400e3;",
+    replace: "export const CONFIRMED_RETENTION = 37 * 86400e3;",
+  },
+  {
+    id: "M63", file: "worker/index.js", suite: "test-friends",
+    what: "구글을 초기 개방 제공자 목록에 다시 넣는다",
+    invariant: "초기 계정 개방은 네이버·카카오 둘이다 — 목록 밖 제공자는 화면에도 서버 라우트에도 없어야 한다",
+    find: 'export const ENABLED_PROVIDERS = ["kakao", "naver"];',
+    replace: 'export const ENABLED_PROVIDERS = ["kakao", "naver", "google"];',
+  },
+  {
+    id: "M64", file: "worker/index.js", suite: "test-friends",
+    what: "제공자 잠금을 화면(목록)에만 남기고 라우트에서는 뺀다",
+    invariant: "막는 자리는 하나여야 한다 — 화면만 숨기면 주소를 아는 사람은 그대로 들어온다",
+    find: 'const isProvider = (n) => typeof n === "string" && Object.prototype.hasOwnProperty.call(P, n)\n'
+        + "  && ENABLED_PROVIDERS.includes(n);",
+    replace: 'const isProvider = (n) => typeof n === "string" && Object.prototype.hasOwnProperty.call(P, n);',
+  },
+  {
+    id: "M65", file: "worker/index.js", suite: "test-signup",
+    what: "구글에 이메일·프로필 범위를 추가한다",
+    invariant: "제공자에게 실명·이메일·전화번호를 요청하지 않는다 — 범위가 늘면 방침의 「요청조차 하지 않습니다」가 거짓이 된다",
+    find: '    scope: "openid",                 // sub 만 받는 최소 범위',
+    replace: '    scope: "openid email profile",   // sub 만 받는 최소 범위',
+  },
+  {
+    id: "M66", file: "worker/schema.sql", suite: "test-signup",
+    what: "users 표에 email 칸을 만든다",
+    invariant: "저장할 자리가 없어야 저장되지 않는다 — 칸 하나가 생기면 그날부터 받을 수 있다",
+    find: "  created_at        INTEGER NOT NULL\n);",
+    replace: "  created_at        INTEGER NOT NULL,\n  email             TEXT\n);",
+  },
+  {
+    id: "M67", file: "worker/index.js", suite: "test-signup",
+    what: "제공자가 준 이메일을 계정 행에 함께 저장한다",
+    invariant: "제공자 응답에서 회원 식별 번호 말고는 아무것도 영속화하지 않는다",
+    find: "      .bind(id, provider, subject, now),",
+    replace: '      .bind(id, provider, subject + "|leak@example.com", now),',
+  },
+  {
+    id: "D28", file: "privacy.html", suite: "test-policies", kind: "정적",
+    what: "방침에서 개인정보 보호책임자 성명 행을 지운다",
+    invariant: "처리자와 보호책임자를 방침에 표기한다(제30조 제1항 제6호 기재사항)",
+    find: "      <tr><th>개인정보 보호책임자</th><td>배성욱</td></tr>\n",
+    replace: "",
+  },
+  {
+    id: "D29", file: "privacy.html", suite: "test-policies", kind: "정적",
+    what: "문의 주소를 실재하지 않는 예시 주소로 바꾼다",
+    invariant: "공개 정책에 가짜·플레이스홀더 주소를 넣지 않는다 — 도착하지 않는 주소는 「연락할 수 있다」를 거짓으로 만든다",
+    transform: (src) => src.replaceAll("qotjddnr9788@gmail.com", "privacy@example.com"),
+  },
+  {
+    id: "D30", file: "privacy.html", suite: "test-policies", kind: "정적",
+    what: "APAC 을 실제 저장 국가로 단정한다",
+    invariant: "APAC 은 국가도 관할권도 아니다 — 확인하지 못한 것을 확인한 것처럼 적지 않는다",
+    find: "<b>APAC(아시아·태평양)</b> 이라고 표시하며, 이는 <b>국가가 아니라 지역 이름</b>입니다.",
+    replace: "<b>APAC(아시아·태평양)</b> 이며, 데이터는 APAC 에 저장됩니다.",
+  },
+  {
+    id: "D31", file: "privacy.html", suite: "test-policies", kind: "정적",
+    what: "백업 사본이 정확히 제때 지워진다고 단정한다",
+    invariant: "R2 는 만료 표시 뒤 실제 삭제까지 통상 24시간이 더 걸릴 수 있다 — 우리가 정하지 못하는 시점을 보장하지 않는다",
+    find: "통상 하루 정도가 더 걸릴 수 있다",
+    replace: "즉시 지워진다",
+  },
+  {
+    id: "D32", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
+    what: "Turnstile 을 「활성화 완료」로 적는다",
+    invariant: "widget·시크릿·운영 호스트 검증·실브라우저가 하나도 안 됐다 — 로컬 준비를 활성화로 승격하지 않는다",
+    find: "| 16 | **Turnstile 위젯 생성·등록** | ❌ **미구성(결정 3).**",
+    replace: "| 16 | **Turnstile 위젯 생성·등록** | ✅ Turnstile 활성화 완료.",
+  },
+  {
+    id: "D33", file: "docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md", suite: "test-docs", kind: "정적",
+    what: "요금제를 사용자 선언에서 원격 확인으로 승격한다",
+    invariant: "사용자 확인과 원격 대시보드 검증은 다른 사실이다 — 섞으면 확인하지 않은 것을 확인했다고 말하게 된다",
+    find: "| **사용자 확인** | **Workers Free 사용 중** (사용자 선언 · 2026-08-26) |",
+    replace: "| **사용자 확인** | 요금제는 대시보드에서 확인했다 |",
+  },
+  {
+    id: "D34", file: "docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md", suite: "test-docs", kind: "정적",
+    what: "백업 주기를 「매일 백업한다」로 되돌린다",
+    invariant: "백업은 migration 직전에만 만든다 — 방침이 그 사실을 적고 있어 문서가 갈리면 방침이 거짓이 된다",
+    find: "| 정기 백업 | **하지 않는다**(매일 백업 없음) |",
+    replace: "| 정기 백업 | 매일 백업한다 |",
+  },
+  {
+    id: "D35", file: "docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md", suite: "test-docs", kind: "정적",
+    what: "§24-5 백업 절 자체를 없앤다",
+    invariant: "결정이 문서에서 사라지면 그것을 지키는 금지 목록이 아무것도 안 재게 된다",
+    find: "### 24-5. 백업",
+    replace: "### 24-5x. 백업",
   },
 ];

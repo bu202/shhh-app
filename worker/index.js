@@ -70,7 +70,15 @@ const P = {
 //    그러면 아래에서 `p.auth` 가 undefined 인 채로 흘러 「없는 제공자」가 아니라 「설정이 덜 됨」
 //    으로 답하게 되고(503), 실제로 없는 것을 있는데 고장 났다고 말하는 셈이 된다.
 //    자기 속성만 본다.
-const isProvider = (n) => typeof n === "string" && Object.prototype.hasOwnProperty.call(P, n);
+// **초기 계정 개방에서 실제로 여는 제공자**(사용자 결정 · 2026-08-26). 구글 구현은 지우지 않고
+// 목록 밖에 둔다 — 되살릴 때 여기 한 줄이다.
+// ⚠️ **화면만 숨기면 실패다.** 버튼을 안 그려도 `/api/login/google`·`/api/signup/start` 가 열려
+//    있으면 주소를 아는 사람은 그대로 들어온다. 그래서 잠금을 `isProvider` **하나**에 둔다 —
+//    화면이 보는 `/health` 의 `providers`(`readyProviders`)도, 라우트 셋도 전부 이 함수를 지난다.
+//    막는 자리를 둘로 나누면 한쪽만 고치는 날 그 틈이 곧 열린 문이다.
+export const ENABLED_PROVIDERS = ["kakao", "naver"];
+const isProvider = (n) => typeof n === "string" && Object.prototype.hasOwnProperty.call(P, n)
+  && ENABLED_PROVIDERS.includes(n);
 
 // 앱 주소는 env.APP_ORIGIN 하나. 로컬 개발(localhost·LAN)은 **개발용 Worker 에서만** 연다.
 //
@@ -526,7 +534,11 @@ export const TOMBSTONE_KEY_VERSION = 1;
 //
 // **원본을 저장하지 않는다.** DB 가 새도 남의 세션을 쓸 수 없어야 한다 — 저장하는 건 SHA-256 뿐이고
 // 원본은 브라우저의 쿠키에만 있다.
-const SESSION_DAYS = 180;
+// ⚠️ **절대 유효기간이다**(사용자 결정 · 2026-08-26). 180일이었다가 90일로 줄였다 —
+// 세션은 「지운 뒤에도 남는 것」 중 사람이 가장 오래 들고 있는 값이고, 그 길이를 정하는 근거가
+// 기술이 아니라 방침이기 때문이다. **`privacy.html` 이 같은 숫자를 적는다** —
+// `scripts/test-policies.mjs` 가 이 상수를 읽어 방침 문장과 대조하므로 한쪽만 고치면 실패한다.
+export const SESSION_DAYS = 90;
 const sha256 = async (s) => b64u(await crypto.subtle.digest("SHA-256", ENC.encode(s)));
 const mkToken = () => b64u(crypto.getRandomValues(new Uint8Array(32)));
 
@@ -1590,7 +1602,7 @@ async function route(req, env, rc) {
       //       이 응답은 인증 없이 열려 있고, 그 숫자들은 운영 정보다(D1 직접 조회로 본다).
       //    ⚠️ **못 읽으면 참이다.** ledger 는 붙어 있는데 상태를 못 읽는 것을 「괜찮다」로
       //       읽지 않는다 — 그러면 표가 깨진 배포가 조용히 정상으로 보인다.
-      // 보유기간이 지났는데 아직 남아 있는 해제 기록. **사용자 결정 1**: 「37일 후 삭제 실패는
+      // 보유기간이 지났는데 아직 남아 있는 해제 기록. **사용자 결정 1**: 「보유기간 후 삭제 실패는
       // 운영 경보」. 못 읽으면 경보 쪽으로 기운다(fail-closed).
       let overdue = 1;
       try { overdue = env.LEDGER ? await overdueResolutions(env) : 0; } catch { overdue = 1; }

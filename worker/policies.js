@@ -1,19 +1,19 @@
 // 자동 생성 — `node scripts/policies.mjs stamp` 가 쓴다. 손으로 고치지 않는다.
 // 원본은 policies/manifest.json 이고, scripts/test-policies.mjs 가 셋(파일·manifest·이 파일)을 대조한다.
 export const POLICY_BUNDLE = {
-  "pv": "a342d7215501",
+  "pv": "f669d86e5b46",
   "docs": {
     "age14": {
       "path": "policies/age14-2303810b39a1.txt",
       "hash": "2303810b39a19391051142bcb2ca2f7cec81ff5ea0a9f2a051596af2c8c108b1"
     },
     "privacy": {
-      "path": "policies/privacy-e85d8eff300f.html",
-      "hash": "e85d8eff300f0c404fec0260e604905b9bff1b52a191fc8dcb144334bfb5c2b3"
+      "path": "policies/privacy-8935ff1fddc2.html",
+      "hash": "8935ff1fddc2b66cbec1b1611b942b22110003da7b256c2031adc927e3c405b7"
     },
     "summary": {
-      "path": "policies/summary-d474a58df31c.txt",
-      "hash": "d474a58df31cd4566e8883b8df605f78320ef3af9b12006d136ab6cb4164a350"
+      "path": "policies/summary-0e28ebcd7826.txt",
+      "hash": "0e28ebcd7826910e9a9edb823089eae8492412e492f6c06eb0ee8301ad7d1366"
     },
     "terms": {
       "path": "policies/terms-245e3ae48884.html",

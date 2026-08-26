@@ -146,8 +146,9 @@ CREATE INDEX IF NOT EXISTS transitions_open ON transitions(state);
 
 -- ── stale lease 해제 기록 (2026-08-25 · 사용자 결정 1) ────────────────────
 -- 최소 기록만 남긴다. **IP·사용자 UID·요청 경로·요청 내용·자유 입력 사유는 저장하지 않는다.**
--- 보유기간은 확정 삭제 표식과 같은 규칙(`CONFIRMED_RETENTION` = 37일)이고 정리 크론이 지운다.
--- 37일 뒤 삭제가 실패하면 운영 경보 대상이다.
+-- 보유기간은 확정 삭제 표식과 같은 규칙(`CONFIRMED_RETENTION`)이고 정리 크론이 지운다.
+-- 숫자를 여기 적지 않는다 — 원본은 `worker/ledger.js` 의 상수 하나다(요금제가 바뀌면 재계산한다).
+-- 보유기간(`CONFIRMED_RETENTION`)이 지난 뒤에도 삭제가 실패하면 운영 경보 대상이다.
 --
 -- ⚠️ `reason_code` 는 **열거값**이다. 자유 입력이면 그 칸이 곧 개인정보 유입구가 된다.
 -- ⚠️ `operator_ref` 는 **비식별 라벨**이다(예: `ops-2026-09-01`). 이메일·이름을 적지 않는다.

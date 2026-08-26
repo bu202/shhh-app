@@ -13,7 +13,7 @@ import assert from "node:assert";
 import worker, { createAccountWithPolicy, findUser, newSession, pathTemplate,
   routeFor, rlMax, routeBuckets, routeCount, maintenanceAllows, envelopeOk,
   authRoutes, mkSessionToken, SESSION_ENVELOPE_VERSION,
-  appOrigin, loginPossible } from "../worker/index.js";
+  appOrigin, loginPossible, ENABLED_PROVIDERS } from "../worker/index.js";
 import { makeD1, makeLedger, withLatency, asRequest } from "./_d1.mjs";
 import { readFileSync } from "node:fs";
 import { drainState, readMode, MODE_UNBOUND } from "../worker/ledger.js";
@@ -334,8 +334,11 @@ function befriend(env, a, b, status = "accepted") {
   assert.equal((await cb("aaa.bbb")).status, 400, "위조 state 가 통과했다");
   assert.equal((await cb(state + "x")).status, 400, "서명을 고친 state 가 통과했다");
   assert.equal((await cb("")).status, 400, "빈 state 가 통과했다");
-  // 33. 카카오로 시작한 state 를 구글 자리에서 쓸 수 없다.
-  assert.equal((await worker.fetch(new Request("https://api.test/cb/google?code=x&state=" + encodeURIComponent(state)), env)).status,
+  // 33. 카카오로 시작한 state 를 다른 제공자 자리에서 쓸 수 없다.
+  //     ⚠️ 전에는 구글 자리에서 쟀는데, 구글은 2026-08-26 부터 제공자 목록 밖이라 그 주소가
+  //        404 다 — 그러면 이 검사는 「state 를 봤다」가 아니라 「주소가 없다」를 재게 된다.
+  //        **열려 있는 다른 제공자**로 재야 state 대조가 실제로 도는지 알 수 있다.
+  assert.equal((await worker.fetch(new Request("https://api.test/cb/naver?code=x&state=" + encodeURIComponent(state)), env)).status,
     400, "다른 제공자의 state 가 통과했다");
 
   // 34. n 이 state **안에** 들어간다 — 밖(쿼리)에 있으면 남이 고쳐 붙일 수 있다.
@@ -777,9 +780,12 @@ function befriend(env, a, b, status = "accepted") {
   assert.equal(h0.ready, false, "설정이 없는데 ready 다");
   // 68. /ready 는 설정이 덜 됐으면 503 이다.
   assert.equal((await get("/ready", bare)).status, 503, "설정이 없는데 /ready 가 200 이다");
+  // ⚠️ **구글 시크릿을 일부러 넣어 둔다**(2026-08-26). 구글은 초기 개방 목록 밖이라,
+  //    시크릿이 **다 있어도** 목록에 나오면 안 된다 — 그 사실을 여기서 함께 잰다.
+  //    시크릿을 빼고 재면 「없어서 안 나온 것」과 구분이 안 된다.
   const full = makeEnv({ KAKAO_ID: "id", GOOGLE_ID: "id", GOOGLE_SECRET: "s", EDGE_GUARD: "ratelimit", RL: RL_EDGE });
   const h1 = await (await get("/health", full)).json();
-  assert.deepEqual(h1.providers, ["kakao", "google"], "설정된 제공자만 오지 않는다");
+  assert.deepEqual(h1.providers, ["kakao"], "설정된 제공자만 오지 않는다 (구글은 초기 개방 목록 밖이다)");
   assert.equal((await get("/ready", full)).status, 200, "다 설정됐는데 /ready 가 503 이다");
   // 69. DB 바인딩이 없으면 ready 가 아니다 — 로그인도 단어장도 못 한다.
   assert.equal((await (await get("/health", { ...full, DB: undefined })).json()).ready, false, "DB 없이 ready 다");
@@ -2352,8 +2358,10 @@ function befriend(env, a, b, status = "accepted") {
       "T83-d: 거부했는데 주 D1 이 바뀌었다");
   }
 
-  // ── e. 카카오·구글은 종전대로 **요청이 도착한 주소**의 `/api/cb/<이름>` 이다.
-  for (const name of ["kakao", "google"]) {
+  // ── e. 카카오는 종전대로 **요청이 도착한 주소**의 `/api/cb/<이름>` 이다(`viaApp` 이 아닌 갈래).
+  //   ⚠️ 구글도 같은 갈래였지만 2026-08-26 부터 제공자 목록 밖이라 그 주소가 404 다 —
+  //      여기 남겨 두면 복귀 주소 규칙이 아니라 「주소가 없다」를 재게 된다. T90 이 따로 잰다.
+  for (const name of ["kakao"]) {
     const env = makeEnv({ [name.toUpperCase() + "_ID"]: "id",
                           [name.toUpperCase() + "_SECRET"]: "sec" });
     delete env.APP_URL;
@@ -2567,6 +2575,75 @@ function befriend(env, a, b, status = "accepted") {
   }
 }
 
+// ══ T90 — 초기 계정 개방의 제공자 목록 (2026-08-26 · 사용자 결정) ═════════
+//
+// 결정: **네이버·카카오만 연다. 구글은 초기 목록 밖이다.** 구현은 지우지 않는다.
+//
+// ⛔ **화면만 숨기는 것은 실패다.** 버튼을 안 그려도 `/api/login/google` 이 302 를 주면
+//    주소를 아는 사람은 그대로 들어와 계정을 만든다. 그러면 「초기에는 두 곳만」이
+//    화면에만 있는 규칙이 된다 — 위협 61 과 정확히 같은 무늬다(규칙이 화면에만 있고
+//    실제 문에는 없었다).
+//
+// ⚠️ **시크릿을 다 넣은 채로 잰다.** 빼고 재면 「목록 밖이라 닫힌 것」과 「설정이 없어서
+//    닫힌 것」이 구분되지 않아, 목록을 지워도 검사가 그대로 통과한다.
+{
+  const ORG = "https://app.test";
+  const goog = { GOOGLE_ID: "gid", GOOGLE_SECRET: "gsec" };
+
+  // ── a. 목록 자체. 구현(`P`)에는 남아 있고 **개방 목록에만** 없다.
+  assert.deepEqual(ENABLED_PROVIDERS, ["kakao", "naver"],
+    "T90-a: 초기 개방 제공자가 카카오·네이버 둘이 아니다");
+
+  // ── b. 화면이 보는 목록에 안 나온다 — 시크릿이 다 있어도.
+  const env = makeEnv({ ...goog, KAKAO_ID: "id", KAKAO_SECRET: "s",
+                        NAVER_ID: "id", NAVER_SECRET: "s" });
+  const h = await (await worker.fetch(new Request("https://api.test/api/health",
+    { headers: { Origin: ORG } }), env)).json();
+  assert.deepEqual(h.providers, ["kakao", "naver"],
+    `T90-b: /health 가 ${JSON.stringify(h.providers)} 를 준다 — 구글 시크릿이 다 있어도 나오면 안 된다`);
+
+  // ── c. 서버의 문 넷이 전부 닫혀 있다. **어느 DB 도 만지지 않는다.**
+  const before = () => ({
+    users: env.DB._db.prepare("SELECT COUNT(*) n FROM users").get().n,
+    lease: env.LEDGER._db.prepare("SELECT COUNT(*) n FROM write_leases").get().n,
+  });
+  const b0 = before();
+  for (const [path, init] of [
+    ["/api/login/google", { headers: { Origin: ORG } }],
+    ["/api/cb/google?code=x&state=y", { headers: { Origin: ORG } }],
+    ["/api/exchange/google", { method: "POST", headers: { Origin: ORG, "Content-Type": "application/json" }, body: "{}" }],
+  ]) {
+    const r = await worker.fetch(new Request("https://api.test" + path, init), env);
+    assert.equal(r.status, 404,
+      `T90-c: ${path} 가 ${r.status} 다 — 목록 밖 제공자는 없는 주소여야 한다`);
+  }
+  // 가입 시작은 라우트가 실재하고 **본문**이 제공자를 말한다 — 그래서 404 가 아니라 400 이다.
+  const rs = await worker.fetch(new Request("https://api.test/api/signup/start", {
+    method: "POST", headers: { Origin: ORG, "Content-Type": "application/json" },
+    body: JSON.stringify({ provider: "google", terms: true, age14: true }),
+  }), env);
+  assert.equal(rs.status, 400, `T90-c: /signup/start 가 google 로 ${rs.status} 다`);
+  const b1 = before();
+  assert.deepEqual(b1, b0, "T90-c: 목록 밖 제공자 요청이 DB 를 만졌다");
+
+  // ── d. **열려 있는 둘은 그대로 연다.** 잠금이 넓어지면 여기서 잡힌다.
+  for (const name of ENABLED_PROVIDERS) {
+    const r = await worker.fetch(new Request("https://api.test/api/login/" + name,
+      { headers: { Origin: ORG } }), env);
+    assert.equal(r.status, 302, `T90-d: ${name} 로그인이 ${r.status} 다 — 열려 있어야 한다`);
+  }
+
+  // ── e. **화면 코드도 목록을 스스로 적지 않는다.** `js/auth.js` 는 `/health` 의 답만 본다.
+  //   ⚠️ 소스에 이름이 있는 것 자체는 문제가 아니다(표시 이름표가 있다). 문제는 **필터**다 —
+  //      `PROVIDERS` 로 거르지 않고 그리면 서버가 안 준 제공자를 화면이 만들어 낸다.
+  {
+    const src = fs.readFileSync(new URL("../js/auth.js", import.meta.url), "utf8");
+    for (const m of src.matchAll(/\["kakao", "naver", "google"\][^\n]*/g))
+      assert.match(m[0], /PROVIDERS/,
+        `T90-e: js/auth.js 가 제공자 목록을 서버 답으로 거르지 않는다 — ${m[0].trim()}`);
+  }
+}
+
 console.log("test-friends: 통과 — 로그인 왕복 표(브라우저 결속) · 친구 쌍 유일성 · 친구 권한(행 하나) · 쿠키 세션 · 세대 무효화 · CSRF(Origin 필수) · 제공자ID 비공개 "
   + "· 버전 충돌 · 수락 트랜잭션(상한 포함) · 무관계 DELETE · 마스터 · 복귀 주소 · 본문 한도 · state 서명 · 코드 회전 · 상한 · 헤더 · readiness(스키마 실질의) · 세션 청소 · 레이트리밋(RL_KEY HMAC · 버킷 분리) · 제공자 응답 상한 · 계정 삭제 원자성(표식·lease) · 활성 초대 코드 1개 · 유지보수/restore_closed 게이트 · 전역 user-data drain(요청당 임차증 1개 · 지연 읽기·쓰기 · TTL 만료 ≠ 해제) "
   + "· LEDGER 미바인딩 fail-closed(계층별) · 라우트 분류(없는 주소·로그인 시작의 쓰기 0) · 임차증 상한 "
@@ -2574,4 +2651,5 @@ console.log("test-friends: 통과 — 로그인 왕복 표(브라우저 결속) 
   + "· T71 세션 envelope(모양·서명·판·만료 · DB 앞 거절 · 서명 ≠ 인증 · 키 전용성·교체 · auth 라우트 전수) "
   + "· T75 비밀값 비교(요약 32바이트 + timingSafeEqual · await 전수 · 응답 모양 하나 · 어댑터 비배포) "
   + "· T83 복귀 주소의 단일 원본(APP_ORIGIN 검증 · APP_URL 폐지) "
-  + "· T84 GET 은 주 D1 사용자 도메인 행을 안 바꾼다(표 목록은 스키마에서 파생 · OAuth 콜백만 예외 — 서명 state·shh_t 로 묶인다 · ledger 부수효과는 허용 목록·상한·정리로 따로 검사) · 초대 코드 생성은 same-origin POST");
+  + "· T84 GET 은 주 D1 사용자 도메인 행을 안 바꾼다(표 목록은 스키마에서 파생 · OAuth 콜백만 예외 — 서명 state·shh_t 로 묶인다 · ledger 부수효과는 허용 목록·상한·정리로 따로 검사) · 초대 코드 생성은 same-origin POST "
+  + "· T90 초기 개방 제공자(구글은 화면·서버 넷 다 닫힘 · 시크릿이 있어도 · DB 0 · 열린 둘은 그대로)");

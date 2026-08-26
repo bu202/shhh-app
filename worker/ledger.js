@@ -92,11 +92,22 @@ export async function deletionEvidenceUsable(env) {
 
 // pending 이 이 시간을 넘도록 확정되지 않으면 **경보**다. 지우는 시각이 아니다.
 export const PENDING_ALERT = 24 * 3600e3;
-// 확정된 표식을 얼마나 들고 있나. **기술적 보수 계산값이고 법정 보유기간이 아니다** —
-//   max(가정한 Time Travel 30일, 수동 백업 규칙 7일) + 안전 여유 7일 = 37일.
-// 요금제의 실제 복원 가능 기간과 백업 규칙이 확정되면 다시 계산한다. privacy.html 에는
-// 이 숫자를 **법정 보유기간으로 적지 않는다**(확정 전에는 숫자 자체를 적지 않는다).
-export const CONFIRMED_RETENTION = 37 * 86400e3;
+// 확정된 표식을 얼마나 들고 있나. **기술적 보수 계산값이고 법정 보유기간이 아니다.**
+//
+// ⚠️ **37일이었다. 그 값은 Time Travel 30일을 「가정」해 계산한 것이었다**(2026-08-26 재계산).
+//    실제 요금제와 백업 규칙이 정해지면서 근거가 바뀌었다 — 지금 쓰는 것은 **Workers Free** 이고
+//    (사용자 확인 · 원격 대시보드로 검증한 것이 아니다), 그 등급의 D1 Time Travel 은 **7일**이다.
+//      max(Time Travel 7일, 백업 R2 lifecycle 만료 7일) + 안전 여유 7일 = 14일
+//      + R2 는 만료 시각이 지난 뒤 실제 삭제까지 **통상 24시간**이 더 걸릴 수 있다(공식 문서)
+//      = **15일**
+//    표식은 「되살아난 계정을 다시 지우기 위한 값」이므로 **되살릴 수 있는 창보다 길어야 한다.**
+//    짧으면 복원 가능한 마지막 날에 표식이 이미 없다.
+//
+// ⛔ **유료 전환은 이 숫자를 자동으로 안 바꾼다.** Paid 의 Time Travel 은 30일이라 그날
+//    이 값과 방침 문장을 함께 다시 계산해야 한다(`docs/OPS_RUNBOOK.md` 의 요금제 전환 게이트).
+// ⚠️ privacy.html 은 이 값을 **법정 보유기간으로 적지 않는다**. 「N일 뒤 반드시 삭제」라고도
+//    적지 않는다 — R2 의 삭제 지연 때문에 그 문장은 우리가 보장할 수 없다.
+export const CONFIRMED_RETENTION = 15 * 86400e3;
 // ponytail: lease 수명은 Worker 의 최대 실행시간보다 길어야 한다 — 짧으면 살아 있는 요청의
 //   lease 가 먼저 만료돼 **drain 이 거짓으로 0** 이 된다. 120초는 실측이 아니라 여유값이다.
 //   실제 p95 를 재서 좁힐 것(설계서 §10-9-5 Q6).
@@ -340,7 +351,7 @@ export async function ledgerAnswers(env) {
 }
 
 // 보유기간이 지난 해제 기록이 남아 있나. **경보 대상**이다(사용자 결정 1 · 2026-08-25):
-// 「37일 후 삭제 실패는 운영 경보」.
+// 「보유기간(`CONFIRMED_RETENTION`)이 지난 뒤에도 남아 있으면 운영 경보」.
 export async function overdueResolutions(env, now = Date.now()) {
   const r = await env.LEDGER.prepare(
     "SELECT COUNT(*) AS n FROM lease_resolutions WHERE expires_keep < ?").bind(now).first();

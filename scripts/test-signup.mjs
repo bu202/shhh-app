@@ -16,6 +16,7 @@ import { POLICY_BUNDLE } from "../worker/policies.js";
 import { TURNSTILE_ACTION, providerPossible } from "../worker/index.js";
 import { makeD1, makeLedger, withLatency, asRequest } from "./_d1.mjs";
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 
 // 서버가 state 에 싣는 표 해시와 **같은 계산**이다(b64u(SHA-256(txn))).
 // 여기서 다르게 계산하면 규칙이 두 벌이 되어, 서버가 바뀌어도 테스트는 옛 규칙을 통과시킨다.
@@ -922,9 +923,10 @@ function failOn(db, needle) {
     ["naver: ID 만",            "naver",  { NAVER_ID: "id" }, false],
     ["naver: SECRET 만",        "naver",  { NAVER_SECRET: "s" }, false],
     ["naver: 둘 다",            "naver",  { NAVER_ID: "id", NAVER_SECRET: "s" }, true],
-    ["google: ID 만",           "google", { GOOGLE_ID: "id" }, false],
-    ["google: SECRET 만",       "google", { GOOGLE_SECRET: "s" }, false],
-    ["google: 둘 다",           "google", { GOOGLE_ID: "id", GOOGLE_SECRET: "s" }, true],
+    // ⚠️ **구글 행은 여기서 뺐다**(2026-08-26). 구글은 초기 계정 개방의 제공자 목록 밖이라
+    //    「시크릿이 맞으면 열린다」가 성립하지 않는다 — 시크릿과 무관하게 닫혀 있어야 하고,
+    //    그건 **다른 상태 코드**(설정 부족 503 이 아니라 없는 제공자 400·404)다.
+    //    같은 표에 섞으면 그 차이가 지워진다. T90 이 따로 잰다.
     // 카카오만 secret 이 선택이다(콘솔에서 끌 수 있다). **기존 정책을 그대로 유지한다.**
     ["kakao: ID 만(정책상 허용)", "kakao",  { KAKAO_ID: "id" }, true],
     ["kakao: SECRET 만",        "kakao",  { KAKAO_SECRET: "s" }, false],
@@ -1003,9 +1005,73 @@ function failOn(db, needle) {
   }
 }
 
+// == T91 - 회원가입 데이터 최소화가 **코드·스키마·OAuth 요청**에 다 있는가 =====
+//    (2026-08-26 사용자 결정: 실명·전화번호·이메일을 회원 필드로 받지 않는다)
+//
+// ⛔ **방침에만 적는 것으로는 못 지킨다.** 「받지 않습니다」는 문장이고, 실제로 받지 않는 것은
+//    ① 제공자에게 요청하는 범위(scope) ② 응답에서 꺼내 저장하는 값 ③ 저장할 자리(스키마)
+//    셋이 함께 정한다. 하나만 열려도 그 문장이 거짓이 된다.
+{
+  // -- a. **요청 범위.** 이름·이메일·전화번호를 부르는 scope 가 늘면 실패한다.
+  //   허용 목록으로 잰다 - 금지 낱말 목록은 새 이름이 생기면 조용히 통과한다.
+  const src = fs.readFileSync(new URL("../worker/index.js", import.meta.url), "utf8");
+  const scopes = [...src.matchAll(/scope:\s*"([^"]*)"/g)].map((x) => x[1]);
+  assert.ok(scopes.length >= 3, t(`T91-a: 제공자 scope 를 ${scopes.length}개밖에 못 찾았다 — 검사기가 낡았다`));
+  for (const sc of scopes)
+    assert.ok(sc === "" || sc === "openid",
+      t(`T91-a: 최소 범위 밖의 scope 가 생겼다: "${sc}" — 신원 정보를 요청하게 된다`));
+
+  // -- b. **저장할 자리.** users 표의 칸을 스키마에서 읽어 고정한다.
+  //   ⚠️ 칸이 늘어나는 것 자체를 막는다. `email TEXT` 한 줄이면 그날부터 받을 수 있다.
+  const schema = fs.readFileSync(new URL("../worker/schema.sql", import.meta.url), "utf8");
+  const tbl = schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS users ("));
+  const cols = tbl.slice(0, tbl.indexOf(");")).split("\n").slice(1)
+    .map((l) => (l.trim().match(/^([a-z_]+)\s/) || [])[1]).filter(Boolean);
+  assert.deepEqual(cols.sort(),
+    ["created_at", "id", "provider", "provider_subject", "session_version"],
+    t(`T91-b: users 표의 칸이 바뀌었다 — ${cols.join(",")}`));
+
+  // -- c. **제공자가 더 줘도 저장하지 않는다.** 살찐 응답으로 실제 가입을 끝까지 돌리고
+  //   두 DB 를 통째로 훑어 그 값들이 **어디에도** 없는지 본다.
+  //   ⚠️ 소스를 훑는 검사로 대신하지 않는다 - 「어딘가에서 j.email 을 읽는다」가 아니라
+  //      「저장된 것 중에 그 값이 있나」를 재야 한다. 새 저장 경로가 생겨도 이 검사는 잡는다.
+  const PII = { email: "leak@example.com", name: "홍길동", phone: "010-1234-5678",
+                nickname: "닉네임유출", profile_image: "https://x/y.png", birthday: "0101" };
+  const env = makeEnv();
+  const st = await startSignup(env);
+  assert.equal(st.status, 200, t("T91-c: 가입 시작이 열리지 않았다 — 검사기가 낡았다"));
+
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url) => new Response(JSON.stringify(
+    String(url).includes("token")
+      ? { access_token: "tok", ...PII }
+      : { id: "fat-1", sub: "fat-1", response: { id: "fat-1", ...PII },
+          kakao_account: { ...PII }, properties: { ...PII }, ...PII }),
+    { headers: { "Content-Type": "application/json" } });
+  const res = await cb(env, st.state, st.txn).finally(() => { globalThis.fetch = real; });
+  assert.equal(res.status, 302, t(`T91-c: 살찐 응답으로 가입이 끝나지 않았다 (${res.status}) — 검사기가 낡았다`));
+  assert.equal(count(env, "users"), 1, t("T91-c: 계정이 안 만들어졌다 — 검사기가 낡았다"));
+
+  const dump = [];
+  for (const db of [env.DB._db, env.LEDGER._db]) {
+    for (const { name } of db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all())
+      for (const row of db.prepare(`SELECT * FROM "${name}"`).all())
+        dump.push(Object.values(row).map(String).join(" "));
+  }
+  assert.ok(dump.length > 0, t("T91-c: 두 DB 에서 읽은 행이 0개다 — 아무것도 안 재고 있다"));
+  const all = dump.join(" ");
+  for (const [k, v] of Object.entries(PII))
+    assert.ok(!all.includes(v),
+      t(`T91-c: 제공자가 준 ${k} 가 저장됐다 — 필요 없는 프로필 정보를 영속화한다`));
+  // 저장돼야 하는 것은 회원 식별 번호 하나다. 없으면 위 검사가 「빈 DB 라 통과」한 것이다.
+  assert.ok(all.includes("fat-1"), t("T91-c: 회원 식별 번호가 저장되지 않았다 — 위 단언이 헛돌았다"));
+}
+
 console.log(`test-signup: ${n}개 통과 — 가입 state AEAD(nonce·AAD·키 길이·키 분리) · `
   + `필수 항목 fail-closed · 정책 기록 ${REQUIRED_POLICY_EVENTS}종 원자성 · CHECK 강제 · `
   + `소비 표식(순차·동시·재소비) · 로그인 경로가 계정을 안 만듦 · 만료 정리 · 로그 0건 · `
   + `T70 Turnstile(토큰 없음·위조·재사용·만료·검증 실패·시크릿 부재·콜백 대조·범위) · `
   + `T73 부분 시크릿(화면·시작·콜백·로그인에서 행 0건) · T74 action·hostname 대조 · `
-  + `T77 제공자별 시크릿 쌍(9경우 · 카카오 선택 정책 유지 · 외부 호출 0)`);
+  + `T77 제공자별 시크릿 쌍(9경우 · 카카오 선택 정책 유지 · 외부 호출 0) · `
+  + `T91 데이터 최소화(scope 허용목록 · users 칸 고정 · 살찐 응답의 PII 가 두 DB 어디에도 0건)`);
