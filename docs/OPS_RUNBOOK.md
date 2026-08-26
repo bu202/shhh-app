@@ -406,7 +406,7 @@ npx wrangler d1 execute shhh-ledger --remote --command \
 | 세션 쿠키를 DB 없이 검증하기 | 지금 리미터는 인증 **앞**이라 신원이 IP 뿐이고, 그래서 공유 IP(CGNAT)가 버킷을 나눠 쓴다. uid 별로 되돌리려면 **서명된 세션 envelope**(전용 시크릿 하나 추가 · 기존 세션 전부 무효)가 필요하다. 지금은 사용자 0명이라 값싸지만, **바꾸는 순간 시크릿이 하나 더 는다** — 별도 결정 |
 | ~~`rate_limits` 를 ledger D1 로 옮기기~~ | ✅ **2026-08-20 에 옮겼다**(위협 49 · migration `migrations-ledger/0003`). 「주 D1 은 임차증 안에서만 만진다」에 예외가 없어졌다. ⚠️ 주 D1 의 옛 표는 **그대로 둔다** — 파괴적 migration 은 별도 승인이고 안 쓰는 표는 해가 없다 |
 | **엣지 남용 방어 자체** | 지금은 붙일 수단이 없다 — Pages Functions 지원 바인딩에 ratelimits 가 없고 `*.pages.dev` 에는 WAF 규칙을 못 건다. 그래서 **계정 라우트가 fail-closed 다**(위협 50). 선택지·비용은 §13 |
-| 외부 법률 검토 L1~L16 | `docs/PRIVACY_LEGAL_REVIEW_PACKET.md`. Claude 가 법적 적합성을 판정하지 않는다 |
+| ~~외부 법률 검토 L1~L16~~ | **해당 없음 — 사용자 결정으로 필수 범위에서 제외**(2026-08-26 · 2단계 결정서 §22). L1~L16 은 `docs/PRIVACY_LEGAL_REVIEW_PACKET.md` §12 에서 세 상태로 분류돼 살아 있고, 잔여 위험은 같은 문서 §16 이다. ⚠️ **Claude 는 법적 적합성을 판정하지 않는다** |
 | 네이버·카카오 재승인 | 절차는 `docs/OAUTH_REAPPROVAL_RUNBOOK.md`. **배포와 `/api/ready` 확인이 끝난 뒤에** 낸다 — 검수자가 여는 화면이 최신이어야 한다 |
 | 설치형 PWA 실검증 | iOS Safari · Android Chrome 에서 **설치한 뒤** 오프라인·업데이트를 직접 본다. Node 목이 통과했다고 오프라인이 되는 것이 아니다 |
 | 바깥 origin 수형 그림의 오프라인 | `<img>` 로 받는 응답은 opaque(성공·실패 구분 불가)라 캐시하지 않는다. 하려면 그림을 우리 origin 으로 옮기거나 CORS 를 요청해야 한다(`service-worker.js` 의 `cacheable`) |

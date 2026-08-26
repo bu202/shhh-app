@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readManifest, bundleId, currentAssets, KINDS, DIR } from "./policies.mjs";
+import { INCLUDE } from "./build.mjs";
 import { POLICY_BUNDLE } from "../worker/policies.js";
 import { requiredPolicyKinds, REQUIRED_POLICY_EVENTS } from "../worker/index.js";
 
@@ -133,13 +134,62 @@ for (const f of readdirSync(DIR))
 // (위협 69 를 고치면서 새 키가 생겼는데 방침에는 한 줄도 없었다).
 // 그래서 **코드에서 키를 뽑아** 현재 방침 판과 대조한다. 못 찾으면 실패다.
 {
-  const cur = String(await R("policies/" + m.versions.filter((v) => v.kind === "privacy").at(-1).file))
-    .replace(/\s+/g, " ");
-  const src = (await Promise.all(["js/app.js", "js/auth.js", "js/authApi.js", "js/friends.js"]
-    .map((f) => R(f)))).map(String).join("\n");
+  // ⚠️ **현재 판을 `versions.at(-1)` 로 고르지 않는다**(2026-08-26 정정). `versions` 는
+  //    `kind+file` **문자열 정렬**이라 파일 이름의 해시 순서에 좌우된다 — 새 판의 해시가
+  //    옛 판보다 사전순으로 앞서면 마지막 항목이 **옛 판**이 되고, 그러면 이 검사가
+  //    「지금 사람들이 보는 문서」가 아니라 아무 옛 문서나 재게 된다. 실제로 그 상태가
+  //    한동안 통과하고 있었다(우연히 순서가 맞았을 뿐이다).
+  //    **현재 판의 원본은 하나다 — `manifest.bundle.docs.privacy.path`.**
+  //
+  //    ⚠️ **경로를 먼저 붙잡고 그것이 번들의 것인지 단언한다.** 내용만 재면 안 된다 —
+  //    실측(2026-08-26 돌연변이 M59): `.at(-1)` 로 되돌려도 **직전 판**이 잡혀서 아래
+  //    내용 단언이 전부 통과했다. 즉 「우연히 비슷한 옛 문서」를 재고도 초록불이 된다.
+  //    깨야 하는 것은 **고르는 방법**이지 그날의 내용이 아니다.
+  const curPath = POLICY_BUNDLE.docs.privacy.path;
+  assert.equal(curPath, m.bundle.docs.privacy.path,
+    t("현재 방침 판의 경로를 번들이 아닌 곳에서 골랐다 — 원본은 manifest 의 번들 하나다"));
+  const cur = String(await R(curPath)).replace(/\s+/g, " ");
+  // ── 8-2. **검사 대상 JS 는 빌드 allowlist 에서 파생한다** ────────────────
+  //    하드코딩한 네 파일만 보면 **새로 배포되는 JS 가 조용히 빠진다.** 배포되는 것의 원본은
+  //    `scripts/build.mjs` 의 `INCLUDE` 하나이므로 거기서 `.js` 를 뽑는다. 그래서
+  //    `js/camera.js` 는 지금 제외되고(빌드에 없다), **INCLUDE 에 넣는 순간 자동으로 들어온다.**
+  const deployedJs = INCLUDE.filter((f) => f.endsWith(".js") && f !== "service-worker.js");
+  assert.ok(deployedJs.length >= 4,
+    t(`빌드 allowlist 에서 배포 JS 를 못 뽑았다 (${deployedJs.length}개) — INCLUDE 의 모양이 바뀌었다`));
+  const src = (await Promise.all(deployedJs.map((f) => R(f)))).map(String).join("\n");
   // `const XXX_KEY = "shh-…"` 로 선언된 것만 센다 — 그것이 이 저장소의 영속 키 관용구다.
   const keys = [...src.matchAll(/const \w*KEY\w* = "(shh-[a-z-]+)"/g)].map((x) => x[1]);
   assert.ok(keys.length >= 12, t(`영속 저장 키를 못 뽑았다 (${keys.length}개)`));
+
+  // ── 배포 JS 의 **영속 저장·외부 요청 수단**이 전부 알려진 자리인가 ────────
+  //    키 이름만 세면 「관용구를 안 쓴 저장」이 통째로 빠진다. 저장 수단 자체를 훑어
+  //    **선언된 키 밖에서 쓰이는 저장·외부 호스트가 있으면** 실패시킨다.
+  const storageHits = [...src.matchAll(/\b(localStorage|sessionStorage|indexedDB|caches)\b/g)].map((x) => x[1]);
+  assert.ok(storageHits.length > 0,
+    t("배포 JS 에서 영속 저장 호출을 하나도 못 찾았다 — 이 검사가 아무것도 재지 않는다"));
+  // 브라우저 코드에 쿠키를 **쓰는** 자리가 있으면 안 된다(세션은 HttpOnly 라 서버만 심는다).
+  assert.ok(!/document\.cookie\s*=/.test(src),
+    t("배포 JS 가 document.cookie 에 쓴다 — 방침은 세션이 HttpOnly 쿠키라고 적는다"));
+  // 배포 JS 가 부르는 **바깥 호스트**가 전부 방침에 적혀 있는가.
+  // ⚠️ **주석은 뺀다.** 재려는 것은 「코드가 무엇을 부르는가」이지 「주석이 무엇을 언급하는가」가
+  //    아니다. 실제로 이 저장소의 주석에는 **옛 API 주소**와 **아직 안 쓰는 Play Billing 주소**가
+  //    적혀 있는데, 그것까지 세면 방침에 「부르지도 않는 주소」를 적게 된다 — 문서가 사실보다
+  //    넓어지는 것도 갈리는 것이다.
+  // ⚠️ **블록 주석(`/* */`)은 지우지 않는다.** 그 정규식은 소스의 정규식 리터럴 안 `/*` 에
+  //    걸려 파일을 통째로 삼켰고, 그러면 호스트가 0개가 되어 **검사가 조용히 아무것도 안 잰다.**
+  //    그래서 아래 「하나도 못 뽑았다」 단언을 함께 둔다 — 0개는 통과가 아니라 실패다.
+  const code = src
+    .replace(/^\s*\/\/.*$/gm, " ")               // 줄 전체 주석
+    .replace(/([^:])\/\/.*$/gm, "$1");           // 꼬리 주석 (`https://` 의 // 는 앞이 `:` 라 남는다)
+  const EXTERNAL_HOSTS = { "challenges.cloudflare.com": /challenges\.cloudflare\.com/,
+                           "sldict.korean.go.kr": /sldict\.korean\.go\.kr/ };
+  const hosts = [...new Set([...code.matchAll(/https?:\/\/([a-z0-9.-]+\.[a-z]{2,})/gi)].map((x) => x[1].toLowerCase()))];
+  assert.ok(hosts.length > 0,
+    t("배포 JS 에서 외부 호스트를 하나도 못 뽑았다 — 이 검사가 아무것도 재지 않는다"));
+  for (const h of hosts) {
+    assert.ok(EXTERNAL_HOSTS[h], t(`배포 JS 가 부르는 호스트 '${h}' 가 이 검사의 대조표에 없다 — 방침에 적었는지 아무도 안 본다`));
+    assert.match(cur, EXTERNAL_HOSTS[h], t(`배포 JS 가 부르는 호스트 '${h}' 가 현재 방침 판에 없다`));
+  }
 
   // 각 키가 방침의 **어느 문장으로** 설명되는지. 키 이름 자체는 문서에 안 적는다(사용자에게
   // 뜻이 없다) — 그래서 「이 키를 설명하는 문구」를 여기서 짝지어 둔다.
@@ -176,16 +226,76 @@ for (const f of readdirSync(DIR))
 
   // ── 근거 없는 「식별정보가 없다」 단정이 다시 들어오면 실패한다 ───────────
   // 앱이 통제하지 못하는 것(Cloudflare 가 만드는 토큰의 내용)을 단정하지 않는다.
-  for (const v of m.versions.filter((x) => x.kind === "privacy").slice(-1)) {
+  {
     // ⚠️ **공백을 접어서 본다.** 문구가 줄바꿈을 걸쳐 있으면 그대로 매치하는 검사는
     //    「문서를 재포맷했다」는 이유만으로 깨지고, 사람이 검사를 느슨하게 고치게 된다.
-    const txt = String(await R("policies/" + v.file)).replace(/\s+/g, " ");
+    //    대상은 **현재 번들의 privacy** 하나다(`versions.slice(-1)` 이 아니다 — 위 8-1 참조).
+    const txt = cur;
     assert.ok(!/확인용 값에는 <b>회원님을 가리키는 정보가 들어 있지 않습니다/.test(txt),
       t("방침이 Turnstile 토큰에 식별정보가 없다고 단정한다 — 앱이 입증할 수 없는 주장이다"));
     assert.match(txt, /저희 앱은 그 확인용 값에 회원님의 계정 번호/,
       t("방침이 「앱이 무엇을 넣지 않는가」로 범위를 좁히지 않았다"));
     assert.match(txt, /그 안에 무엇이 담기는지는 Cloudflare 가 정합니다/,
       t("방침이 토큰 내용의 결정 주체가 Cloudflare 임을 적지 않았다"));
+  }
+}
+
+// ══ 12. **현재 방침 판에 근거 없는 법률 단정이 없는가** (2026-08-26 · §8-3) ══
+//
+// 왜: `privacy.html` 은 한동안 「법령에 따라 따로 보관해야 하는 기록은 없습니다」라고 적고
+// 있었다. **우리가 확인한 것은 「결제·거래 기능이 없다」뿐**이고, 다른 법령의 보관 의무가
+// 없다는 것은 **확인한 적이 없는 법률 결론**이다. 같은 무늬로 「제공자 회원 번호만으로는
+// 누구인지 알 수 없다」도 적혀 있었다 — 제공자마다 다르고 셋 다 확인하지 못한 값이다.
+//
+// ⚠️ **현재 판만 본다.** 옛 판은 그때 사람들이 본 바이트라 고치면 안 된다 —
+//    이 검사가 옛 판까지 보면 「불변 파일을 고쳐서 검사를 통과시키는」 길이 열린다.
+{
+  const cur = String(await R(POLICY_BUNDLE.docs.privacy.path)).replace(/\s+/g, " ");
+  const FORBIDDEN_CLAIMS = [
+    [/법령에 따라 따로 보관해야 하는 기록은 없/, "확인한 적 없는 법령상 보관 의무 부재를 단정"],
+    [/법적 문제가 (전혀 )?없/, "법적 적합성 단정"],
+    [/법적으로 완벽/, "같음"],
+    [/변호사 검토 완료/, "받은 적이 없다"],
+    [/외부 법률 검토 완료/, "같음"],
+    [/이 번호만으로는 누구인지 알 수 없/, "제공자 식별자의 성질을 셋 다 확인하지 못했다"],
+    [/다른 앱도 (하니|하므로)/, "사례는 적법성의 근거가 아니다"],
+  ];
+  for (const [re, why] of FORBIDDEN_CLAIMS)
+    assert.ok(!re.test(cur), t(`현재 방침 판에 근거 없는 단정이 있다 — ${why}: ${re}`));
+
+  // 반대 방향: **대신 적기로 한 문장**이 실제로 있어야 한다. 지우고 통과시키는 길을 막는다.
+  for (const [re, what] of [
+    [/결제·거래 기능이 없어 결제·거래 기록/, "확인한 사실(결제·거래 기록을 만들지 않는다)"],
+    [/그 밖에 법령상 별도 보관 의무가 있는지는/, "단정하지 않는다는 단서"],
+    [/개인정보로 취급/, "제공자 회원 번호를 개인정보로 취급한다는 서술"],
+    [/제15조 제1항 제4호 — 정보주체와 체결한 계약을 이행하거나/, "제15조 제1항 제4호의 **현행** 문구"],
+    [/제28조의8 제1항 제3호 — 정보주체와의 계약의 체결 및 이행/, "제28조의8 제1항 제3호의 **현행** 문구"],
+    [/가목/, "제3호 가목(방침 공개)이 함께 필요하다는 사실"],
+  ]) assert.match(cur, re, t(`현재 방침 판에 ${what} 가 없다`));
+
+  // ⚠️ **2023-03-14 개정 전 문구가 되살아나면 실패한다.** 6차판 전에는 이 문구였다.
+  assert.ok(!/불가피하게 필요한 경우/.test(cur),
+    t("현재 방침 판이 제15조 제1항 제4호의 **개정 전** 문구(「불가피하게」)를 인용한다"));
+
+  // ── 카메라: **배포 여부와 방침 문장이 함께 움직여야 한다** ────────────────
+  //    지금 `js/camera.js` 는 빌드 allowlist 에 없어서 「카메라 기능이 없습니다」가 참이다.
+  //    ⚠️ **빌드에 넣는 순간 그 문장이 거짓이 된다.** 그때 방침이 무엇을 적어야 하는지를
+  //    여기 못박아 둔다 — 넣고 나서 「테스트가 통과하니 괜찮겠지」가 되지 않게.
+  const cameraDeployed = INCLUDE.some((f) => f === "js/camera.js" || f === "js");
+  if (!cameraDeployed) {
+    assert.match(cur, /카메라 기능이 없습니다/,
+      t("카메라 JS 가 배포되지 않는데 방침이 그 사실을 안 적는다"));
+  } else {
+    for (const [re, what] of [
+      [/카메라 (권한|접근)/, "카메라 권한"],
+      [/기기 (안|내)에서만/, "기기 내 처리 범위"],
+      [/랜드마크|손 모양 좌표/, "손 랜드마크 처리"],
+      [/저장|전송/, "영상·랜드마크·샘플의 저장·전송 여부"],
+      [/jsDelivr|cdn\.jsdelivr\.net|MediaPipe/, "MediaPipe 내려받기 경로"],
+      [/모델/, "모델 내려받기"],
+    ]) assert.match(cur, re, t(`카메라 JS 가 배포되는데 방침에 ${what} 설명이 없다`));
+    assert.ok(!/카메라 기능이 없습니다/.test(cur),
+      t("카메라 JS 가 배포되는데 방침은 「카메라 기능이 없습니다」라고 적는다"));
   }
 }
 

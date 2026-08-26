@@ -351,7 +351,7 @@ export const MUTATIONS = [
     // ⚠️ **이 앵커는 개수가 바뀔 때마다 함께 바꾼다**(D21 을 더하며 세 번째로 고쳤다).
     //    자기가 건드리는 숫자를 앵커에 담는 변이라 피할 수 없다 — 대신 낡으면 실행기가
     //    ANCHOR-MISS 로 종료 코드 1 을 내므로 **조용히 썩지는 않는다.**
-    find: "`scripts/mutations.mjs`(목록 83종",
+    find: "`scripts/mutations.mjs`(목록 87종",
     replace: "`scripts/mutations.mjs`(목록 22종",
   },
   {
@@ -484,8 +484,40 @@ export const MUTATIONS = [
     id: "M41", file: "policies/manifest.json", suite: "test-policies", kind: "정적",
     what: "번들의 privacy 판을 Turnstile 설명이 없는 옛 판으로 되돌린다",
     invariant: "현재 방침 판은 실제로 나가는 외부 요청을 전부 설명한다 (가입 화면의 challenges.cloudflare.com)",
-    find: "        \"path\": \"policies/privacy-ea634a5aeafd.html\",",
+    // ⚠️ **앵커는 「현재 번들의 privacy 경로」다.** 새 판이 나올 때마다 여기를 갱신한다 —
+    //    안 하면 앵커 실패로 `mutate.mjs` 가 0 이 아닌 코드로 끝난다(조용히 통과하지 않는다).
+    find: "        \"path\": \"policies/privacy-e85d8eff300f.html\",",
     replace: "        \"path\": \"policies/privacy-1d3d2d870876.html\",",
+  },
+  {
+    id: "M59", file: "scripts/test-policies.mjs", suite: "test-policies", kind: "정적",
+    what: "현재 방침 판 선택을 다시 `versions` 배열의 마지막 항목으로 되돌린다",
+    invariant: "현재 판의 원본은 manifest 의 번들 하나다 — 배열 정렬 순서가 그것을 정하지 않는다",
+    // ⚠️ **경로를 고르는 줄**을 바꾼다. 내용 단언만으로는 못 잡는다 — 첫 판이 그래서 살아남았다
+    //    (`.at(-1)` 이 직전 판을 집었고 그 판도 모든 내용 단언을 통과했다).
+    find: "  const curPath = POLICY_BUNDLE.docs.privacy.path;",
+    replace: "  const curPath = \"policies/\" + m.versions.filter((v) => v.kind === \"privacy\").at(-1).file;",
+  },
+  {
+    id: "M60", file: "scripts/build.mjs", suite: "test-policies", kind: "정적",
+    what: "카메라 JS 를 배포 allowlist 에 넣고 방침은 그대로 둔다",
+    invariant: "배포되는 JS 가 늘면 방침 검사 범위도 함께 는다 — 하드코딩한 파일 목록은 새 파일을 놓친다",
+    find: "  \"js/app.js\",",
+    replace: "  \"js/camera.js\",\n  \"js/app.js\",",
+  },
+  {
+    id: "D26", file: "CLAUDE.md", suite: "test-docs", kind: "정적",
+    what: "외부 법률 검토를 다시 공개 출시 No-Go 사유로 적는다",
+    invariant: "외부 전문가 상담은 사용자 결정으로 필수 범위에서 제외됐다 — No-Go 사유로 되살리지 않는다",
+    find: "## 6. 구조와 경계",
+    replace: "현재 외부 법률 검토 미완료이므로 공개 출시는 No-Go 다.\n\n## 6. 구조와 경계",
+  },
+  {
+    id: "D27", file: "docs/PRIVACY_LEGAL_REVIEW_PACKET.md", suite: "test-docs", kind: "정적",
+    what: "법률·사례 자료의 §10 을 다시 「현재 미해결 8건」으로 되돌린다",
+    invariant: "8건은 2026-08-18 개정으로 해소됐다 — 현재 미해결로 적으면 검토 전제가 틀어진다",
+    find: "## 10. 2026-08-17 당시 발견된 불일치 8건",
+    replace: "## 10. 현재 개인정보처리방침과 코드의 알려진 불일치 8건",
   },
   {
     id: "D22", file: "docs/PRIVACY_LEGAL_REVIEW_PACKET.md", suite: "test-docs", kind: "정적",
@@ -554,7 +586,7 @@ export const MUTATIONS = [
     id: "D21", file: "docs/STAGE3_SIGNUP_SECURITY_DESIGN.md", suite: "test-docs", kind: "정적",
     what: "「종」이 없는 괄호형 내역을 낡은 「정적 21」로 되돌린다",
     invariant: "총계뿐 아니라 **하위 내역**도 MUTATIONS 에서 파생한다 — 「N종」이라고 안 적은 괄호형 내역도 센다(총계만 보면 66 ≠ 40+21 이 남는다)",
-    find: "(동작 57 · 정적 26).",
+    find: "(동작 57 · 정적 30).",
     replace: "(동작 40 · 정적 21).",
   },
   // ── 위협 70 · 불완전한 OAuth 주소가 세션 폐기 재시도를 막던 결함의 방어들 ──
