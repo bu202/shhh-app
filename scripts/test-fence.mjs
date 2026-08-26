@@ -103,6 +103,7 @@ const CLASSIFIED = {
   "worker/ledger.js":        "ledger 전용 — 주 D1 을 만지지 않는다",
   "worker/fence.js":         "D fence 통로 — 술어를 붙이는 곳 자신",
   "worker/policies.js":      "빌드 산출 상수 — DB 를 만지지 않는다",
+  "worker/build-id.js":      "빌드 산출 상수 — DB 를 만지지 않는다",
 };
 
 // ── 예외: 사용자 데이터 표를 만지지만 fence 를 안 지나는 자리 ─────────────

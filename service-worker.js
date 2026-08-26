@@ -27,6 +27,9 @@ const ASSETS = [
   "index.html",
   "privacy.html",
   "css/style.css",
+  // ⚠️ **생성 파일이고 선캐시된다.** 이 파일이 캐시에 있어야 오래된 설치 PWA 가 **자기 세대**를
+  //    말한다 — 네트워크에서 새로 받아 오면 옛 화면이 「나는 최신」이라고 답해 대조가 무의미해진다.
+  "js/build.js",
   "js/app.js",
   "js/authApi.js",
   "js/auth.js",
@@ -48,8 +51,8 @@ const ASSETS = [
   "policies/manifest.json",
   "policies/index.html",
   "policies/age14-2303810b39a1.txt",
-  "policies/privacy-8935ff1fddc2.html",
-  "policies/summary-0e28ebcd7826.txt",
+  "policies/privacy-ec20ee0ec725.html",
+  "policies/summary-2c778c53e315.txt",
   "policies/terms-245e3ae48884.html",
   // policies:end
 ];

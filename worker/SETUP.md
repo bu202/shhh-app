@@ -52,6 +52,12 @@ npx wrangler pages secret put KAKAO_ID --project-name shhh-app
 #                     `/api/ready` 가 절대 200 이 아니다(EDGE_GUARD 선언이라야 ready 다).
 #  TURNSTILE_SITE_KEY — **시크릿이 아니라 wrangler.jsonc 의 vars** 다(공개 값).
 #                     가입 화면이 위젯을 그리는 데 쓴다. 없으면 signupReady 가 거짓이다.
+#  D1_PLAN          — **시크릿이 아니라 wrangler.jsonc 의 vars** 다. `free` 또는 `paid`.
+#                     D1 Time Travel 로 되돌릴 수 있는 창(7일/30일)을 코드에 알려준다.
+#                     삭제 표식은 그 창이 지나기 전에는 지워지지 않는다.
+#                     ⚠️ 없거나 모르는 값이면 **가장 긴 창(30일)** 으로 떨어진다 —
+#                     표식이 더 오래 남을 뿐이라 안전한 방향이다. 반대(유료인데 free 로
+#                     적어 두는 것)는 코드가 못 막으므로 요금제 전환이 운영 게이트다.
 #  EDGE_GUARD       — **시크릿이 아니라 wrangler.jsonc 의 vars** 다. `waf` 또는 `ratelimit`.
 #                     없거나 모르는 값이면 계정 라우트가 DB 를 만지기 전에 503 이다.
 #                     모드별 절차는 docs/OPS_RUNBOOK.md §13-2.

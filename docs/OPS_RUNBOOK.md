@@ -167,6 +167,23 @@ cp worker/cleanup/wrangler.example.jsonc worker/cleanup/wrangler.jsonc
   fields in the dashboard" — Pages / Wrangler configuration).
 - 커밋한다. `--commit-dirty=true` 로 배포하지 않으므로 커밋이 먼저다.
 
+### 4-1. `vars` — 요금제 선언 `D1_PLAN` (2026-08-26)
+
+같은 파일의 `vars` 에 **지금 쓰는 D1 요금제**를 적는다. 값은 `"free"` 또는 `"paid"` 다.
+
+```jsonc
+"D1_PLAN": "free"
+```
+
+왜 필요한가: 삭제 표식은 「복원으로 되살아난 계정을 다시 지우기 위한 값」이라 **되돌릴 수
+있는 창보다 오래** 살아 있어야 한다. 그 창은 D1 Time Travel 이 정하고(Free 7일 · Paid 30일),
+코드는 요금제를 알 방법이 없다.
+
+- ⚠️ **모르는 값·빈 값은 가장 긴 창(30일)** 으로 떨어진다 — 표식이 더 오래 남을 뿐이라
+  **안전한 방향**이다. 빠뜨렸다고 사이트가 멈추지 않는다.
+- ⛔ **위험한 방향은 그 반대다** — 유료로 옮겼는데 여기가 `free` 인 채로 남는 것.
+  코드는 그것을 못 막으므로 요금제 전환은 **운영 게이트**다(§18-1).
+
 ## 5. 시크릿 등록
 
 ```bash
@@ -252,6 +269,42 @@ npx wrangler d1 execute shhh-ledger --remote --command \
 **중단 기준:** ③ 의 두 표가 안 보이면 배포하지 않는다. 동기화 뒤 `/api/ready` 의
 `fenceSynced` 가 `true` 가 아니면 **계정 라우트를 열지 않는다** — 그 상태에서는 어차피
 모든 사용자 데이터 문장이 0행이다.
+
+## 6-4. 주 D1 에 `0007` 적용 — 계정 처리정지 (2026-08-26)
+
+`0007` 은 `users` 에 `suspended_at` 한 칸을 더한다. 방침의 「처리정지」가 가리키는 **실제 상태**다.
+
+⚠️ **`ALTER TABLE ADD COLUMN` 은 `IF NOT EXISTS` 를 못 쓴다** — 두 번 돌리면 실패한다.
+
+```bash
+# 1) 이미 적용됐나
+npx wrangler d1 execute shhh-db --remote --command "PRAGMA table_info(users)"
+#    → suspended_at 이 보이면 건너뛴다
+# 2) 적용
+npx wrangler d1 execute shhh-db --remote --file migrations/0007_account_suspension.sql
+# 3) 확인 — 정지된 계정 0건이어야 한다(새 칸이므로 전부 NULL)
+npx wrangler d1 execute shhh-db --remote --command \
+  "SELECT COUNT(*) AS suspended FROM users WHERE suspended_at IS NOT NULL"
+```
+
+**중단 기준:** ③ 이 0 이 아니면 배포하지 않는다 — 새 칸에 값이 있을 수 없다.
+
+## 6-5. ledger 에 `0005` 적용 — 백업 inventory (2026-08-26)
+
+`0005` 는 `backups` 표를 만든다. **이 표가 없으면 정리 크론이 삭제 표식 정리에서 실패한다** —
+그건 결함이 아니라 의도된 fail-closed 다(「백업이 있는지 모른다」를 「없다」로 읽지 않는다).
+
+⛔ **그러므로 이 migration 은 정리 Worker 배포보다 **먼저** 적용한다.**
+
+```bash
+# 1) 적용
+npx wrangler d1 execute shhh-ledger --remote --file migrations-ledger/0005_backup_inventory.sql
+# 2) 확인 — 표가 있고 0행이다
+npx wrangler d1 execute shhh-ledger --remote --command \
+  "SELECT COUNT(*) AS n FROM backups"
+```
+
+**중단 기준:** ②가 실패하면 정리 Worker 를 배포하지 않는다.
 
 ## 6-3. stale write lease 사고 대응 (2026-08-25)
 
@@ -752,7 +805,8 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<프로젝트>.pages.dev/
 |---|---|---|---|
 | **G1** | **개인정보 문의 전용 도메인 이메일** | ❌ 없다. 방침은 지금 도착하는 주소를 적는다 | 도메인 확보 → `privacy@<도메인>` 생성 → **실제로 보내서 받아 보기**(수신 테스트) → `privacy.html`·`policies-src/*` 개정 → `node scripts/policies.mjs stamp` → 새 `pv` 배포 |
 | **G2** | **Turnstile 원격 구성** | ❌ ①(로컬 준비)만 | widget 생성 → `TURNSTILE_SITE_KEY`(vars)·`TURNSTILE_SECRET`(secret) 등록 → **운영 호스트·action 검증** → 실브라우저 확인 |
-| **G3** | **백업 절차**(B1~B9) | ❌ 로컬 구현 0줄 · R2 버킷 없음 | R2 비공개 버킷 → lifecycle 7일 만료 → 스크립트 구현 → **B1~B9 전부 참** |
+| **G3** | **백업 절차**(B1~B9) | ⚠️ **스크립트는 있다**(`scripts/backup.mjs` · 2026-08-26) · **R2 버킷·키 파일은 없다** → 지금은 `config` 로 fail-closed | R2 비공개 버킷 생성 → lifecycle **7일 만료** → 암호화 키 파일을 **버킷 밖**에 두기 → `BACKUP_*` 4개 설정 → `node scripts/backup.mjs backup --dry-run` 통과 → 실제 1회 → **B1~B9 전부 참** |
+| **G6** | **원격 migration `0007`·ledger `0005`** | ❌ 미적용 | §6-4 · §6-5. ⛔ **ledger `0005` 는 정리 Worker 배포보다 먼저** — 없으면 표식 정리가 fail-closed 로 실패한다 |
 | **G4** | **D1 요금제 대시보드 확인** | ⚠️ 사용자 선언(Free)만 | 대시보드에서 실제 등급 확인. ⛔ 경과일·bookmark 로 **추론하지 않는다** |
 | **G5** | **최신 정책 번들 원격 반영** | ❌ 라이브는 옛 `pv` | 배포 후 `GET /api/policies` 의 `pv` 가 `worker/policies.js` 와 같은지 실측 |
 
@@ -772,23 +826,44 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<프로젝트>.pages.dev/
 ⚠️ **비용을 써도 「어느 나라에 저장되나」는 자동으로 해결되지 않는다.** Time Travel 창이
 길어질 뿐이고, jurisdiction 은 여전히 `eu`·`fedramp` 둘뿐이며 기존 D1 에는 나중에 못 붙인다.
 
-### 18-2. 백업 실행 절차 (구현 전 · 인수조건)
+### 18-2. 백업 실행 절차 — **스크립트는 있다. 원격 구성이 없다** (2026-08-26 갱신)
 
-⛔ **아직 아무것도 만들지 않았다.** 아래는 만들 때 지킬 순서이고, 지금은 실행하지 않는다.
+`scripts/backup.mjs` 가 아래 순서를 그대로 구현한다. ⛔ **원격 구성(R2 버킷·키 파일)이
+없으면 첫 단계에서 `config` 로 끝난다** — 「설정이 없으니 건너뛴다」가 아니라 **실패**다.
 
 ```
 migration 승인 요청
-  → 주 D1 export        (실패하면 여기서 중단)
-  → ledger D1 export    (실패하면 여기서 중단)
-  → 크기·해시·필수 표 존재 검증   (실패하면 중단)
-  → 암호화               (성공해야만 다음)
-  → R2 비공개 버킷 업로드
-  → 되읽어 해시 대조      (실패하면 migration 중단)
-  → [사람의 migration 승인]      ← 백업 성공이 이 승인을 대신하지 않는다
-  → migration 실행
+  → node scripts/backup.mjs backup
+      → inventory 에 pending 기록  (실패하면 여기서 중단 — export 도 시작하지 않는다)
+      → 주 D1 export              (실패하면 중단)
+      → ledger D1 export          (실패하면 중단)
+      → 크기·필수 표 존재·해시 검증  (실패하면 중단)
+      → 암호화                     (성공해야만 다음)
+      → R2 비공개 버킷 업로드
+      → inventory uploaded
+      → 되읽어 확인               (실패하면 ready 로 안 적는다)
+      → inventory ready
+  → node scripts/backup.mjs gate   ← 0이 아니면 **migration 을 실행하지 않는다**
+  → [사람의 migration 승인]        ← 백업 성공이 이 승인을 대신하지 않는다
+  → npx wrangler d1 migrations apply …   ← 사람이 따로 친다
 ```
 
-- 자동 백업은 허용, **자동 복원은 금지**(경로 자체를 만들지 않는다).
+**설정 네 가지**(전부 있어야 한다. 하나라도 없으면 fail-closed):
+
+| 이름 | 값 | ⚠️ |
+|---|---|---|
+| `BACKUP_MAIN_DB` | `shhh-db` | |
+| `BACKUP_LEDGER_DB` | `shhh-ledger` | |
+| `BACKUP_R2_BUCKET` | 비공개 R2 버킷 이름 | **공개 접근 끄기** · lifecycle 7일 만료 |
+| `BACKUP_KEY_FILE` | 32바이트 키(base64) **파일 경로** | ⛔ **저장소 안에 두지 않는다** · ⛔ **백업 버킷 안에 두지 않는다** — 같은 곳에 두면 버킷 하나가 새는 순간 암호화가 아무 일도 안 한 것이 된다 |
+
+- ⛔ **키를 값으로 넘기지 않는다**(`BACKUP_KEY=...`). 프로세스 목록과 셸 기록에 남는다.
+- **dry-run 은 원격에 한 글자도 쓰지 않는다**: `node scripts/backup.mjs backup --dry-run`.
+- ⛔ **`restore` 하위 명령이 없다. 앞으로도 만들지 않는다**(자동 복원 금지).
+
+- 자동 백업은 허용, **자동 복원은 금지**(경로 자체를 만들지 않는다 — `scripts/test-backup.mjs` B8 이
+  스크립트 소스에 복원 명령이 생기면 실패시킨다).
+- ⚠️ **「자동」은 「매일」이 아니다.** 정기 백업은 하지 않는다 — migration 직전에만 만든다.
 - 백업 파일·암호키를 **Git 에 두지 않는다.** 키를 백업과 **같은 위치**에 두지 않는다.
 - lifecycle 만료·삭제 **실패는 경보**로 낸다.
 - ⛔ **「정확히 7일에 완전 삭제」라고 쓰지 않는다** — 만료 후 실제 삭제까지 통상 24시간이

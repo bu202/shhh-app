@@ -284,17 +284,73 @@ export async function markConfirmed(env, lease, mark, now = Date.now()) {
   return !!(r.meta && r.meta.changes);
 }
 
+// ── 복원 창 — **요금제가 정한다. 상수 하나가 정하지 않는다** ─────────────
+//
+// ⚠️ 2026-08-26 까지 표식 삭제의 유일한 조건은 `expires_at < now`(= `CONFIRMED_RETENTION`)
+//    였다. 그 값은 **Free 요금제를 가정해** 계산된 하나의 숫자라, 유료로 옮겨 Time Travel 창이
+//    30일이 되는 순간 **표식이 복원 창보다 먼저 사라진다** — 되살아난 사람을 다시 지울 근거가
+//    없어지고, 그 사실을 아무도 알아채지 못한다. 그래서 창을 **따로, 명시적으로** 잰다.
+//
+// ⛔ **모르는 값·빈 값은 가장 긴 창으로 떨어진다.** 설정을 안 한 배포에서 짧은 쪽을 고르면
+//    「설정을 잊었다」가 곧 「표식을 일찍 지운다」가 된다. 모를 때는 오래 들고 있는 쪽이 안전하다.
+//    ⚠️ 반대 방향(요금제를 올렸는데 `D1_PLAN` 은 `free` 인 채)은 코드가 못 막는다 —
+//       그래서 요금제 전환이 **운영 게이트**다(`docs/OPS_RUNBOOK.md` §18-1).
+export const TIME_TRAVEL_DAYS = { free: 7, paid: 30 };
+export const LONGEST_RESTORE_WINDOW = 30 * 86400e3;
+export const restoreWindow = (env) => {
+  const d = TIME_TRAVEL_DAYS[String((env && env.D1_PLAN) || "").toLowerCase()];
+  return (d === undefined ? 30 : d) * 86400e3;
+};
+
+// ── 백업 inventory ──────────────────────────────────────────────────────
+// 표식 삭제를 **막는** 백업의 정의. 한 자리에만 적는다 — 두 곳에 적으면 갈라진다.
+//   · `deleted_at IS NULL`  객체가 아직 있거나, **있는지 모른다**
+//   · `status <> 'aborted'` `aborted` 만이 「객체가 없음을 확인했다」이다
+// ⚠️ **「모른다」는 삭제 허가가 아니다.** `pending`·`uploaded`·`failed` 는 전부 막는다.
+export const BACKUP_BLOCKS_SQL =
+  "b.deleted_at IS NULL AND b.status <> 'aborted'";
+
+// 이 시각 이전에 확정된 삭제를 담고 있을 수 있는 백업이 하나라도 있나.
+// 기준을 `pending_at`(삭제를 **시도한** 시각)이 아니라 `confirmed_at`(계정이 실제로 없음을
+// **확인한** 시각)으로 잡는다 — 시도와 확인 사이에 찍힌 스냅샷은 계정을 담고 있을 수 있다.
+export async function coveringBackups(env, confirmedAt) {
+  const r = await env.LEDGER.prepare(
+    `SELECT COUNT(*) AS n FROM backups b WHERE ${BACKUP_BLOCKS_SQL} AND b.snapshot_at <= ?`)
+    .bind(confirmedAt).first();
+  return r.n;
+}
+
 // 정리. **이 파일에서 `deletions` 를 지우는 문장은 이것 하나뿐이고, `confirmed_at IS NOT NULL`
 // 이 빠지면 안 된다.** 빠지면 「삭제는 됐는데 확정 기록만 실패한」 표식이 사라져 복원 때 그
 // 사람이 되살아나고 아무도 알아채지 못한다. scripts/test-deletion-ledger.mjs 가 이 문장을 잰다.
+//
+// ⚠️ **조건이 넷이다**(2026-08-26 · H4). 전에는 첫째 하나뿐이었다:
+//   ① `confirmed_at IS NOT NULL`      삭제가 실제로 끝났나
+//   ② `expires_at < now`              사용자 결정 최소 보유기간(`CONFIRMED_RETENTION`)이 지났나
+//   ③ `confirmed_at < now - 복원창`   D1 Time Travel 로 되돌릴 수 있는 구간을 벗어났나
+//   ④ 담고 있을 수 있는 **백업이 없나**(`BACKUP_BLOCKS_SQL`)
+// ⛔ **②만으로 지우지 않는다.** 15일은 **최소값**이지 삭제 조건이 아니다 —
+//    백업이 아직 살아 있으면 그 백업으로 복원한 순간 그 사람이 되살아나고, 다시 지울 근거가
+//    이 표식뿐이다.
+// ⚠️ `backups` 표가 없거나 질의가 실패하면 이 문장은 **던진다.** 그것이 맞는 방향이다 —
+//    「inventory 를 못 읽었다」는 「백업이 없다」가 아니라 「모른다」이고, 모를 때 지우면
+//    되돌릴 수 없다. 부르는 쪽(정리 크론)이 그 실패를 경보로 올린다.
 export const DELETIONS_SWEEP_SQL =
-  "DELETE FROM deletions WHERE confirmed_at IS NOT NULL AND expires_at < ?";
+  `DELETE FROM deletions WHERE confirmed_at IS NOT NULL AND expires_at < ?1
+     AND confirmed_at < ?2
+     AND NOT EXISTS (SELECT 1 FROM backups b
+                      WHERE ${BACKUP_BLOCKS_SQL} AND b.snapshot_at <= deletions.confirmed_at)`;
+
+// ⚠️ **`?1`·`?2` 는 서로 다른 값이다.** ?1 은 지금, ?2 는 「지금 − 복원 창」이다.
+//    같은 값을 두 번 넣으면 ③이 통째로 무력해진다(복원 창을 0 으로 만든 것과 같다).
+export const sweepCutoff = (env, now = Date.now()) => now - restoreWindow(env);
 
 export async function sweepConfirmed(env, now = Date.now(), limit = 500) {
+  const cutoff = sweepCutoff(env, now);
   const r = await env.LEDGER.prepare(
     `${DELETIONS_SWEEP_SQL} AND mark IN (SELECT mark FROM deletions
-       WHERE confirmed_at IS NOT NULL AND expires_at < ? LIMIT ${Number(limit) | 0})`)
-    .bind(now, now).run();
+       WHERE confirmed_at IS NOT NULL AND expires_at < ?1 LIMIT ${Number(limit) | 0})`)
+    .bind(now, cutoff).run();
   return (r.meta && r.meta.changes) || 0;
 }
 

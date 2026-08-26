@@ -332,6 +332,13 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 > | 4단계 코드·DB 구현 | **로컬 구현 완료 2026-08-22 · 2026-08-23~24 재검증으로 다시 마감(위협 64·65).** **원격은 두 가지로 갈라 읽는다**(2026-08-24): ✅ **안전 동기화는 실행됐다** — production 배포 **`7362d2f0`**(source **`e02e810`**) · preview **`cae28bf6`**(같은 source) · `READY_KEY` 등록 · 옛 배포 **15개 삭제**(2026-08-22). **직전** production 은 `19e69dee`(source `7477867`)이고 검증된 **롤백** 후보로 남겨 뒀다. ⛔ **계정 인프라는 하나도 안 했다** — 원격 `0005` 미적용 · ledger D1 미생성 · `LEDGER` 미바인딩 · 가입·삭제·세션·Turnstile 시크릿 미등록 · OAuth 시크릿 미등록 · 정리 Worker 미배포 · 도메인·WAF 없음. 그래서 라이브의 계정 라우트는 **두 DB 를 만지기 전에 503** 이다. 남용 방어 계약 v2 · **사람 확인**(공개 가입만) · **서명 세션 envelope** 까지 들어갔다(T65~T72). 전역 user-data drain 은 결정 A′ 로 구현됐다 — HTTP 요청과 정리 크론 둘 다 |
 > | 남용 방어 | **미구성이고, 그래서 계정 라우트가 fail-closed 다**(2026-08-22 · 위협 52~56). Pages Functions 에는 엣지 레이트리밋 바인딩이 없고 `*.pages.dev` 에는 WAF 규칙을 못 건다. `EDGE_GUARD` 선언이 없거나 그 모드의 실재가 검증되지 않으면 `/api/health`·`/api/ready`·`/api/policies` 만 답한다. `/api/ready` 의 진단은 **`READY_KEY` 헤더**를 요구한다(위협 56). **A안(커스텀 도메인 + WAF)으로 확정됐다**(사용자 결정 1 · 2026-08-22). **2026년 9월 진행 예정**이고 **지금은 미구성**이라, 구성 전까지 계정 경로는 fail-closed 다. B안(Workers 전환)은 **보류**, Turnstile 은 **공개 회원가입 보조**, 세션 envelope 은 **사용**한다. ⚠️ **「무엇을 붙일지 선택 대기」가 아니다** — 남은 것은 구성이지 결정이 아니다(`docs/OPS_RUNBOOK.md` §13-2) |
 >
+> **2026-08-26 2단계 보완(위협 73~78 · 로컬만)** — 방침 문장을 코드와 한 줄씩 대조해 여섯을 닫았다:
+> ① 없는 백업을 「설정해 두었다」고 말함 ② 삭제 표식을 시간만 보고 지움 ③ 이메일로 계정을
+> 처리해 준다는 불가능한 약속 ④ 「로그아웃 = 처리정지」 ⑤ 정지해도 친구에게는 보임
+> ⑥ 옛 설치 PWA 가 옛 계약으로 붙음. 새로 생긴 것: `GET /me/export` · `POST /me/suspend` ·
+> `POST /me/resume` · `scripts/backup.mjs` · migration **`0007`**(주 D1) · **`0005`**(ledger) ·
+> vars **`D1_PLAN`** · 빌드 식별자 세대 대조. ⛔ **원격은 넷 다 미구성이다.**
+>
 > 결정 1·2·5(조건부)·6 과 **A(AEAD state)·B(정리 Worker)·C(옛 배포 차단, 조건부)·D(drain 은 법률 후)·E(보유기간 임시값)**
 > 는 확정이고, **결정 3·4 도 2026-08-18 프로젝트 결정 A·B 로 확정됐다**(계약 이행 · CASCADE).
 > 근거 자료는 `docs/PRIVACY_LEGAL_REVIEW_PACKET.md` — **법령·사례 자체 검토 자료**다.
@@ -347,7 +354,7 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 >
 > <!-- 현재상태:끝 -->
 
-`npm test` **27개 스위트** 전부 통과한다(2026-08-22 실측, exit 0). 단, **테스트 통과는 보안 완료가 아니다** —
+`npm test` **29개 스위트** 전부 통과한다(2026-08-22 실측, exit 0). 단, **테스트 통과는 보안 완료가 아니다** —
 이 저장소는 "초록불인데 P0 가 살아 있던" 사고를 **두 번** 겪었다(§5 참고). 두 번째가 더 중요하다:
 96개 서버 테스트가 통과하는 동안 **클라이언트 실패 처리 경로에는 테스트가 하나도 없었고**,
 계정 삭제가 500 이어도 "계정을 지웠어요"라고 말하고 있었다.
@@ -388,7 +395,7 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 | 항목 | 상태 |
 |---|---|
 | 브랜치 | `cf-pages`. ⚠️ **push 되지 않은 로컬 커밋이 있다** — 개수는 자주 바뀌니 `git status --short --branch` 로 본다 |
-| 테스트 | **27개 스위트** 통과(2026-08-22 실측, exit 0). `test-workerd` 가 진짜 workerd 를 띄워 운영 경로를 밟는다. 4단계에서 `test-policies` · `test-signup` · `test-deletion-ledger` · `test-cleanup` 이 늘었다. 개수의 원본은 `package.json` 의 `test` 스크립트이고 `scripts/test-docs.mjs` 가 거기서 읽어 문서와 대조한다 |
+| 테스트 | **29개 스위트** 통과(2026-08-22 실측, exit 0). `test-workerd` 가 진짜 workerd 를 띄워 운영 경로를 밟는다. 4단계에서 `test-policies` · `test-signup` · `test-deletion-ledger` · `test-cleanup` 이 늘었다. 개수의 원본은 `package.json` 의 `test` 스크립트이고 `scripts/test-docs.mjs` 가 거기서 읽어 문서와 대조한다 |
 | 돌연변이 | `node scripts/mutate.mjs` 로 **다시 돌릴 수 있다**. 목록의 원본은 `scripts/mutations.mjs`. 개수를 여기 적지 않는다 — 실행기 출력이 원본이다 |
 | 배포본 | 파일 수·선캐시 수·캐시 이름은 **빌드가 정한다** — `npm run build` 의 마지막 줄과 `scripts/test-dist.mjs` 의 출력이 원본이다. 손으로 적으면 다음 빌드에 낡는다(2026-08-20 정정: 여기 적혀 있던 「57개」는 그때 이미 58개였다). 내부 파일 0개는 `test-dist` 가 매번 검사한다 |
 | **라이브 (production)** | **배포 `7362d2f0`**(Production / branch `main` / source **`e02e810`**) — 2026-08-24 안전 동기화. **위협 57~65** 의 수정이 여기 들어 있다. ⛔ **위협 66 이후는 여기 없다** — 66~69 도, 70~72 도 로컬 커밋뿐이다(`git log --oneline e02e810..HEAD` 가 원본이다). 2026-08-24 12:35 KST 실측: 계정 API 전부 **503**(두 DB 를 만지기 전 · `GET`·`PUT /book` · `/login/{kakao,naver}` · `POST /signup/start`) · 키 없는·틀린 키 `/api/ready` **503 `{"ok":true,"ready":false,"diagnostics":false}`** · `/api/health` `ready:false`·`providers:[]`·`ledgerBound:false`·`abuseReady:false`·`signupReady:false` · `/api/policies` **200** · `/` **200** · 없는 주소 **404** · 내부 파일 7종 **SPA 폴백**(sha256 `7d809fa2268d…`) · SW·핵심 JS 4개가 빌드와 **바이트 동일** · 브라우저 리소스 19개 중 실패 0 · 콘솔 오류 0. ⚠️ **계정 기능을 여는 배포가 아니다** — `EDGE_GUARD` 부재가 그대로다. 실측 원본은 `docs/OPS_RUNBOOK.md` §16-5 |
@@ -405,7 +412,7 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 | **ledger D1** | **아직 없다**(`d1 list` 에 `shhh-ledger` 가 없다). 스키마·migration 은 `worker/ledger-schema.sql` · `migrations-ledger/0001`·`0002` 에 있고, 생성·바인딩은 **별도 승인** 사항이다. 바인딩이 없으면 `readMode()` 가 `unbound` 라 사용자 데이터 API 가 전부 503 이다 |
 | 정리 크론 | **로컬 구현만 · 미배포.** `worker/cleanup/` 에 있고, 설정은 **템플릿(`wrangler.example.jsonc`)과 실제 설정(`wrangler.jsonc`)으로 갈라져 있다**(2026-08-19). 실제 설정은 저장소에 없고(`.gitignore`) `docs/OPS_RUNBOOK.md` §3 이 만든다 — **배포 가능한 설정 파일에 placeholder 가 들어갈 수 없는 구조다**(`scripts/test-config.mjs` 가 잰다). 실패·경보는 2026-08-18 에 마감했다: 실패한 회차는 `ctx.waitUntil()` Promise 를 **거부해** Cron Trigger 에 실패로 남고, 확정 안 된 삭제 표식·연속 실패 3회는 `/api/ready` 의 **`cleanupAlert`** boolean 으로 나온다. **외부 알림(Slack·이메일 등)은 붙이지 않았다.** ⚠️ **배포 전까지 운영에서는 아무도 만료 데이터를 안 치운다** |
 | legacy KV | **아직 살아 있다.** 5개(`b:1 c:1 s:2 u:1`, 접두사 개수만 확인 — **이번에 재조회하지 않았다**). 새 코드는 쓰지 않는다. 폐기 방향은 승인, **실행은 별도 승인**이고 **이번 범위에서 제외**다 |
-| **배포된 source 와 로컬** | **production source 는 `e02e810` 이다**(2026-08-24). **위협 57~65** 의 수정이 배포됐다. ⛔ **위협 66~72 는 배포되지 않았다** — 로컬 커밋에만 있다. ⚠️ **여기에 「최신 커밋」 해시를 적지 않는다** — HEAD 는 커밋할 때마다 움직여서 손으로 유지하면 반드시 낡는다(실제로 한 번 낡았다). 확인은 `git rev-parse HEAD` · `git log -1 --oneline` 이 원본이고, 배포 지점과의 차이는 `git log --oneline e02e810..HEAD` 로 본다. **push 0건**은 그대로다 |
+| **배포된 source 와 로컬** | **production source 는 `e02e810` 이다**(2026-08-24). **위협 57~65** 의 수정이 배포됐다. ⛔ **위협 66~78 은 배포되지 않았다** — 로컬 커밋에만 있다. ⚠️ **여기에 「최신 커밋」 해시를 적지 않는다** — HEAD 는 커밋할 때마다 움직여서 손으로 유지하면 반드시 낡는다(실제로 한 번 낡았다). 확인은 `git rev-parse HEAD` · `git log -1 --oneline` 이 원본이고, 배포 지점과의 차이는 `git log --oneline e02e810..HEAD` 로 본다. **push 0건**은 그대로다 |
 | 2단계(회원가입·개인정보) | **완료 2026-08-26** → `docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md` §21·§22. 정책 결정 2026-08-17 · 처리 근거·국외 처리·연령·CASCADE 확정 2026-08-18 · **2026-08-26 공식 법령·실제 서비스 사례 대조로 마감**. **외부 전문가 상담: 해당 없음 — 필수 범위에서 제외.** ⚠️ 사용자가 공식 자료를 보고 내린 **운영 결정**이지 변호사 검토 결과가 아니고, **법적 적합성 보증도 아니다** |
 | 4단계(구현) | **로컬 구현 완료 2026-08-22 · 2026-08-23~24 재검증 세 차례로 다시 마감(위협 64·65).** ✅ **그 코드가 2026-08-24 에 배포됐다**(production `7362d2f0` · source `e02e810` · preview `cae28bf6`). ⛔ **계정 인프라는 하나도 안 했다** — 위 행들이 각각 답한다. **push 0건**은 그대로다 |
 | wrangler | `4.123.0` 을 devDependency 로 **고정**. OAuth 토큰은 살아 있음(`whoami` 실측) |
@@ -763,7 +770,7 @@ AI 는 후보를 좁힐 뿐 **최종 수어 판정을 하지 않는다**. 문장
 ```bash
 python3 scripts/serve.py 8000        # 정적 화면만
 npm run build && npx wrangler pages dev dist   # Functions + 로컬 D1
-npm test                              # 27개 스위트 (빌드·dist·workerd 검사 포함)
+npm test                              # 29개 스위트 (빌드·dist·workerd 검사 포함)
 node scripts/mutate.mjs               # 돌연변이 검증 (목록: scripts/mutations.mjs)
 npm audit
 ```

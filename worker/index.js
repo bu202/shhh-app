@@ -28,6 +28,9 @@
 import { POLICY_BUNDLE } from "./policies.js";
 import { withFence, FenceMismatch, fenceInSync } from "./fence.js";
 import { overdueResolutions } from "./ledger.js";
+// 빌드가 만들어 박는 값. **손으로 고치지 않는다** — `scripts/build.mjs` 가 다시 쓰고
+// `scripts/test-dist.mjs` 가 서버 값과 화면 값이 같은 원본에서 나왔는지 대조한다.
+import { BUILD_ID } from "./build-id.js";
 import {
   deletionMark, DELETION_KEY_VERSION, readMode, ledgerAnswers, drainState,
   acquireLease, leaseAlive, releaseLease, LEASE_MODES_REQUEST,
@@ -360,6 +363,11 @@ const health = async (env) => {
            //    값 그대로 나간다 — 공개 값이다(브라우저에 박히도록 설계된 값).
            // ⚠️ **`/signup/start` 와 콜백이 보는 것과 같은 함수다.** 나눠 적으면 갈라진다.
            signupReady: signupPossible(env) && providers.length > 0,
+           // 이 배포의 빌드 식별자. 화면이 **자기 것과 대조해** 세대가 섞였는지 본다
+           // (2026-08-26). 값은 `scripts/build.mjs` 가 선캐시 자산 전체의 해시로 만든다 —
+           // 사람이 두 곳에 같은 값을 적는 방식이 아니다. 비밀이 아니고, 이미 서비스워커
+           // 캐시 이름으로 브라우저에 그대로 들어 있다.
+           build: BUILD_ID,
            turnstileSiteKey: env.TURNSTILE_SITE_KEY || null };
 };
 
@@ -527,6 +535,66 @@ export async function stateTombstone(env, state) {
 }
 export const TOMBSTONE_KEY_VERSION = 1;
 
+// ── 처리정지 재개 티켓 ───────────────────────────────────────────────────
+// 정지된 계정으로 OAuth 인증이 성공했을 때 **세션 대신** 발급하는 값이다.
+// 이것만으로는 아무것도 못 한다 — `POST /me/resume` 한 자리에서 1회 소비돼야 세션이 선다.
+//
+// 왜 세션을 바로 주지 않나: 「로그인했으니 재개」로 두면 **정지가 사실상 존재하지 않는다.**
+// 정지한 사람이 습관적으로 로그인 버튼을 누르는 것만으로 처리가 다시 시작되고, 본인은 그
+// 사실을 모른다. 재개는 **본인이 그 화면에서 명시적으로 고르는 행위**여야 한다.
+//
+// 왜 URL·localStorage 가 아니라 **쿠키**인가: 주소에 실으면 브라우저 기록·리퍼러·공유 링크에
+// 남고, localStorage 에 두면 같은 기기의 다른 스크립트가 읽는다. HttpOnly 쿠키는 둘 다 아니다.
+// 담긴 값은 어차피 AEAD 로 봉해져 있어 제공자 회원번호가 읽히지 않지만, **티켓 자체가 비밀**이다.
+//
+// ⚠️ **키는 `SIGNUP_STATE_KEY` 를 쓰되 AAD 로 갈라 둔다.** 가입 state 를 재개 티켓으로,
+//    재개 티켓을 가입 state 로 쓰는 것은 AAD 가 달라 복호화 단계에서 실패한다 —
+//    즉 두 값은 **암호학적으로 서로 다른 종류**다. 키를 새로 만들지 않은 이유: 둘 다 10분짜리
+//    1회용 OAuth 왕복 봉투라 수명·파급이 같고, 키를 돌리면 어차피 둘 다 무효가 되며 그때
+//    사용자가 잃는 것은 **다시 누르는 수고**뿐이다(저장된 데이터는 관여하지 않는다).
+//    ⛔ 세션 서명(`SESSION_ENVELOPE_KEY`)·표식(`TOMBSTONE_KEY`)과는 **겸용하지 않는다** —
+//       그 둘은 수명도 파급도 다르다(하나를 돌리면 모든 세션이 끊기거나 표식이 어긋난다).
+const RESUME_V = "v1";
+const RESUME_TTL = 600e3;
+const RESUME_COOKIE = "shh_rz";
+const resumeAad = (env, provider, exp) =>
+  ENC.encode(`${RESUME_V}|resume|${provider}|${env.APP_ORIGIN}|${exp}`);
+
+export async function makeResumeTicket(env, uid, provider, subject, now = Date.now()) {
+  const exp = now + RESUME_TTL;
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const plain = ENC.encode(JSON.stringify({ uid, provider, subject, exp }));
+  const ct = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: nonce, additionalData: resumeAad(env, provider, exp) },
+    await signupKey(env), plain);
+  return `${RESUME_V}.${exp}.${b64u(nonce)}.${b64u(ct)}`;
+}
+
+// 실패 사유를 가려서 알려주지 않는다(만료·위조·제공자 불일치가 전부 `null` 이다).
+export async function takeResumeTicket(env, ticket, now = Date.now()) {
+  if (typeof ticket !== "string" || ticket.length > SIGNUP_STATE_MAX) return null;
+  const parts = ticket.split(".");
+  if (parts.length !== 4 || parts[0] !== RESUME_V) return null;
+  const exp = Number(parts[1]);
+  if (!Number.isSafeInteger(exp) || !(now < exp)) return null;
+  // 제공자는 **암호문 밖에서 모른다** — AAD 에 들어 있으므로 후보를 하나씩 시도한다.
+  // 후보는 **지금 열려 있는 제공자**뿐이다: 목록에서 빠진 제공자로는 재개도 못 한다
+  //  (그 계정으로 다시 들어오는 길이 통째로 닫혀야 「비활성」이 참이다).
+  for (const name of ENABLED_PROVIDERS) {
+    try {
+      const plain = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: unb64u(parts[2]), additionalData: resumeAad(env, name, exp) },
+        await signupKey(env), unb64u(parts[3]));
+      const p = JSON.parse(new TextDecoder().decode(plain));
+      // **안쪽이 진실이다.** 헤더의 exp 와 다르거나 제공자가 어긋나면 그 자체가 이상 신호다.
+      if (p.exp !== exp || p.provider !== name) return null;
+      if (typeof p.uid !== "string" || typeof p.subject !== "string" || !p.uid || !p.subject) return null;
+      return p;
+    } catch { /* 다음 후보 */ }
+  }
+  return null;
+}
+
 // ── 세션 ─────────────────────────────────────────────────────────────────
 // 토큰은 **완전한 무작위 32바이트**다. 예전엔 `<b64u(uid)>.<무작위>` 라 앞부분이 계정을 알려줬는데,
 // 그건 KV 에서 "이 계정의 세션"을 훑으려고 붙인 것이었다. D1 에는 `sessions.user_id` 가 있으니
@@ -602,6 +670,9 @@ export async function envelopeOk(env, token, now = Date.now()) {
 const COOKIE = "shh_s";
 const ATTRS = "HttpOnly; Secure; SameSite=Lax; Path=/api";
 const setCookie = (token) => `${COOKIE}=${token}; ${ATTRS}; Max-Age=${SESSION_DAYS * 86400}`;
+// 재개 티켓 쿠키. 세션 쿠키와 **같은 속성**(HttpOnly·Secure·SameSite=Lax)이고 수명만 짧다.
+const setResumeCookie = (t) => `${RESUME_COOKIE}=${t}; ${ATTRS}; Max-Age=${RESUME_TTL / 1000}`;
+const clearResumeCookie = () => `${RESUME_COOKIE}=; ${ATTRS}; Max-Age=0`;
 const clearCookie = () => `${COOKIE}=; ${ATTRS}; Max-Age=0`;
 const readCookie = (req, name = COOKIE) => {
   const raw = req.headers.get("Cookie") || "";
@@ -666,15 +737,31 @@ export async function newSession(env, userId) {
 
 // 이 토큰이 누구인가. 한 번의 조인으로 **살아 있는 세션인지까지** 판정한다:
 // 폐기 안 됐고, 안 만료됐고, 발급 당시 세대가 지금 세대와 같아야 한다.
+// ⚠️ **정지 여부를 같은 질의로 읽는다**(2026-08-26). 따로 물으면 두 질의 사이에 정지가
+//    끼어들 수 있고, 그 창에서 정지된 계정의 요청 하나가 그대로 처리된다.
+//    `suspended_at` 을 여기서 걸러 `null` 을 돌려주지 **않는** 이유: 그러면 정지가 401 과
+//    구분되지 않아 화면이 「로그아웃됐어요」라고 말한다 — 사용자가 스스로 멈춘 것을
+//    이유 없는 로그아웃으로 읽게 된다. 판정은 부르는 쪽이 한다.
 async function whoAmI(env, token) {
   if (!token) return null;
   const row = await env.DB.prepare(
-    `SELECT s.user_id AS uid FROM sessions s JOIN users u ON u.id = s.user_id
+    `SELECT s.user_id AS uid, u.suspended_at AS susp
+       FROM sessions s JOIN users u ON u.id = s.user_id
       WHERE s.token_hash = ? AND s.revoked_at IS NULL AND s.expires_at > ?
         AND s.session_version = u.session_version AND {FENCE}`)
     .bind(await sha256(token), Date.now()).first();
-  return row ? row.uid : null;
+  return row ? { uid: row.uid, suspended: row.susp !== null && row.susp !== undefined } : null;
 }
+
+// 처리정지 중에도 **열어 두는 자리.** 로그아웃 하나뿐이다.
+//
+// 왜 이것뿐인가: 정지하면 같은 batch 로 세션이 전부 죽으므로 정지된 계정에는 원래 세션이
+// 없다 — 여기 오는 것은 **경합으로 살아남은 세션**뿐이고, 그런 세션이 할 수 있어야 하는 일은
+// 「스스로 끝나는 것」 하나다. 열람·삭제 같은 권리 행사는 **재개 뒤에** 앱 안에서 한다
+// (재개는 OAuth 재인증 한 번이라 벽이 아니다). 열어 두는 자리가 늘수록 정지의 뜻이 옅어진다.
+const SUSPEND_OPEN = [[/^\/session$/, "DELETE"]];
+export const suspendAllows = (path, method) =>
+  SUSPEND_OPEN.some(([re, m]) => m === method && re.test(path));
 
 // 이 계정의 로그인을 **전부** 끊는다. 로그아웃과 탈퇴가 같은 자리를 쓴다.
 //
@@ -687,6 +774,36 @@ async function killSessions(env, uid) {
     env.DB.prepare("UPDATE users SET session_version = session_version + 1 WHERE id = ? AND {FENCE}").bind(uid),
     env.DB.prepare("DELETE FROM sessions WHERE user_id = ? AND {FENCE}").bind(uid),
   ]);
+}
+
+// ── 처리정지 ─────────────────────────────────────────────────────────────
+// **한 batch 다.** 정지 표시와 세션 폐기가 갈라지면 반쪽 상태가 생긴다 —
+// 「정지됐는데 다른 기기는 계속 쓰는」 상태와 「로그아웃만 되고 정지는 안 된」 상태 둘 다
+// 사용자에게는 거짓말이다. D1 의 batch 는 한 트랜잭션이고 중간 실패는 전체 롤백이다.
+//
+// ⚠️ **현재 세션만 끊지 않는다.** 세대를 올리므로 이 계정의 **모든 기기**가 그 자리에서 끊긴다.
+//    한 기기만 끊으면 다른 기기가 계속 처리를 일으켜 정지가 이름뿐이 된다.
+// ⚠️ `COALESCE` 라 두 번 눌러도 처음 시각이 유지된다(멱등).
+async function suspendAccount(env, uid, now = Date.now()) {
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE users SET suspended_at = COALESCE(suspended_at, ?), session_version = session_version + 1
+        WHERE id = ? AND {FENCE}`).bind(now, uid),
+    env.DB.prepare("DELETE FROM sessions WHERE user_id = ? AND {FENCE}").bind(uid),
+  ]);
+}
+
+// 재개. **제공자와 제공자 회원번호를 같은 문장에서 다시 확인한다** — 티켓이 진짜여도
+// 그 사이에 계정이 지워졌거나(재가입으로 uid 재사용은 없지만 행이 없을 수 있다) 다른 제공자
+// 계정이 그 자리에 있으면 0행이 되어 재개가 실패한다.
+// 이미 정지가 풀렸으면(`suspended_at IS NOT NULL` 불일치) 역시 0행이다 — 티켓 1회 소비와
+// 함께 **재생(replay)이 두 겹으로** 막힌다.
+async function resumeAccount(env, uid, provider, subject) {
+  const r = await env.DB.prepare(
+    `UPDATE users SET suspended_at = NULL
+      WHERE id = ? AND provider = ? AND provider_subject = ? AND suspended_at IS NOT NULL AND {FENCE}`)
+    .bind(uid, provider, subject).run();
+  return !!(r.meta && r.meta.changes);
 }
 
 // ── 레이트리밋 ───────────────────────────────────────────────────────────
@@ -1145,13 +1262,20 @@ const pairKey = (a, b) => (a < b ? a + "|" + b : b + "|" + a);
 // 내 목록. **쿼리 하나**로 세 갈래(수락됨·받은 요청·보낸 요청)를 다 만든다.
 // 예전엔 친구 수만큼 KV 를 읽었다(brief 를 사람마다 불렀다).
 // 상대 별명·단어는 books 를 LEFT JOIN 해서 같이 가져온다 — 없는 사람도 목록에 나와야 하므로 LEFT.
+// ⚠️ **정지된 상대의 별명·단어는 나가지 않는다**(2026-08-26). 처리정지의 뜻이
+//    「그 사람의 개인정보를 더 이상 처리하지 않는다」이므로, 친구 화면에 계속 보이면
+//    방침이 그 자리에서 거짓이 된다. 관계 자체는 남긴다(지우는 것은 탈퇴다) —
+//    상대에게는 「이름 없는 친구 · 0개」로 보인다.
+//    ⛔ **화면에서 거르지 않는다.** 서버가 안 실어야 「보이지 않는다」가 참이다.
 async function friendRows(env, uid) {
   const { results } = await env.DB.prepare(
     `SELECT f.requester_id AS req, f.addressee_id AS adr, f.status AS status,
-            b.nickname AS name, b.words AS words
+            CASE WHEN o.suspended_at IS NULL THEN b.nickname ELSE NULL END AS name,
+            CASE WHEN o.suspended_at IS NULL THEN b.words    ELSE NULL END AS words
        FROM friendships f
-       LEFT JOIN books b
-         ON b.user_id = CASE WHEN f.requester_id = ?1 THEN f.addressee_id ELSE f.requester_id END
+       JOIN users o
+         ON o.id = CASE WHEN f.requester_id = ?1 THEN f.addressee_id ELSE f.requester_id END
+       LEFT JOIN books b ON b.user_id = o.id
       WHERE (f.requester_id = ?1 OR f.addressee_id = ?1) AND {FENCE}`).bind(uid).all();
   return results || [];
 }
@@ -1317,6 +1441,14 @@ const ROUTES = [
   [/^\/book$/, ["PUT"], true, "write", true],
   [/^\/me$/, ["GET"], true, "read", true],
   [/^\/me$/, ["PUT", "DELETE"], true, "write", true],
+  // 개인정보 열람 — **자기 계정만.** 세션의 uid 만 쓰고 입력에서 uid 를 받지 않는다.
+  [/^\/me\/export$/, ["GET"], true, "read", true],
+  // 처리정지. 로그아웃(`DELETE /session`)과 **다른 라우트다** — 같은 자리에 두면 화면도
+  // 문서도 둘을 같은 것으로 쓰게 된다(그게 이번에 고친 그 결함이다).
+  [/^\/me\/suspend$/, ["POST"], true, "write", true],
+  // 재개. **세션이 없다**(정지가 세션을 전부 끊었다) — 그래서 `auth:false` 이고, 신원은
+  // 1회용 재개 티켓 쿠키가 말한다. 세션을 새로 만드는 자리라 버킷은 로그인과 같다.
+  [/^\/me\/resume$/, ["POST"], true, "login", false],
   [/^\/friends$/, ["GET"], true, "read", true],
   [/^\/friends$/, ["POST"], true, "friends", true],
   // 초대 코드 **최초 생성**. 회전과 갈라 둔다 — 회전은 남에게 보낸 링크를 죽이는 파괴적
@@ -1840,6 +1972,34 @@ async function route(req, env, rc) {
         if (!who) return viaApp ? fail("로그인에 실패했어요", 502) : fail(null, 302, st.back + "#login=fail");
 
         const existing = await findUser(env, name, who.subject);
+
+        // ── 정지된 계정은 **세션을 받지 못한다** ──
+        // ⛔ 「OAuth 인증에 성공했으니 재개」로 두면 정지가 사실상 없는 것과 같다 — 습관적으로
+        //    로그인 버튼을 누르는 것만으로 처리가 다시 시작되고 본인은 모른다.
+        // 대신 **제한된 상태 하나**만 전달한다: 「이 계정은 정지 중이고 재개가 필요하다」.
+        // 재개 티켓은 HttpOnly 쿠키로 심고 주소에는 `#login=suspended` 만 남긴다 —
+        // 제공자 회원번호도 티켓도 URL·기록·리퍼러에 남지 않는다.
+        //
+        // ⚠️ **가입 갈래에서도 여기서 끝난다.** 소비 표식조차 남기지 않는다 — 정지된 계정에
+        //    대한 가입 요청은 아무것도 바꾸지 않아야 하고, 쓰지 않은 state 는 스스로 만료된다.
+        // ⚠️ 판정은 **주 D1 을 다시 읽어** 한다. 위 `findUser` 는 uid 만 답한다.
+        if (existing) {
+          const su = await env.DB.prepare(
+            "SELECT suspended_at AS s FROM users WHERE id = ? AND {FENCE}").bind(existing).first();
+          if (su && su.s !== null && su.s !== undefined) {
+            let ticket;
+            try { ticket = await makeResumeTicket(env, existing, name, who.subject); }
+            catch { return viaApp ? fail("지금은 로그인할 수 없어요", 503)
+                                  : fail(null, 302, st.back + "#login=fail"); }
+            const r = viaApp
+              ? json(env, req, { error: "처리정지 중인 계정이에요", suspended: true }, 403)
+              : redir(st.back + "#login=suspended");
+            r.headers.append("Set-Cookie", setResumeCookie(ticket));
+            r.headers.append("Set-Cookie", clearTxn());
+            return r;
+          }
+        }
+
         let uid = existing;
         if (!existing && !isSignup) {
           // **로그인 경로는 계정을 만들지 않는다.** 이것이 이번 단계의 핵심 변경이다 —
@@ -1895,7 +2055,8 @@ async function route(req, env, rc) {
     // 잠금은 약한 쪽을 따르고, 앱이 토큰을 손에 쥐는 길(localStorage)이 살아남는다.
     // 토큰 자체는 아무 정보도 안 담는다(완전 무작위). 누구인지는 sessions 행이 말한다.
     const token = readCookie(req);
-    const uid = await whoAmI(env, token);
+    const me = await whoAmI(env, token);
+    const uid = me ? me.uid : null;
 
     // ── CSRF ──
     // 쿠키는 **브라우저가 알아서 붙인다.** 그래서 남의 사이트가 우리에게 보내는 요청에도 실린다 —
@@ -1912,6 +2073,19 @@ async function route(req, env, rc) {
       //    curl 편의뿐이고, 잃는 것은 "허용 목록을 지나지 않는 상태 변경 경로"의 존재다.
       if (!o || !allowed(env, o)) return json(env, req, { error: "허용되지 않은 요청이에요" }, 403);
     }
+
+    // ── 처리정지 ──
+    // **CSRF 뒤, 라우트 처리 앞이다.** 뒤에 두면 자리마다 잊을 수 있고, 앞에 두면 낯선
+    // origin 이 「이 계정이 정지 상태인가」를 물어볼 수 있게 된다.
+    //
+    // 정지하면 같은 batch 로 세션이 전부 죽으므로 여기 오는 것은 **경합으로 살아남은 세션**
+    // 뿐이다 — 그래도 막는다. 「원래 못 온다」는 방어가 아니다(위협 39 에서 같은 무늬를 겪었다).
+    // ⚠️ 401 과 **다른 코드**로 답한다. 401 이면 화면이 표시를 지우고 「로그아웃됐어요」라고
+    //    말하는데, 사용자는 스스로 멈춘 것이지 로그아웃된 것이 아니다.
+    // ⚠️ 응답에 **왜·언제·무엇이** 를 싣지 않는다. 「멈춰 있고, 재개하려면 다시 로그인하라」뿐이다.
+    if (me && me.suspended && !suspendAllows(path, req.method))
+      return json(env, req, { error: "처리정지 중인 계정이에요. 다시 시작하시려면 로그인해 주세요",
+                              suspended: true }, 403);
 
     // ② 상태를 바꾸는 요청. 읽기는 세지 않는다 — 남용해도 남는 게 없고, 세면 정상 사용이
     //    먼저 걸린다. 로그인한 사람은 uid 로, 아니면 IP 로 센다.
@@ -2082,6 +2256,142 @@ async function route(req, env, rc) {
       }
     }
 
+    // ── 3-1. 개인정보 열람(내려받기) ──
+    //
+    // ⚠️ **입력에서 계정을 받지 않는다.** query·body·path 어디에도 uid 자리가 없고, 아래 질의는
+    //    전부 위 `uid`(세션이 말한 값) 하나만 쓴다 — IDOR 가 **구조적으로** 불가능하다.
+    //    「받되 세션과 대조한다」로 두면 대조를 빠뜨린 자리가 곧 구멍이다.
+    // ⚠️ **남의 것을 싣지 않는다.** 친구는 상대에게 이미 보이는 범위(내부 계정 번호·별명·상태)
+    //    만 넣고 **상대의 제공자 회원번호는 넣지 않는다**. 세션은 **메타데이터만**(만료·폐기·세대)
+    //    이고 `token_hash` 는 넣지 않는다 — 그것이 곧 세션 자체다.
+    // ⚠️ **비밀값은 어느 것도 지나가지 않는다.** 키·HMAC·리미터 키·OAuth secret 은 이 응답을
+    //    만드는 질의에 등장하지 않는다.
+    if (path === "/me/export" && req.method === "GET") {
+      if (!uid) return json(env, req, { error: "로그인이 필요해요" }, 401);
+      const u = await env.DB.prepare(
+        `SELECT provider, provider_subject, created_at, session_version, suspended_at
+           FROM users WHERE id = ? AND {FENCE}`).bind(uid).first();
+      if (!u) return json(env, req, { error: "로그인이 필요해요" }, 401);
+      const book = await getBook(env, uid);
+      // ⚠️ `friendRows()` 를 쓰지 않는다 — 그 질의는 **상대의 단어장까지** 끌고 온다(화면이
+      //    개수를 세는 데 쓴다). 내려받기 파일에 남의 단어를 넣지 않으려고 자리를 갈라 둔다.
+      const fr = await env.DB.prepare(
+        `SELECT requester_id AS req, addressee_id AS adr, status, created_at, accepted_at
+           FROM friendships WHERE (requester_id = ?1 OR addressee_id = ?1) AND {FENCE}`)
+        .bind(uid).all();
+      const codes = await env.DB.prepare(
+        "SELECT code, created_at, revoked_at FROM invite_codes WHERE user_id = ? AND {FENCE}")
+        .bind(uid).all();
+      const policies = await env.DB.prepare(
+        `SELECT kind, action, document_version, occurred_at, recorded_at
+           FROM policy_events WHERE user_id = ? AND {FENCE}`).bind(uid).all();
+      const sess = await env.DB.prepare(
+        `SELECT session_version, expires_at, revoked_at FROM sessions
+          WHERE user_id = ? AND {FENCE}`).bind(uid).all();
+      // 상대에 대해 넣는 것은 **상대에게 이미 보이는 범위**뿐이다 —
+      // 내부 계정 번호(친구 목록 응답이 이미 주는 값)와 관계의 상태·시각.
+      // ⛔ 상대의 제공자 회원번호·단어장은 넣지 않는다.
+      const friends = (fr.results || []).map((r) => ({
+        상대_계정번호: r.req === uid ? r.adr : r.req,
+        상태: r.status,
+        내가_보냈나: r.req === uid,
+        만든_시각: r.created_at,
+        맺은_시각: r.accepted_at === undefined ? null : r.accepted_at,
+      }));
+      const doc = {
+        // 형식이 바뀌면 이 번호가 오른다. 받아 둔 파일이 뭐였는지 나중에도 알 수 있어야 한다.
+        스키마: "shhh-export-1",
+        내려받은_시각: Date.now(),
+        안내: "이 파일에는 회원님 계정에 저장된 값만 들어 있습니다. 친구의 제공자 회원번호와 "
+            + "세션 토큰은 저희도 되돌릴 수 없는 형태로만 보관하므로 들어 있지 않습니다.",
+        계정: {
+          내부_계정번호: uid,
+          로그인_제공자: u.provider,
+          제공자_회원번호: u.provider_subject,
+          가입_시각: u.created_at,
+          세션_세대: u.session_version,
+          처리정지_시각: u.suspended_at === undefined ? null : u.suspended_at,
+        },
+        단어장: { 단어: book.words, 별명: book.name, 판번호: book.version, 마지막_저장: book.updated },
+        친구: friends,
+        초대코드: (codes.results || []).map((c) => ({
+          코드: c.code, 만든_시각: c.created_at, 폐기_시각: c.revoked_at,
+        })),
+        가입기록: (policies.results || []).map((e) => ({
+          종류: e.kind, 행위: e.action, 문서판: e.document_version,
+          한_시각: e.occurred_at, 기록한_시각: e.recorded_at,
+        })),
+        // ⚠️ 세션은 **메타데이터만**이다. 토큰도 그 해시도 들어가지 않는다.
+        세션: (sess.results || []).map((x) => ({
+          발급_세대: x.session_version, 만료_시각: x.expires_at, 폐기_시각: x.revoked_at,
+        })),
+      };
+      // **0건과 누락을 구분한다.** 위 키는 값이 없어도 `[]`·`null` 로 반드시 있고,
+      // 개수를 따로 적어 「비어 있다」가 「빠졌다」로 읽히지 않게 한다.
+      doc.건수 = {
+        단어: doc.단어장.단어.length, 친구: friends.length,
+        초대코드: doc.초대코드.length, 가입기록: doc.가입기록.length, 세션: doc.세션.length,
+      };
+      // ⚠️ **캐시 금지.** 이 응답은 개인정보 전문이라 공유 캐시·브라우저 캐시 어디에도
+      //    남으면 안 된다(한 기기를 두 사람이 쓰는 경우가 실재한다).
+      return json(env, req, doc, 200, {
+        "Cache-Control": "no-store, no-cache, must-revalidate, private",
+        // ⚠️ **헤더는 ASCII 만 담긴다**(ByteString). 한글 파일 이름을 그대로 쓰면 응답을 만들다
+        //    죽는다 — 그래서 ASCII 이름을 기본으로 두고 RFC 5987 로 한글 이름을 덧붙인다.
+        "Content-Disposition":
+          `attachment; filename="shhh-my-data.json"; filename*=UTF-8''${encodeURIComponent("shhh-내-정보.json")}`,
+      });
+    }
+
+    // ── 3-2. 처리정지 ──
+    // 로그아웃과 **다른 일이다.** 로그아웃은 이 기기의 접근을 끝내고, 정지는 계정의 처리를 멈춘다.
+    // 되돌릴 수 있다(재개) — 그래서 삭제와도 다르다.
+    if (path === "/me/suspend" && req.method === "POST") {
+      if (!uid) return json(env, req, { error: "로그인이 필요해요" }, 401);
+      await suspendAccount(env, uid, Date.now());
+      const r = json(env, req, { ok: true, suspended: true });
+      r.headers.append("Set-Cookie", clearCookie());
+      return r;
+    }
+
+    // ── 3-3. 처리 재개 ──
+    // **OAuth 재인증 결과와 결합된다.** 이 자리에 오는 유일한 길은 정지된 계정으로 콜백을
+    // 통과해 재개 티켓 쿠키를 받은 것이고, 그 티켓은 1회용이다.
+    // ⛔ **로그인 성공만으로 자동 재개하지 않는다** — 콜백은 세션을 안 만들고 티켓만 준다.
+    //    사용자가 이 요청을 **명시적으로** 보내야 재개된다. 취소하면 아무 요청도 안 나가고,
+    //    티켓은 10분 뒤 스스로 만료된다.
+    if (path === "/me/resume" && req.method === "POST") {
+      const failResume = () => {
+        // 티켓이 쓸모없어졌으면 그 자리에서 버린다 — 남겨 두면 사용자가 같은 실패를 반복한다.
+        const r = json(env, req, { error: "재개 요청이 만료됐어요. 다시 로그인해 주세요" }, 401);
+        r.headers.append("Set-Cookie", clearResumeCookie());
+        return r;
+      };
+      const raw = readCookie(req, RESUME_COOKIE);
+      if (!raw) return failResume();
+      // 키가 없으면 **확인할 수 없다** — 통과시키지 않는다.
+      if (!env.SIGNUP_STATE_KEY || !env.TOMBSTONE_KEY)
+        return json(env, req, { error: "지금은 재개할 수 없어요. 잠시 뒤에 다시 시도해 주세요" }, 503,
+          { "Retry-After": "60" });
+      const t = await takeResumeTicket(env, raw, Date.now());
+      if (!t) return failResume();
+      // **1회 소비가 먼저다.** 재개보다 뒤에 두면 같은 티켓으로 두 번 재개할 수 있고,
+      // 두 번째는 이미 풀린 정지를 다시 푸는 무해한 요청처럼 보이지만 실제로는
+      // 「사용자가 다시 정지한 계정」을 남이 되살리는 길이다.
+      // PRIMARY KEY 충돌 = 이미 쓴 티켓 → 그 자리에서 끝난다.
+      try {
+        await consumeSignupState(env, await stateTombstone(env, raw), t.exp);
+      } catch {
+        return failResume();
+      }
+      if (!(await resumeAccount(env, t.uid, t.provider, t.subject))) return failResume();
+      const token = await newSession(env, t.uid);
+      const r = json(env, req, { ok: true, resumed: true, via: t.provider });
+      r.headers.append("Set-Cookie", setCookie(token));
+      r.headers.append("Set-Cookie", clearResumeCookie());
+      return r;
+    }
+
     // ── 4. 친구 ──
     if (path.startsWith("/friends")) {
       if (!uid) return json(env, req, { error: "로그인이 필요해요" }, 401);
@@ -2210,8 +2520,14 @@ async function route(req, env, rc) {
         // 여기서는 조인 하나가 곧 권한 판정이다.
         if (m2[2]) {
           if (req.method !== "GET") return json(env, req, { error: "안 되는 요청이에요" }, 405);
+          // ⚠️ **정지된 상대의 단어장은 열리지 않는다**(2026-08-26). 조건을 조인 안에 둔다 —
+          //    읽고 나서 거르면 그 사이의 정지가 창을 빠져나가고, 무엇보다 거르는 것을
+          //    한 자리라도 빠뜨리면 방침이 거짓이 된다.
+          //    응답은 「친구가 아니에요」와 **같다** — 상대가 정지했다는 사실 자체가
+          //    그 사람에 관한 정보라, 친구에게도 알리지 않는다.
           const row = await env.DB.prepare(
             `SELECT b.words AS words, b.nickname AS name FROM friendships f
+               JOIN users o ON o.id = ?2 AND o.suspended_at IS NULL
                LEFT JOIN books b ON b.user_id = ?2
               WHERE f.status = 'accepted'
                 AND ((f.requester_id = ?1 AND f.addressee_id = ?2)

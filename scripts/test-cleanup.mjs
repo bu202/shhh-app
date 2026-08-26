@@ -16,7 +16,10 @@ import { makeD1, makeLedger } from "./_d1.mjs";
 
 let n = 0;
 const t = (m) => { n++; return m; };
-const env0 = () => ({ DB: makeD1(), LEDGER: makeLedger() });
+// ⚠️ `D1_PLAN` 을 명시한다(2026-08-26 · H4). 표식 삭제 조건에 **복원 창**이 들어갔고,
+//    모르는 값은 가장 긴 창(30일)으로 떨어진다 — 여기서 안 적으면 「만료됐는데 안 지운다」가
+//    되어 이 스위트가 정리 자체를 못 재게 된다. 창별 판정은 `test-deletion-ledger` T92 가 잰다.
+const env0 = () => ({ D1_PLAN: "free", DB: makeD1(), LEDGER: makeLedger() });
 const lc = (env, where = "") => env.LEDGER._db.prepare(`SELECT COUNT(*) n FROM deletions ${where}`).get().n;
 const dc = (env, table, where = "") => env.DB._db.prepare(`SELECT COUNT(*) n FROM ${table} ${where}`).get().n;
 const lcT = (env, table, where = "") => env.LEDGER._db.prepare(`SELECT COUNT(*) n FROM ${table} ${where}`).get().n;
@@ -29,8 +32,11 @@ function seed(env, now) {
   const del = (mark, confirmed, exp) => L.exec(
     `INSERT INTO deletions (mark, key_version, pending_at, confirmed_at, pending_alert_at, expires_at)
      VALUES ('${mark}', 1, 1, ${confirmed}, ${now - 1}, ${exp})`);
-  del("conf-old", now - 10, now - 1);            // 확정 · 만료 → 지운다
-  del("conf-new", now - 10, now + 60e3);         // 확정 · 아직 → 남긴다
+  // ⚠️ 확정 시각을 **복원 창 밖**(60일 전)에 둔다. 창 안이면 보유기간이 지나도 안 지운다 —
+  //    그건 이 스위트가 재려는 것이 아니라 T92 의 몫이다.
+  const OLD = now - 60 * 86400e3;
+  del("conf-old", OLD, now - 1);                 // 확정 · 만료 · 창 밖 → 지운다
+  del("conf-new", OLD, now + 60e3);              // 확정 · 아직 → 남긴다
   del("pend-old", "NULL", now - 1);              // ⛔ 확정 안 됨 · 만료 → **남긴다**
   // ⛔ 해제되지 않은 임차증. 만료됐어도 **남긴다** — 자동으로 지우는 경로가 없어야 한다.
   L.exec(`INSERT INTO write_leases VALUES ('lease-stuck',1,1,${now - 1})`);
@@ -52,6 +58,23 @@ function seed(env, now) {
   seed(env, now);
   const out = await runCleanup(env, now);
   assert.equal(lc(env, "WHERE mark = 'conf-old'"), 0, t("T44: 만료된 확정 표식이 안 지워졌다"));
+  // ⚠️ **크론도 복원 창을 지킨다**(2026-08-26 · 돌연변이 M81 생존). 크론은 `DELETIONS_SWEEP_SQL`
+  //    에 인자 **둘**을 넘기는데 그 값이 서로 달라야 한다(`now` · `now − 복원 창`).
+  //    같은 값을 두 번 넘기면 복원 창 조건이 `confirmed_at < now` 가 되어 **통째로 무력해진다** —
+  //    문장은 그대로인데 방어만 사라지는 모양이라, 조건을 읽는 검사로는 절대 안 잡힌다.
+  {
+    const e2 = env0(), t2 = Date.now();
+    seed(e2, t2);
+    // 확정이 **3일 전** = Free 복원 창(7일) 안. 보유기간은 이미 지났다.
+    e2.LEDGER._db.exec(
+      `INSERT INTO deletions (mark, key_version, pending_at, confirmed_at, pending_alert_at, expires_at)
+       VALUES ('conf-in-window', 1, 1, ${t2 - 3 * 86400e3}, ${t2 - 1}, ${t2 - 1})`);
+    await runCleanup(e2, t2);
+    assert.equal(lc(e2, "WHERE mark = 'conf-in-window'"), 1,
+      t("T44: ⛔ 크론이 복원 창 안의 표식을 지웠다 — 되살아난 사람을 다시 지울 근거가 사라진다"));
+    assert.equal(lc(e2, "WHERE mark = 'conf-old'"), 0,
+      t("T44: 창 밖 표식까지 안 지웠다 — 검사가 반대로 헛돌았다"));
+  }
   assert.equal(lc(env, "WHERE mark = 'conf-new'"), 1, t("T44: 아직 안 만료된 확정 표식을 지웠다"));
   // ★ 이 한 줄이 이 파일의 존재 이유다. pending 을 시간만 보고 지우면,
   //   「삭제는 됐는데 확정 기록만 실패한」 표식이 사라져 복원 때 그 사람이 되살아난다.

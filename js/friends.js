@@ -36,7 +36,9 @@ if (typeof document !== "undefined") {
     //    **로그인한 적 없는 사람에게도** 이 버튼이 보였고, 401 로 세션이 죽은 직후에도
     //    (그때 계정 계층은 "ok" 다 — 서버가 대답은 했으니까) 그대로 남아 있었다.
     //    조건은 js/auth.js 의 `accountReady()` 와 같다: **표시가 있고 서버가 열려 있을 때만.**
-    el("share-btn").hidden = !authToken() || accountDown();
+    //    ⚠️ **세대 대조도 같은 조건이다**(2026-08-26). 옛 화면이 새 서버에 초대 코드 생성을
+    //       보내면 계약이 안 맞는다 — 판정은 `js/authApi.js` 가 소유하고 여기서는 읽기만 한다.
+    el("share-btn").hidden = !authToken() || accountDown() || buildStale();
     for (const b of document.querySelectorAll(".seg[data-book]")) {
       const on = b.dataset.book === VIEW;
       b.classList.toggle("on", on);

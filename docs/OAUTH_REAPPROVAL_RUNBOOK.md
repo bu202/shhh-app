@@ -88,6 +88,7 @@
 | `APP_ORIGIN` | `wrangler.jsonc` vars | 언제나. **origin 만**(https · path 없음 · 끝 슬래시 없음) |
 | `EDGE_GUARD` | `wrangler.jsonc` vars | 계정 라우트를 열려면. `"waf"` 또는 `"ratelimit"` |
 | `TURNSTILE_SITE_KEY` | `wrangler.jsonc` vars (**공개 값**) | 가입 화면이 위젯을 그리려면 |
+| `D1_PLAN` | `wrangler.jsonc` vars | 삭제 표식 보유 판정. 없으면 가장 긴 창(30일). **계정 개방과 무관하게 늘 적어 둔다** |
 | `STATE_KEY` | 시크릿 | 로그인 왕복 서명 |
 | `RL_KEY` | 시크릿 | 레이트리밋 키 HMAC. 없으면 세지 않는다 |
 | `SESSION_ENVELOPE_KEY` | 시크릿 | 세션 서명. 없으면 **쓸 수 없는 계정**이 만들어진다 |

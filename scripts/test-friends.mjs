@@ -1899,8 +1899,10 @@ function befriend(env, a, b, status = "accepted") {
       ["POST", "/signup/start"], ["GET", "/cb/kakao"], ["GET", "/exchange/naver"],
       ["DELETE", "/session"], ["GET", "/book"], ["PUT", "/book"], ["GET", "/me"],
       ["PUT", "/me"], ["DELETE", "/me"], ["GET", "/friends"], ["POST", "/friends"],
-      ["POST", "/friends/code"], ["GET", "/friends/x/book"], ["PUT", "/friends/x"],
-      ["DELETE", "/friends/x"],
+      ["POST", "/friends/code"], ["POST", "/friends/code/ensure"],
+      ["GET", "/friends/x/book"], ["PUT", "/friends/x"], ["DELETE", "/friends/x"],
+      // 권리 행사 셋(2026-08-26). 셋 다 주 D1 을 만지므로 같은 자물쇠를 지나야 한다.
+      ["GET", "/me/export"], ["POST", "/me/suspend"], ["POST", "/me/resume"],
     ];
     // 대표 경로가 **표를 전부 덮었나.** 라우트를 더하고 여기 안 적으면 그것만 검사 밖에 남는다.
     const covered = new Set();
@@ -2176,9 +2178,9 @@ function befriend(env, a, b, status = "accepted") {
 
   // T71-i. ★ 표가 `auth:true` 라고 적은 라우트는 **전부** 이 문 뒤에 있다. 전수로 잰다.
   {
-    const SAMPLE = { "GET": ["/book", "/me", "/friends", "/friends/x/book"],
+    const SAMPLE = { "GET": ["/book", "/me", "/me/export", "/friends", "/friends/x/book"],
                      "PUT": ["/book", "/me", "/friends/x"],
-                     "POST": ["/friends", "/friends/code", "/friends/code/ensure"],
+                     "POST": ["/friends", "/friends/code", "/friends/code/ensure", "/me/suspend"],
                      "DELETE": ["/session", "/me", "/friends/x"] };
     let n = 0;
     for (const [method, paths] of Object.entries(SAMPLE)) {

@@ -189,8 +189,8 @@ export const MUTATIONS = [
     id: "M20", file: "worker/ledger.js", suite: "test-cleanup",
     what: "표식 정리에서 confirmed 조건을 뺀다",
     invariant: "확정되지 않은 삭제 표식은 지우지 않는다 — 지우면 복원 때 그 사람이 되살아난다",
-    find: "  \"DELETE FROM deletions WHERE confirmed_at IS NOT NULL AND expires_at < ?\";",
-    replace: "  \"DELETE FROM deletions WHERE expires_at < ?\";",
+    find: "  `DELETE FROM deletions WHERE confirmed_at IS NOT NULL AND expires_at < ?1",
+    replace: "  `DELETE FROM deletions WHERE expires_at < ?1",
   },
   {
     id: "M21", file: "worker/ledger.js", suite: "test-deletion-ledger",
@@ -297,14 +297,14 @@ export const MUTATIONS = [
     id: "D07", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "재감사 결함 합계와 위협 범위를 22건 · 39~60 으로 되돌린다",
     invariant: "결함 합계와 위협 범위는 설계서의 위협 표에서 파생된다 — 낡은 숫자는 「이미 다 봤다」는 착각을 만든다",
-    find: "차례로 재현했다(위협 **39~72** · **여섯 판 연속**",
+    find: "차례로 재현했다(위협 **39~78** · **여섯 판 연속**",
     replace: "차례로 재현했다(위협 39~60 · 다섯 판 연속",
   },
   {
     id: "D08", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "재감사 결함 합계만 22건으로 되돌린다(위협 범위는 그대로 둔다)",
     invariant: "합계는 판별 문형(`4+5+…건` · `N건을 차례로 재현`) 어느 쪽으로 적어도 파생값과 같아야 한다",
-    find: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4+3+1+1+4+3건 = **34건** 수정",
+    find: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4+3+1+1+4+3+6건 = **40건** 수정",
     replace: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4건 = **22건** 수정",
   },
   {
@@ -351,7 +351,7 @@ export const MUTATIONS = [
     // ⚠️ **이 앵커는 개수가 바뀔 때마다 함께 바꾼다**(D21 을 더하며 세 번째로 고쳤다).
     //    자기가 건드리는 숫자를 앵커에 담는 변이라 피할 수 없다 — 대신 낡으면 실행기가
     //    ANCHOR-MISS 로 종료 코드 1 을 내므로 **조용히 썩지는 않는다.**
-    find: "`scripts/mutations.mjs`(목록 102종",
+    find: "`scripts/mutations.mjs`(목록 128종",
     replace: "`scripts/mutations.mjs`(목록 22종",
   },
   {
@@ -486,7 +486,7 @@ export const MUTATIONS = [
     invariant: "현재 방침 판은 실제로 나가는 외부 요청을 전부 설명한다 (가입 화면의 challenges.cloudflare.com)",
     // ⚠️ **앵커는 「현재 번들의 privacy 경로」다.** 새 판이 나올 때마다 여기를 갱신한다 —
     //    안 하면 앵커 실패로 `mutate.mjs` 가 0 이 아닌 코드로 끝난다(조용히 통과하지 않는다).
-    find: "        \"path\": \"policies/privacy-8935ff1fddc2.html\",",
+    find: "        \"path\": \"policies/privacy-ec20ee0ec725.html\",",
     replace: "        \"path\": \"policies/privacy-1d3d2d870876.html\",",
   },
   {
@@ -496,7 +496,10 @@ export const MUTATIONS = [
     // ⚠️ **경로를 고르는 줄**을 바꾼다. 내용 단언만으로는 못 잡는다 — 첫 판이 그래서 살아남았다
     //    (`.at(-1)` 이 직전 판을 집었고 그 판도 모든 내용 단언을 통과했다).
     find: "  const curPath = POLICY_BUNDLE.docs.privacy.path;",
-    replace: "  const curPath = \"policies/\" + m.versions.filter((v) => v.kind === \"privacy\").at(-1).file;",
+    // ⚠️ **`.at(-1)` 이 아니라 `.at(0)` 이다**(2026-08-26). 그날 만든 판의 해시가 우연히
+    //    배열 마지막으로 정렬되면서 `.at(-1)` 이 **현재 판과 같은 파일**을 집었고, 그래서 이
+    //    변이가 동치가 되어 살아남았다(실측). 「확실히 현재가 아닌 항목」을 집게 고쳤다.
+    replace: "  const curPath = \"policies/\" + m.versions.filter((v) => v.kind === \"privacy\").at(0).file;",
   },
   {
     id: "M60", file: "scripts/build.mjs", suite: "test-policies", kind: "정적",
@@ -558,7 +561,7 @@ export const MUTATIONS = [
     id: "D17", file: "docs/STAGE3_SIGNUP_SECURITY_DESIGN.md", suite: "test-docs", kind: "정적",
     what: "§13-6 매핑 합계를 낡은 79 로 되돌린다",
     invariant: "매핑 절의 「N건 전부 연결됐다」는 표의 최대 T 번호에서 파생한다 — 표만 늘리고 합계를 안 고치면 검사가 그것을 잡아야 한다",
-    find: "**91건 전부 실행 가능한 단언으로 연결됐다.**",
+    find: "**97건 전부 실행 가능한 단언으로 연결됐다.**",
     replace: "**79건 전부 실행 가능한 단언으로 연결됐다.**",
   },
   {
@@ -586,7 +589,7 @@ export const MUTATIONS = [
     id: "D21", file: "docs/STAGE3_SIGNUP_SECURITY_DESIGN.md", suite: "test-docs", kind: "정적",
     what: "「종」이 없는 괄호형 내역을 낡은 「정적 21」로 되돌린다",
     invariant: "총계뿐 아니라 **하위 내역**도 MUTATIONS 에서 파생한다 — 「N종」이라고 안 적은 괄호형 내역도 센다(총계만 보면 66 ≠ 40+21 이 남는다)",
-    find: "(동작 64 · 정적 38).",
+    find: "(동작 85 · 정적 43).",
     replace: "(동작 40 · 정적 21).",
   },
   // ── 위협 70 · 불완전한 OAuth 주소가 세션 폐기 재시도를 막던 결함의 방어들 ──
@@ -757,8 +760,8 @@ export const MUTATIONS = [
     id: "M66", file: "worker/schema.sql", suite: "test-signup",
     what: "users 표에 email 칸을 만든다",
     invariant: "저장할 자리가 없어야 저장되지 않는다 — 칸 하나가 생기면 그날부터 받을 수 있다",
-    find: "  created_at        INTEGER NOT NULL\n);",
-    replace: "  created_at        INTEGER NOT NULL,\n  email             TEXT\n);",
+    find: "  suspended_at      INTEGER\n);",
+    replace: "  suspended_at      INTEGER,\n  email             TEXT\n);",
   },
   {
     id: "M67", file: "worker/index.js", suite: "test-signup",
@@ -821,5 +824,214 @@ export const MUTATIONS = [
     invariant: "결정이 문서에서 사라지면 그것을 지키는 금지 목록이 아무것도 안 재게 된다",
     find: "### 24-5. 백업",
     replace: "### 24-5x. 백업",
+  },
+  // ── 2026-08-26 권리 행사 · 백업 · 세대 대조 ───────────────────────────
+  {
+    id: "M68", file: "worker/index.js", suite: "test-rights",
+    what: "내려받기에서 세션 확인 **둘 다** 없앤다",
+    // ⚠️ **한 줄만 빼면 동치였다**(2026-08-26 실측). 아래 `if (!u)` 가 두 번째 자물쇠라
+    //    `uid` 가 `null` 이어도 결국 401 이었다 — 그래서 둘을 함께 뺀다. 자물쇠가 둘인 것은
+    //    좋은 일이고, 여기서 재려는 것은 **둘 다 없으면 열리나**다.
+    invariant: "개인정보 전문은 살아 있는 세션이 있을 때만 나간다",
+    transform: (src) => src
+      .replace('    if (path === "/me/export" && req.method === "GET") {\n'
+             + '      if (!uid) return json(env, req, { error: "로그인이 필요해요" }, 401);',
+               '    if (path === "/me/export" && req.method === "GET") {')
+      .replace('      if (!u) return json(env, req, { error: "로그인이 필요해요" }, 401);',
+               '      if (!u) return json(env, req, { 스키마: "shhh-export-1" }, 200);'),
+  },
+  {
+    id: "M69", file: "worker/index.js", suite: "test-rights",
+    what: "내려받기가 세션 uid 대신 요청이 준 uid 를 쓴다",
+    invariant: "열람은 **세션이 말한 계정**만 본다 — 입력이 계정을 고르면 IDOR 다",
+    find: '      const u = await env.DB.prepare(\n'
+        + '        `SELECT provider, provider_subject, created_at, session_version, suspended_at\n'
+        + '           FROM users WHERE id = ? AND {FENCE}`).bind(uid).first();',
+    replace: '      const who2 = url.searchParams.get("uid") || uid;\n'
+        + '      const u = await env.DB.prepare(\n'
+        + '        `SELECT provider, provider_subject, created_at, session_version, suspended_at\n'
+        + '           FROM users WHERE id = ? AND {FENCE}`).bind(who2).first();',
+  },
+  {
+    id: "M70", file: "worker/index.js", suite: "test-rights",
+    what: "정지 계정 차단을 없앤다",
+    invariant: "정지된 계정은 서비스 처리를 받지 않는다 — 세션이 살아남은 경합에서도 막힌다",
+    find: "    if (me && me.suspended && !suspendAllows(path, req.method))",
+    replace: "    if (false && me && me.suspended && !suspendAllows(path, req.method))",
+  },
+  {
+    id: "M71", file: "worker/index.js", suite: "test-rights",
+    what: "처리정지가 **현재 세션만** 끊는다",
+    invariant: "정지는 이 계정의 모든 기기를 끊는다 — 한 기기만 끊으면 정지가 이름뿐이다",
+    find: "      `UPDATE users SET suspended_at = COALESCE(suspended_at, ?), session_version = session_version + 1\n"
+        + "        WHERE id = ? AND {FENCE}`).bind(now, uid),",
+    replace: "      `UPDATE users SET suspended_at = COALESCE(suspended_at, ?)\n"
+        + "        WHERE id = ? AND {FENCE}`).bind(now, uid),",
+  },
+  {
+    id: "M72", file: "worker/index.js", suite: "test-rights",
+    what: "정지된 계정의 콜백이 그냥 로그인시킨다(자동 재개)",
+    invariant: "OAuth 인증 성공만으로 처리가 재개되지 않는다 — 재개는 사용자가 명시적으로 고른다",
+    find: "          if (su && su.s !== null && su.s !== undefined) {",
+    replace: "          if (false && su && su.s !== null && su.s !== undefined) {",
+  },
+  {
+    id: "M73", file: "worker/index.js", suite: "test-rights",
+    what: "재개 티켓의 1회 소비를 없앤다",
+    invariant: "재개 티켓은 1회용이다 — 재사용되면 사용자가 다시 정지한 계정을 남이 되살린다",
+    find: "      try {\n        await consumeSignupState(env, await stateTombstone(env, raw), t.exp);\n"
+        + "      } catch {\n        return failResume();\n      }",
+    replace: "      try {\n        await consumeSignupState(env, await stateTombstone(env, raw), t.exp);\n"
+        + "      } catch { /* 재사용 허용 */ }",
+  },
+  {
+    id: "M74", file: "worker/index.js", suite: "test-rights",
+    what: "재개가 제공자·회원번호를 다시 확인하지 않는다",
+    invariant: "재개는 티켓이 가리키는 **그 제공자 계정**에만 듣는다",
+    find: "      WHERE id = ? AND provider = ? AND provider_subject = ? AND suspended_at IS NOT NULL AND {FENCE}`)\n"
+        + "    .bind(uid, provider, subject).run();",
+    replace: "      WHERE id = ? AND suspended_at IS NOT NULL AND {FENCE}`)\n"
+        + "    .bind(uid).run();",
+  },
+  {
+    id: "M75", file: "js/authApi.js", suite: "test-client",
+    what: "세대 대조를 항상 참으로 만든다",
+    invariant: "화면 세대와 서버 세대가 다르면 계정 UI 를 닫는다",
+    find: "  return typeof serverBuild === \"string\" && !!serverBuild && !!mine && mine === serverBuild;",
+    replace: "  return true;",
+  },
+  {
+    id: "M76", file: "js/authApi.js", suite: "test-client",
+    what: "서버 세대가 없을 때를 「같다」로 읽는다",
+    invariant: "모름은 「같다」가 아니다 — 값이 없거나 모양이 다르면 닫는 쪽이다",
+    find: "  return typeof serverBuild === \"string\" && !!serverBuild && !!mine && mine === serverBuild;",
+    replace: "  return !serverBuild || !mine || mine === serverBuild;",
+  },
+  {
+    id: "M77", file: "js/friends.js", suite: "test-client",
+    what: "초대 버튼이 세대 대조를 안 본다",
+    invariant: "계정 판정 밖에 남는 화면 자리가 없어야 한다(정적 버튼이 그 무늬였다)",
+    find: "    el(\"share-btn\").hidden = !authToken() || accountDown() || buildStale();",
+    replace: "    el(\"share-btn\").hidden = !authToken() || accountDown();",
+  },
+  {
+    id: "M78", file: "worker/ledger.js", suite: "test-deletion-ledger",
+    what: "삭제 표식을 **시간만 보고** 지운다(백업 조건 제거)",
+    invariant: "표식은 되살릴 수 있는 원본이 남아 있는 동안 지우지 않는다",
+    find: "     AND confirmed_at < ?2\n"
+        + "     AND NOT EXISTS (SELECT 1 FROM backups b\n"
+        + "                      WHERE ${BACKUP_BLOCKS_SQL} AND b.snapshot_at <= deletions.confirmed_at)`;",
+    replace: "     AND ?2 IS NOT NULL`;",
+  },
+  {
+    id: "M79", file: "worker/ledger.js", suite: "test-deletion-ledger",
+    what: "「객체가 있는지 모르는」 백업을 막지 않는 것으로 친다",
+    invariant: "모름은 삭제 허가가 아니다 — `aborted` 만이 「객체가 없음을 확인했다」이다",
+    find: '  "b.deleted_at IS NULL AND b.status <> \'aborted\'";',
+    replace: '  "b.status = \'ready\' AND b.deleted_at IS NULL";',
+  },
+  {
+    id: "M80", file: "worker/ledger.js", suite: "test-deletion-ledger",
+    what: "요금제를 모를 때 **가장 짧은** 복원 창을 쓴다",
+    invariant: "설정을 빠뜨린 배포가 표식을 더 일찍 지우게 되면 안 된다",
+    find: "  return (d === undefined ? 30 : d) * 86400e3;",
+    replace: "  return (d === undefined ? 7 : d) * 86400e3;",
+  },
+  {
+    id: "M81", file: "worker/cleanup/index.js", suite: "test-cleanup",
+    what: "정리 크론이 복원 창 인자에 `now` 를 두 번 넣는다",
+    invariant: "`?1`·`?2` 는 다른 값이다 — 같으면 복원 창 조건이 통째로 무력해진다",
+    find: "   (env, now) => [now, sweepCutoff(env, now)]],",
+    replace: "   (env, now) => [now, now]],",
+  },
+  {
+    id: "M82", file: "scripts/backup.mjs", suite: "test-backup",
+    what: "설정이 없어도 백업을 진행한다",
+    invariant: "원격 구성이 없으면 백업은 **실패**다 — 「건너뛴 것」이 아니다",
+    find: "  if (miss.length) {\n"
+        + "    // ⛔ **fail-closed.** 설정이 없으면 백업이 「건너뛴 것」이 아니라 「실패한 것」이다.\n"
+        + "    log(`백업 설정이 없다: ${miss.join(\", \")}`);\n"
+        + "    return { ok: false, step: \"config\", code: \"config\", missing: miss };\n  }",
+    replace: "  if (miss.length) log(`백업 설정이 없다: ${miss.join(\", \")}`);",
+  },
+  {
+    id: "M83", file: "scripts/backup.mjs", suite: "test-backup",
+    what: "업로드 검증 실패를 무시하고 ready 로 적는다",
+    invariant: "되읽어 확인하기 전에는 `ready` 가 아니다",
+    find: '    if (head.code !== 0) return await fail("upload_verify", "upload_verify");',
+    replace: "    if (head.code !== 0) { /* 무시 */ }",
+  },
+  {
+    id: "M84", file: "scripts/backup.mjs", suite: "test-backup",
+    what: "필수 표 검증을 없앤다",
+    invariant: "빈 덤프·표가 빠진 덤프를 백업이라 부르지 않는다",
+    find: "      for (const tbl of REQUIRED_TABLES[which]) {\n"
+        + "        if (!new RegExp(`CREATE TABLE[^;]*\\\\b${tbl}\\\\b`, \"i\").test(text))\n"
+        + "          return await fail(\"verify\", \"verify\");\n      }",
+    replace: "      void text;",
+  },
+  {
+    id: "M85", file: "scripts/backup.mjs", suite: "test-backup",
+    what: "inventory 상태를 못 읽어도 migration 게이트를 연다",
+    invariant: "「모른다」는 「백업이 있다」가 아니다",
+    find: '  } catch { log("백업 상태를 못 읽었다"); return { ok: false, code: "unreadable" }; }',
+    replace: '  } catch { return { ok: true, code: "unreadable" }; }',
+  },
+  {
+    id: "M86", file: "scripts/backup.mjs", suite: "test-backup",
+    what: "dry-run 에서도 원격에 기록한다",
+    invariant: "dry-run 은 원격 쓰기 0건이다",
+    find: "    if (!dryRun) {\n      try { await inv.insertPending(id, now); }",
+    replace: "    if (true) {\n      try { await inv.insertPending(id, now); }",
+  },
+  {
+    id: "D36", file: "privacy.html", suite: "test-policies", kind: "정적",
+    what: "「로그아웃하면 처리가 멈춘다」를 되살린다",
+    invariant: "로그아웃은 세션만 끊는다 — 계정·단어장·친구 관계·가입 기록은 그대로다",
+    find: "⚠️ <b>로그아웃은 처리정지가 아닙니다.</b>",
+    replace: "<b>로그아웃하시면 그 시점부터 계정 관련 처리가 멈춥니다.</b>",
+  },
+  {
+    id: "D37", file: "privacy.html", suite: "test-policies", kind: "정적",
+    what: "이메일만으로 계정을 처리해 준다고 되돌린다",
+    invariant: "이메일은 계정 소유의 증명이 아니다 — 우리는 이메일을 받지도 저장하지도 않는다",
+    find: "<b>이메일만으로는 계정 정보를 알려 드리거나, 지우거나, 정지를 풀어 드릴 수 없습니다.</b>",
+    replace: "<b>이메일로 요청하시면 계정 정보를 알려 드리거나 지워 드립니다.</b>",
+  },
+  {
+    id: "D38", file: "privacy.html", suite: "test-policies", kind: "정적",
+    what: "아직 없는 백업을 운영 중이라고 적는다",
+    invariant: "구현이 없는 것을 방침에 현재형으로 적지 않는다",
+    find: "<b>백업 사본은 지금 운영하고 있지 않습니다.</b>",
+    replace: "<b>백업 사본을 운영하고 있습니다.</b>",
+  },
+  {
+    id: "D39", file: "privacy.html", suite: "test-policies", kind: "정적",
+    what: "15일을 삭제일로 단정한다",
+    invariant: "15일은 최소 보유기간이고, 되살릴 원본이 남아 있으면 더 오래 보관한다",
+    find: "여기서 <b>15일은 「최소」이지\n       「그날 지운다」가 아닙니다.</b>",
+    replace: "표식은 <b>15일째에 지워집니다.</b>",
+  },
+  {
+    id: "D40", file: "privacy.html", suite: "test-policies", kind: "정적",
+    what: "비회원에게는 기기 단어장도 안 생긴다고 적는다",
+    invariant: "로그인하지 않아도 이 기기의 로컬 저장소에는 단어장이 만들어진다",
+    find: "<b>① 이 기기 안에는 단어장이 만들어집니다.</b>",
+    replace: "<b>① 이 기기에도 아무것도 남지 않습니다.</b>",
+  },
+  {
+    id: "M87", file: "worker/index.js", suite: "test-rights",
+    what: "정지된 친구의 별명·단어 개수를 그대로 실어 보낸다",
+    invariant: "처리정지는 **친구의 화면에서도** 그 사람의 값을 멈춘다 — 그 값을 나르는 것은 친구의 요청이다",
+    find: "            CASE WHEN o.suspended_at IS NULL THEN b.nickname ELSE NULL END AS name,\n"
+        + "            CASE WHEN o.suspended_at IS NULL THEN b.words    ELSE NULL END AS words",
+    replace: "            b.nickname AS name, b.words AS words",
+  },
+  {
+    id: "M88", file: "worker/index.js", suite: "test-rights",
+    what: "정지된 친구의 단어장을 그대로 열어 준다",
+    invariant: "정지된 사람의 단어장은 친구에게도 열리지 않는다",
+    find: "               JOIN users o ON o.id = ?2 AND o.suspended_at IS NULL\n",
+    replace: "",
   },
 ];

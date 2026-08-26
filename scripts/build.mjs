@@ -34,6 +34,8 @@ export const INCLUDE = [
   "_headers",                 // 보안 헤더. 빠지면 CSP 가 통째로 사라진다
   "css",
   // js/camera.js 는 뺀다 — index.html 이 로드하지 않는다(6단계로 미룸). 되살릴 때 여기 추가.
+  // **생성 파일.** 화면이 자기 세대를 아는 유일한 근거다(아래 `stampBuildId`).
+  "js/build.js",
   "js/app.js",
   "js/authApi.js",
   "js/auth.js",
@@ -77,6 +79,7 @@ export async function build() {
   // 증상이 "그림이 안 뜬다"·"CSP 가 없다"라서 사람이 늦게 알아챈다.
   if (missing.length) throw new Error("빌드 목록에 있는데 파일이 없다: " + missing.join(", "));
   await stampCacheName();
+  await stampBuildId();
   return await listDist();
 }
 
@@ -95,6 +98,14 @@ const SW = "service-worker.js";
 // **줄 전체**를 잡는다(뒤에 붙는 주석까지). 해시를 낼 때 이 줄을 통째로 지워야, 빌드를 두 번
 // 돌려도 같은 이름이 나온다 — 이름이 이름 자신에 의존하면 재빌드마다 값이 흔들린다.
 const CACHE_LINE = /const CACHE = PREFIX \+ "[^"]*";.*/;
+// 빌드 식별자를 **담기만 하는** 파일. 해시에서 뺀다 — 넣으면 값이 자기 자신에 의존해
+// 재빌드마다 흔들린다(캐시 이름 줄을 지우고 해시하는 것과 같은 이유).
+// 선캐시 목록에는 **남는다**: 오래된 설치 PWA 가 자기 세대를 말해야 대조가 뜻을 가진다.
+const BUILD_FILE = "js/build.js";
+const BUILD_LINE = /window\.SHH_BUILD = "[^"]*";.*/;
+// 서버가 읽는 같은 값. **저장소에 커밋한다** — Pages 가 `functions/` 를 번들할 때 읽는다.
+const SERVER_BUILD_FILE = "worker/build-id.js";
+const SERVER_BUILD_LINE = /export const BUILD_ID = "[^"]*";.*/;
 const swAssets = (src) => [...src.matchAll(/^\s*"([^"]+)",\s*$/gm)]
   .map((m) => (m[1] === "./" ? "index.html" : m[1]));
 
@@ -105,6 +116,7 @@ export async function swCacheName() {
   h.update(src.replace(CACHE_LINE, ""));
   for (const rel of swAssets(src)) {
     h.update(rel);                                        // 목록의 순서·이름 변화도 세대다
+    if (rel === BUILD_FILE) continue;                     // 값이 자기 자신에 의존하지 않게
     h.update(await readFile(path.join(DIST, rel)));
   }
   const base = (src.match(/const CACHE = PREFIX \+ "(v\d+)/) || [])[1] || "v0";
@@ -117,6 +129,35 @@ async function stampCacheName() {
   if (!CACHE_LINE.test(src)) throw new Error(`${SW} 의 CACHE 줄을 못 찾았다 — 캐시 세대가 안 갈린다`);
   await writeFile(file, src.replace(CACHE_LINE,
     `const CACHE = PREFIX + "${await swCacheName()}";   // 빌드가 박는다: scripts/build.mjs swCacheName()`));
+}
+
+// ── 빌드 식별자를 화면과 서버에 같은 값으로 박는다 ──────────────────────
+//
+// 왜 생겼나: 설치형 PWA 는 **옛 세대의 화면 코드를 계속 돌린다.** 서비스워커 세대는 갈리지만
+// 그건 캐시 이름의 문제이고, 이미 떠 있는 화면이 옛 `auth.js`·`authApi.js` 로 계정 API 를
+// 부르는 것은 막지 못한다. 그 조합이 실제로 사고를 냈다(친구 화면이 영원히 로딩).
+// 이제 화면이 자기 세대를 알고 서버 세대와 **대조**해, 다르면 인증 UI 를 스스로 닫는다.
+//
+// ⚠️ **사람이 두 파일에 같은 값을 적는 방식이 아니다.** 값은 여기 한 곳에서 나오고,
+//    `scripts/test-dist.mjs` 가 빌드 결과와 커밋된 서버 파일을 대조한다.
+// ⚠️ `worker/build-id.js` 는 **저장소 파일**을 고친다(dist 가 아니다). 빌드 뒤 작업 트리가
+//    더러워지면 그건 「커밋할 생성물이 있다」는 뜻이다 — `worker/policies.js` 와 같은 규칙.
+async function stampBuildId() {
+  const id = await swCacheName();
+  for (const [file, re, line] of [
+    [path.join(DIST, BUILD_FILE), BUILD_LINE,
+     `window.SHH_BUILD = "${id}";   // 빌드가 박는다: scripts/build.mjs stampBuildId()`],
+    [path.join(ROOT, SERVER_BUILD_FILE), SERVER_BUILD_LINE,
+     `export const BUILD_ID = "${id}";   // 빌드가 박는다: scripts/build.mjs stampBuildId()`],
+  ]) {
+    const src = await readFile(file, "utf8");
+    if (!re.test(src)) throw new Error(`${file} 의 빌드 식별자 줄을 못 찾았다 — 세대 대조가 안 된다`);
+    const out = src.replace(re, line);
+    // 저장소 파일은 **바뀔 때만** 쓴다. 같은 값을 다시 써서 mtime 만 흔들면
+    // 빌드가 돌 때마다 작업 트리가 더러워 보인다.
+    if (out !== src) await writeFile(file, out);
+  }
+  return id;
 }
 
 export async function listDist(dir = DIST, base = "") {

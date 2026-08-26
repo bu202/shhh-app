@@ -17,7 +17,13 @@ CREATE TABLE IF NOT EXISTS users (
   provider          TEXT NOT NULL,              -- kakao | naver | google
   provider_subject  TEXT NOT NULL,              -- 제공자 회원번호. 절대 응답에 싣지 않는다
   session_version   INTEGER NOT NULL DEFAULT 0, -- 올리면 이 계정의 **모든** 세션이 즉시 죽는다
-  created_at        INTEGER NOT NULL
+  created_at        INTEGER NOT NULL,
+  -- 처리정지(2026-08-26 · migration 0007). NULL 이면 정상, 시각이 있으면 **정지 중**이다.
+  -- ⚠️ 로그아웃과 다른 축이다 — 로그아웃은 세션을 끊고, 정지는 **계정의 처리를 멈춘다.**
+  --    정지하면 세션도 함께 죽지만(같은 batch), 세션이 죽었다고 정지는 아니다.
+  -- ⚠️ 이 칸을 늘리는 대신 상태 표를 만들지 않는다 — 값이 둘뿐이고 시각 하나면
+  --    「언제부터」까지 답한다.
+  suspended_at      INTEGER
 );
 -- 같은 제공자 계정이 두 번 가입되면 단어장이 갈라진다.
 CREATE UNIQUE INDEX IF NOT EXISTS users_provider ON users(provider, provider_subject);

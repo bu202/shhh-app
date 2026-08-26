@@ -1027,8 +1027,12 @@ function failOn(db, needle) {
   const tbl = schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS users ("));
   const cols = tbl.slice(0, tbl.indexOf(");")).split("\n").slice(1)
     .map((l) => (l.trim().match(/^([a-z_]+)\s/) || [])[1]).filter(Boolean);
+  //   ⚠️ `suspended_at` 은 2026-08-26 에 늘었다(migration 0007 · 처리정지). **제공자에게
+  //      받은 값이 아니라 사용자가 앱에서 만든 상태 시각**이라 최소수집 원칙과 충돌하지 않는다 —
+  //      그래도 목록에 손으로 더해야 통과하도록 남긴다. 칸이 느는 순간 사람이 한 번 보는 것,
+  //      그것이 이 검사의 값이다.
   assert.deepEqual(cols.sort(),
-    ["created_at", "id", "provider", "provider_subject", "session_version"],
+    ["created_at", "id", "provider", "provider_subject", "session_version", "suspended_at"],
     t(`T91-b: users 표의 칸이 바뀌었다 — ${cols.join(",")}`));
 
   // -- c. **제공자가 더 줘도 저장하지 않는다.** 살찐 응답으로 실제 가입을 끝까지 돌리고

@@ -405,7 +405,8 @@ const apiRotateCode = () => request("/friends/code", { method: "POST" });
 //   ok     서버에 닿아 계약대로 생긴 응답을 받았나
 //   ready  서버가 **계정 기능이 열려 있다고 말했나** (`ready === true` 일 때만 참)
 // 못 물어봤거나 계약을 못 지킨 응답이면 **fail-closed**: ok:false · ready:false 다.
-const DOWN_HEALTH = Object.freeze({ ok: false, ready: false, providers: [], signupReady: null, turnstileSiteKey: null });
+const DOWN_HEALTH = Object.freeze({ ok: false, ready: false, providers: [], signupReady: null,
+                                    turnstileSiteKey: null, build: null });
 async function apiHealth() {
   const t = timeoutSignal(REQUEST_TIMEOUT);
   try {
@@ -429,10 +430,84 @@ async function apiHealth() {
     return d && d.ok === true && typeof d.ready === "boolean" && Array.isArray(d.providers)
       ? { ok: true, ready: d.ready, providers: d.providers,
           signupReady: d.signupReady === true,
+          // ⚠️ **모양이 안 맞으면 `null` 이다**(2026-08-26). 문자열이 아니면 대조할 것이 없고,
+          //    대조할 것이 없으면 「같다」가 아니라 **「모른다」**여야 한다 — 아래 buildMatches()
+          //    가 모름을 닫는 쪽으로 읽는다. 여기서 `""` 로 정규화하면 화면의 `""` 와 우연히
+          //    같아져 통과한다(그 실수는 `ready` 에서 이미 한 번 났다).
+          build: typeof d.build === "string" && d.build ? d.build : null,
           turnstileSiteKey: typeof d.turnstileSiteKey === "string" ? d.turnstileSiteKey : null }
       : DOWN_HEALTH;
   } catch {
     return DOWN_HEALTH;
+  } finally {
+    t.done();
+  }
+}
+
+// ── 화면 세대와 서버 세대 대조 ───────────────────────────────────────────
+//
+// 왜 필요한가: 설치형 PWA 는 **옛 화면 코드를 계속 돌린다.** 서비스워커 캐시 이름은 세대별로
+// 갈리지만, 이미 떠 있는 탭이 옛 `auth.js`·`authApi.js` 로 계정 API 를 부르는 것은 막지 못한다.
+// 그 조합이 실제 사고를 냈다(옛 `friends.js` 에 실패 분기가 없어 친구 화면이 영원히 로딩).
+// 계정 경로는 특히 위험하다 — 옛 화면이 새 서버의 403/503 을 이해하지 못한다.
+//
+// ⛔ **fail-closed 다.** 값이 없거나·모양이 다르거나·못 물어봤으면 **다르다고 본다.**
+//    「모르니 일단 열자」는 정확히 이 저장소가 여러 번 겪은 fail-open 무늬다.
+// ⚠️ 이것은 **서버 방어가 아니라 화면 방어**다. 최종 방어선은 그대로 서버의 readiness·
+//    `EDGE_GUARD`·세션 검증이다 — 옛 화면에는 이 코드 자체가 없으므로(그 세대는 대조를
+//    아예 안 한다) 화면만 믿으면 안 된다.
+const clientBuild = () =>
+  (typeof window !== "undefined" && typeof window.SHH_BUILD === "string" && window.SHH_BUILD)
+    ? window.SHH_BUILD : null;
+const buildMatches = (serverBuild) => {
+  const mine = clientBuild();
+  return typeof serverBuild === "string" && !!serverBuild && !!mine && mine === serverBuild;
+};
+
+// ⚠️ **판정은 여기 한 곳에 산다**(`accountState` 와 같은 자리). 화면 파일마다 각자 판정하면
+//    한쪽만 고친 날 다른 쪽이 옛 규칙으로 돈다 — `share-btn` 이 정확히 그렇게 남았다
+//    (2026-08-23 에도 같은 무늬였다: 정적 버튼 하나가 계정 판정 밖에 있었다).
+//    `null` = 아직 못 물어봤다(판정하지 않는다) · `false` = 다르다 → 닫는다.
+let buildOk = null;
+const buildStale = () => buildOk === false;
+const setBuildOk = (v) => {
+  if (buildOk === v) return;
+  buildOk = v;
+  for (const fn of accountWatchers) fn(accountState);   // 화면들이 같은 자리에서 다시 그린다
+};
+
+// 새 세대를 받아 온다. **다시 읽는 것은 서비스워커가 실제로 바뀐 뒤**(controllerchange)이고
+// 여기서는 하지 않는다 — 여기서 reload 하면 옛 캐시를 그대로 다시 읽어 **고리에 빠진다.**
+// ⚠️ 로그인 왕복 중에는 부르지 않는다(부르는 쪽이 판정한다). 갱신이 controllerchange 를 내면
+//    app.js 의 1회 reload 가 일회용 `code`·`state`·`n` 을 소모한다.
+const requestAppUpdate = () => {
+  try {
+    if (!("serviceWorker" in navigator)) return;
+    navigator.serviceWorker.getRegistration().then((r) => { if (r) r.update(); }).catch(() => {});
+  } catch { /* 갱신 못 해도 화면은 이유를 말한다 */ }
+};
+
+// ── 개인정보 열람 · 처리정지 · 재개 ──────────────────────────────────────
+// **uid 를 인자로 받지 않는다.** 받을 자리가 없어야 남의 것을 요청하는 화면 코드가
+// 애초에 만들어지지 않는다(서버도 세션 uid 만 쓴다 — 두 겹이다).
+const apiExport = () => request("/me/export");
+const apiSuspend = () => request("/me/suspend", { method: "POST" });
+// 재개는 **세션이 없는 상태**에서 부른다(정지가 세션을 전부 끊었다). 그래서 `request()` 를
+// 쓸 수 없다 — 그 함수는 로그인 표시가 없으면 보내지 않는다. 신원은 1회용 재개 티켓 쿠키다.
+async function apiResume() {
+  const t = timeoutSignal(REQUEST_TIMEOUT);
+  try {
+    const res = await fetch(API + "/me/resume", {
+      method: "POST", credentials: "same-origin", signal: t.signal,
+      headers: { "Content-Type": "application/json" },
+    });
+    const d = await res.json().catch(() => null);
+    if (res.ok && d && d.ok) return { ok: true, via: d.via || "" };
+    return { ok: false, status: res.status, message: d && d.error };
+  } catch (e) {
+    return { ok: false, status: 0,
+             message: e && (e.name === "TimeoutError" || e.name === "AbortError")
+               ? "응답이 늦어요. 잠시 뒤에 다시 시도해 주세요" : "연결이 안 돼요" };
   } finally {
     t.done();
   }
@@ -455,6 +530,8 @@ async function apiExchange(provider, code, state) {
     // ⚠️ **실패를 한 덩어리로 뭉개지 않는다.** 「아직 가입 안 했다」와 「이미 쓴 가입 요청이다」와
     //    「서버가 거절했다」는 사용자가 할 일이 전부 다르다 — 같은 말을 하면 헛수고를 시킨다.
     if (!res.ok) {
+      // 정지된 계정. **세션은 안 왔고 재개 티켓 쿠키만 심어졌다** — 화면이 재개를 물어야 한다.
+      if (d && d.suspended) return { ok: false, kind: "suspended", suspended: true };
       if (d && d.signupRequired) return { ok: false, kind: "signup_required" };
       if (d && d.stateUsed) return { ok: false, kind: "state_used" };
       if (d && d.policyStale) return { ok: false, kind: "policy_stale" };

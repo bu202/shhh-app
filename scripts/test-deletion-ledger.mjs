@@ -16,7 +16,7 @@ import worker, { createAccountWithPolicy, newSession } from "../worker/index.js"
 import {
   deletionMark, DELETION_KEY_VERSION, acquireLease, leaseAlive, releaseLease, activeLeases,
   markPending, markConfirmed, sweepConfirmed, pendingAlertCount, pendingTotalCount,
-  CONFIRMED_RETENTION, PENDING_ALERT,
+  CONFIRMED_RETENTION, PENDING_ALERT, restoreWindow, coveringBackups, TIME_TRAVEL_DAYS,
   drainState, rememberDeletionKey, LEASE_MODES_REQUEST, LEASE_MODES_CLEANUP,
 } from "../worker/ledger.js";
 import {
@@ -537,17 +537,122 @@ const call = (env, token, path, method = "GET") => worker.fetch(new Request("htt
   assert.equal((await setMode(env, "open")).mode, "open", t("H1-e: 유지보수 해제까지 막혔다"));
 
   // 만료 정리는 **confirmed 만** 지운다. 조건이 빠지면 여기서 걸린다.
+  // ⚠️ **조건이 넷이다**(2026-08-26 · H4). 여기서는 옛 두 가지(확정 여부·보유기간)만 재고,
+  //    복원 창과 백업 inventory 는 아래 T92 가 전수로 잰다 — 그래서 이 env 는 `D1_PLAN` 이
+  //    `free`(창 7일)이고 확정 시각을 그보다 훨씬 과거로 둔다.
   const now = Date.now();
+  const long = 90 * 86400e3;
+  env.D1_PLAN = "free";
   const ins = (mark, confirmed) => env.LEDGER._db.exec(
     `INSERT INTO deletions (mark, key_version, pending_at, confirmed_at, pending_alert_at, expires_at)
      VALUES ('${mark}', 1, 1, ${confirmed}, ${now - 1}, ${now - 1})`);
-  ins("m-old", now - 2);      // 확정됨 · 만료됨 → 지운다
+  ins("m-old", now - long);   // 확정됨 · 만료됨 · 복원 창 밖 → 지운다
   ins("m-pend", "NULL");      // 확정 안 됨 · 만료됨 → ⛔ 지우지 않는다
   const removed = await sweepConfirmed(env, now);
   assert.equal(removed, 1, t("H2: 만료된 confirmed 가 안 지워졌다"));
   assert.equal(lcount(env, "WHERE mark = 'm-pend'"), 1,
     t("H2: ⛔ 만료된 pending 을 지웠다 — 복원 때 그 사람이 되살아나고 아무도 모른다"));
   assert.equal(await pendingAlertCount(env, now), 1, t("H2: 확정 안 된 pending 을 못 셌다"));
+}
+
+// ══ T92 — 삭제 표식은 **시간만으로** 지워지지 않는다 (2026-08-26 · H4) ══
+//
+// ⛔ 왜 생겼나: 2026-08-26 까지 조건은 `confirmed_at IS NOT NULL AND expires_at < now` 뿐이었다.
+//    표식의 쓸모는 「복원으로 되살아난 계정을 다시 지우는 것」인데, **되살릴 수 있는 원본**은
+//    시간이 아니라 ① D1 Time Travel 창 ② 아직 살아 있는 백업 사본이다. 둘 중 하나라도 남아
+//    있는데 표식을 지우면, 그 원본으로 복원하는 순간 그 사람이 되살아나고 **다시 지울 근거가
+//    사라진다.** 15일은 사용자가 정한 **최소 보유기간**이지 삭제 조건이 아니다.
+{
+  const MARK = "t92";
+  const now = Date.now();
+  const day = 86400e3;
+  // 확정 시각을 60일 전으로 둔다 — Free(7일)에서도 Paid(30일)에서도 창 **밖**이다.
+  // 그래야 백업 조건만 따로 잴 수 있다.
+  const confirmedAt = now - 60 * day;
+  const seed = (env) => env.LEDGER._db.exec(
+    `INSERT INTO deletions (mark, key_version, pending_at, confirmed_at, pending_alert_at, expires_at)
+     VALUES ('${MARK}', 1, 1, ${confirmedAt}, ${now - 1}, ${now - 1})`);
+  // ⚠️ `ready` 는 두 DB 해시와 객체 키가 **전부** 있어야 한다(표의 CHECK). 여기서 채워 넣는
+  //    이유는 그 제약이 진짜로 걸려 있기 때문이다 — 안 채우면 INSERT 자체가 실패한다.
+  const backup = (env, id, snapAt, status, deletedAt = "NULL") => env.LEDGER._db.exec(
+    `INSERT INTO backups (backup_id, snapshot_at, created_at, status, deleted_at,
+                          main_db_hash, ledger_db_hash, object_key)
+     VALUES ('${id}', ${snapAt}, ${snapAt}, '${status}', ${deletedAt}, 'h1', 'h2', 'k')`);
+  const left = (env) => env.LEDGER._db.prepare(
+    "SELECT COUNT(*) n FROM deletions WHERE mark = ?").get(MARK).n;
+
+  // ── T92-a. ★ 아무 백업도 없고 창도 지났으면 **지운다**(막는 쪽만 재면 회귀를 못 잡는다).
+  {
+    const env = makeEnv({ D1_PLAN: "free" }); seed(env);
+    assert.equal(await sweepConfirmed(env, now), 1, t("T92-a: 지울 수 있는 표식을 안 지웠다"));
+    assert.equal(left(env), 0, t("T92-a: 표식이 남았다"));
+  }
+
+  // ── T92-b. ⛔ **복원 창 안**이면 보유기간이 지나도 남긴다.
+  //    확정을 3일 전으로 두고 `expires_at` 은 이미 지난 값이다 — 옛 조건이라면 지워졌다.
+  {
+    const env = makeEnv({ D1_PLAN: "free" });
+    env.LEDGER._db.exec(
+      `INSERT INTO deletions (mark, key_version, pending_at, confirmed_at, pending_alert_at, expires_at)
+       VALUES ('${MARK}', 1, 1, ${now - 3 * day}, ${now - 1}, ${now - 1})`);
+    assert.equal(await sweepConfirmed(env, now), 0,
+      t("T92-b: ⛔ Time Travel 로 되돌릴 수 있는 구간의 표식을 지웠다"));
+  }
+
+  // ── T92-c. ⛔ **요금제를 모르면 가장 긴 창**을 쓴다. 15일 상수만 믿는 경로를 막는다.
+  //    확정 20일 전 — Free(7일)면 지워지지만 Paid(30일)·모름이면 남아야 한다.
+  for (const [plan, expect] of [["free", 1], ["paid", 0], [undefined, 0], ["gold", 0]]) {
+    const env = makeEnv(plan === undefined ? {} : { D1_PLAN: plan });
+    env.LEDGER._db.exec(
+      `INSERT INTO deletions (mark, key_version, pending_at, confirmed_at, pending_alert_at, expires_at)
+       VALUES ('${MARK}', 1, 1, ${now - 20 * day}, ${now - 1}, ${now - 1})`);
+    assert.equal(await sweepConfirmed(env, now), expect,
+      t(`T92-c: D1_PLAN=${plan} 에서 삭제 판정이 틀렸다 — 모르는 값은 가장 긴 창이어야 한다`));
+  }
+  assert.equal(TIME_TRAVEL_DAYS.free, 7, t("T92-c: Free 창이 7일이 아니다"));
+  assert.equal(TIME_TRAVEL_DAYS.paid, 30, t("T92-c: Paid 창이 30일이 아니다"));
+  assert.equal(restoreWindow({ D1_PLAN: "free" }), 7 * day, t("T92-c: free 창 계산이 틀렸다"));
+  assert.equal(restoreWindow({}), 30 * day, t("T92-c: 미설정이 가장 긴 창으로 안 떨어진다"));
+
+  // ── T92-d. ⛔ **삭제 이전에 찍힌 백업**이 살아 있으면 남긴다(상태 전부).
+  //    `pending`·`uploaded`·`failed` 는 「객체가 있는지 **모른다**」다 — 모름은 삭제 허가가 아니다.
+  for (const st of ["pending", "uploaded", "ready", "failed"]) {
+    const env = makeEnv({ D1_PLAN: "free" }); seed(env);
+    backup(env, "b-" + st, confirmedAt - day, st);
+    assert.equal(await sweepConfirmed(env, now), 0,
+      t(`T92-d: ⛔ status=${st} 인 백업이 살아 있는데 표식을 지웠다`));
+    assert.equal(await coveringBackups(env, confirmedAt), 1,
+      t(`T92-d: status=${st} 백업을 덮는 것으로 안 셌다`));
+  }
+
+  // ── T92-e. **삭제 이후**에 찍힌 백업은 막지 않는다. 그 계정은 이미 없었다.
+  {
+    const env = makeEnv({ D1_PLAN: "free" }); seed(env);
+    backup(env, "b-after", confirmedAt + day, "ready");
+    assert.equal(await coveringBackups(env, confirmedAt), 0, t("T92-e: 삭제 후 백업을 덮는 것으로 셌다"));
+    assert.equal(await sweepConfirmed(env, now), 1, t("T92-e: 삭제 후 백업이 표식을 막았다"));
+  }
+
+  // ── T92-f. 객체가 **실제로 없음을 확인한** 백업만 막지 않는다.
+  {
+    for (const [st, del, expect] of [["deleted", now - day, 1], ["aborted", "NULL", 1],
+                                     ["ready", "NULL", 0]]) {
+      const env = makeEnv({ D1_PLAN: "free" }); seed(env);
+      backup(env, "b-f", confirmedAt - day, st, del);
+      assert.equal(await sweepConfirmed(env, now), expect,
+        t(`T92-f: status=${st} deleted_at=${del} 에서 판정이 틀렸다`));
+    }
+  }
+
+  // ── T92-g. ⛔ **inventory 를 못 읽으면 지우지 않는다.** 「모른다」는 「백업이 없다」가 아니다.
+  //    표를 통째로 없애 질의가 실패하게 만든다 — 그러면 sweep 은 **던져야** 한다.
+  {
+    const env = makeEnv({ D1_PLAN: "free" }); seed(env);
+    env.LEDGER._db.exec("DROP TABLE backups");
+    await assert.rejects(() => sweepConfirmed(env, now),
+      t("T92-g: ⛔ inventory 를 못 읽는데 조용히 지웠다(또는 조용히 넘어갔다)"));
+    assert.equal(left(env), 1, t("T92-g: inventory 를 못 읽었는데 표식이 사라졌다"));
+  }
 }
 
 // ══ T78 — fencing 과 확정의 **일회성** (2026-08-22 · 돌연변이 M21·M22 생존) ══

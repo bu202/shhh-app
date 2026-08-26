@@ -12,6 +12,10 @@ import { readFileSync } from "node:fs";
 import assert from "node:assert";
 
 const read = (p) => readFileSync(new URL("../" + p, import.meta.url), "utf8");
+// 화면이 말하는 자기 세대. **저장소의 `js/build.js` 에서 읽는다** — 여기 손으로 적으면
+// 그 파일이 바뀔 때 이 스위트만 조용히 옛 값을 쓰게 된다(빌드는 dist 쪽만 다시 박는다).
+const CLIENT_BUILD = (read("js/build.js").match(/window\.SHH_BUILD = "([^"]*)"/) || [])[1];
+if (!CLIENT_BUILD) throw new Error("js/build.js 에서 세대 값을 못 읽었다 — 세대 대조 검사가 헛돈다");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 마이크로태스크가 다 돌 때까지. sync() 처럼 await 되지 않는 호출이 있어서 필요하다.
 const tick = async (n = 6) => { for (let i = 0; i < n; i++) await Promise.resolve(); };
@@ -69,7 +73,11 @@ function loadClient({ store = {}, routes, loc = {} } = {}) {
     removeItem: (k) => { delete store[k]; },
   };
   // loc 으로 로그인 왕복에서 돌아온 주소(`?code=…&state=…` · `#login=ok…`)를 만들 수 있다.
-  const location = { origin: "https://test", pathname: "/", search: "", hash: "", href: "", ...loc };
+  // ⚠️ **`reload` 를 센다**(2026-08-26 · T93). 화면이 스스로 다시 읽으면 옛 캐시를 그대로
+  //    다시 읽어 **무한 고리**가 된다 — 세지 않으면 그 고리를 아무도 못 잡는다.
+  const reloads = { n: 0 };
+  const location = { origin: "https://test", pathname: "/", search: "", hash: "", href: "",
+                     reload: () => { reloads.n++; }, ...loc };
   // ⚠️ **replaceState 를 실제로 반영한다**(2026-08-25 · 위협 70). 예전에는 빈 함수라
   //    「주소를 지웠나」를 아무도 못 쟀다 — 그 눈멂 때문에 불완전한 OAuth 파라미터가
   //    주소에 영원히 남아 세션 폐기 재시도를 매 실행 억제하는 결함이 통과했다.
@@ -174,7 +182,11 @@ function loadClient({ store = {}, routes, loc = {} } = {}) {
     const FREE_LIMIT = 5, PRO_PRICE = "", BETA_NO_WALL = true;
     let isPro = false, isMaster = false;
   `;
-  const src = preamble + read("js/authApi.js") + "\n" + read("js/auth.js") + "\n" + read("js/friends.js")
+  // ⚠️ **실제 페이지와 같은 순서로 읽는다.** index.html 이 `js/build.js` 를 auth.js 보다 먼저
+  //    싣는다 — 여기서 빼면 `window.SHH_BUILD` 가 없어 화면이 세대 불일치로 판정하고,
+  //    그러면 이 스위트 전체가 「계정 UI 가 닫힌 상태」를 재게 된다(실제로 그렇게 됐다).
+  const src = preamble + read("js/build.js") + "\n"
+    + read("js/authApi.js") + "\n" + read("js/auth.js") + "\n" + read("js/friends.js")
     + "\n; return { HOOKS, TOASTS, getBook: () => BOOK, setBook: (v) => { BOOK = v.slice(); } };";
 
   // window 이벤트를 붙잡아 둔다. `storage` 는 **다른 탭이 localStorage 를 고쳤을 때만** 나는
@@ -189,7 +201,7 @@ function loadClient({ store = {}, routes, loc = {} } = {}) {
   )(localStorage, location, history, crypto, fetch, document, () => confirmAnswer, addEventListener, window);
 
   return {
-    ...inner, store, calls, document, segs, location, window, replaced,
+    ...inner, store, calls, document, segs, location, window, replaced, reloads,
     fireStorage: (key, newValue) => { for (const fn of winHandlers.storage || []) fn({ key, newValue }); },
     fireOnline: () => { for (const fn of winHandlers.online || []) fn({}); },
     onlineHandlers: () => (winHandlers.online || []).length,
@@ -212,7 +224,7 @@ const FRIENDS_OK = {
 //    회전 테스트가 `FRIENDS_OK.code` 를 "new111" 로 바꿔 놓아서, 뒤 테스트의 GET /friends 가
 //    그 값을 돌려줬다. 진짜 서버는 매번 새 응답을 만든다.
 const defaultRoutes = (m, p) => {
-  if (p === "/health") return { status: 200, body: { ok: true, ready: true, signupReady: true, providers: ["kakao", "naver", "google"] } };
+  if (p === "/health") return { status: 200, body: { ok: true, build: CLIENT_BUILD, ready: true, signupReady: true, providers: ["kakao", "naver", "google"] } };
   if (p === "/book" && m === "GET") return { status: 200, body: structuredClone(BOOK_OK) };
   if (p === "/friends" && m === "GET") return { status: 200, body: structuredClone(FRIENDS_OK) };
   return { status: 200, body: { ok: true } };
@@ -448,7 +460,7 @@ await T("providers 가 비면 로그인 버튼을 그리지 않는다", async ()
   const c = await boot({
     store: {},
     routes: (m, p) => (p === "/health"
-      ? { status: 200, body: { ok: true, ready: false, providers: [] } }
+      ? { status: 200, body: { ok: true, build: CLIENT_BUILD, ready: false, providers: [] } }
       : defaultRoutes(m, p)),
   });
   const box = c.document.getElementById("mypage");
@@ -911,7 +923,7 @@ await T("회원가입 화면 — 정책 해시 대조 · 필수 체크 · 실패
   const hasText = (c, needle) => allText(gate(c)).includes(needle);
 
   const baseRoutes = (over = {}) => async (m, p) => {
-    if (p === "/health") return { status: 200, body: { ok: true, ready: true, signupReady: true,
+    if (p === "/health") return { status: 200, body: { ok: true, build: CLIENT_BUILD, ready: true, signupReady: true,
       providers: ["kakao", "naver", "google"], turnstileSiteKey: "0xTEST" } };
     if (p === "/policies") return over.policies ?? { status: 200, body: { pv: PV, docs: await docsFor() } };
     if (p.startsWith("./policies/")) {
@@ -1005,7 +1017,7 @@ await T("회원가입 화면 — 정책 해시 대조 · 필수 체크 · 실패
   {
     // ② 서버가 site key 를 안 주면 위젯을 부르지도 않는다(외부 요청을 만들지 않는다).
     const c = await openApp(async (m, p) => (p === "/health"
-      ? { status: 200, body: { ok: true, ready: true, signupReady: true, providers: ["kakao"], turnstileSiteKey: null } }
+      ? { status: 200, body: { ok: true, build: CLIENT_BUILD, ready: true, signupReady: true, providers: ["kakao"], turnstileSiteKey: null } }
       : baseRoutes()(m, p)));
     btn(c, "가입하기").click();
     await settle(); await settle();
@@ -1056,7 +1068,7 @@ await T("회원가입 화면 — 정책 해시 대조 · 필수 체크 · 실패
     // ⚠️ `ready:true` 다 — 로그인은 되고 **가입 전용 키만** 빠진 상태가 서버에서 실제로 나온다
     //    (`ready` 는 가입 키를 안 본다). 서버가 늘 싣는 필드를 fixture 가 빠뜨리면 계약 검사가
     //    fixture 때문에 무너진다.
-    const locked = await openApp(health({ ok: true, ready: true, providers: ["kakao"], signupReady: false }));
+    const locked = await openApp(health({ ok: true, build: CLIENT_BUILD, ready: true, providers: ["kakao"], signupReady: false }));
     btn(locked, "가입하기").click();
     await settle();
     assert.ok(!btn(locked, "카카오로 가입하기"), t("가입이 잠겼는데 되지 않는 가입 버튼을 그렸다"));
@@ -1070,7 +1082,7 @@ await T("회원가입 화면 — 정책 해시 대조 · 필수 체크 · 실패
     assert.ok(!locked.calls.some((x) => x.path === "/policies"), t("가입이 잠겼는데 약관을 받아 왔다"));
 
     // ② 제공자가 아예 없다 = 로그인도 가입도 준비 중
-    const none = await openApp(health({ ok: true, ready: false, providers: [], signupReady: false }));
+    const none = await openApp(health({ ok: true, build: CLIENT_BUILD, ready: false, providers: [], signupReady: false }));
     btn(none, "가입하기").click();
     await settle();
     assert.ok(hasText(none, "지금은 새로 가입할 수 없어요"), t("제공자가 없는데 가입 안내가 없다"));
@@ -1088,7 +1100,7 @@ await T("회원가입 화면 — 정책 해시 대조 · 필수 체크 · 실패
   // 4. 오프라인·시간 초과는 **연결 문제라고 말한다.** 원인이 다르면 할 일도 다르다.
   {
     const c = await openApp(async (m, p) => (p === "/health"
-      ? { status: 200, body: { ok: true, ready: true, signupReady: true, providers: ["kakao"] } }
+      ? { status: 200, body: { ok: true, build: CLIENT_BUILD, ready: true, signupReady: true, providers: ["kakao"] } }
       : p === "/policies" ? { throw: true } : { status: 200, body: {} }));
     btn(c, "가입하기").click();
     await settle();
@@ -1204,7 +1216,7 @@ const DOWN = "계정 기능을 점검 중이에요";
 const myBox = (c) => c.document.getElementById("mypage");
 const friBox = (c) => c.document.getElementById("friends");
 const routes503 = (m, p) => {
-  if (p === "/health") return { status: 200, body: { ok: true, ready: false, signupReady: false, providers: [] } };
+  if (p === "/health") return { status: 200, body: { ok: true, build: CLIENT_BUILD, ready: false, signupReady: false, providers: [] } };
   return { status: 503, body: { error: "계정 기능이 아직 열리지 않았어요", mode: "unknown" } };
 };
 
@@ -1252,7 +1264,7 @@ await T("503 은 shh-via 를 지우지 않는다", async () => {
 await T("401 은 shh-via 를 지운다", async () => {
   const store = LOGGED_IN();
   const c = await boot({ store, routes: (m, p) =>
-    p === "/health" ? { status: 200, body: { ok: true, ready: true, signupReady: true, providers: ["kakao"] } }
+    p === "/health" ? { status: 200, body: { ok: true, build: CLIENT_BUILD, ready: true, signupReady: true, providers: ["kakao"] } }
                     : { status: 401, body: {} } });
   assert.equal(store["shh-via"], undefined, "401 인데 로그인 표시가 남았다");
 });
@@ -1270,8 +1282,8 @@ await T("친구 데이터 적재 후 503: 이전 친구·초대 동작이 남지
   let down = false;
   const c = await boot({ routes: (m, p) => {
     if (p === "/health") return down
-      ? { status: 200, body: { ok: true, ready: false, signupReady: false, providers: [] } }
-      : { status: 200, body: { ok: true, ready: true, signupReady: true, providers: ["kakao"] } };
+      ? { status: 200, body: { ok: true, build: CLIENT_BUILD, ready: false, signupReady: false, providers: [] } }
+      : { status: 200, body: { ok: true, build: CLIENT_BUILD, ready: true, signupReady: true, providers: ["kakao"] } };
     if (down) return { status: 503, body: { error: "계정 기능이 아직 열리지 않았어요" } };
     if (p === "/book" && m === "GET") return { status: 200, body: structuredClone(BOOK_OK) };
     if (p === "/friends" && m === "GET") return { status: 200, body: structuredClone(FRIENDS_OK) };
@@ -1323,7 +1335,7 @@ const H = (body) => ({ status: 200, body });
 
 // 1. 빈 store + `ready:false` → 계정 기능을 열지 않는다. 계정 요청도 안 나간다.
 await T("readiness false(빈 store): 계정 기능을 열지 않고 계정 요청도 없다", async () => {
-  const c = await boot({ store: {}, routes: healthOnly(H({ ok: true, ready: false, providers: [] })) });
+  const c = await boot({ store: {}, routes: healthOnly(H({ ok: true, build: CLIENT_BUILD, ready: false, providers: [] })) });
   assert.equal(c.document.getElementById("share-btn").hidden, true,
     "health 가 ready:false 인데 계정 기능을 연 상태로 판정했다 — `ready` 를 버렸다");
   assert.deepEqual(accountCalls(c).map((x) => x.path), [],
@@ -1349,12 +1361,12 @@ const failClosed = async (label, resp) => {
 };
 for (const [label, body] of [
   ["ready 누락", { ok: true, providers: [] }],
-  ["ready 가 문자열", { ok: true, ready: "true", providers: [] }],
-  ["ready 가 숫자 1", { ok: true, ready: 1, providers: [] }],
-  ["ready 가 null", { ok: true, ready: null, providers: [] }],
+  ["ready 가 문자열", { ok: true, build: CLIENT_BUILD, ready: "true", providers: [] }],
+  ["ready 가 숫자 1", { ok: true, build: CLIENT_BUILD, ready: 1, providers: [] }],
+  ["ready 가 null", { ok: true, build: CLIENT_BUILD, ready: null, providers: [] }],
   ["본문 ok:false", { ok: false, ready: true, providers: [] }],
   ["본문이 배열", []],
-  ["providers 가 배열이 아님", { ok: true, ready: true, providers: "kakao" }],
+  ["providers 가 배열이 아님", { ok: true, build: CLIENT_BUILD, ready: true, providers: "kakao" }],
 ]) {
   await T(`readiness ${label}: fail-closed`, () => failClosed(label, H(body)));
 }
@@ -1373,10 +1385,10 @@ for (const [label, resp] of [["500", { status: 500, body: {} }], ["네트워크 
 //      갈래로 떨어져야 한다: 버튼을 안 그리고 이유를 말한다.
 for (const [label, body] of [
   ["ready 누락", { ok: true, providers: ["kakao"] }],
-  ["ready 가 문자열", { ok: true, ready: "true", providers: ["kakao"] }],
-  ["ready 가 숫자 1", { ok: true, ready: 1, providers: ["kakao"] }],
-  ["ready 가 null", { ok: true, ready: null, providers: ["kakao"] }],
-  ["ready 가 객체", { ok: true, ready: {}, providers: ["kakao"] }],
+  ["ready 가 문자열", { ok: true, build: CLIENT_BUILD, ready: "true", providers: ["kakao"] }],
+  ["ready 가 숫자 1", { ok: true, build: CLIENT_BUILD, ready: 1, providers: ["kakao"] }],
+  ["ready 가 null", { ok: true, build: CLIENT_BUILD, ready: null, providers: ["kakao"] }],
+  ["ready 가 객체", { ok: true, build: CLIENT_BUILD, ready: {}, providers: ["kakao"] }],
 ]) {
   await T(`readiness ${label}: 계약 위반 응답의 제공자로 로그인 버튼을 그리지 않는다`, async () => {
     const c = await boot({ store: {}, routes: healthOnly(H(body)) });
@@ -1392,7 +1404,7 @@ for (const [label, body] of [
 //    ⚠️ 로그인 표시가 **있는** store 로 잰다. 초대 링크 버튼은 계정 동작이라 `ready:true` 만으로는
 //       안 열린다(로그인한 적 없는 사람에게 보이면 그것도 「되는 척하는 버튼」이다).
 await T("readiness true: 계정 UI 를 연다", async () => {
-  const c = await boot({ store: LOGGED_IN(), routes: healthOnly(H({ ok: true, ready: true, providers: ["kakao"] })) });
+  const c = await boot({ store: LOGGED_IN(), routes: healthOnly(H({ ok: true, build: CLIENT_BUILD, ready: true, providers: ["kakao"] })) });
   assert.notEqual(c.document.getElementById("share-btn").hidden, true,
     "ready:true 인데 계정 기능이 닫힌 채로 남았다");
 });
@@ -1402,7 +1414,7 @@ await T("readiness true: 계정 UI 를 연다", async () => {
 //     판정 근거가 `/health` 하나뿐인 상태를 만든다.)
 await T("stale 표시 + readiness false(503 없이): 계정으로 단정하지 않는다", async () => {
   const store = LOGGED_IN();
-  const c = await boot({ store, routes: healthOnly(H({ ok: true, ready: false, providers: [] })) });
+  const c = await boot({ store, routes: healthOnly(H({ ok: true, build: CLIENT_BUILD, ready: false, providers: [] })) });
   const txt = allText(c.document.getElementById("mypage"));
   assert.ok(!txt.includes("카카오"), "ready:false 인데 「카카오 계정」이라고 말한다");
   assert.ok(txt.includes(DOWN), "ready:false 인데 점검 안내가 없다");
@@ -1802,6 +1814,110 @@ await T("down → 401: 옛 친구·초대 데이터가 되살아나지 않는다
   });
 }
 
+// ══ T93 — 화면 세대와 서버 세대 대조 (2026-08-26) ═════════════════════════
+//
+// ⛔ 왜 생겼나: 설치형 PWA 는 **옛 화면 코드를 계속 돌린다.** 서비스워커 캐시 이름은 세대별로
+//    갈리지만, 이미 떠 있는 탭이 옛 `auth.js`·`authApi.js` 로 새 서버의 계정 API 를 부르는 것은
+//    막지 못한다. 그 조합이 실제 사고를 냈다(옛 `friends.js` 에 실패 분기가 없어 친구 화면이
+//    영원히 로딩). 계정 경로는 특히 위험하다 — 옛 화면이 새 서버의 403·503 을 이해하지 못한다.
+//
+// ⚠️ **fail-closed 를 전수로 잰다.** 값이 다르거나·없거나·모양이 틀리면 전부 닫는 쪽이다.
+//    「모르니 일단 열자」가 이 저장소가 여러 번 겪은 무늬다(위협 39·52·56 · readiness 계약).
+{
+  // ⚠️ **계정 라우트는 끊김으로 둔다**(기존 readiness 계약 검사와 같은 이유). 200 을 주면
+  //    그 응답이 `setAccountState("ok")` 를 세워 **`/health` 판정을 덮어쓴다** — 그러면 이
+  //    검사가 재려던 것(세대 대조로 닫히나)을 못 재고 우연히 통과한다.
+  const hb = (body) => (m, p) => (p === "/health" ? { status: 200, body } : { throw: true });
+  // 열려야 하는 쪽을 잴 때만 진짜 응답을 준다.
+  const hbOpen = (body) => (m, p) => (p === "/health" ? { status: 200, body } : defaultRoutes(m, p));
+  const OKB = { ok: true, ready: true, signupReady: true, providers: ["kakao", "naver"] };
+  const STALE = "새 버전이 필요해요";
+
+  // ── a. 같으면 정상이다. **막는 쪽만 재면 「영영 안 열리는」 회귀를 못 잡는다.**
+  await T("T93-a 세대가 같으면 계정 UI 가 열린다", async () => {
+    const c = await boot({ routes: hbOpen({ ...OKB, build: CLIENT_BUILD }) });
+    const txt = allText(c.document.getElementById("mypage"));
+    assert.ok(!txt.includes(STALE), "세대가 같은데 새 버전 안내를 낸다");
+    assert.ok(txt.includes("카카오"), "세대가 같은데 계정 화면이 안 열린다");
+    assert.equal(c.document.getElementById("share-btn").hidden, false,
+      "세대가 같은데 계정 기능이 닫혀 있다");
+  });
+
+  // ── b. 다르면 **계정 UI 를 닫고 이유를 말한다.**
+  await T("T93-b 세대가 다르면 계정 UI 를 닫고 새 버전을 안내한다", async () => {
+    const c = await boot({ routes: hb({ ...OKB, build: "v11-deadbeefdead" }) });
+    const txt = allText(c.document.getElementById("mypage"));
+    assert.ok(txt.includes(STALE), "세대가 다른데 새 버전 안내가 없다");
+    assert.ok(!txt.includes("카카오 계정"), "세대가 다른데 「카카오 계정」이라 단정한다");
+    assert.equal(c.document.getElementById("share-btn").hidden, true,
+      "세대가 다른데 초대 링크 버튼이 보인다");
+    // 점검(503)과 **다른 말**을 해야 한다 — 기다릴 일과 다시 열 일은 사용자가 할 일이 다르다.
+    assert.ok(!txt.includes("점검 중"), "세대 불일치를 「점검 중」이라 말한다 — 기다려도 안 열린다");
+  });
+
+  // ── c. 로그아웃 상태에서 **로그인 버튼을 안 그린다.**
+  await T("T93-c 세대가 다르면 로그인 버튼을 안 그린다", async () => {
+    const c = await boot({ store: {}, routes: hbOpen({ ...OKB, build: "v11-deadbeefdead" }) });
+    const txt = allText(c.document.getElementById("mypage"));
+    assert.ok(!/카카오로 로그인|네이버로 로그인/.test(txt),
+      "세대가 다른데 로그인 버튼을 그렸다 — 눌러도 계약이 안 맞는다");
+    assert.ok(txt.includes(STALE), "세대가 다른데 이유를 안 말한다");
+  });
+
+  // ── d. **모양이 틀리거나 없으면 다르다고 본다**(fail-closed 전수).
+  for (const [label, build] of [
+    ["build 누락", undefined], ["build 가 null", null], ["build 가 빈 문자열", ""],
+    ["build 가 숫자", 11], ["build 가 배열", ["v11"]], ["build 가 객체", { v: "v11" }],
+  ]) {
+    await T(`T93-d ${label}: fail-closed`, async () => {
+      const body = { ...OKB }; if (build !== undefined) body.build = build;
+      const c = await boot({ routes: hb(body) });
+      assert.equal(c.document.getElementById("share-btn").hidden, true,
+        `${label} 인데 계정 기능을 열었다 — 모름은 「같다」가 아니다`);
+      assert.ok(allText(c.document.getElementById("mypage")).includes(STALE),
+        `${label} 인데 이유를 안 말한다`);
+    });
+  }
+
+  // ── e. **health 자체를 못 물어봤으면 세대 판정을 하지 않는다.**
+  //    그 상태는 이미 「연결 안 됨」으로 닫히고, 여기서 「새 버전이 필요해요」라고 말하면
+  //    사용자가 하지 않아도 될 일(앱 재설치)을 한다.
+  for (const [label, resp] of [
+    ["health 500", { status: 500, body: {} }],
+    ["health 끊김", { throw: true }],
+  ]) {
+    await T(`T93-e ${label}: 세대 불일치라고 말하지 않는다`, async () => {
+      const c = await boot({ routes: (m, p) => (p === "/health" ? resp : { throw: true }) });
+      const txt = allText(c.document.getElementById("mypage"));
+      assert.ok(!txt.includes(STALE), `${label} 인데 「새 버전」이라 말한다`);
+      assert.equal(c.document.getElementById("share-btn").hidden, true,
+        `${label} 인데 계정 기능을 열었다`);
+    });
+  }
+
+  // ── f. **가입도 시작하지 않는다.** 옛 화면은 옛 정책 번들 해시로 시작해 policy_stale 을 받는다.
+  await T("T93-f 세대가 다르면 가입 화면이 시작조차 안 한다", async () => {
+    const c = await boot({ store: {}, routes: hbOpen({ ...OKB, build: "v11-deadbeefdead" }) });
+    const gate = c.document.getElementById("gate");
+    assert.ok(allText(gate).length >= 0);
+    // 게이트를 직접 연다(첫 화면 게이트가 이미 열려 있을 수도 있다).
+    const join = walk(gate).find((e) => e._text === "가입하기");
+    if (join) join.click();
+    await tick(); await tick();
+    const txt = allText(gate);
+    assert.ok(txt.includes(STALE), "세대가 다른데 가입 화면이 이유를 안 말한다");
+    assert.ok(!c.calls.some((x) => x.path === "/policies"),
+      "세대가 다른데 약관을 받아 왔다 — 시작하지 않아야 한다");
+  });
+
+  // ── g. **다시 읽기(reload)를 스스로 하지 않는다.** 옛 캐시를 그대로 다시 읽어 고리에 빠진다.
+  await T("T93-g 세대 불일치가 reload 고리를 만들지 않는다", async () => {
+    const c = await boot({ routes: hbOpen({ ...OKB, build: "v11-deadbeefdead" }) });
+    assert.equal(c.reloads.n, 0,
+      "세대 불일치에서 화면이 스스로 다시 읽었다 — 옛 캐시라 무한 고리가 된다");
+  });
+}
+
 const failed = RESULTS.filter((r) => !r[0]);
 for (const [pass, name, why] of RESULTS) if (!pass) console.log(`  ✗ ${name}\n      ${why}`);
 if (failed.length) {
@@ -1814,4 +1930,6 @@ console.log(`test-client: ${n}개 통과 — 로그아웃·계정삭제·친구�
   + ` · T72 사람 확인 위젯: 토큰 전에는 잠김 · 만료 시 재잠금 · 본문에 토큰 · 위젯 실패 안내)`
   + ` · 계정 서버 닫힘(503) 3상태: 표시 보존 · 계정 단정 금지 · 동작 숨김 · 복구`
   + ` · T84 초대 코드 생성은 명시적 POST(코드 없음 정상 표시 · 회전 미호출 · 실패·재시도)`
-  + ` · T85 실패한 세션 폐기의 영속 재시도(표식 유지·해제 · 다음 실행 · 초기화 비차단 · 새 세션 보호)`);
+  + ` · T85 실패한 세션 폐기의 영속 재시도(표식 유지·해제 · 다음 실행 · 초기화 비차단 · 새 세션 보호)`
+  + ` · T93 화면·서버 세대 대조(같으면 열림 · 다르면 계정 UI·로그인·가입 차단 · 모양 6종 fail-closed`
+  + ` · 못 물어본 것과 구분 · reload 고리 없음)`);

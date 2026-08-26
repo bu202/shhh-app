@@ -15,7 +15,7 @@
 //    `drained:true` 라고 답했다(T47b). 「크론이니까 예외」가 정확히 그 구멍이었다.
 import { withFence } from "../fence.js";
 import { DELETIONS_SWEEP_SQL, acquireLease, releaseLease, LEASE_MODES_CLEANUP,
-         pendingAlertCount } from "../ledger.js";
+         pendingAlertCount, sweepCutoff } from "../ledger.js";
 
 // 무료 플랜의 scheduled Worker CPU 한도는 10ms 다. 한 번에 다 지우려다 시간 초과로
 // **매번 아무것도 못 지우는** 상태가 가장 나쁘다 — 대상별로 잘라 여러 번에 걸쳐 지운다.
@@ -24,9 +24,10 @@ const LIMIT = 200;
 // 정리가 낡았다고 볼 기준(= 주기의 2배). `/api/ready` 의 `cleanupStale` 과 같은 값을 쓴다.
 const PERIOD = 3600e3;
 
-// 대상 네 가지. **`deletions` 를 지우는 문장은 C2 하나뿐이고, 그 WHERE 에는 반드시
-// `confirmed_at IS NOT NULL` 이 들어간다.** 없으면 「삭제는 됐는데 확정 기록만 실패한」 표식이
-// 사라져 복원 때 그 사람이 되살아나고 아무도 모른다.
+// 대상 다섯 가지. **`deletions` 를 지우는 문장은 C2 하나뿐이고, 그 WHERE 에는 반드시
+// `confirmed_at IS NOT NULL` 과 **백업 inventory 조건**이 들어간다.** 없으면 「삭제는 됐는데
+// 확정 기록만 실패한」 표식이 사라지거나, 아직 살아 있는 백업으로 되살아난 사람을 다시 지울
+// 근거가 사라진다 — 둘 다 아무도 알아채지 못한다.
 const JOBS = [
   // ⚠️ C1 — **만료 전에 지우면 그 순간 replay 창이 다시 열린다.**
   ["consumed_signup_states", "DB",
@@ -44,9 +45,17 @@ const JOBS = [
    `DELETE FROM rate_limits WHERE bucket IN
       (SELECT bucket FROM rate_limits WHERE expires_at < ? LIMIT ${LIMIT})`],
   // C2 — 확정된 표식만. 조건이 SQL 문자열 한 곳(ledger.js)에서 온다.
+  //
+  // ⚠️ **인자가 둘이고 값이 다르다**(2026-08-26 · H4). `?1` 은 지금, `?2` 는 「지금 − 복원 창」이다.
+  //    같은 값을 두 번 넣으면 복원 창 조건이 통째로 무력해진다 — 그래서 `now` 를 개수만큼
+  //    복제하던 옛 방식(`Array(nArgs).fill(now)`)을 쓰지 않고 **값을 만들어 넘긴다.**
+  // ⚠️ 이 문장은 `backups` 표를 읽는다. 표가 없거나 질의가 실패하면 **던진다** —
+  //    「inventory 를 못 읽었다」는 「백업이 없다」가 아니다. 던지면 아래 `tick()` 이
+  //    연속 실패로 세고 `/api/ready` 의 `cleanupAlert` 가 켜진다.
   ["deletions", "LEDGER",
    `${DELETIONS_SWEEP_SQL} AND mark IN (SELECT mark FROM deletions
-      WHERE confirmed_at IS NOT NULL AND expires_at < ? LIMIT ${LIMIT})`, 2],
+      WHERE confirmed_at IS NOT NULL AND expires_at < ?1 LIMIT ${LIMIT})`,
+   (env, now) => [now, sweepCutoff(env, now)]],
   // C5 — stale 해제 기록의 보유기간(2026-08-25 · 사용자 결정 1). 확정 삭제 표식과 **같은 규칙**
   //      (`CONFIRMED_RETENTION`)이고, `expires_keep` 은 기록할 때 이미 계산돼 있다.
   //      ⚠️ 지우지 못한 채 기한이 지난 것은 **경보 대상**이다(`/api/ready` 의 `cleanupAlert`).
@@ -84,10 +93,12 @@ export async function runCleanup(env, now = Date.now()) {
     const fenced = withFence(env, lease);
     const bind = (b) => (b === "DB" ? fenced.DB : env[b]);
     const counts = {};
-    for (const [name, binding, sql, nArgs = 1] of JOBS) {
+    // 인자는 **대상마다 다르다.** 옛 방식은 「`now` 를 nArgs 개 복제」였는데, 값이 서로 달라야
+    // 하는 대상(C2 의 복원 창)이 생기면서 그 방식 자체가 조용한 우회로가 됐다.
+    for (const [name, binding, sql, args = () => [now]] of JOBS) {
       // 지울 것이 없으면 0행이다 — 그것은 **정상**이고 fence 불일치가 아니다.
       // 둘을 가르는 것은 fence 통로가 한다(0행일 때만 fence 를 다시 읽는다).
-      const r = await bind(binding).prepare(sql).bind(...Array(nArgs).fill(now)).run();
+      const r = await bind(binding).prepare(sql).bind(...args(env, now)).run();
       counts[name] = (r.meta && r.meta.changes) || 0;
     }
     // ⛔ C6 — 확정되지 않은 pending 은 **지우지 않는다. 세어서 알린다.**

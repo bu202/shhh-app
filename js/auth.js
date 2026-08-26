@@ -225,13 +225,19 @@ if (typeof document !== "undefined") {
   // 표시만 보고 그리면 계정 라우트가 전부 503 인 배포에서 「카카오 계정」이라고 말한다(2026-08-23).
   // ⚠️ 표시는 **지우지 않는다** — 503 은 「세션이 죽었다」가 아니라 「지금은 모른다」이고,
   //    지워 버리면 사용자가 이유 없이 로그아웃된 것으로 보인다(그 자리에서는 로그인도 503 이다).
-  const accountReady = () => !!authToken() && !accountDown();
+  // ⚠️ 세대 판정(`buildStale()`)은 **`js/authApi.js` 가 소유한다** — `accountState` 와 같은 자리다.
+  //    여기서 따로 들고 있으면 `js/friends.js` 의 정적 버튼처럼 판정 밖에 남는 자리가 생긴다.
+  const accountReady = () => !!authToken() && !accountDown() && !buildStale();
   const DOWN_MSG = "계정 기능을 점검 중이에요. 사전과 연습은 그대로 쓸 수 있어요.";
+  const STALE_MSG = "새 버전이 필요해요. 앱을 완전히 닫았다가 다시 열어주세요. "
+                  + "사전과 연습은 그대로 쓸 수 있어요.";
   // 점검 안내 한 줄. 계정 화면 자리마다 같은 말을 쓴다.
+  // ⚠️ **원인이 다르면 사용자가 할 일도 다르다.** 점검은 기다릴 일이고 세대 불일치는
+  //    앱을 다시 열 일이다 — 같은 말을 하면 기다려도 영영 안 열린다.
   const downNote = (box) => {
     const p = document.createElement("p");
     p.className = "hint";
-    p.textContent = DOWN_MSG;
+    p.textContent = buildStale() ? STALE_MSG : DOWN_MSG;
     box.appendChild(p);
   };
 
@@ -342,6 +348,12 @@ if (typeof document !== "undefined") {
       localStorage.removeItem("shh-intro-muted");
       location.reload();
     });
+    // ── 권리 행사(2026-08-26) ──
+    // 방침의 「열람 · 정정 · 삭제 · 처리정지」가 **앱 안에서 실제로 되는 자리**다.
+    // ⛔ 이메일만으로는 열람도 삭제도 하지 않는다 — 이 앱은 이메일을 받지 않으므로 보낸
+    //    사람과 계정을 안전하게 이을 방법이 없다. 그래서 권리 행사의 기본 경로가 **여기**다.
+    row(list, "내 정보 내려받기", "", () => downloadMyData());
+    row(list, "처리정지", "", () => suspendFlow());
     row(list, "개인정보처리방침", "", () => { location.href = "privacy.html"; });
     box.appendChild(list);
 
@@ -380,6 +392,54 @@ if (typeof document !== "undefined") {
     note.className = "hint";
     note.textContent = "다른 기기에서도 로그인이 풀려요.";
     box.appendChild(note);
+  }
+
+  // ── 열람권: 내 정보를 파일로 ──────────────────────────────────────────
+  // ⚠️ **uid 를 어디에도 싣지 않는다.** 서버가 세션의 계정만 본다 — 화면에 uid 를 다루는
+  //    코드가 아예 없어야 「남의 것을 요청하는 화면」이 만들어지지 않는다.
+  // ⚠️ 파일은 **메모리에서 만들어 곧바로 버린다**(objectURL 회수). 남겨 두면 이 탭이 살아
+  //    있는 동안 그 주소로 개인정보 전문을 다시 읽을 수 있다.
+  async function downloadMyData() {
+    const r = await apiExport();
+    if (!r.ok) {
+      toast(r.status === 401 ? "로그인이 풀렸어요. 다시 로그인한 뒤 받아주세요"
+        : r.kind === "network" || r.kind === "timeout" ? "연결이 안 돼요. 잠시 뒤에 다시 눌러주세요"
+        : "지금은 받을 수 없어요. 잠시 뒤에 다시 시도해 주세요");
+      return;
+    }
+    try {
+      const blob = new Blob([JSON.stringify(r.data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = "shhh-내-정보.json";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast("내 정보를 내려받았어요");
+    } catch {
+      toast("파일을 만들지 못했어요. 브라우저에서 다시 시도해 주세요");
+    }
+  }
+
+  // ── 처리정지 ─────────────────────────────────────────────────────────
+  // **로그아웃도 삭제도 아니다.** 그래서 무엇이 다른지 누르기 전에 말한다 —
+  // 여기서 설명을 아끼면 사용자가 「지워지는 줄 알고」 누르거나 「멈추는 줄 알고」 로그아웃한다.
+  async function suspendFlow() {
+    if (!confirm("처리정지를 하면 계정의 처리가 멈춰요.\n"
+      + "· 모든 기기에서 로그인이 풀리고, 친구에게 별명·단어 개수가 더 이상 보이지 않아요.\n"
+      + "· 단어장·별명·친구 관계는 지워지지 않고 그대로 보관돼요(지우시려면 계정 삭제예요).\n"
+      + "· 다시 시작하시려면 같은 방법으로 로그인하신 뒤 「다시 시작하기」를 누르시면 돼요.\n"
+      + "계속할까요?")) return;
+    const r = await apiSuspend();
+    if (!r.ok) {
+      toast(r.status === 401 ? "로그인이 풀렸어요. 다시 로그인한 뒤 눌러주세요"
+        : r.kind === "network" || r.kind === "timeout" ? "연결이 안 돼요. 잠시 뒤에 다시 눌러주세요"
+        : "처리정지를 하지 못했어요. 잠시 뒤에 다시 시도해 주세요");
+      return;
+    }
+    // 서버가 이미 모든 세션을 끊었다. 화면도 같은 상태로 맞춘다.
+    setEntitlement(false, false);
+    setAuth(null); renderAll(); GO("me");
+    toast("처리를 멈췄어요. 다시 시작하시려면 로그인해 주세요.");
   }
 
   // ── 계정 ── 설정 → 계정으로 들어온다. 여기서 하는 일은 하나: 계정을 지우는 것.
@@ -504,6 +564,16 @@ if (typeof document !== "undefined") {
   // 다시 시도할 일이고, 제공자 미설정은 기다릴 일이라 같은 말을 하면 헛수고를 시킨다.
   // 어느 쪽이든 **사전과 연습은 그대로 열려 있다**는 말을 반드시 붙인다(로그인만 닫는 것이다).
   function loginButtons(box, cls) {
+    // ⛔ **세대가 다르면 버튼을 아예 안 그린다**(2026-08-26). 옛 화면이 새 서버에 로그인을
+    //    시작하면 콜백 계약이 달라 조용히 실패하거나, 더 나쁘게는 옛 화면이 이해 못 하는
+    //    상태(정지·재개)를 받아 사용자에게 잘못 말한다.
+    if (buildStale()) {
+      const p = document.createElement("p");
+      p.className = "hint";
+      p.textContent = STALE_MSG;
+      box.appendChild(p);
+      return;
+    }
     // 순서는 **우리가 정한다**(서버 응답 순서에 화면 순서를 맡기지 않는다).
     const list = ["kakao", "naver", "google"].filter((k) => (PROVIDERS || []).includes(k));
     if (!list.length) {
@@ -629,6 +699,55 @@ if (typeof document !== "undefined") {
   // 비동기 화면이라 **네 가지 상태를 전부 가진다**: loading · error(+재시도) · ready · 진행 중.
   // 무한 spinner 와 영구 disabled 버튼을 만들지 않는다 — 친구 목록이 겪은 그 증상이다.
   let SIGNUP_BUSY = false;
+  // ── 처리정지된 계정으로 로그인했을 때 ────────────────────────────────
+  // 서버는 **세션을 주지 않는다.** 준 것은 1회용 재개 티켓(HttpOnly 쿠키)뿐이고, 여기서
+  // 사용자가 **명시적으로 고를 때만** 재개된다.
+  // ⛔ 「로그인했으니 알아서 재개」로 두면 정지가 사실상 없는 것과 같다.
+  // ⛔ 취소는 **아무 요청도 보내지 않는다** — 정지가 그대로 유지되고 티켓은 10분 뒤 만료된다.
+  function openResume() {
+    const { box, intro, introWasOpen } = gateBox();
+    const foot = gateCard(box, "이 계정은 <b>처리정지</b> 상태예요<br>다시 시작할까요?");
+
+    const note = document.createElement("p");
+    note.className = "hint";
+    note.textContent = "정지하신 동안에도 단어장·별명·친구 관계는 지워지지 않고 그대로 있어요. "
+      + "다시 시작하시면 그대로 이어서 쓰실 수 있어요.";
+    foot.appendChild(note);
+
+    const go = document.createElement("button");
+    go.type = "button"; go.className = "btn-primary";
+    go.textContent = "다시 시작하기";
+    go.addEventListener("click", async () => {
+      if (go.disabled) return;
+      go.disabled = true;                      // 중복 클릭 잠금 — 티켓은 1회용이다
+      const prev = go.textContent;
+      go.textContent = "처리 중…";
+      const r = await apiResume();
+      if (!r.ok) {
+        go.disabled = false; go.textContent = prev;
+        toast(r.message || "다시 시작하지 못했어요. 다시 로그인해 주세요.");
+        return;
+      }
+      setAuth(r.via || authVia());
+      box.hidden = true;
+      renderAll();
+      toast("다시 시작했어요");
+      // 세션이 방금 생겼다 — 서버 단어장을 다시 맞춘다.
+      sync(true);
+    });
+    foot.appendChild(go);
+
+    const cancel = document.createElement("button");
+    cancel.type = "button"; cancel.className = "btn-ghost";
+    cancel.textContent = "아니요, 계속 멈춰 둘게요";
+    cancel.addEventListener("click", () => { box.hidden = true; toast("정지 상태를 유지해요"); });
+    foot.appendChild(cancel);
+
+    peekButton(foot, intro, introWasOpen, box);
+    policyLinks(foot);
+    box.hidden = false;
+  }
+
   async function openSignup(notice) {
     const { box, intro, introWasOpen } = gateBox();
     const foot = gateCard(box, "shhh! 시작하기");
@@ -651,6 +770,13 @@ if (typeof document !== "undefined") {
     //    약관을 받아 오지도 않고 여기서 끝낸다 — 체크박스를 다 채운 뒤 마지막 버튼에서
     //    503 을 만나는 것이 사용자에게 가장 나쁜 순서다. 기존 사용자는 로그인이 되므로 길을 준다.
     //    ⚠️ null(못 물어봄)은 여기서 막지 않는다 — 아래 제공자 목록이 "연결할 수 없어요"로 답한다.
+    // ⛔ **세대가 다르면 가입도 시작하지 않는다**(2026-08-26). 여기서 막지 않으면 옛 화면이
+    //    옛 정책 번들 해시로 `/signup/start` 를 부르고, 서버는 `policy_stale` 로 거절한다 —
+    //    사용자에게는 원인 없는 실패다. 원인을 말하고 앱을 다시 열게 한다.
+    if (buildStale()) {
+      status.textContent = STALE_MSG;
+      return;
+    }
     if (SIGNUP_READY === false) {
       status.textContent = "지금은 새로 가입할 수 없어요. 준비가 끝나면 열릴 거예요. "
         + "로그인 없이도 사전과 연습은 그대로 쓸 수 있어요.";
@@ -965,6 +1091,13 @@ if (typeof document !== "undefined") {
       openSignup(SIGNUP_BACK[status]);
       return false;
     }
+    // 정지된 계정. **세션이 없다** — 서버가 재개 티켓만 심었다.
+    if (status === "suspended") {
+      takeNonce();
+      GATE_TAKEN = true;
+      openResume();
+      return false;
+    }
     if (status !== "ok") { takeNonce(); toast("로그인에 실패했어요. 다시 시도해 주세요."); return false; }
     const mine = takeNonce();
     if (!mine || n !== mine) {
@@ -988,6 +1121,12 @@ if (typeof document !== "undefined") {
     // **가입 안 함은 가입 화면으로 갈 일**이다. 하나로 뭉개면 사용자가 헛수고를 한다.
     if (!r.ok) {
       takeNonce();
+      // 네이버 갈래의 정지 응답(`403 suspended`). 가입 안내와 **다른 화면**으로 간다.
+      if (r.suspended) {
+        GATE_TAKEN = true;
+        openResume();
+        return false;
+      }
       const BACK = {
         signup_required: "아직 가입하지 않으셨어요. 여기서 가입하실 수 있어요.",
         state_used: "이미 처리된 가입 요청이에요. 다시 시작해 주세요.",
@@ -1056,6 +1195,22 @@ if (typeof document !== "undefined") {
     // 못 물어봤으면 null 로 남긴다 — loginButtons 가 그걸 보고 "연결 안 됨"이라 말한다.
     if (h.ok) { PROVIDERS = h.providers; SIGNUP_READY = h.signupReady;
                 TURNSTILE_KEY = h.turnstileSiteKey; }
+    // ── 화면 세대와 서버 세대 대조(2026-08-26) ──
+    // 못 물어봤으면 **판정하지 않는다**(`null` 유지) — 그 상태는 아래 `setAccountState("down")`
+    // 이 이미 닫으므로, 여기서 `false` 로 적으면 「연결이 안 돼요」가 「새 버전이 필요해요」로
+    // 바뀌어 사용자가 하지 않아도 될 일을 한다.
+    if (h.ok) {
+      setBuildOk(buildMatches(h.build));
+      if (buildStale()) {
+        // 새 세대를 받아 온다. **여기서 reload 하지 않는다** — 옛 캐시를 그대로 다시 읽어
+        // 고리에 빠진다. 실제 다시 읽기는 서비스워커가 바뀐 뒤 `controllerchange` 한 번뿐이고
+        // (app.js), 그 자리에 로그인 왕복 자물쇠가 이미 있다.
+        // ⚠️ **로그인 왕복 중에는 부르지 않는다** — 갱신이 controllerchange 를 내면 그 1회
+        //    reload 가 일회용 `code`·`state`·`n` 을 소모한다.
+        if (!plantsSession(ret)) requestAppUpdate();
+        toast(STALE_MSG);
+      }
+    }
     // 계정 기능이 열렸는지는 **`ready` 하나**로 판정한다(서버 계약은 그대로다).
     // ⚠️ `providers: []` 를 근거로 쓰지 않는다 — 그건 「로그인을 시작할 수 있나」이지
     //    「지금 로그인돼 있나」가 아니다. 제공자가 없어도 세션은 살아 있을 수 있다.

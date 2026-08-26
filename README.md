@@ -97,6 +97,7 @@ npx wrangler pages deploy --project-name shhh-app --branch main
 | `DEV_RATE_LIMIT` | **로컬 전용**(`.dev.vars`·테스트) | 계정 라우트가 **DB 를 만지기 전에 503** — 아래 「남용 방어」 참조 |
 | **`EDGE_GUARD`** (`waf` 또는 `ratelimit`) | `wrangler.jsonc` vars | 계정 라우트가 열리지 않는다. **선언되지 않은 방어를 있다고 보지 않는다**(위협 52·55). **지금 이 프로젝트에는 없다** |
 | `RL` (엣지 레이트리밋 바인딩) | `wrangler.jsonc` | `EDGE_GUARD="ratelimit"` 인데 없거나 `limit()` 이 함수가 아니면 계정 라우트가 열리지 않는다. **Pages Functions 에는 못 붙인다** |
+| **`D1_PLAN`** (`free` 또는 `paid`) | `wrangler.jsonc` vars | 삭제 표식이 **가장 긴 복원 창(30일)** 기준으로 더 오래 남는다. 모르는 값·빈 값도 같다 — **안전한 방향이지만 요금제를 올릴 때 반드시 함께 고친다**(`docs/OPS_RUNBOOK.md` §18-1) |
 | `APP_ORIGIN` | `wrangler.jsonc` | 복귀 주소 검증이 안 선다. **origin 만** — path·끝 슬래시가 있으면 `appOrigin()` 이 거부해 계정 라우트가 503 이다 |
 | **`DB`** (D1 `shhh-db`) | `wrangler.jsonc` | 전부 안 된다 |
 | **`LEDGER`** (D1 `shhh-ledger`) | `wrangler.jsonc` | **사용자 데이터 API 가 전부 503** — 표식 없는 삭제·추적 없는 쓰기를 만들지 않는다 |

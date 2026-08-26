@@ -124,7 +124,11 @@ const OAUTH_RUNBOOK = "docs/OAUTH_REAPPROVAL_RUNBOOK.md";
   //    「없다는 사실이 문서에 적혀 있어야 한다」다. 아래 6-b 가 값까지 검사한다.
   // ⚠️ `TURNSTILE_SITE_KEY` 는 **공개 값**이다(브라우저에 박히도록 설계된 값). 비밀은
   //    `TURNSTILE_SECRET` 쪽이라 그쪽만 시크릿으로 검사한다.
-  const VARS = new Set(["APP_ORIGIN", "EDGE_GUARD", "TURNSTILE_SITE_KEY"]);
+  // ⚠️ `D1_PLAN` 도 **운영자가 선언하는 값**이다(2026-08-26 · H4). 삭제 표식을 얼마나
+  //    들고 있어야 하는지가 요금제의 Time Travel 창에서 나오는데, 코드는 그 요금제를
+  //    알 방법이 없다. 모르면 **가장 긴 창(30일)** 으로 떨어지므로 빠뜨려도 안전한
+  //    방향이지만, 빠뜨렸다는 사실은 문서에 적혀 있어야 한다.
+  const VARS = new Set(["APP_ORIGIN", "EDGE_GUARD", "TURNSTILE_SITE_KEY", "D1_PLAN"]);
   // **로컬 전용 스위치.** 문서 셋에는 적혀 있어야 하고(있는 줄 모르면 아무도 못 쓴다),
   // **배포 가능한 설정 파일에는 절대 없어야 한다** — 있으면 남용 방어 없이 계정 라우트가
   // 열린 채로 배포된다(위협 50). 그래서 시크릿과 **다르게** 검사한다.
@@ -146,7 +150,7 @@ const OAUTH_RUNBOOK = "docs/OAUTH_REAPPROVAL_RUNBOOK.md";
     }
   }
   // 선언 변수도 같다. 이름만 코드에 있고 문서에 없으면 아무도 켤 줄 모른다.
-  for (const v of ["EDGE_GUARD", "TURNSTILE_SITE_KEY"]) {
+  for (const v of ["EDGE_GUARD", "TURNSTILE_SITE_KEY", "D1_PLAN"]) {
     for (const d of DOCS) assert.ok(R(d).includes(v), t(`${d} 에 ${v} 설명이 없다 — 코드가 이 이름으로 계정 라우트를 연다`));
   }
   // 로컬 전용 스위치: 문서 셋에는 있고, **배포 가능한 설정 둘에는 없다.**

@@ -10,14 +10,15 @@
 //    사람에게는 그것도 방어가 아니다. **「불변」은 자동으로 강제되는 성질이 아니라 운영 규칙이다.**
 import assert from "node:assert";
 import { readFile } from "node:fs/promises";
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readManifest, bundleId, currentAssets, KINDS, DIR } from "./policies.mjs";
 import { INCLUDE } from "./build.mjs";
 import { POLICY_BUNDLE } from "../worker/policies.js";
-import { requiredPolicyKinds, REQUIRED_POLICY_EVENTS, SESSION_DAYS } from "../worker/index.js";
+import { requiredPolicyKinds, REQUIRED_POLICY_EVENTS, SESSION_DAYS,
+         ENABLED_PROVIDERS, routeFor } from "../worker/index.js";
 import { CONFIRMED_RETENTION } from "../worker/ledger.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -383,9 +384,123 @@ for (const f of readdirSync(DIR))
     [/통상 하루 정도가 더 걸릴 수 있다/, "백업 삭제 지연 단서"],
     [/30일/, "유료 전환 시 늘어나는 범위"],
     [/먼저 다시 계산하고/, "유료 전환 전 재계산 게이트"],
-    [/매일 백업하지 않습니다/, "백업 주기 사실"],
+    [/매일 하는 정기 백업은 하지 않고/, "백업 주기 사실"],
     [/자동으로 되돌리는 기능은 만들지 않습니다/, "자동 복원 금지"],
   ]) assert.match(cur, re, t(`현재 방침 판에 ${what} 서술이 없다`));
+}
+
+// ── 14. **방침이 말하는 것과 코드가 하는 일이 같은가** (2026-08-26 신설) ──
+//
+// ⛔ 왜 생겼나: 방침이 **없는 기능**과 **하지 않는 일**을 현재형으로 적고 있었다.
+//   H1 백업 — 「7일 만료로 설정해 둔다」고 했지만 백업 코드도 저장 공간도 없었다
+//   H2 권리 — 「이메일로 요청하면 처리해 준다」고 했지만 이메일을 받지 않아 계정을 이을 수 없다
+//   H3 정지 — 「로그아웃하면 처리가 멈춘다」고 했지만 로그아웃은 세션만 끊는다
+//   M1 비회원 — 「단어장도 만들지 않는다」고 했지만 기기 로컬 저장소에는 만든다
+//   M2 요청 — 「그 밖엔 아무 요청도 안 나간다」고 했지만 폐기 재시도가 나간다
+//   M3 제공자 — 구글을 현재 제공자로 적었지만 서버는 받지 않는다
+//
+// ⚠️ **문자열 하나로 「의미가 맞다」고 말하지 않는다.** 각 항목은 ⓐ 있어야 할 문장과
+//    ⓑ **있으면 안 되는 반대 문장**을 함께 잰다. 그리고 가능한 것은 **코드에서 파생**한다.
+{
+  // ⚠️ **불변 사본을 읽는다**(살아 있는 원본이 아니라). 화면이 실제로 보여주는 바이트가
+  //    그 사본이므로, 원본만 고치고 stamp 를 잊으면 여기서 실패한다.
+  const cur = String(await R(POLICY_BUNDLE.docs.privacy.path)).replace(/\s+/g, " ");
+  const sum = String(await R(POLICY_BUNDLE.docs.summary.path)).replace(/\s+/g, " ");
+  const src = (f) => readFileSync(new URL("../" + f, import.meta.url), "utf8");
+
+  // ── a. **제공자 목록은 코드에서 파생한다.** 손으로 적으면 갈라진다.
+  {
+    const open = ENABLED_PROVIDERS;
+    const NAME = { kakao: "카카오", naver: "네이버", google: "구글" };
+    assert.deepEqual([...open].sort(), ["kakao", "naver"],
+      t("14-a: 열린 제공자 목록이 바뀌었다 — 방침 문장을 함께 고쳐야 한다"));
+    for (const doc of [cur, sum]) {
+      for (const k of open)
+        assert.ok(doc.includes(NAME[k]), t(`14-a: 열려 있는 ${NAME[k]} 가 문서에 없다`));
+    }
+    // 닫힌 제공자는 **닫혔다고** 적혀 있어야 한다. 「그냥 안 적기」로는 부족하다 —
+    // 옛 문장이 남아 있는지 아무도 못 잰다.
+    for (const k of Object.keys(NAME).filter((x) => !open.includes(x))) {
+      assert.match(cur, new RegExp(`${NAME[k]}[^<]{0,40}(쓰실 수 없|꺼 둔|비활성)`),
+        t(`14-a: 닫힌 ${NAME[k]} 를 「지금 쓸 수 없다」고 적지 않았다`));
+      assert.ok(!new RegExp(`카카오·네이버·${NAME[k]}가? 주는`).test(cur),
+        t(`14-a: 닫힌 ${NAME[k]} 가 아직 현재 제공자로 적혀 있다`));
+    }
+  }
+
+  // ── b. **로그아웃 ≠ 처리정지.** 옛 문장이 되살아나면 실패한다.
+  assert.ok(!/로그아웃[^<]{0,30}(계정 관련 )?처리가 멈춥니다/.test(cur),
+    t("14-b: ⛔ 「로그아웃하면 처리가 멈춘다」가 되살아났다 — 로그아웃은 세션만 끊는다"));
+  assert.match(cur, /로그아웃은 처리정지가 아닙니다/,
+    t("14-b: 로그아웃과 처리정지를 가르는 문장이 없다"));
+  for (const [re, what] of [
+    [/설정 → <b>처리정지<\/b>/, "처리정지의 앱 안 경로"],
+    [/모든 기기에서 로그인이 풀리고/, "정지가 모든 기기에 듣는다는 사실"],
+    [/데이터는 지우지 않고 그대로 보관/, "정지 ≠ 삭제"],
+    [/로그인만으로는 자동으로 다시 시작되지 않습니다/, "자동 재개 금지"],
+    [/「다시 시작하기」를 직접 누르셔야/, "명시적 재개"],
+  ]) assert.match(cur, re, t(`14-b: 방침에 ${what} 가 없다`));
+  // 코드에도 그 라우트가 실제로 있어야 한다 — 방침만 고치고 끝내지 않는다.
+  assert.ok(routeFor("POST", "/me/suspend") && routeFor("POST", "/me/resume"),
+    t("14-b: 방침은 처리정지·재개를 말하는데 라우트가 없다"));
+
+  // ── c. **열람은 실제로 내려받을 수 있어야 한다.**
+  assert.match(cur, /내 정보 내려받기/, t("14-c: 방침에 내려받기 경로가 없다"));
+  assert.match(sum, /내 정보 내려받기/, t("14-c: 가입 요약에 내려받기 경로가 없다"));
+  assert.ok(routeFor("GET", "/me/export"), t("14-c: 방침은 내려받기를 말하는데 라우트가 없다"));
+  assert.match(cur, /친구의 제공자 회원 번호와 친구의 단어장은 들어 있지 않습니다/,
+    t("14-c: 내려받기에 남의 것이 없다는 사실을 적지 않았다"));
+
+  // ── d. ⛔ **이메일은 계정 소유 증명이 아니다.** 옛 약속이 되살아나면 실패한다.
+  assert.ok(!/(카카오·네이버)의 계정에서 보내 주시거나/.test(cur),
+    t("14-d: ⛔ 「제공자 계정에서 메일을 보내면 처리해 준다」가 되살아났다 — 확인할 방법이 없다"));
+  for (const [re, what] of [
+    [/이메일은 문의를 받는 수단일 뿐/, "이메일의 성질"],
+    [/이메일만으로는 계정 정보를 알려 드리거나, 지우거나/, "이메일만으로 불가"],
+    [/먼저 네이버·카카오 계정을 복구해 주세요/, "복구가 먼저"],
+    [/실명·전화번호·신분증을 요구하지 않습니다/, "본인확인에 새 개인정보를 안 받는다"],
+  ]) assert.match(cur, re, t(`14-d: 방침에 ${what} 가 없다`));
+  assert.match(sum, /이메일만으로는 계정을 확인해 드릴 수 없습니다/,
+    t("14-d: 가입 요약이 이메일 예외를 그대로 약속한다"));
+
+  // ── e. **비회원 — 서버에는 없고 기기에는 있다.**
+  assert.ok(!/로그인하지 않으시면 계정도 단어장도 만들지 않습니다/.test(cur),
+    t("14-e: ⛔ 「비회원은 단어장을 안 만든다」가 되살아났다 — 기기에는 만든다"));
+  assert.match(cur, /이 기기 안에는 단어장이 만들어집니다/,
+    t("14-e: 기기 단어장이 생긴다는 사실이 없다"));
+  // 코드가 실제로 그 키에 저장한다.
+  assert.match(src("js/app.js"), /const BOOK_KEY = "shh-wordbook"/,
+    t("14-e: 기기 단어장 키가 바뀌었다 — 방침 문장을 다시 봐야 한다"));
+
+  // ── f. **비로그인 요청 — 폐기 재시도를 고지한다.**
+  assert.ok(!/그 밖의 <code>\/api\/<\/code> 경로로는 로그인하지 않으면 아무 요청도 나가지 않습니다/.test(cur),
+    t("14-f: ⛔ 「비로그인이면 아무 요청도 안 나간다」가 되살아났다"));
+  assert.match(cur, /DELETE \/api\/session/,
+    t("14-f: 세션 폐기 재시도 요청을 고지하지 않았다"));
+  // 코드에 그 재시도가 실제로 있다.
+  assert.match(src("js/authApi.js"), /addEventListener\("online", \(\) => \{ retryRevokeSession\(\); \}\)/,
+    t("14-f: 폐기 재시도 경로가 코드에서 사라졌다 — 방침 문장을 다시 봐야 한다"));
+
+  // ── g. **백업 — 「있다」와 「없다」를 동시에 말하지 않는다.**
+  assert.ok(!/아직 확정해 말씀드릴 수 없습니다/.test(cur),
+    t("14-g: ⛔ 같은 문서가 기간을 확정했다가 미확정이라고 다시 말한다"));
+  assert.ok(!/만들어진 지 <b>7일이 지나면 만료<\/b>되도록<\/b>? ?설정해 둡니다/.test(cur),
+    t("14-g: ⛔ 아직 없는 백업을 「설정해 두었다」고 현재형으로 말한다"));
+  for (const [re, what] of [
+    [/백업 사본은 지금 운영하고 있지 않습니다/, "백업 미운영 사실"],
+    [/지금까지 만들어진 백업 사본은 하나도 없습니다/, "백업 0건"],
+    [/실제로 백업을 운영하기 시작하면 이 문단을 먼저 고치겠습니다/, "운영 시작 시 개정 약속"],
+  ]) assert.match(cur, re, t(`14-g: 방침에 ${what} 가 없다`));
+
+  // ── h. **삭제 표식 — 15일은 최소이지 삭제 조건이 아니다.**
+  for (const [re, what] of [
+    [/15일은 「최소」이지\s*\n?\s*「그날 지운다」가 아닙니다/, "최소 ≠ 삭제일"],
+    [/백업 사본이 더 이상 남아 있지 않음을 확인/, "백업 확인 조건"],
+    [/확인하지 못하면\(모르면\) 지우지 않습니다/, "모름은 삭제 허가가 아니다"],
+  ]) assert.match(cur, re, t(`14-h: 방침에 ${what} 가 없다`));
+  // 코드도 같은 조건을 들고 있다 — 방침만 고치고 끝내지 않는다.
+  assert.match(src("worker/ledger.js"), /NOT EXISTS \(SELECT 1 FROM backups/,
+    t("14-h: 표식 삭제 SQL 에 백업 조건이 없다 — 방침이 거짓이 된다"));
 }
 
 console.log(`test-policies: 통과 — 단언 ${n}개 · 판 ${m.versions.length}개 · pv ${m.bundle.pv} · `

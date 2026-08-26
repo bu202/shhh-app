@@ -66,6 +66,37 @@ assert.ok(/-[0-9a-f]{12}$/.test(cacheName || ""),
   `캐시 이름에 내용 해시가 없다(${cacheName}) — 자산이 바뀌어도 이름이 그대로라 옛 세대가 남는다`);
 assert.equal(cacheName, await swCacheName(), "캐시 이름이 지금 dist 자산의 해시와 다르다");
 
+// 6-1. **화면 세대 · 서버 세대 · 캐시 이름이 같은 계산에서 나온다** (2026-08-26)
+//
+// 왜 생겼나: 설치형 PWA 는 옛 화면 코드를 계속 돌린다. 캐시 세대는 갈려도 **이미 떠 있는
+// 탭**이 옛 `auth.js` 로 새 서버의 계정 API 를 부르는 것은 막지 못한다. 그래서 화면이 자기
+// 세대를 알고 서버 세대와 대조한다 — 그 대조가 뜻을 가지려면 **두 값이 같은 원본에서** 나와야
+// 한다. 사람이 두 파일에 같은 값을 옮겨 적는 방식이면, 한쪽만 고친 날 대조가 조용히 무의미해진다.
+//
+// ⚠️ **이 검사가 잡는 것과 못 잡는 것을 갈라 적는다.**
+//    잡는 것: 세 자리 중 **하나라도 안 박히거나 다른 계산에서 나오면** 실패한다.
+//    못 잡는 것: `worker/build-id.js` 의 **커밋을 잊은 것**은 못 잡는다 — 이 스위트가 빌드를
+//    돌리면서 그 파일을 다시 쓰기 때문이다. 다만 배포도 같은 빌드 명령을 거치므로
+//    (Pages 의 build command → 그 뒤에 `functions/` 번들) 낡은 값이 배포되지는 않는다.
+//    커밋을 잊으면 다음 `git status` 가 말한다.
+{
+  const { readFile } = await import("node:fs/promises");
+  const clientBuild = ((await readFile(new URL("../dist/js/build.js", import.meta.url), "utf8"))
+    .match(/window\.SHH_BUILD = "([^"]*)"/) || [])[1];
+  const serverBuild = ((await readFile(new URL("../worker/build-id.js", import.meta.url), "utf8"))
+    .match(/export const BUILD_ID = "([^"]*)"/) || [])[1];
+  assert.equal(clientBuild, cacheName,
+    `화면 세대(${clientBuild}) 가 캐시 이름(${cacheName}) 과 다르다 — 같은 계산이 아니다`);
+  assert.equal(serverBuild, cacheName,
+    `worker/build-id.js (${serverBuild}) 가 낡았다 — \`npm run build\` 뒤 커밋을 잊었다`);
+  assert.ok(/-[0-9a-f]{12}$/.test(serverBuild || ""), "서버 세대에 내용 해시가 없다");
+  // 저장소의 `js/build.js` 는 **개발용 자리표시자**로 남아 있어야 한다 — 빌드는 dist 만 박는다.
+  const repoBuild = ((await readFile(new URL("../js/build.js", import.meta.url), "utf8"))
+    .match(/window\.SHH_BUILD = "([^"]*)"/) || [])[1];
+  assert.equal(repoBuild, "dev",
+    `저장소의 js/build.js 가 "${repoBuild}" 다 — 빌드 결과가 저장소 소스에 새어 들어갔다`);
+}
+
 // 7. 자산이 바뀌면 이름도 **반드시** 바뀐다. 위 검사만으로는 "해시를 늘 상수로 계산해도" 통과한다.
 {
   const { writeFile, readFile } = await import("node:fs/promises");
