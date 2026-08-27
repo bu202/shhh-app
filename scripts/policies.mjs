@@ -13,6 +13,9 @@ import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { execFileSync } from "node:child_process";
+// 배포 경계의 원본은 해시 하나다 — 보관함의 「나갔던 판 / 아직 안 나간 판」이 여기서 갈린다.
+import { DEPLOYED_SOURCE, DEPLOYED_AT } from "./deployed.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const DIR = path.join(ROOT, "policies");
@@ -47,7 +50,18 @@ export const POLICY_BUNDLE = ${JSON.stringify(m.bundle, null, 2)};
 `;
 
 // 가입 화면이 아니라 **사람이 주소로 찾아올 때** 보여줄 목록. 번들이 바뀌면 다시 쓴다.
-const indexHtml = (m) => `<!DOCTYPE html>
+export const indexHtml = (m, shipped) => {
+  // ⚠️ **현재 판을 「지난 판」에 다시 적지 않는다**(2026-08-27 · K4). 옛 보관함은 `versions`
+  //    전체를 그대로 뿌려서, 지금 나가는 사본 넷이 「지난 판」에도 함께 있었다 — 보관함의
+  //    쓸모가 「그때 그 사람이 본 문서가 이것이다」인데 그 구분이 없으면 지목이 안 된다.
+  // ⚠️ **「지난 판」과 「아직 나간 적 없는 판」도 다르다.** 로컬에서 stamp 만 하고 배포되지
+  //    않은 사본은 **아무도 본 적이 없다** — 그걸 「지난 판」이라 부르면 거짓이다.
+  //    경계의 원본은 `scripts/deployed.mjs` 의 source 해시 하나다.
+  const current = new Set(Object.values(m.bundle.docs).map((d) => d.path.replace(/^policies\//, "")));
+  const rest = m.versions.filter((v) => !current.has(v.file));
+  const past = shipped ? rest.filter((v) => shipped.has(v.file)) : rest;
+  const draft = shipped ? rest.filter((v) => !shipped.has(v.file)) : null;
+  return `<!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
@@ -73,15 +87,40 @@ const indexHtml = (m) => `<!DOCTYPE html>
 ${Object.keys(m.bundle.docs).sort().map((k) =>
   `      <li><b>${k}</b> — <a href="${m.bundle.docs[k].path.replace(/^policies\//, "")}">${m.bundle.docs[k].path.replace(/^policies\//, "")}</a><br><code>${m.bundle.docs[k].hash}</code></li>`).join("\n")}
     </ul>
-    <h2>지난 판</h2>
+    <h2>지난 판 — 실제로 나갔던 문서</h2>
+    <p>배포 경계는 <code>${DEPLOYED_SOURCE}</code>(${DEPLOYED_AT} 배포)입니다.
+       그 시점에 저장소에 있던 사본만 여기에 둡니다.</p>
     <ul>
-${m.versions.map((v) => `      <li>${v.kind} — <a href="${v.file}">${v.file}</a></li>`).join("\n")}
+${past.length ? past.map((v) => `      <li>${v.kind} — <a href="${v.file}">${v.file}</a></li>`).join("\n")
+              : "      <li>아직 없습니다.</li>"}
+    </ul>
+    <h2>아직 나간 적 없는 판</h2>
+    <p>만들어 두었지만 <b>배포된 적이 없는</b> 사본입니다. 이 문서를 보신 분은 아무도 없습니다.
+       지우지 않고 남기는 이유는 판별 값(pv)의 계산 근거가 되기 때문입니다.</p>
+    <ul>
+${draft === null
+  ? "      <li>배포 경계를 확인할 수 없어 분류하지 못했습니다.</li>"
+  : (draft.length ? draft.map((v) => `      <li>${v.kind} — <a href="${v.file}">${v.file}</a></li>`).join("\n")
+                  : "      <li>없습니다.</li>")}
     </ul>
     <p style="margin-top:32px"><a href="../">← shhh!로 돌아가기</a> · <a href="../privacy.html">개인정보처리방침</a></p>
   </main>
 </body>
 </html>
 `;
+};
+
+// 배포 경계 시점에 `policies/` 에 있던 파일 이름들. **git 이 원본이다** — manifest 에 적어 두면
+// 파생값이 낡는다. 확인할 수 없으면 `null` 을 돌려주고, 보관함이 그 사실을 그대로 적는다.
+export function shippedPolicyFiles() {
+  try {
+    // ⚠️ **저장소 위치를 환경에서 받을 수 있다** — 돌연변이 실행기는 추적 파일만 임시 폴더로
+    //    복사하고 `.git` 은 가져가지 않는다(`scripts/deployed.mjs` 와 같은 이유).
+    return new Set(execFileSync("git", ["ls-tree", "-r", "--name-only", DEPLOYED_SOURCE, "policies/"],
+      { encoding: "utf8", cwd: process.env.SHHH_GIT_ROOT || ROOT }).split("\n").filter(Boolean)
+      .map((f) => f.replace(/^policies\//, "")));
+  } catch { return null; }
+}
 
 // 살아 있는 원본을 읽어 새 불변 사본이 필요하면 만든다. **이미 있는 파일은 절대 덮어쓰지 않는다.**
 export async function stamp() {
@@ -105,7 +144,7 @@ export async function stamp() {
   m.bundle = { pv: bundleId(docs), docs };
   await writeFile(MANIFEST, JSON.stringify(m, null, 2) + "\n");
   await writeFile(WORKER_FILE, workerModule(m));
-  await writeFile(path.join(DIR, "index.html"), indexHtml(m));
+  await writeFile(path.join(DIR, "index.html"), indexHtml(m, shippedPolicyFiles()));
   await stampServiceWorker(m);
   return { manifest: m, added };
 }

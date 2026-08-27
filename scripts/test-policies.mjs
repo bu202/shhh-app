@@ -596,5 +596,89 @@ for (const f of readdirSync(DIR))
   }
 }
 
+// ── 16. **보관함의 current / past / draft 구분** (2026-08-27 · K4) ────────
+//
+// 옛 보관함은 `versions` 전체를 「지난 판」으로 뿌렸다 — 그래서 **지금 나가는 사본 넷이
+// 「지난 판」에도 함께** 있었다. 보관함의 쓸모는 「그때 그 사람이 본 문서가 이것이다」인데,
+// 지금 판이 지난 판에 섞여 있으면 그 지목이 안 된다.
+//
+// 그리고 「지난 판」과 「아직 나간 적 없는 판」도 다르다. 로컬에서 stamp 만 하고 배포되지
+// 않은 사본은 **아무도 본 적이 없다** — 그걸 「지난 판」이라 부르면 거짓이다.
+{
+  const idx = String(await R("policies/index.html"));
+  const { shippedPolicyFiles, indexHtml } = await import("./policies.mjs");
+  const shipped = shippedPolicyFiles();
+  // ⚠️ **생성기가 원본이다.** 보관함 페이지는 만들어지는 파일이므로, 여기서 다시 만들어
+  //    디스크의 것과 바이트로 대조한다 — 그래야 「생성기를 고쳤는데 페이지는 옛 분류
+  //    그대로」인 상태가 검사에 걸린다.
+  assert.equal(indexHtml(m, shipped), idx,
+    t("16: policies/index.html 이 생성기 출력과 다르다 — `npm run policies` 를 안 돌렸다"));
+  assert.ok(shipped && shipped.size > 0, t("16: 배포 경계의 파일 목록을 못 읽었다 — 검사가 헛돈다"));
+
+  const section = (h) => {
+    const at = idx.indexOf(`<h2>${h}`);
+    assert.ok(at > 0, t(`16: 보관함에 「${h}」 절이 없다`));
+    const end = idx.indexOf("<h2>", at + 4);
+    return idx.slice(at, end < 0 ? idx.length : end);
+  };
+  // 보관함 안의 사본만 센다 — `../privacy.html` 같은 바깥 링크는 사본이 아니다.
+  const files = (block) => [...block.matchAll(/href="([^"/]+\.(?:html|txt))"/g)].map((x) => x[1]);
+  const current = new Set(Object.values(m.bundle.docs).map((d) => d.path.replace(/^policies\//, "")));
+  const past = files(section("지난 판"));
+  const draft = files(section("아직 나간 적 없는 판"));
+
+  // ── a. 지금 나가는 사본은 **지난 판에도 draft 에도 없다.**
+  for (const f of current) {
+    assert.ok(!past.includes(f), t(`16-a: ★ 지금 나가는 ${f} 가 「지난 판」에도 적혀 있다`));
+    assert.ok(!draft.includes(f), t(`16-a: ★ 지금 나가는 ${f} 가 「아직 안 나간 판」에 적혀 있다`));
+  }
+  // ── b. 「지난 판」은 **배포 경계에 실제로 있던 것만**이다.
+  for (const f of past) {
+    assert.ok(shipped.has(f),
+      t(`16-b: ★ 나간 적 없는 ${f} 를 「지난 판」이라 부른다 — 아무도 본 적이 없다`));
+  }
+  // ── c. draft 는 **배포 경계에 없던 것만**이다(양성 대조 — 둘 다 재야 한다).
+  for (const f of draft) {
+    assert.ok(!shipped.has(f),
+      t(`16-c: ★ 실제로 나갔던 ${f} 를 「아직 안 나간 판」이라 부른다`));
+  }
+  // ── d. 셋을 합치면 manifest 전체다. 어느 사본도 조용히 사라지지 않는다.
+  assert.equal(new Set([...current, ...past, ...draft]).size, m.versions.length,
+    t(`16-d: 보관함이 ${past.length + draft.length + current.size}개를 적는데 manifest 는 ${m.versions.length}개다`));
+  // ── e. **불변 사본의 바이트는 그대로다.** 이름의 해시와 내용이 계속 일치해야 한다.
+  for (const v of m.versions) {
+    const body = await R("policies/" + v.file);
+    assert.equal(createHash("sha256").update(body).digest("hex"), v.hash,
+      t(`16-e: ★ 불변 사본 ${v.file} 의 내용이 바뀌었다`));
+  }
+}
+
+// ── 17. **처리정지 약속을 코드가 문장 안에서 지키는가** (2026-08-27 · 위협 82) ──
+//
+// 방침은 「처리정지를 누르면 **모든 기기에서 로그인이 풀린다**」고 적는다. 그런데 그 약속은
+// 세션을 지우는 것만으로는 지켜지지 않는다 — **정지가 끝난 뒤에 도착하는 OAuth 콜백**이
+// 세션을 하나 새로 만들면, 사용자가 재개하는 순간 그 기기가 살아난다.
+// 그래서 발급 문장 자체가 「정지되지 않았고 세대가 그대로」를 요구해야 한다.
+{
+  const src = readFileSync(new URL("../worker/index.js", import.meta.url), "utf8");
+  const ins = (src.match(/INSERT INTO sessions[\s\S]{0,400}?\{FENCE\}`\)/) || [])[0] || "";
+  assert.ok(ins, t("17: 세션 INSERT 문장을 못 찾았다 — 검사가 낡았다"));
+  assert.match(ins, /suspended_at IS NULL/,
+    t("17: ★ 세션 발급이 정지 여부를 안 본다 — 「모든 기기에서 로그인이 풀린다」가 거짓이 된다"));
+  assert.match(ins, /session_version = COALESCE\(\?, session_version\)/,
+    t("17: ★ 세션 발급이 자격 확인 시점의 세대를 안 본다 — 로그아웃 뒤에도 발급된다"));
+  assert.match(src, /if \(!\(ins\.meta && ins\.meta\.changes === 1\)\) throw new SessionRace\(\)/,
+    t("17: ★ 0행 발급이 성공으로 넘어간다"));
+  // 방침 쪽 문장도 함께 잰다 — 한쪽만 고치면 둘이 갈라진다.
+  const cur = String(await R(POLICY_BUNDLE.docs.privacy.path)).replace(/\s+/g, " ");
+  const sum = String(await R(POLICY_BUNDLE.docs.summary.path)).replace(/\s+/g, " ");
+  for (const [label, body] of [["privacy.html", cur], ["요약", sum]]) {
+    assert.ok(/모든 기기/.test(body),
+      t(`17: ${label} 이 처리정지의 범위를 「모든 기기」로 적지 않았다`));
+    assert.ok(/로그인만으로는|직접 누르셔야/.test(body),
+      t(`17: ${label} 이 「로그인만으로 재개되지 않는다」를 적지 않았다`));
+  }
+}
+
 console.log(`test-policies: 통과 — 단언 ${n}개 · 판 ${m.versions.length}개 · pv ${m.bundle.pv} · `
   + `필수 이벤트 ${REQUIRED_POLICY_EVENTS}종(${requiredPolicyKinds.map(([k, a]) => k + "/" + a).join(" ")})`);
