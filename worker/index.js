@@ -713,18 +713,35 @@ const bound = async (env, req, st) => !!st.txn && (await sameSecret(st.txn, awai
 // 이 세션은 죽는다(아래 killSessions).
 // export 하는 이유: scripts/test-friends.mjs 가 로그인 왕복을 흉내내지 않고 **진짜 경로로**
 // 세션을 만들기 위해서다. 토큰 해시를 테스트가 직접 계산하게 두면 그 순간 로직이 두 벌이 된다.
-export async function newSession(env, userId) {
+export class SessionRace extends Error {
+  constructor() { super("session issuance lost the race"); this.name = "SessionRace"; }
+}
+
+export async function newSession(env, userId, expectedGen = null) {
   const now = Date.now();
   const expires = now + SESSION_DAYS * 86400e3;
   // ⚠️ **서명 envelope 다**(2026-08-22 · 결정 4). 저장하는 것은 여전히 **토큰 전체의 SHA-256**
   //    이라 DB 가 새도 남의 세션을 쓸 수 없다. 만료는 envelope 와 `sessions.expires_at` 둘 다에
   //    있고, **DB 쪽이 최종 판정**이다(관리자가 행을 지우면 그 순간 끝나야 하므로).
   const token = await mkSessionToken(env, expires);
-  const u = await env.DB.prepare("SELECT session_version FROM users WHERE id = ? AND {FENCE}")
-    .bind(userId).first();
-  await env.DB.prepare(
-    "INSERT INTO sessions (token_hash, user_id, session_version, expires_at) SELECT ?, ?, ?, ? WHERE {FENCE}")
-    .bind(await sha256(token), userId, u ? u.session_version : 0, expires).run();
+  // ⚠️ **자격 확인과 INSERT 가 같은 문장이다**(2026-08-27 · 위협 82). 예전에는 세대를 따로
+  //    읽고 나서 조건 없이 INSERT 했다 — 그 사이에 정지·로그아웃이 끼어들 수 있고, 그 창은
+  //    **제공자 서버 왕복 2회만큼 넓다.** 재현(F12·F14·F15): 정지가 완주한 뒤에도 콜백이
+  //    세션 행을 만들었고, 사용자가 스스로 재개하는 순간 그 토큰이 살아났다.
+  //    `session_version` 도 **행에서 읽어 그 자리에 박는다** — 밖에서 읽은 값을 다시 쓰면
+  //    검사와 저장이 또 갈라진다.
+  // ⚠️ `expectedGen` 은 **부르는 쪽이 자격을 확인한 시점의 세대**다. 넘기면 그 뒤의 로그아웃이
+  //    이 발급을 0행으로 만든다. `null` 은 「기준 시점이 없다」는 뜻이고(테스트가 세션을 직접
+  //    만드는 자리), 그때도 계정 존재·정지·fence 는 그대로 요구한다.
+  const ins = await env.DB.prepare(
+    `INSERT INTO sessions (token_hash, user_id, session_version, expires_at)
+     SELECT ?, id, session_version, ? FROM users
+      WHERE id = ? AND suspended_at IS NULL AND session_version = COALESCE(?, session_version)
+        AND {FENCE}`)
+    .bind(await sha256(token), expires, userId, expectedGen).run();
+  // ⛔ **0행은 성공이 아니다.** 여기서 통과시키면 「쓸 수 없는 세션」이 아니라 「없는 세션」을
+  //    쿠키로 심게 되고, 화면은 로그인됐다고 말한다.
+  if (!(ins.meta && ins.meta.changes === 1)) throw new SessionRace();
   // ⚠️ **죽은 행을 여기서 치운다.** whoAmI 는 만료를 판정에서만 걸러내고 행은 그대로 뒀다 —
   //    그래서 다시 오지 않는 사용자의 세션 행이 영원히 남았다. 방침(`SESSION_DAYS` 뒤 만료)이 거짓말은
   //    아니지만, 만료된 뒤에도 보관할 이유가 없는 것을 보관하고 있었다.
@@ -741,6 +758,14 @@ export async function newSession(env, userId) {
   } catch { /* 청소 실패는 로그인을 막지 않는다 */ }
   return token;
 }
+
+// 로그인 자격 한 줄. **정지 여부와 세대를 같은 질의로 읽는다** — 따로 읽으면 그 사이의
+// 정지·로그아웃이 창을 빠져나가고, 그 값을 기준으로 세션이 발급된다.
+// 여기서 읽은 `gen` 이 곧 「이 로그인이 자격을 확인한 시점」이고, `newSession` 이 그 값을
+// **INSERT 문장 안에서** 다시 요구한다.
+const loginEligibility = (env, uid) => env.DB.prepare(
+  "SELECT suspended_at AS s, session_version AS gen FROM users WHERE id = ? AND {FENCE}")
+  .bind(uid).first();
 
 // 이 토큰이 누구인가. 한 번의 조인으로 **살아 있는 세션인지까지** 판정한다:
 // 폐기 안 됐고, 안 만료됐고, 발급 당시 세대가 지금 세대와 같아야 한다.
@@ -1424,6 +1449,73 @@ const MAINT_READS = [
 //   query   최상위 이동이라 헤더를 못 붙인다(`/login/:provider`) — `?b=`
 //   state   제공자가 돌려보내는 자리라 우리가 아무것도 못 붙인다 — **서명된 state 안**
 //   null    면제. 정적 화면·상태·정책 — ⛔ **막으면 옛 PWA 가 새 코드를 받을 길이 없어진다**
+// ── 옛 설치형 PWA 가 **읽을 수 있는 화면** (2026-08-27 · 위협 83) ────────
+//
+// 426 을 상태코드로만 돌려주면 top-level navigation 에서는 브라우저가 본문을 그대로 그린다.
+// 옛 클라이언트에는 그 응답을 해석할 코드가 없다 — 사용자가 보는 것은 영문 한 줄이거나,
+// 콜백에서는 **아무 설명도 없는 `#login=outdated` 조각**이다. 그 화면에서 사용자가 할 수
+// 있는 일이 하나도 없다.
+//
+// 그래서 이 두 자리(`GET /login/:provider` · 콜백 세대 불일치)는 Worker 가 만든 **자립형
+// 한국어 HTML** 을 준다.
+//
+// ⚠️ **자립형이란 새 JS·CSS·서비스워커·바깥 자원을 하나도 안 부른다는 뜻이다.** 옛 PWA 는
+//    그것들을 못 받거나 캐시에서 옛 판을 꺼낸다 — 부르는 순간 이 화면도 옛 세대가 된다.
+// ⛔ **자동 새로고침·자동 서비스워커 해제를 넣지 않는다.** 옛 캐시를 다시 읽어 고리가 된다.
+//    사용자가 누르는 링크 하나만 둔다.
+// ⛔ **OAuth code·state·토큰·쿠키를 화면에도 로그에도 싣지 않는다.** 이 화면이 그리는 값은
+//    앱 주소와 빌드 식별자뿐이고, 둘 다 이미 공개돼 있다.
+const updatePage = (env, why) => {
+  // ⚠️ `appOrigin()` 은 값이 없거나 모양이 다르면 **`null`** 을 돌려준다. 그대로 쓰면
+  //    화면에 `null/` 이 박혀 **누를 수는 있는데 아무 데도 안 가는 링크**가 된다 —
+  //    이 화면의 유일한 쓸모가 그 링크다. 모를 때는 **같은 호스트의 루트**로 보낸다.
+  const home = appOrigin(env) || "";
+  const body = `<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>앱을 업데이트해 주세요 · shhh!</title>
+<style>
+:root{color-scheme:light dark}
+*{box-sizing:border-box}
+body{margin:0;padding:24px 20px;font:16px/1.7 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",
+  "Noto Sans KR",sans-serif;background:#fbfaf8;color:#241f1a}
+main{max-width:26rem;margin:0 auto}
+h1{font-size:1.35rem;line-height:1.4;margin:0 0 12px}
+p{margin:0 0 14px;word-break:keep-all;overflow-wrap:anywhere}
+a.go{display:block;text-align:center;padding:14px 16px;border-radius:12px;background:#241f1a;
+  color:#fbfaf8;text-decoration:none;font-weight:700;margin:20px 0 24px}
+ol{margin:0 0 8px;padding-left:1.2em}
+li{margin-bottom:6px}
+small{display:block;margin-top:24px;color:#7a6f66;font-size:.8rem;word-break:break-all}
+@media (prefers-color-scheme:dark){body{background:#17140f;color:#efe9e0}
+  a.go{background:#efe9e0;color:#17140f}small{color:#9a8f85}}
+</style></head><body><main>
+<h1>앱이 오래된 판이에요</h1>
+<p>지금 열려 있는 화면이 서버가 아는 판보다 오래됐어요. 그래서 ${why} 진행할 수 없어요.
+아래 버튼으로 최신 화면을 열어 주세요.</p>
+<a class="go" href="${home}/">최신 화면 열기</a>
+<p><b>홈 화면에 설치해 두셨다면</b></p>
+<ol>
+<li>이 화면을 닫아 주세요.</li>
+<li>설치된 앱을 완전히 종료했다가 다시 열어 주세요.</li>
+<li>그래도 같으면 아래 주소를 브라우저에서 직접 열어 주세요.</li>
+</ol>
+<p>${home}/</p>
+<small>build ${BUILD_ID}</small>
+</main></body></html>`;
+  return new Response(body, {
+    status: 426,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "no-referrer",
+      // 이 화면은 자기 안의 style 말고는 아무것도 안 쓴다. 그 사실을 정책으로도 적는다.
+      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; "
+        + "img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    },
+  });
+};
+
 export const BUILD_HEADER = "x-shh-build";
 const ALWAYS_OPEN = [/^\/health$/, /^\/ready$/, /^\/policies$/];
 
@@ -1613,8 +1705,11 @@ export default {
         // 426 Upgrade Required. 화면이 「앱을 새로고침해 주세요」로 바꿔 말한다.
         // ⛔ 응답에 서버 세대 말고는 아무것도 싣지 않는다.
         const msg = "앱이 오래된 판이에요. 새로고침하거나 앱을 다시 열어 주세요";
+        // `query` 방식은 **`GET /login/:provider` 하나**이고 그것은 언제나 top-level
+        // navigation 이다 — 브라우저가 본문을 그대로 그리므로 사람이 읽을 화면을 준다.
+        // 나머지(계정 API)는 화면 코드가 받아 자기 말로 바꾼다.
         return rt.compat === "query"
-          ? new Response(msg, { status: 426, headers: { ...SEC, "Content-Type": "text/plain; charset=utf-8" } })
+          ? updatePage(env, "로그인을")
           : json(env, req, { error: msg, updateRequired: true, build: BUILD_ID }, 426);
       }
     }
@@ -2012,10 +2107,12 @@ async function route(req, env, rc) {
         //    그 화면은 이미 낡았으므로 처음부터 다시 하는 것이 맞다.
         // ⛔ **인증이 아니다.** 값은 공개돼 있다. 아래 브라우저 결속(`bound`)이 그대로 남는다.
         if (st.b !== BUILD_ID)
+          // ⚠️ 리다이렉트 갈래는 **조각이 아니라 화면**이다(2026-08-27 · 위협 83).
+          //    `#login=outdated` 를 읽을 코드가 옛 세대에는 없다 — 사용자에게는 빈 화면이다.
           return viaApp
             ? json(env, req, { error: "앱이 오래된 판이에요. 새로고침한 뒤 다시 시도해 주세요",
                                updateRequired: true, build: BUILD_ID }, 426)
-            : fail(null, 302, st.back + "#login=outdated");
+            : updatePage(env, "로그인을");
 
         // **표를 본다.** 공격자가 자기 code/state 링크를 남에게 보내도 여기서 끝난다 —
         // 그 사람 브라우저에는 우리가 심은 표가 없다. code 교환·세션 생성 **이전**이라
@@ -2076,9 +2173,9 @@ async function route(req, env, rc) {
         // ⚠️ **가입 갈래에서도 여기서 끝난다.** 소비 표식조차 남기지 않는다 — 정지된 계정에
         //    대한 가입 요청은 아무것도 바꾸지 않아야 하고, 쓰지 않은 state 는 스스로 만료된다.
         // ⚠️ 판정은 **주 D1 을 다시 읽어** 한다. 위 `findUser` 는 uid 만 답한다.
+        let elig = existing ? await loginEligibility(env, existing) : null;
         if (existing) {
-          const su = await env.DB.prepare(
-            "SELECT suspended_at AS s FROM users WHERE id = ? AND {FENCE}").bind(existing).first();
+          const su = elig;
           if (su && su.s !== null && su.s !== undefined) {
             let ticket;
             try { ticket = await makeResumeTicket(env, existing, name, who.subject); }
@@ -2125,7 +2222,20 @@ async function route(req, env, rc) {
         }
 
         // 세션은 **batch 가 성공한 뒤에만** 만든다.
-        const token = await newSession(env, uid);
+        // 방금 만든 계정은 자격을 아직 안 읽었다 — 여기서 한 번 읽고, 그 세대를 발급 문장이
+        // 다시 요구한다.
+        if (!elig || elig.gen === undefined) elig = await loginEligibility(env, uid);
+        let token;
+        try {
+          token = await newSession(env, uid, elig ? Number(elig.gen) : null);
+        } catch (e) {
+          // ⛔ **자격이 사라졌다**(정지·로그아웃·탈퇴가 이 왕복 도중에 완주했다).
+          //    성공으로 넘기지 않는다 — 넘기면 사용자는 「끊었다」고 믿는데 세션이 산다.
+          if (!(e instanceof SessionRace)) throw e;
+          return viaApp
+            ? json(env, req, { error: "로그인 상태가 바뀌었어요. 다시 로그인해 주세요", raced: true }, 409)
+            : fail(null, 302, st.back + "#login=fail");
+        }
         // 토큰을 **주소에도 본문에도 싣지 않는다.** 쿠키로 심는다 — 앱이 손에 쥐지 않으면
         // 「남에게 보낼 수 있는 로그인 링크」라는 것 자체가 만들어지지 않는다.
         const okRes = viaApp
@@ -2507,7 +2617,17 @@ async function route(req, env, rc) {
         return failResume();
       }
       if (!(await resumeAccount(env, t.uid, t.provider, t.subject))) return failResume();
-      const token = await newSession(env, t.uid);
+      // 재개 **직후**의 자격을 읽어 그 세대로 발급한다. 그 사이에 누가 다시 정지시키면
+      // 발급 문장이 0행이 되어 `SessionRace` 로 끝난다 — 「재개는 됐는데 세션은 없다」가
+      // 「정지된 계정에 세션이 생겼다」보다 안전하다.
+      let token;
+      try {
+        const el = await loginEligibility(env, t.uid);
+        token = await newSession(env, t.uid, el ? Number(el.gen) : null);
+      } catch (e) {
+        if (!(e instanceof SessionRace)) throw e;
+        return json(env, req, { error: "로그인 상태가 바뀌었어요. 다시 로그인해 주세요", raced: true }, 409);
+      }
       const r = json(env, req, { ok: true, resumed: true, via: t.provider });
       r.headers.append("Set-Cookie", setCookie(token));
       r.headers.append("Set-Cookie", clearResumeCookie());

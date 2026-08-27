@@ -17,7 +17,7 @@
 import "./_workers-shim.mjs";
 import assert from "node:assert";
 import worker, {
-  BUILD_HEADER, compatMode, routeTable, createAccountWithPolicy, newSession,
+  BUILD_HEADER, compatMode, routeTable, createAccountWithPolicy, newSession, makeState,
 } from "../worker/index.js";
 import { BUILD_ID } from "../worker/build-id.js";
 import { makeD1, makeLedger, asRequest } from "./_d1.mjs";
@@ -190,6 +190,89 @@ const ledgerWrites = (env) =>
   const allow = res.headers.get("Access-Control-Allow-Headers") || "";
   assert.ok(allow.toLowerCase().includes(BUILD_HEADER),
     t(`C7: 허용 헤더 목록에 계약 헤더가 없다 — preflight 에서 막힌다: "${allow}"`));
+}
+
+// ══ C9. 안내 화면은 **APP_ORIGIN 을 모를 때도** 쓸 수 있어야 한다 ═════════
+// 이 화면의 유일한 쓸모가 링크 하나다. `appOrigin()` 이 `null` 일 때 그 값을 그대로 쓰면
+// `null/` 이 박혀 **누를 수는 있는데 아무 데도 안 가는 링크**가 된다.
+{
+  for (const bad of [{}, { APP_ORIGIN: "not a url" }, { APP_ORIGIN: "https://x.test/" }]) {
+    const env = { ...makeEnv(), ...bad };
+    if (!("APP_ORIGIN" in bad)) delete env.APP_ORIGIN;
+    const res = await worker.fetch(new Request("https://api.test/api/login/kakao?b=old"), env);
+    const html = await res.text();
+    assert.equal(res.status, 426, t(`C9: ${JSON.stringify(bad)} 에서 상태가 ${res.status} 다`));
+    assert.doesNotMatch(html, /"null\/?"|>null</,
+      t(`C9: ★ ${JSON.stringify(bad)} 에서 화면에 null 이 박혔다`));
+    assert.match(html, /<a[^>]+href="[^"]*\/"/,
+      t(`C9: ★ ${JSON.stringify(bad)} 에서 누를 수 있는 링크가 사라졌다`));
+  }
+}
+
+// ══ C8. 옛 설치형 PWA 가 **읽을 수 있는 화면** ═════════════════════════════
+// 426 을 상태코드로만 돌려주면 top-level navigation 에서는 브라우저가 그 본문을 그대로
+// 그린다 — 옛 클라이언트에는 그것을 해석할 코드가 없다. 사용자가 보는 것은 회색 화면에
+// 적힌 영문 오류이거나, 콜백에서는 **아무 설명도 없는 `#login=outdated` 조각**이다.
+// 그래서 이 두 자리는 **Worker 가 직접 만든 자립형 한국어 HTML** 을 준다.
+//
+// ⚠️ 자립형이란: 새 JS·CSS·서비스워커·외부 자원을 **하나도** 불러오지 않는다는 뜻이다.
+//    옛 PWA 는 그것들을 못 받거나 옛 판을 캐시에서 꺼낸다.
+{
+  const env = makeEnv();
+  const pages = [];
+  for (const provider of ["naver", "kakao"]) {
+    // ── a. 로그인 시작(top-level navigation)
+    const res = await worker.fetch(new Request(
+      `https://api.test/api/login/${provider}?b=old-build`,
+      { headers: { Accept: "text/html,application/xhtml+xml" } }), env);
+    assert.equal(res.status, 426, t(`C8-a(${provider}): 상태가 426 이 아니다 (${res.status})`));
+    assert.match(res.headers.get("Content-Type") || "", /^text\/html; ?charset=utf-8$/i,
+      t(`C8-a(${provider}): ★ 옛 클라이언트에게 HTML 이 아닌 것을 줬다`
+        + ` (${res.headers.get("Content-Type")})`));
+    assert.match(res.headers.get("Cache-Control") || "", /no-store/,
+      t(`C8-a(${provider}): 안내 화면이 캐시될 수 있다`));
+    pages.push(await res.text());
+  }
+
+  // ── b. 콜백 세대 불일치도 같은 화면이다(옛 판은 조각을 못 읽는다)
+  {
+    const st = await makeState(env, "kakao", ORIGIN, "n", "txn", "old-build");
+    const realFetch = globalThis.fetch;
+    let hits = 0;
+    globalThis.fetch = async () => { hits++; return new Response("{}"); };
+    try {
+      const res = await worker.fetch(new Request(
+        `https://api.test/api/cb/kakao?code=zzz&state=${encodeURIComponent(st)}`,
+        { headers: { Accept: "text/html" } }), env);
+      assert.equal(res.status, 426,
+        t(`C8-b: ★ 콜백 불일치가 옛 조각 redirect 로 끝났다 (${res.status} `
+          + `${res.headers.get("Location") || ""})`));
+      assert.match(res.headers.get("Content-Type") || "", /text\/html/,
+        t("C8-b: ★ 콜백 불일치가 HTML 안내를 안 준다"));
+      assert.equal(hits, 0, t(`C8-b: 안내 화면을 주면서 제공자를 ${hits}번 불렀다`));
+      pages.push(await res.text());
+    } finally { globalThis.fetch = realFetch; }
+  }
+
+  // ── c. 화면이 실제로 쓸모가 있나 — 자립·한국어·최신 앱으로 가는 길
+  for (const [i, html] of pages.entries()) {
+    const w = t(`C8-c[${i}]`);
+    assert.match(html, /<html[^>]*lang="ko"/, w + ": lang=ko 가 없다");
+    assert.match(html, /<meta[^>]+name="viewport"/, w + ": viewport 가 없다 — 390px 에서 깨진다");
+    assert.ok(/오래된|최신|업데이트/.test(html), w + ": ★ 한국어 설명이 없다");
+    // ⚠️ **주소가 글자로 있는 것과 「누를 수 있는 것」은 다르다**(돌연변이 M127 이 처음에
+    //    살아남았다 — 링크를 지워도 본문에 주소가 남아 있어 통과했다).
+    assert.match(html, new RegExp(`<a[^>]+href="${ORIGIN}/?"`),
+      w + ": ★ 최신 앱으로 갈 수 있는 링크가 없다");
+    assert.ok(html.includes(ORIGIN), w + ": ★ 최신 앱으로 가는 주소가 없다");
+    // 자립: 바깥 자원을 부르지 않는다.
+    assert.doesNotMatch(html, /<script/i, w + ": ★ 스크립트를 넣었다 — 옛 PWA 에서 안 돈다");
+    assert.doesNotMatch(html, /<link[^>]+stylesheet/i, w + ": ★ 바깥 CSS 를 불렀다");
+    assert.doesNotMatch(html, /<img|<iframe/i, w + ": ★ 바깥 자원을 불렀다");
+    assert.doesNotMatch(html, /http-equiv="refresh"/i, w + ": ★ 자동 새로고침을 넣었다 — 고리가 된다");
+    // 민감값 0건.
+    assert.doesNotMatch(html, /zzz|code=|state=|shh_s|shh_t/, w + ": ★ OAuth 값이 화면에 실렸다");
+  }
 }
 
 console.log(`test-compat: ${n}개 통과 — 계정 API·가입·로그인 시작·콜백의 빌드 계약 · `

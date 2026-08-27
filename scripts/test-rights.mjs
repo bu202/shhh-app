@@ -177,13 +177,20 @@ const cookieOf = (res, name) => (res.headers.getSetCookie()
   const susp = env.DB._db.prepare("SELECT suspended_at FROM users WHERE id = ?").get(A.uid).suspended_at;
   assert.ok(susp > 0, t("E2-b: suspended_at 이 안 적혔다"));
 
-  // -- c. 멱등. 두 번 눌러도 처음 시각이 유지된다.
+  // -- c. 두 번 눌러도 처음 시각이 유지된다.
+  //
+  // ⚠️ **옛 판은 정지된 계정에 세션을 하나 더 발급해서 이것을 쟀다.** 그 길은 2026-08-27 에
+  //    닫혔다(위협 82) — `newSession` 이 `suspended_at IS NULL` 을 INSERT 문장 안에서 요구한다.
+  //    그래서 두 번째 정지를 **부를 방법 자체가 없다**: 정지가 세션을 전부 지웠고 새 세션도
+  //    안 나간다. 여기서는 그 사실을 그대로 잰다 — 시각이 유지되는 것과, 발급이 거부되는 것.
   const B = await mkUser(env);
   await req(env, "/me/suspend", { method: "POST", token: B.token });
   const first = env.DB._db.prepare("SELECT suspended_at FROM users WHERE id = ?").get(B.uid).suspended_at;
-  env.DB._db.exec(`UPDATE users SET session_version = session_version WHERE id = '${B.uid}'`);
-  const tok2 = await asRequest(env, (fe) => newSession(fe, B.uid));
-  await req(env, "/me/suspend", { method: "POST", token: tok2 });
+  await assert.rejects(() => asRequest(env, (fe) => newSession(fe, B.uid)),
+    (e) => e.name === "SessionRace",
+    t("E2-c: ★ 정지된 계정에 세션이 새로 발급됐다"));
+  assert.equal(dcount(env, "sessions", "WHERE user_id = ?", B.uid), 0,
+    t("E2-c: ★ 거부된 발급이 세션 행을 남겼다"));
   assert.equal(env.DB._db.prepare("SELECT suspended_at FROM users WHERE id = ?").get(B.uid).suspended_at,
     first, t("E2-c: 두 번째 정지가 시각을 덮었다"));
 

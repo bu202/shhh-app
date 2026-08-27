@@ -390,4 +390,160 @@ const putBook = (env, uid, words, name = "") =>
   }
 }
 
+
+// ══════════════════════════════════════════════════════════════════════════
+// 세션 **발급** 경합 (2026-08-27 · K1 재감사). 위 F1~F11 은 「이미 발급된 세션이 정지
+// 뒤에 무엇을 하는가」를 재고, 아래 F12~F15 는 그 **앞 단계**를 잰다 — OAuth 콜백이
+// 자격을 확인한 뒤 세션을 넣기까지 사이에 정지·로그아웃이 끼어들면 어떻게 되는가.
+//
+// ⚠️ 이 창은 **넓다.** 자격 확인과 INSERT 사이에 제공자 서버 왕복 2회가 들어간다.
+//    「빠르니까 안 겹친다」가 성립하지 않는 자리다.
+// ══════════════════════════════════════════════════════════════════════════
+
+// 제공자 서버 대역. 부른 횟수를 세지는 않는다 — 여기서 재는 것은 순서다.
+const withProvider = async (subject, fn) => {
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url) => new Response(JSON.stringify(
+    String(url).includes("token") ? { access_token: "tok" }
+                                  : { id: subject, sub: subject, response: { id: subject } }),
+    { headers: { "Content-Type": "application/json" } });
+  try { return await fn(); } finally { globalThis.fetch = real; }
+};
+
+// 로그인 시작 → { state, txn }. **진짜 라우트를 지난다.**
+async function startLogin(env, provider = "kakao") {
+  const r = await worker.fetch(new Request(`https://api.test/api/login/${provider}?n=nonce`), env);
+  const loc = r.headers.get("Location") || "";
+  return {
+    state: new URL(loc).searchParams.get("state"),
+    txn: ((r.headers.get("Set-Cookie") || "").match(/shh_t=([^;]*)/) || [])[1] || "",
+  };
+}
+const callback = (env, provider, state, txn) =>
+  worker.fetch(new Request(
+    `https://api.test/api/cb/${provider}?code=c${Math.random()}&state=${encodeURIComponent(state)}`,
+    { headers: { Cookie: "shh_t=" + txn } }), env);
+const sessCount = (env, uid) =>
+  row(env, "SELECT COUNT(*) n FROM sessions WHERE user_id = ?", uid).n;
+const tokenOf = (res) => ((res.headers.get("Set-Cookie") || "").match(/shh_s=([^;]*)/) || [])[1] || "";
+
+// ══ F12. 자격 확인 → 정지 완료 → 세션 삽입 ═══════════════════════════════
+// 콜백이 「이 계정은 정지되지 않았다」를 확인한 **뒤에** 정지가 완주한다.
+{
+  const env = makeEnv();
+  const A = await mkUser(env, "kakao", "race-12");
+  const other = await newToken(env, A.uid);
+  const { state, txn } = await startLogin(env);
+
+  const b = barrier(env.DB, (s) => /INSERT INTO sessions/.test(s));
+  env.DB = b.db;
+  const inflight = withProvider(A.sub, () => callback(env, "kakao", state, txn));
+  await b.hit;
+  const sus = await req(env, "/me/suspend", { method: "POST", token: other });
+  assert.equal(sus.status, 200, t("F12: 정지 요청이 실패했다 — 경합을 재지 못한다"));
+  b.release();
+  const res = await inflight;
+
+  assert.equal(sessCount(env, A.uid), 0,
+    t(`F12: ★ 정지가 끝난 뒤에 콜백이 세션 행을 만들었다 (${sessCount(env, A.uid)}개)`));
+  assert.doesNotMatch(String(res.headers.get("Location") || ""), /#login=ok/,
+    t("F12: ★ 정지된 계정의 지연 콜백이 로그인 성공으로 끝났다"));
+}
+
+// ══ F13. 세션 삽입 완료 → 정지 완료 ═══════════════════════════════════════
+// 순서가 반대면 정지가 그 세션을 무효화해야 한다(양성 대조).
+{
+  const env = makeEnv();
+  const A = await mkUser(env, "kakao", "race-13");
+  const { state, txn } = await startLogin(env);
+  const res = await withProvider(A.sub, () => callback(env, "kakao", state, txn));
+  const fresh = tokenOf(res);
+  assert.ok(fresh, t("F13: 정상 로그인이 세션을 안 만들었다 — 경합을 재지 못한다"));
+  assert.equal((await req(env, "/book", { token: fresh })).status, 200,
+    t("F13: 새로 받은 세션이 처음부터 못 쓴다"));
+
+  assert.equal((await req(env, "/me/suspend", { method: "POST", token: fresh })).status, 200,
+    t("F13: 정지가 실패했다"));
+  // ⚠️ **401 이다, 403 이 아니다.** 정지는 세션 행을 지우므로 그 뒤에 **새로 도착한** 요청은
+  //    인증 자체가 실패한다. 403 `suspended` 는 「이미 인증을 통과한 요청」이 문장 안에서
+  //    막히는 자리(F1·F2)의 답이다 — 둘을 같은 값으로 적으면 어느 쪽이 돌았는지 못 가린다.
+  assert.equal((await req(env, "/book", { token: fresh })).status, 401,
+    t("F13: ★ 정지 뒤에도 그 세션이 살아 있다"));
+  assert.equal(sessCount(env, A.uid), 0, t("F13: 정지가 세션 행을 안 지웠다"));
+}
+
+// ══ F14. 자격 확인 → 로그아웃 완료 → 세션 삽입 ════════════════════════════
+// 로그아웃은 세대를 올린다. 그보다 **먼저 자격을 읽은** 콜백은 세션을 만들 수 없어야 한다.
+{
+  const env = makeEnv();
+  const A = await mkUser(env, "kakao", "race-14");
+  const other = await newToken(env, A.uid);
+  const { state, txn } = await startLogin(env);
+
+  const b = barrier(env.DB, (s) => /INSERT INTO sessions/.test(s));
+  env.DB = b.db;
+  const inflight = withProvider(A.sub, () => callback(env, "kakao", state, txn));
+  await b.hit;
+  assert.equal((await req(env, "/session", { method: "DELETE", token: other })).status, 200,
+    t("F14: 로그아웃이 실패했다 — 경합을 재지 못한다"));
+  b.release();
+  const res = await inflight;
+
+  assert.equal(sessCount(env, A.uid), 0,
+    t(`F14: ★ 로그아웃이 끝난 뒤에 콜백이 세션 행을 남겼다 (${sessCount(env, A.uid)}개)`));
+  assert.doesNotMatch(String(res.headers.get("Location") || ""), /#login=ok/,
+    t("F14: ★ 로그아웃 뒤의 지연 콜백이 로그인 성공으로 끝났다"));
+}
+
+// ══ F15. 정지 → 지연 콜백 → 재개 ══════════════════════════════════════════
+// **가장 나쁜 갈래다.** 정지 중에 만들어진 세션은 그때는 403 이라 안 보이지만,
+// 사용자가 스스로 재개하는 순간 살아난다 — 사용자는 그 기기를 끊은 줄 안다.
+{
+  const env = makeEnv();
+  const A = await mkUser(env, "kakao", "race-15");
+  const other = await newToken(env, A.uid);
+  const { state, txn } = await startLogin(env);
+
+  const b = barrier(env.DB, (s) => /INSERT INTO sessions/.test(s));
+  env.DB = b.db;
+  const inflight = withProvider(A.sub, () => callback(env, "kakao", state, txn));
+  await b.hit;
+  assert.equal((await req(env, "/me/suspend", { method: "POST", token: other })).status, 200,
+    t("F15: 정지가 실패했다"));
+  b.release();
+  const delayed = tokenOf(await inflight);
+
+  // 사용자가 스스로 재개한다 — 정지를 푸는 정상 경로다.
+  env.DB._db.prepare("UPDATE users SET suspended_at = NULL WHERE id = ?").run(A.uid);
+  if (delayed) {
+    const res = await req(env, "/book", { token: delayed });
+    assert.notEqual(res.status, 200,
+      t(`F15: ★ 재개한 순간 정지 중에 발급된 지연 세션이 살아났다 (${res.status})`));
+  }
+  assert.equal(sessCount(env, A.uid), 0,
+    t(`F15: ★ 정지 중에 만들어진 세션 행이 남아 있다 (${sessCount(env, A.uid)}개)`));
+}
+
+// ══ F16. 「정지되지 않았다」를 세대와 **독립으로** 잰다 ════════════════════
+// F12·F15 에서는 정지가 세대도 함께 올린다 — 그래서 발급이 막힌 이유가 「정지」인지
+// 「세대」인지 갈리지 않는다. 실제로 돌연변이 M119(정지 조건 제거)가 그 상태에서 **살아남았다.**
+// 조건이 둘이면 **각각을 따로** 재야 한다(위협 79 의 F10 과 같은 교훈이다).
+{
+  const env = makeEnv();
+  const A = await mkUser(env, "kakao", "race-16");
+  const gen = row(env, "SELECT session_version v FROM users WHERE id = ?", A.uid).v;
+  // 세대는 그대로 두고 정지만 적는다.
+  env.DB._db.prepare("UPDATE users SET suspended_at = ? WHERE id = ?").run(Date.now(), A.uid);
+  await assert.rejects(() => asRequest(env, (fe) => newSession(fe, A.uid, Number(gen))),
+    (e) => e.name === "SessionRace",
+    t("F16: ★ 세대가 그대로면 정지된 계정에도 세션이 발급된다"));
+  assert.equal(sessCount(env, A.uid), 1,
+    t("F16: ★ 거부됐어야 할 발급이 세션 행을 남겼다"));   // 처음 하나(mkUser)만 남아야 한다
+
+  // 양성 대조 — 정지를 풀면 같은 세대로 발급된다.
+  env.DB._db.prepare("UPDATE users SET suspended_at = NULL WHERE id = ?").run(A.uid);
+  await asRequest(env, (fe) => newSession(fe, A.uid, Number(gen)));
+  assert.equal(sessCount(env, A.uid), 2, t("F16: 정상 발급이 막혔다 — 검사가 늘 참이다"));
+}
+
 console.log(`test-actor-fence: ${n} assertions ok`);
