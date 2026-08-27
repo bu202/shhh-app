@@ -118,7 +118,10 @@ const OAUTH_RUNBOOK = "docs/OAUTH_REAPPROVAL_RUNBOOK.md";
   assert.ok(names.size >= 10, t(`코드에서 env 이름을 ${names.size}개만 찾았다 — 검사기가 낡았다`));
 
   // 바인딩(설정 파일에 적는다) vs 시크릿·변수(대시보드/CLI 로 넣는다).
-  const BINDINGS = new Set(["DB", "LEDGER", "KV", "RL"]);
+  // ⚠️ `BACKUPS` 는 **정리 Worker 의 R2 바인딩**이다(2026-08-27 · 위협 85). 백업 inventory 를
+  //    자동으로 맞추려면 R2 에 「그 객체가 아직 있나」를 물어야 하고, Worker 안에서는
+  //    REST API 가 아니라 바인딩으로 묻는다(공식 Workers best practices).
+  const BINDINGS = new Set(["DB", "LEDGER", "KV", "RL", "BACKUPS"]);
   // ⚠️ `EDGE_GUARD` 는 **운영자가 선언하는 값**이라 vars 다(2026-08-22 · 위협 55). 값이 없으면
   //    계정 라우트가 닫힌다 — 그것이 지금 상태이고, 그래서 「없어도 된다」가 아니라
   //    「없다는 사실이 문서에 적혀 있어야 한다」다. 아래 6-b 가 값까지 검사한다.
@@ -164,9 +167,13 @@ const OAUTH_RUNBOOK = "docs/OAUTH_REAPPROVAL_RUNBOOK.md";
     }
   }
   // 바인딩도 같다. `RL` 은 지금 코드에서 「있으면 쓴다」라 필수가 아니다(주석이 그렇게 말한다).
-  for (const b of ["DB", "LEDGER"]) {
+  for (const b of ["DB", "LEDGER", "BACKUPS"]) {
     assert.ok(R(RUNBOOK).includes(b), t(`${RUNBOOK} 에 ${b} 바인딩이 없다`));
   }
+  // 정리 Worker 가 R2 를 쓰면 **그 설정 템플릿에 바인딩이 적혀 있어야 한다** — 없으면
+  // 배포한 사람은 매 회차 실패를 보고서야 알게 된다.
+  assert.ok(R(CLEANUP_TEMPLATE).includes("BACKUPS"),
+    t(`${CLEANUP_TEMPLATE} 에 BACKUPS(R2) 바인딩이 없다 — 코드가 그 이름으로 inventory 를 맞춘다`));
   // 문서에만 있고 코드가 안 쓰는 이름은 반대 방향의 거짓이다(낡은 시크릿을 계속 넣게 된다).
   for (const stale of ["MASTER_CODE", "SESSION_KEY"]) {
     for (const d of DOCS) {

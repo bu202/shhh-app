@@ -832,7 +832,11 @@ function befriend(env, a, b, status = "accepted") {
   //      배포가 smoke test 를 멀쩡히 통과하고, **사용자의 첫 가입·첫 계정 삭제에서** 처음 500 이 났다.
   for (const [binding, table] of [["DB", "policy_events"], ["DB", "consumed_signup_states"],
                                   ["LEDGER", "deletions"], ["LEDGER", "write_leases"],
-                                  ["LEDGER", "cleanup_runs"], ["LEDGER", "maintenance"]]) {
+                                  ["LEDGER", "cleanup_runs"], ["LEDGER", "maintenance"],
+                                  // ⚠️ 셋을 2026-08-27 에 더했다 — `0004`·`0005` 가 만드는 표다.
+                                  //    빠져 있어서 **ledger 를 `0003` 까지만 적용한 배포가 200** 이었다.
+                                  ["LEDGER", "transitions"], ["LEDGER", "lease_resolutions"],
+                                  ["LEDGER", "backups"]]) {
     const e = makeEnv({ KAKAO_ID: "id", GOOGLE_ID: "id", GOOGLE_SECRET: "s", EDGE_GUARD: "ratelimit", RL: RL_EDGE });
     assert.equal((await get("/ready", e)).status, 200, `${table} 를 지우기 전인데 /ready 가 200 이 아니다`);
     e[binding]._db.exec(`DROP TABLE ${table}`);

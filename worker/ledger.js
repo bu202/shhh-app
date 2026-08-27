@@ -310,6 +310,31 @@ export const restoreWindow = (env) => {
 export const BACKUP_BLOCKS_SQL =
   "b.deleted_at IS NULL AND b.status <> 'aborted'";
 
+// 백업 객체의 키. **backup_id 하나에서 결정적으로 재구성된다** — inventory 의 `object_key`
+// 가 비어 있어도(= pending 에서 죽었어도) 무엇을 물어봐야 하는지 알 수 있다.
+// ⚠️ **여기가 원본이다.** `scripts/backup.mjs` 도 이것을 쓴다 — 두 곳에 적으면 갈라지고,
+//    갈라진 날 reconcile 은 있지도 않은 키를 물어 「없다」고 답한다.
+export const BACKUP_OBJECT_KEY = (id) => `shhh/${id}.enc`;
+
+// 백업 inventory 의 상태 전이. **한 방향이다.** 각 상태가 답하는 질문은
+// 「지금 R2 에 그 객체가 있나」 하나다:
+//   pending  모른다(업로드 명령을 아직 안 냈다) · uploaded 있다 · ready 있고 검증됐다
+//   failed   **모른다** · aborted **없다(시작 안 됨)** · deleted **없다(사라짐)**
+// 막지 않는 것은 `aborted`·`deleted` 둘뿐이다 — 나머지는 전부 「모른다 이상」이라 막는다.
+export const BACKUP_NEXT = {
+  pending: ["uploaded", "aborted", "failed"],
+  uploaded: ["ready", "failed", "deleted"],
+  ready: ["deleted", "failed"],
+  failed: ["deleted", "aborted"],
+  aborted: [], deleted: [],
+};
+export const backupCanTransition = (from, to) =>
+  Object.prototype.hasOwnProperty.call(BACKUP_NEXT, from) && BACKUP_NEXT[from].includes(to);
+// 「이 상태로 갈 수 있는 출발 상태들」을 **표에서 만든다.** SQL 에 손으로 적으면 표와 문장이
+// 갈라지고, 갈라진 날 DB 는 표에 없는 전이를 조용히 받아들인다.
+export const backupFroms = (to) => "status IN (" + Object.keys(BACKUP_NEXT)
+  .filter((f) => BACKUP_NEXT[f].includes(to)).map((f) => `'${f}'`).join(", ") + ")";
+
 // 이 시각 이전에 확정된 삭제를 담고 있을 수 있는 백업이 하나라도 있나.
 // 기준을 `pending_at`(삭제를 **시도한** 시각)이 아니라 `confirmed_at`(계정이 실제로 없음을
 // **확인한** 시각)으로 잡는다 — 시도와 확인 사이에 찍힌 스냅샷은 계정을 담고 있을 수 있다.
@@ -390,6 +415,11 @@ export async function cleanupState(env) {
 // 한 문장으로 세 표와 컬럼까지 건드린다. 전부 작은 표라 COUNT 가 값싸고,
 // 사용자 데이터도 아니다(표식은 되돌릴 수 없는 HMAC 하나뿐이다).
 // ⚠️ 오류 문자열을 밖으로 내보내지 않는다 — D1 오류에는 표·컬럼 이름이 섞여 나온다.
+// ⚠️ **표 목록이 migration 전부를 덮어야 한다**(2026-08-27 · 적대적 재검사 8). `0004`·`0005`
+//    가 만드는 `transitions`·`lease_resolutions`·`backups` 가 빠져 있어서, **ledger 를
+//    `0003` 까지만 적용한 배포가 `/api/ready` 200 을 받았다.** 그 배포에서는 유지보수 전환이
+//    재개되지 않고 삭제 표식 정리가 첫 실행에서 터진다 — smoke test 가 아니라 **사용자의
+//    첫 탈퇴**에서 처음 드러난다(2026-08-18 에 주 D1 쪽에서 똑같은 일이 있었다).
 export async function ledgerAnswers(env) {
   if (!env.LEDGER) return false;
   try {
@@ -399,7 +429,10 @@ export async function ledgerAnswers(env) {
             + (SELECT COUNT(*) FROM cleanup_runs WHERE id = 1)
             + (SELECT COUNT(*) FROM maintenance WHERE mode IS NOT NULL)
             + (SELECT COUNT(*) FROM deletion_keys WHERE key_check IS NOT NULL)
-            + (SELECT COUNT(*) FROM rate_limits WHERE expires_at IS NOT NULL) AS n`).first();
+            + (SELECT COUNT(*) FROM rate_limits WHERE expires_at IS NOT NULL)
+            + (SELECT COUNT(*) FROM transitions WHERE state IS NOT NULL)
+            + (SELECT COUNT(*) FROM lease_resolutions WHERE expires_keep IS NOT NULL)
+            + (SELECT COUNT(*) FROM backups WHERE status IS NOT NULL) AS n`).first();
     return typeof r?.n === "number";
   } catch {
     return false;

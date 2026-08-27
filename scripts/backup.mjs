@@ -16,12 +16,17 @@
 // ⚠️ **로그에 개인정보·백업 내용·키를 찍지 않는다.** 남기는 것은 backup_id·상태·바이트 수뿐이다.
 // ⚠️ **이번 세션에서는 실제 원격 작업을 하지 않았다.** `--dry-run` 만 돌렸다.
 import { spawn } from "node:child_process";
-import { createHash, randomBytes, createCipheriv } from "node:crypto";
+import { createHash, randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { readFile, writeFile, mkdtemp, rm, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+// ⚠️ **전이표와 객체 키의 원본은 `worker/ledger.js` 다.** 정리 크론(Workers)과 이 도구(Node)가
+//    같은 규칙을 써야 하는데, 두 곳에 적으면 갈라진다 — 갈라진 날 한쪽은 표에 없는 전이를
+//    받아들이고 다른 쪽은 있지도 않은 키를 묻는다.
+import { BACKUP_NEXT, backupCanTransition, backupFroms, BACKUP_OBJECT_KEY } from "../worker/ledger.js";
 
 // ── 두 DB 와 「그 안에 반드시 있어야 하는 표」 ────────────────────────────
 // export 가 **성공했는데 비어 있는** 경우를 잡는 것이 이 목록의 일이다. wrangler 는 빈 덤프도
@@ -29,9 +34,28 @@ import { pathToFileURL } from "node:url";
 export const REQUIRED_TABLES = {
   main: ["users", "sessions", "books", "friendships", "invite_codes",
          "policy_events", "consumed_signup_states", "write_fence"],
+  // ⚠️ `transitions`·`lease_resolutions` 가 **빠져 있었다**(2026-08-27 · K2 중간 항목).
+  //    둘 다 ledger `0004` 가 만드는 실제 표이고, 없으면 유지보수 전환이 재개되지 않고
+  //    stale 해제 기록이 사라진다 — 그런 덤프를 백업이라 부르면 복구가 반쪽이 된다.
   ledger: ["deletions", "maintenance", "write_leases", "cleanup_runs",
-           "deletion_keys", "rate_limits", "backups"],
+           "deletion_keys", "rate_limits", "transitions", "lease_resolutions", "backups"],
 };
+
+// 복원 검증이 **임시 DB 에 실은 뒤** 확인하는 인덱스. 표만 보면 유일성·부분 유니크가 빠진
+// 덤프를 정상으로 읽는다 — 그 사본으로 복원하면 활성 초대 코드가 사용자당 여러 개가 된다.
+export const REQUIRED_INDEXES = {
+  main: ["users_provider", "friendships_pair", "invite_codes_active"],
+  ledger: ["backups_blocking"],
+};
+
+// 검증 도구의 판. 영수증에 함께 적는다 — 나중에 「무엇이 검증했나」를 물을 수 있어야 한다.
+export const VERIFY_VERSION = "v1";
+// 복호화는 Node 메모리에서 한 번에 한다. **한도를 명시한다** — 넘으면 검증을 시작하지 않고
+// 실패로 끝난다(조용히 죽는 것보다 낫다). 넘기 시작하면 스트리밍 복호화로 바꾼다.
+export const MAX_VERIFY_BYTES = 256 * 1024 * 1024;
+// 암호화 키의 **지문.** 비밀값이 아니다 — 키를 갈아 끼웠는지만 말한다.
+export const keyFingerprint = (key) =>
+  createHash("sha256").update("shhh-backup-key-v1").update(key).digest("hex").slice(0, 16);
 
 // 상태 전이. **한 방향이다** — 되돌아가는 전이는 없다(되돌리려면 새 backup_id 로 다시 한다).
 //
@@ -45,19 +69,12 @@ export const REQUIRED_TABLES = {
 //
 // ⚠️ `failed` → `deleted`·`aborted` 는 **reconcile 이 실제 부재를 확인했을 때만** 쓴다.
 //    이 길이 없으면 한 번 불확실해진 행이 영원히 표식 정리를 막아 보유기간이 사실상 무한이 된다.
-export const NEXT = {
-  pending: ["uploaded", "aborted", "failed"],
-  uploaded: ["ready", "failed", "deleted"],
-  ready: ["deleted", "failed"],
-  failed: ["deleted", "aborted"],
-  aborted: [], deleted: [],
-};
-export const canTransition = (from, to) =>
-  Object.prototype.hasOwnProperty.call(NEXT, from) && NEXT[from].includes(to);
+export const NEXT = BACKUP_NEXT;
+export const canTransition = backupCanTransition;
 
 // 객체 키는 **backup_id 하나에서 결정적으로 재구성된다.** inventory 의 `object_key` 가
 // 비어 있어도(= pending 에서 죽었어도) reconcile 이 무엇을 물어봐야 하는지 알 수 있다.
-export const objectKeyFor = (id) => `shhh/${id}.enc`;
+export const objectKeyFor = BACKUP_OBJECT_KEY;
 
 // 만료 예정 시각이 지나고도 객체가 남아 있을 수 있는 여유. R2 lifecycle 은 만료 표시 뒤
 // 실제 삭제까지 **통상 하루** 정도가 더 걸릴 수 있다(그래서 「7일에 삭제」라고 안 적는다).
@@ -84,7 +101,8 @@ export function sqlValue(v, kind) {
   if (kind === "hash" && HEX64.test(v)) return `'${v}'`;
   if (kind === "key" && KEYRE.test(v) && !String(v).includes("..")) return `'${v}'`;
   if (kind === "status" && Object.prototype.hasOwnProperty.call(NEXT, v)) return `'${v}'`;
-  if (kind === "code" && /^[a-z_]{1,40}$/.test(v)) return `'${v}'`;
+  if (kind === "code" && /^[a-z_0-9]{1,40}$/.test(v)) return `'${v}'`;
+  if (kind === "fp" && /^[0-9a-f]{16}$/.test(v)) return `'${v}'`;
   if (kind === "int" && Number.isSafeInteger(v)) return String(v);
   throw new Error(`백업 inventory 에 넣을 수 없는 값이다 (${kind})`);
 }
@@ -172,8 +190,74 @@ export async function probeObject(run, cfg, key, dest) {
   return "unknown";
 }
 
+// ── 암호화 키 ────────────────────────────────────────────────────────────
+// ⛔ **키를 로그·오류·영수증에 담지 않는다.** 밖으로 나가는 것은 지문뿐이다.
+export async function readKey(cfg) {
+  if (!existsSync(cfg.keyFile)) return { miss: "absent" };
+  let key;
+  try { key = Buffer.from((await readFile(cfg.keyFile, "utf8")).trim(), "base64"); }
+  catch { return { miss: "unreadable" }; }
+  // 짧은 키를 조용히 늘려 쓰지 않는다. 키 강도가 설정 실수에 좌우되면 안 된다.
+  if (key.length !== 32) return { miss: "length" };
+  return { key, fingerprint: keyFingerprint(key) };
+}
+
+// ── 복호화와 임시 적재 ───────────────────────────────────────────────────
+// 파일 모양: `[12바이트 nonce][암호문][16바이트 태그]`. 평문은
+// `{"v":1,...}\n` + main.sql + `\n-- ledger --\n` + ledger.sql.
+export const BUNDLE_SEP = "\n-- ledger --\n";
+export function decryptBundle(buf, key) {
+  if (buf.length < 12 + 16) return { code: "too_short" };
+  let plain;
+  try {
+    const d = createDecipheriv("aes-256-gcm", key, buf.subarray(0, 12));
+    d.setAuthTag(buf.subarray(buf.length - 16));
+    // ⚠️ `final()` 이 태그를 검증한다. 여기서 던지면 **내용이 바뀌었거나 키가 다르다** —
+    //    둘 다 「복원할 수 없다」이므로 갈라 말하지 않는다(어느 쪽인지 말하면 힌트가 된다).
+    plain = Buffer.concat([d.update(buf.subarray(12, buf.length - 16)), d.final()]);
+  } catch { return { code: "decrypt" }; }
+  const nl = plain.indexOf(0x0a);
+  if (nl < 0) return { code: "shape" };
+  let header;
+  try { header = JSON.parse(plain.subarray(0, nl).toString("utf8")); }
+  catch { return { code: "shape" }; }
+  const rest = plain.subarray(nl + 1);
+  const at = rest.indexOf(BUNDLE_SEP);
+  if (at < 0) return { code: "shape" };
+  return {
+    header,
+    main: rest.subarray(0, at),
+    ledger: rest.subarray(at + Buffer.byteLength(BUNDLE_SEP)),
+  };
+}
+
+// **비파괴적 임시 복원.** 메모리 안의 SQLite 하나에 덤프를 그대로 실어 본다 —
+// 운영 DB 는 물론이고 디스크에도 남기지 않는다.
+// ⛔ 이것이 이 저장소에서 「복원」에 가장 가까운 코드이고, **어디에도 쓰지 않는다.**
+//    돌려주는 것은 boolean 하나이고 내용은 함수 밖으로 나가지 않는다.
+export function loadTemp(sqlText, which) {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec(String(sqlText));
+    const names = new Set(db.prepare("SELECT name FROM sqlite_master").all().map((r) => r.name));
+    for (const tbl of REQUIRED_TABLES[which]) if (!names.has(tbl)) return { ok: false, missing: tbl };
+    for (const ix of REQUIRED_INDEXES[which]) if (!names.has(ix)) return { ok: false, missing: ix };
+    return { ok: true, objects: names.size };
+  } catch { return { ok: false, missing: "load" }; }
+  finally { db.close(); }
+}
+
 // ── inventory 접근 ───────────────────────────────────────────────────────
 // 기본 구현은 `wrangler d1 execute <ledger> --remote --command`. 테스트는 가짜를 끼운다.
+// D1 이 실제로 몇 행을 바꿨나. **`--json` 응답의 `meta.changes` 가 원본이다** —
+// 종료 코드 0 은 「문장이 돌았다」이지 「그 행이 바뀌었다」가 아니다.
+const changesOf = (out) => {
+  const parsed = typeof out === "string" ? JSON.parse(out) : out;
+  const first = Array.isArray(parsed) ? parsed[0] : parsed;
+  const m = first && first.meta;
+  return m && Number.isFinite(Number(m.changes)) ? Number(m.changes) : null;
+};
+
 export const makeInventory = (cfg, run) => ({
   async exec(sql) {
     const r = await run("npx", ["wrangler", "d1", "execute", cfg.ledgerDb, "--remote",
@@ -181,25 +265,51 @@ export const makeInventory = (cfg, run) => ({
     if (r.code !== 0) throw new Error("ledger 질의 실패");
     return r.out;
   },
-  insertPending(id, snapshotAt) {
-    return this.exec(`INSERT INTO backups (backup_id, snapshot_at, created_at, status)`
+  // 상태를 바꾸는 문장은 **정확히 한 행**을 바꿔야 한다(2026-08-27 · K2 중간 항목 4).
+  // 0행은 전이표가 막았거나 그 행이 없다는 뜻이고, 둘 다 「했다」로 넘기면 안 된다.
+  // ⛔ 「몇 행이든 돌았으면 성공」으로 두면 전이표가 SQL 안에 있는 의미가 사라진다.
+  async execOne(sql, what) {
+    const changed = changesOf(await this.exec(sql));
+    if (changed !== 1) throw new Error(`backup inventory: ${what} 가 ${changed}행을 바꿨다`);
+  },
+  insertPending(id, snapshotAt, epoch, fingerprint) {
+    return this.execOne(`INSERT INTO backups (backup_id, snapshot_at, created_at, status,`
+      + ` maintenance_epoch, key_fingerprint)`
       + ` VALUES (${sqlValue(id, "id")}, ${sqlValue(snapshotAt, "int")},`
-      + ` ${sqlValue(snapshotAt, "int")}, 'pending')`);
+      + ` ${sqlValue(snapshotAt, "int")}, 'pending', ${sqlValue(epoch, "int")},`
+      + ` ${sqlValue(fingerprint, "fp")})`, "insertPending");
   },
   setUploaded(id, mainHash, ledgerHash, key, expiresAt, bytes, objHash) {
-    return this.exec(`UPDATE backups SET status = 'uploaded',`
+    return this.execOne(`UPDATE backups SET status = 'uploaded',`
       + ` main_db_hash = ${sqlValue(mainHash, "hash")},`
       + ` ledger_db_hash = ${sqlValue(ledgerHash, "hash")},`
       + ` object_key = ${sqlValue(key, "key")},`
       + ` object_bytes = ${sqlValue(bytes, "int")},`
       + ` object_hash = ${sqlValue(objHash, "hash")},`
       + ` expires_expected_at = ${sqlValue(expiresAt, "int")}`
-      + ` WHERE backup_id = ${sqlValue(id, "id")} AND ${froms("uploaded")}`);
+      + ` WHERE backup_id = ${sqlValue(id, "id")} AND ${froms("uploaded")}`, "setUploaded");
   },
   setReady(id) {
-    return this.exec(`UPDATE backups SET status = 'ready' WHERE backup_id = ${sqlValue(id, "id")}`
-      + ` AND ${froms("ready")}`);
+    return this.execOne(`UPDATE backups SET status = 'ready' WHERE backup_id = ${sqlValue(id, "id")}`
+      + ` AND ${froms("ready")}`, "setReady");
   },
+  // 복원 **가능성 증명**의 영수증. 상태는 안 바꾼다 — `ready` 와 다른 사실이기 때문이다.
+  setVerified(id, at, version) {
+    return this.execOne(`UPDATE backups SET verified_at = ${sqlValue(at, "int")},`
+      + ` verify_version = ${sqlValue(version, "code")}`
+      + ` WHERE backup_id = ${sqlValue(id, "id")} AND status = 'ready'`, "setVerified");
+  },
+  // 게이트·검증이 **명시된 backup_id 하나**를 읽는다. 「가장 최근 ready」를 고르지 않는다.
+  async getRow(id) {
+    const out = await this.exec(`SELECT backup_id, status, snapshot_at, object_key, object_bytes,`
+      + ` object_hash, main_db_hash, ledger_db_hash, maintenance_epoch, key_fingerprint,`
+      + ` verified_at, verify_version, expires_expected_at, deleted_at FROM backups`
+      + ` WHERE backup_id = ${sqlValue(id, "id")}`);
+    return rowsOf(out)[0] || null;
+  },
+  // ⚠️ `fail`·`abort`·`markChecked` 는 **`changes` 를 따지지 않는다.** 셋 다 이미 실패한
+  //    경로이거나(앞의 단계가 실패해서 부르는 자리) 기록일 뿐이고, 여기서 던지면 원래의
+  //    실패 사유가 그 예외에 덮인다. 상태를 **앞으로** 옮기는 문장만 `execOne` 이다.
   fail(id, code) {
     return this.exec(`UPDATE backups SET status = 'failed',`
       + ` last_error_code = ${sqlValue(code, "code")}`
@@ -235,8 +345,7 @@ export const makeInventory = (cfg, run) => ({
 
 // 「이 상태로 갈 수 있는 출발 상태들」을 **전이표에서 만든다.** SQL 에 손으로 적으면
 // 표와 문장이 갈라지고, 갈라진 날 DB 는 표에 없는 전이를 조용히 받아들인다.
-const froms = (to) => "status IN (" + Object.keys(NEXT)
-  .filter((f) => NEXT[f].includes(to)).map((f) => `'${f}'`).join(", ") + ")";
+const froms = backupFroms;
 
 // ── 본체 ─────────────────────────────────────────────────────────────────
 // 돌려주는 것은 **영수증 하나**다. 던지지 않는다 — 부르는 쪽(사람)이 코드로 읽는다.
@@ -253,16 +362,12 @@ export async function runBackup({
     log(`백업 설정이 없다: ${miss.join(", ")}`);
     return { ok: false, step: "config", code: "config", missing: miss };
   }
-  if (!existsSync(cfg.keyFile)) {
-    log("암호화 키 파일이 없다");
+  const k = await readKey(cfg);
+  if (k.miss) {
+    log("암호화 키를 쓸 수 없다");
     return { ok: false, step: "config", code: "config", missing: ["BACKUP_KEY_FILE"] };
   }
-  const key = Buffer.from((await readFile(cfg.keyFile, "utf8")).trim(), "base64");
-  if (key.length !== 32) {
-    // 짧은 키를 조용히 늘려 쓰지 않는다. 키 강도가 설정 실수에 좌우되면 안 된다.
-    log("암호화 키가 32바이트가 아니다");
-    return { ok: false, step: "config", code: "config", missing: ["BACKUP_KEY_FILE"] };
-  }
+  const key = k.key;
 
   // ── 정지 확인. **inventory 행을 만들기도 전이다** ──
   // 여기서 막히면 남는 것이 하나도 없어야 한다 — 행을 먼저 만들면 「멈추지 않아서 안 한」
@@ -296,7 +401,7 @@ export async function runBackup({
     // 여기서 죽으면 `pending` 행이 남고, 그 행은 삭제 표식 정리를 **막는다**(`BACKUP_BLOCKS_SQL`).
     // 그게 맞는 방향이다 — 객체가 생겼는지 우리가 모르는 상태이기 때문이다.
     if (!dryRun) {
-      try { await inv.insertPending(id, now); }
+      try { await inv.insertPending(id, now, q.epoch, k.fingerprint); }
       catch { log("inventory 기록 실패"); return { ok: false, backupId: id, step: "inventory", code: "inventory" }; }
     }
 
@@ -471,35 +576,132 @@ export async function reconcile({ env = process.env, now = Date.now(), run = rea
   return out;
 }
 
+// ── 복원 가능성 증명 ─────────────────────────────────────────────────────
+// **`ready` 는 「올렸다」이고, 이것은 「받아서 풀고 실어 봤다」이다.** 둘을 같은 사실로
+// 쓰면 복구가 필요한 날 복구되지 않는 사본을 믿고 있게 된다.
+//
+// 재현(2026-08-27 · K2): 옛 게이트는 `status='ready'` 중 **가장 최근 것**을 골라 나이만 봤다.
+// 그래서 R2 객체가 없어도, 키 파일이 사라져도, 암호문이 망가져도, 안에 표가 빠져 있어도,
+// **이전 유지보수 세대의 사본이어도** migration 이 그대로 진행됐다.
+//
+// 여기서 확인하는 것 전부(하나라도 못 하면 fail-closed):
+//   ① 운영자가 **지정한 backup_id** 의 행이다(「가장 최근」을 고르지 않는다)
+//   ② 상태가 `ready` 이고 영수증에 필요한 값이 다 있다
+//   ③ 키 파일이 있고 **지문이 그때 쓴 키와 같다**
+//   ④ R2 에 그 객체가 **지금** 있다(`--file` 로 받는다 · 크기 한도)
+//   ⑤ 크기와 암호문 SHA-256 이 기록과 같다
+//   ⑥ AES-GCM **인증** 복호화가 성공한다(태그가 맞다)
+//   ⑦ 안쪽 manifest 의 backup_id 와 두 DB 해시가 기록과 같다
+//   ⑧ 두 덤프를 **메모리 SQLite 에 실제로 싣는다** — 필수 표·인덱스까지 확인한다
+//
+// ⛔ **운영 DB 를 건드리지 않는다.** 이 함수가 내는 R2 명령은 `get` 하나이고, 적재는
+//    `:memory:` 다. `restore` 하위 명령은 이 파일에 없고 앞으로도 넣지 않는다.
+export async function verifyBackup({ backupId, env = process.env, now = Date.now(),
+                                     run = realRunner, inventory, log = () => {} } = {}) {
+  const bad = (code, extra = {}) => { log(`복원 검증 실패: ${code}`); return { ok: false, code, ...extra }; };
+  if (!HEX32.test(String(backupId || ""))) return bad("no_backup_id");
+  const { cfg, miss } = readConfig(env);
+  if (miss.length) return bad("config", { missing: miss });
+  const k = await readKey(cfg);
+  if (k.miss) return bad("key");
+
+  const inv = inventory || makeInventory(cfg, run);
+  let row;
+  try { row = await inv.getRow(backupId); } catch { return bad("unreadable"); }
+  if (!row) return bad("no_row");
+  if (row.status !== "ready") return bad("not_ready", { status: row.status });
+  for (const f of ["object_key", "object_bytes", "object_hash",
+                   "main_db_hash", "ledger_db_hash", "maintenance_epoch", "key_fingerprint"]) {
+    if (row[f] === null || row[f] === undefined) return bad("incomplete", { field: f });
+  }
+  // ③ 키가 바뀌었으면 이 사본은 **우리가 못 연다.** 열어 보기 전에 말한다.
+  if (String(row.key_fingerprint) !== k.fingerprint) return bad("key_rotated");
+  if (Number(row.object_bytes) > MAX_VERIFY_BYTES) return bad("too_large");
+
+  const dir = await mkdtemp(path.join(tmpdir(), "shhh-verify-"));
+  try {
+    const dest = path.join(dir, "obj.bin");
+    const state = await probeObject(run, cfg, String(row.object_key), dest);
+    if (state !== "present") return bad(state === "absent" ? "object_absent" : "object_unknown");
+    if ((await stat(dest)).size !== Number(row.object_bytes)) return bad("size_mismatch");
+    if ((await sha256File(dest)) !== String(row.object_hash)) return bad("hash_mismatch");
+
+    const parts = decryptBundle(await readFile(dest), k.key);
+    if (parts.code) return bad(parts.code === "decrypt" ? "decrypt" : "shape");
+    if (String(parts.header && parts.header.id) !== backupId) return bad("manifest_id");
+    const mainHash = createHash("sha256").update(parts.main).digest("hex");
+    const ledgerHash = createHash("sha256").update(parts.ledger).digest("hex");
+    if (String(parts.header.main) !== mainHash || String(parts.header.ledger) !== ledgerHash)
+      return bad("manifest_hash");
+    if (mainHash !== String(row.main_db_hash) || ledgerHash !== String(row.ledger_db_hash))
+      return bad("inventory_hash");
+
+    for (const which of ["main", "ledger"]) {
+      const r = loadTemp(parts[which].toString("utf8"), which);
+      if (!r.ok) return bad("load_" + which, { missing: r.missing });
+    }
+  } finally {
+    // 평문도 암호문도 남기지 않는다.
+    await rm(dir, { recursive: true, force: true });
+  }
+
+  // 영수증. **상태는 안 바꾼다** — 게이트는 이 값을 믿지 않고 사용 시점에 다시 잰다.
+  try { await inv.setVerified(backupId, now, VERIFY_VERSION); }
+  catch { return bad("receipt"); }
+  log(`복원 검증 통과: ${backupId}`);
+  return { ok: true, code: "verified", receipt: {
+    backupId, verifiedAt: now, verifyVersion: VERIFY_VERSION,
+    maintenanceEpoch: Number(row.maintenance_epoch), snapshotAt: Number(row.snapshot_at),
+    objectKey: String(row.object_key), objectBytes: Number(row.object_bytes),
+    objectHash: String(row.object_hash), keyFingerprint: k.fingerprint,
+    mainDbHash: String(row.main_db_hash), ledgerDbHash: String(row.ledger_db_hash),
+  } };
+}
+
 // ── migration 게이트 ─────────────────────────────────────────────────────
 // **백업이 있다는 것을 확인만 한다.** 백업을 만들지도, migration 을 돌리지도 않는다.
-// ⛔ 「방금 만든 ready 백업」이 없으면 0이 아닌 코드로 끝난다 — 그것이 migration 을 막는 방식이다.
-export async function backupGate({ env = process.env, now = Date.now(), run = realRunner,
-                                   query, log = () => {} } = {}) {
+// ⛔ 「방금 만든, 복원되는 것이 증명된 백업」이 없으면 0이 아닌 코드로 끝난다 —
+//    그것이 migration 을 막는 방식이다.
+//
+// ⚠️ **운영자가 backup_id 를 직접 준다.** 「가장 최근 ready」를 자동으로 고르지 않는다:
+//    고르면 사람이 승인하지 않은 사본으로 migration 이 진행되고, 그 사본이 이전 유지보수
+//    세대의 것이어도 아무도 모른다.
+export async function backupGate({ backupId, env = process.env, now = Date.now(),
+                                   run = realRunner, inventory, log = () => {} } = {}) {
   const { cfg, miss } = readConfig(env);
   if (miss.length) { log(`백업 설정이 없다: ${miss.join(", ")}`); return { ok: false, code: "config" }; }
-  const q = query || (async () => {
-    const r = await run("npx", ["wrangler", "d1", "execute", cfg.ledgerDb, "--remote", "--json",
-      "--command", `SELECT snapshot_at FROM backups WHERE status = 'ready'`
-                 + ` ORDER BY snapshot_at DESC LIMIT 1`]);
-    if (r.code !== 0) throw new Error("ledger 질의 실패");
-    return r.out;
-  });
-  let rows;
-  try {
-    const out = await q();
-    // ⚠️ 못 읽으면 **모른다**이고, 모를 때는 막는다.
-    const parsed = typeof out === "string" ? JSON.parse(out) : out;
-    rows = (Array.isArray(parsed) ? parsed[0] : parsed);
-    rows = (rows && rows.results) || [];
-  } catch { log("백업 상태를 못 읽었다"); return { ok: false, code: "unreadable" }; }
-  if (!rows.length) { log("ready 상태의 백업이 없다"); return { ok: false, code: "none" }; }
-  const age = now - Number(rows[0].snapshot_at);
+  if (!HEX32.test(String(backupId || ""))) {
+    log("검증할 backup_id 를 지정해야 한다");
+    return { ok: false, code: "no_backup_id" };
+  }
+  const inv = inventory || makeInventory(cfg, run);
+  let row;
+  try { row = await inv.getRow(backupId); }
+  catch { log("백업 상태를 못 읽었다"); return { ok: false, code: "unreadable" }; }
+  if (!row) { log("그 backup_id 가 없다"); return { ok: false, code: "no_row" }; }
+  if (row.status !== "ready") { log("그 백업은 ready 가 아니다"); return { ok: false, code: "not_ready" }; }
+
+  const age = now - Number(row.snapshot_at);
   if (!(age >= 0 && age <= GATE_MAX_AGE)) {
-    log("마지막 백업이 너무 오래됐다");
+    log("그 백업이 너무 오래됐다");
     return { ok: false, code: "stale", ageMs: age };
   }
-  return { ok: true, ageMs: age };
+
+  // **지금도 멈춰 있나, 그리고 그 백업이 지금 세대의 것인가.**
+  // ⚠️ 세대가 다르면 그 사본은 지금 상태의 복원본이 아니다 — 그 사이에 전환이 있었고,
+  //    복원하면 그 전환 이후의 쓰기가 통째로 사라진다.
+  const q = await quiescence({ cfg, run });
+  if (!q.ok) { log(`두 DB 가 멈춘 상태가 아니다: ${q.why}`); return { ok: false, code: "quiescence", why: q.why }; }
+  if (Number(q.epoch) !== Number(row.maintenance_epoch)) {
+    log("그 백업은 이전 유지보수 세대의 것이다");
+    return { ok: false, code: "epoch", epoch: Number(q.epoch), backupEpoch: Number(row.maintenance_epoch) };
+  }
+
+  // ⚠️ **영수증이 있다는 이유로 건너뛰지 않는다.** 검사와 사용은 같은 경계에 있어야 한다 —
+  //    객체는 영수증을 쓴 뒤에도 사라지거나 바뀔 수 있다.
+  const v = await verifyBackup({ backupId, env, now, run, inventory: inv, log });
+  if (!v.ok) return { ok: false, code: v.code, field: v.field, missing: v.missing };
+  return { ok: true, ageMs: age, receipt: v.receipt };
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────────
@@ -516,16 +718,23 @@ if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
     const r = await reconcile({ log });
     console.log(JSON.stringify(r));
     process.exit(r.ok ? 0 : 1);
-  } else if (cmd === "gate") {
-    const r = await backupGate({ log });
+  } else if (cmd === "verify" || cmd === "gate") {
+    // ⚠️ **backup_id 는 운영자가 준다.** `--id <32자리 hex>` 없이는 시작하지 않는다.
+    const at = process.argv.indexOf("--id");
+    const backupId = at > 0 ? process.argv[at + 1] : null;
+    const r = cmd === "gate" ? await backupGate({ backupId, log })
+                             : await verifyBackup({ backupId, log });
     console.log(JSON.stringify(r));
     process.exit(r.ok ? 0 : 1);
   } else {
-    console.log("사용법: node scripts/backup.mjs backup [--dry-run] | reconcile | gate");
+    console.log("사용법: node scripts/backup.mjs backup [--dry-run] | reconcile"
+              + " | verify --id <backup_id> | gate --id <backup_id>");
     console.log("  backup  두 DB 를 내보내고 검증·암호화·업로드한다. migration 은 실행하지 않는다.");
     console.log("  reconcile inventory 와 R2 의 실제를 맞춘다. 부재를 확인한 행만 닫는다.");
     console.log("          모르는 행·만료 초과·해시 불일치가 있으면 0이 아닌 코드로 끝난다.");
-    console.log("  gate    방금 만든 ready 백업이 있는지만 본다. 없으면 0이 아닌 코드로 끝난다.");
+    console.log("  verify  그 백업을 실제로 받아 풀고 임시 SQLite 에 실어 본다. 운영 DB 는 안 만진다.");
+    console.log("  gate    지정한 백업이 지금 세대의 것이고 실제로 복원되는지 본다.");
+    console.log("          ⛔ restore 는 없다. 이 도구는 되돌리지 않는다.");
     process.exit(2);
   }
 }

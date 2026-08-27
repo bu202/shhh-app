@@ -511,6 +511,166 @@ function seed(env, now) {
   assert.ok(!/new Response\(/.test(src), t("정리 Worker 가 Response 를 만든다 — 응답할 상대가 없다"));
 }
 
+// ══ T101. **자동** inventory reconciliation (2026-08-27 · K2-D · 위협 85) ══
+//
+// 재현: ledger 에 삭제 표식을 막는 백업 행이 있고, R2 lifecycle 이 실제 객체를 지웠다.
+// 아무도 손으로 명령을 내리지 않는다. 그러면 그 행은 **영원히 막는다** — 보유기간이
+// 사실상 무한이 된다. runbook 의 「주기적으로 실행하세요」 한 줄은 그 상태를 못 막는다.
+//
+// ⚠️ **R2 는 바인딩으로 만진다.** Worker 안에서 Cloudflare REST API 를 부르지 않는다
+//    (공식 「Workers best practices」: bindings are direct, in-process references).
+// ⚠️ **머리(head)만 부른다.** 객체 본문을 Worker 메모리에 올리지 않는다 — 128MB 한도에서
+//    큰 백업 하나가 그대로 Worker 를 죽인다.
+{
+  const KEY = (id) => `shhh/${id}.enc`;
+  const mkBucket = (present, opts = {}) => {
+    const calls = [];
+    return { calls, head: async (k) => {
+      calls.push(k);
+      if (opts.down) throw new Error("r2 unreachable");
+      return present.has(k) ? { key: k, size: 10 } : null;
+    }, get: async () => { throw new Error("본문을 받으면 안 된다"); } };
+  };
+  const seedBackup = (env, id, status, snapAt, extra = "") => env.LEDGER._db.exec(
+    `INSERT INTO backups (backup_id, snapshot_at, created_at, status, object_key,
+       main_db_hash, ledger_db_hash, object_bytes, object_hash, maintenance_epoch,
+       key_fingerprint ${extra ? ", " + extra.split("=")[0] : ""})
+     VALUES ('${id}', ${snapAt}, ${snapAt}, '${status}', '${KEY(id)}', 'h', 'h', 10, 'oh', 1, 'fp'`
+    + `${extra ? ", " + extra.split("=")[1] : ""})`);
+
+  // ── a. R2 에서 사라진 객체를 **크론이 스스로** 찾아 닫는다.
+  {
+    const env = env0(), now = Date.now();
+    seedBackup(env, "a".repeat(32), "ready", now - 30 * 86400e3);
+    env.BACKUPS = mkBucket(new Set());
+    const out = await runCleanup(env, now);
+    const row = env.LEDGER._db.prepare("SELECT status, deleted_at, deletion_checked_at FROM backups")
+      .get();
+    assert.equal(row.status, "deleted",
+      t(`T101-a: ★ 사라진 객체가 아직 ${row.status} 다 — 표식 정리를 영원히 막는다`));
+    assert.equal(row.deleted_at, now, t("T101-a: 부재 확인 시각이 안 적혔다"));
+    assert.ok(out.backups && out.backups.gone === 1, t("T101-a: 실행 수치에 안 남았다"));
+    assert.deepEqual(env.BACKUPS.calls, [KEY("a".repeat(32))], t("T101-a: 물어본 키가 다르다"));
+  }
+
+  // ── b. **있는 객체는 안 건드린다**(양성 대조). 확인 시각만 적는다.
+  {
+    const env = env0(), now = Date.now();
+    const id = "b".repeat(32);
+    seedBackup(env, id, "ready", now - 60e3);
+    env.BACKUPS = mkBucket(new Set([KEY(id)]));
+    const out = await runCleanup(env, now);
+    const row = env.LEDGER._db.prepare("SELECT status, deletion_checked_at FROM backups").get();
+    assert.equal(row.status, "ready", t(`T101-b: ★ 살아 있는 백업을 ${row.status} 로 닫았다`));
+    assert.equal(row.deletion_checked_at, now, t("T101-b: 확인 시각이 안 적혔다"));
+    assert.equal(out.backups.present, 1, t("T101-b: 수치가 안 맞는다"));
+  }
+
+  // ── c. `pending` 은 `aborted` 로 간다(업로드가 시작되지 않았음을 확인했다).
+  {
+    const env = env0(), now = Date.now();
+    seedBackup(env, "c".repeat(32), "pending", now - 60e3);
+    env.BACKUPS = mkBucket(new Set());
+    await runCleanup(env, now);
+    assert.equal(env.LEDGER._db.prepare("SELECT status FROM backups").get().status, "aborted",
+      t("T101-c: pending 의 부재가 aborted 가 아니다"));
+  }
+
+  // ── d. **모르면 아무것도 안 적고 회차가 실패한다.** 조회 실패는 부재가 아니다.
+  {
+    const env = env0(), now = Date.now();
+    seedBackup(env, "d".repeat(32), "ready", now - 60e3);
+    env.BACKUPS = mkBucket(new Set(), { down: true });
+    await assert.rejects(() => runCleanup(env, now),
+      t("T101-d: ★ R2 가 답을 못 하는데 회차가 성공으로 끝났다"));
+    const row = env.LEDGER._db.prepare("SELECT status, deletion_checked_at FROM backups").get();
+    assert.equal(row.status, "ready", t("T101-d: ★ 모르는 상태에서 행을 닫았다"));
+    assert.equal(row.deletion_checked_at, null,
+      t("T101-d: ★ 확인하지 못했는데 확인 시각을 적었다"));
+  }
+
+  // ── e. 막는 행이 있는데 **바인딩이 없으면** 회차가 실패한다(조용히 넘어가지 않는다).
+  {
+    const env = env0(), now = Date.now();
+    seedBackup(env, "e".repeat(32), "ready", now - 60e3);
+    await assert.rejects(() => runCleanup(env, now),
+      t("T101-e: ★ R2 바인딩이 없는데 정리가 성공으로 끝났다"));
+  }
+  // ── e2. 막는 행이 **없으면** 바인딩이 없어도 정상이다(아직 백업을 안 쓰는 배포).
+  {
+    const env = env0(), now = Date.now();
+    const out = await runCleanup(env, now);
+    assert.equal(out.backups.scanned, 0, t("T101-e2: 볼 것이 없는데 무언가 셌다"));
+  }
+
+  // ── f. **오래 확인되지 않은 행**이 있으면 회차가 실패한다(운영자가 발견할 수 있어야 한다).
+  {
+    const env = env0(), now = Date.now();
+    const id = "f".repeat(32);
+    seedBackup(env, id, "ready", now - 60e3, `expires_expected_at=${now - 30 * 86400e3}`);
+    env.BACKUPS = mkBucket(new Set([KEY(id)]));
+    await assert.rejects(() => runCleanup(env, now),
+      t("T101-f: ★ 만료 예정이 한참 지났는데 아직 있는 객체를 조용히 넘겼다"));
+    assert.equal(env.LEDGER._db.prepare("SELECT status FROM backups").get().status, "ready",
+      t("T101-f: ⛔ 만료가 지났다는 이유로 행을 닫았다 — 시각은 삭제의 근거가 아니다"));
+  }
+
+  // ── g. **멱등**하고 재실행 가능하다. 닫힌 행은 다시 묻지 않는다.
+  {
+    const env = env0(), now = Date.now();
+    seedBackup(env, "9".repeat(32), "ready", now - 60e3);
+    env.BACKUPS = mkBucket(new Set());
+    await runCleanup(env, now);
+    const first = env.BACKUPS.calls.length;
+    const out2 = await runCleanup(env, now + 1000);
+    assert.equal(env.BACKUPS.calls.length, first,
+      t("T101-g: 이미 닫은 행을 R2 에 다시 물었다"));
+    assert.equal(out2.backups.scanned, 0, t("T101-g: 재실행이 멱등하지 않다"));
+  }
+
+  // ── h. **한 회차에 보는 수에 상한이 있다.** 무료 크론의 CPU 10ms 안에서 끝나야 한다.
+  {
+    const env = env0(), now = Date.now();
+    for (let i = 0; i < 40; i++) seedBackup(env, String(i).padStart(32, "0"), "ready", now - 60e3);
+    env.BACKUPS = mkBucket(new Set());
+    const out = await runCleanup(env, now);
+    assert.ok(out.backups.scanned <= 25 && out.backups.scanned > 0,
+      t(`T101-h: 한 회차가 ${out.backups.scanned}개를 봤다 — 상한이 없다`));
+    // 남은 것은 다음 회차가 본다.
+    const left = env.LEDGER._db.prepare(
+      "SELECT COUNT(*) n FROM backups WHERE status = 'ready'").get().n;
+    assert.ok(left > 0, t("T101-h: 상한이 있다면서 한 번에 다 처리했다"));
+  }
+
+  // ── j. **그 사이에 행이 사라지면** 「했다」로 넘기지 않는다.
+  //    부재 전이는 `changes === 1` 이어야 한다 — 아니면 전이표가 막았거나 누가 옮긴 것이다
+  //    (돌연변이 M142 가 처음에 살아남았다: 정상 경로에서는 늘 1행이라 그 갈래를 아무도 안 밟았다).
+  {
+    const env = env0(), now = Date.now();
+    const id = "5".repeat(32);
+    seedBackup(env, id, "ready", now - 60e3);
+    const b = mkBucket(new Set());
+    env.BACKUPS = { ...b, head: async (k) => {
+      // 조회하는 사이에 운영자가 그 행을 직접 지웠다.
+      env.LEDGER._db.exec(`DELETE FROM backups WHERE backup_id = '${id}'`);
+      return b.head(k);
+    } };
+    await assert.rejects(() => runCleanup(env, now),
+      t("T101-j: ★ 0행을 바꾼 전이를 「했다」로 넘겼다"));
+  }
+
+  // ── i. 유지보수·복원 중에는 **아무것도 안 한다**(정리 자체가 건너뛴다).
+  {
+    const env = env0(), now = Date.now();
+    seedBackup(env, "7".repeat(32), "ready", now - 60e3);
+    env.BACKUPS = mkBucket(new Set());
+    env.LEDGER._db.exec("UPDATE maintenance SET mode = 'maintenance' WHERE id = 1");
+    const out = await runCleanup(env, now);
+    assert.ok(out.skipped, t("T101-i: 유지보수 중인데 정리가 돌았다"));
+    assert.equal(env.BACKUPS.calls.length, 0, t("T101-i: ★ 유지보수 중에 R2 를 물었다"));
+  }
+}
+
 console.log(`test-cleanup: ${n}개 통과 — confirmed 만 삭제(pending 보존) · 만료 전 소비 표식 보존 · `
   + `안 풀린 lease 보존 · 재실행 안전 · maintenance/restore_closed 즉시 종료 · `
   + `크론도 임차증(주 D1 첫 접근 전 획득 · 도는 중 drained:false · 끝난 뒤에만 0) · `

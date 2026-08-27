@@ -11,17 +11,24 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
-  runBackup, backupGate, readConfig, sqlValue, REQUIRED_TABLES, NEXT,
+  runBackup, backupGate, readConfig, sqlValue, REQUIRED_TABLES, REQUIRED_INDEXES, NEXT,
   BACKUP_TTL_DAYS, GATE_MAX_AGE, objectKeyFor, canTransition, reconcile,
-  OVERDUE_GRACE, absentEvidence,
+  OVERDUE_GRACE, absentEvidence, verifyBackup, keyFingerprint, VERIFY_VERSION,
+  makeInventory, decryptBundle, loadTemp, BUNDLE_SEP, MAX_VERIFY_BYTES,
 } from "./backup.mjs";
 
 let n = 0;
 const t = (m) => { n++; return m; };
 const KEY = Buffer.alloc(32, 7).toString("base64");
 
-const dump = (which) => REQUIRED_TABLES[which]
-  .map((x) => `CREATE TABLE ${x} (a);\nINSERT INTO ${x} VALUES (1);`).join("\n");
+// **실제로 SQLite 에 실리는 덤프여야 한다.** 검증이 임시 DB 에 싣기 때문이다 —
+// 표 이름만 문자열로 맞춰 두면 「적재해 봤다」가 재지 못한다.
+const dump = (which, { drop = null } = {}) => [
+  ...REQUIRED_TABLES[which].filter((x) => x !== drop)
+    .map((x) => `CREATE TABLE ${x} (a);\nINSERT INTO ${x} VALUES (1);`),
+  ...REQUIRED_INDEXES[which].filter((x) => x !== drop)
+    .map((x, i) => `CREATE INDEX ${x} ON ${REQUIRED_TABLES[which][i]}(a);`),
+].join("\n");
 
 // 가짜 inventory. 상태 전이를 **표대로** 강제한다 — 코드가 순서를 건너뛰면 여기서 걸린다.
 function fakeInv(opts = {}) {
@@ -38,8 +45,15 @@ function fakeInv(opts = {}) {
   };
   return {
     rows, calls,
-    async insertPending(id, at) { guard("insert"); calls.push("insert");
-      rows.set(id, { backup_id: id, status: "pending", snapshot_at: at }); },
+    async insertPending(id, at, epoch, fp) { guard("insert"); calls.push("insert");
+      rows.set(id, { backup_id: id, status: "pending", snapshot_at: at,
+                     maintenance_epoch: epoch, key_fingerprint: fp }); },
+    async getRow(id) { guard("row"); calls.push("row");
+      const r = rows.get(id); return r ? { ...r } : null; },
+    async setVerified(id, at, v) { guard("verified"); calls.push("verified");
+      const r = rows.get(id);
+      assert.ok(r && r.status === "ready", `ready 가 아닌 행에 영수증을 적는다: ${id}`);
+      r.verified_at = at; r.verify_version = v; },
     async setUploaded(id, m, l, k, exp, bytes, hash) { guard("uploaded"); calls.push("uploaded");
       Object.assign(move(id, "uploaded"), { main_db_hash: m, ledger_db_hash: l, object_key: k,
         expires_expected_at: exp, object_bytes: bytes, object_hash: hash }); },
@@ -65,10 +79,10 @@ function fakeInv(opts = {}) {
 // 파일 유무가 진짜여야 한다.
 function fakeRun({ fail = {}, emptyMain = false, missingTable = null, noFile = false,
                    quiet = {}, objects = null, r2Down = false, tamperOnGet = false,
-                   breakEncrypt = false } = {}) {
+                   breakEncrypt = false, putMap = null } = {}) {
   const calls = [];
   const store = objects;                       // null 이면 「이번 실행에서 올린 것만 있다」
-  const put = new Map();
+  const put = putMap || new Map();
   const maint = { mode: "maintenance", epoch: 7, drained_at: 1, pending_transition: null,
                   ...(quiet.maintenance || {}) };
   const leases = quiet.leases === undefined ? 0 : quiet.leases;
@@ -137,6 +151,9 @@ function fakeRun({ fail = {}, emptyMain = false, missingTable = null, noFile = f
 const tmp = await mkdtemp(path.join(tmpdir(), "shhh-bk-test-"));
 const keyFile = path.join(tmp, "key");
 await writeFile(keyFile, KEY);
+// **다른 키.** 「키를 갈아 끼운 뒤 옛 백업을 복원 가능이라 부르는」 경우를 재려면 필요하다.
+const otherKeyFile = path.join(tmp, "key2");
+await writeFile(otherKeyFile, Buffer.alloc(32, 9).toString("base64"));
 const ENV = { BACKUP_MAIN_DB: "shhh-db", BACKUP_LEDGER_DB: "shhh-ledger",
               BACKUP_R2_BUCKET: "shhh-backups", BACKUP_KEY_FILE: keyFile };
 
@@ -271,29 +288,215 @@ for (const failOn of ["insert", "uploaded", "ready"]) {
     t("B8: 백업 스크립트에 복원 경로가 생겼다 — 자동 복원은 금지다"));
 }
 
-// ══ B9. 게이트 ══
+// ══ B9. 게이트 — **지정한 백업 하나**를 실제로 검증한다 ══
+//
+// 옛 게이트는 `status='ready'` 중 가장 최근 것을 골라 **나이만** 봤다. 그래서 R2 객체가
+// 없어도, 키가 사라져도, 암호문이 망가져도, 이전 유지보수 세대의 사본이어도 통과했다.
 {
   const now = Date.now();
-  const q = (rows) => async () => JSON.stringify([{ results: rows }]);
-  assert.equal((await backupGate({ env: ENV, now, query: q([{ snapshot_at: now - 60e3 }]) })).ok,
-    true, t("B9: 방금 만든 ready 백업이 있는데 막았다"));
-  // ⚠️ **`code` 만 재지 않는다**(2026-08-26 · 돌연변이 M85 생존). `catch` 가
-  //    `{ ok: true, code: "unreadable" }` 을 돌려주는 변이가 **`code` 단언을 통과했다** —
-  //    막느냐 마느냐를 정하는 값은 `ok` 인데 그것을 아무도 안 보고 있었다.
-  for (const [label, query, code] of [
-    ["ready 백업 없음", q([]), "none"],
-    ["백업이 너무 오래됨", q([{ snapshot_at: now - GATE_MAX_AGE - 1 }]), "stale"],
-    ["상태를 못 읽음", async () => { throw new Error("down"); }, "unreadable"],
-    ["미래 시각", q([{ snapshot_at: now + 60e3 }]), "stale"],
-  ]) {
-    const r = await backupGate({ env: ENV, now, query });
-    assert.equal(r.ok, false, t(`B9: ${label} 인데 게이트가 열렸다 — migration 이 진행된다`));
-    assert.equal(r.code, code, t(`B9: ${label} 의 사유 코드가 ${r.code} 다`));
+  const put = new Map();
+  const inv = fakeInv();
+  const F = fakeRun({ putMap: put });
+  const made = await runBackup({ env: ENV, now, run: F.run, inventory: inv, log: () => {} });
+  assert.equal(made.ok, true, t("B9: 준비용 백업이 실패했다"));
+
+  // ── a. **backup_id 없이는 시작조차 안 한다.**
+  const noId = await backupGate({ env: ENV, now, run: F.run, inventory: inv });
+  assert.equal(noId.ok, false, t("B9-a: ★ backup_id 없이 게이트가 열렸다 — 「가장 최근」을 골랐다"));
+  assert.equal(noId.code, "no_backup_id", t(`B9-a: 사유가 ${noId.code} 다`));
+
+  // ── b. 양성 대조 — 방금 만든 그 백업은 통과하고, 영수증이 남는다.
+  const ok = await backupGate({ env: ENV, now, run: F.run, inventory: inv, backupId: made.backupId });
+  assert.equal(ok.ok, true, t(`B9-b: 정상 백업을 막았다 (${ok.code})`));
+  assert.equal(ok.receipt.backupId, made.backupId, t("B9-b: 영수증의 backup_id 가 다르다"));
+  assert.equal(ok.receipt.verifyVersion, VERIFY_VERSION, t("B9-b: 영수증에 검증 판이 없다"));
+  assert.equal(ok.receipt.keyFingerprint, keyFingerprint(Buffer.from(KEY, "base64")),
+    t("B9-b: 영수증의 키 지문이 다르다"));
+  assert.equal(inv.rows.get(made.backupId).verified_at, now, t("B9-b: 영수증이 기록되지 않았다"));
+  // ⛔ 영수증에 비밀값이 없다.
+  assert.doesNotMatch(JSON.stringify(ok.receipt), new RegExp(KEY.slice(0, 20)),
+    t("B9-b: ★ 영수증에 키가 실렸다"));
+
+  // ── c. 각 실패 조건에서 **막힌다.**
+  const cases = [
+    ["없는 backup_id", { backupId: "f".repeat(32) }, "no_row"],
+    ["R2 객체가 없다", { run: fakeRun({ objects: {} }).run }, "object_absent"],
+    ["R2 가 답을 못 한다", { run: fakeRun({ putMap: put, r2Down: "network unreachable" }).run },
+      "object_unknown"],
+    ["크기가 다르다", { patch: (r) => { r.object_bytes = Number(r.object_bytes) + 1; } }, "size_mismatch"],
+    ["암호문 해시가 다르다", { patch: (r) => { r.object_hash = "a".repeat(64); } }, "hash_mismatch"],
+    ["암호문이 손상됐다", { run: fakeRun({ putMap: put, tamperOnGet: true }).run }, "size_mismatch"],
+    ["키 파일이 없다", { env: { ...ENV, BACKUP_KEY_FILE: path.join(tmp, "no-such-key") } }, "key"],
+    ["키가 갈렸다", { env: { ...ENV, BACKUP_KEY_FILE: otherKeyFile } }, "key_rotated"],
+    ["내부 main 해시가 다르다", { patch: (r) => { r.main_db_hash = "b".repeat(64); } }, "inventory_hash"],
+    ["세대가 다르다", { run: fakeRun({ putMap: put, quiet: { maintenance: { epoch: 9 }, fence: 9 } }).run },
+      "epoch"],
+    ["멈춘 상태가 아니다", { run: fakeRun({ putMap: put, quiet: { maintenance: { mode: "open" } } }).run },
+      "quiescence"],
+    ["너무 오래됐다", { at: now + GATE_MAX_AGE + 1 }, "stale"],
+  ];
+  for (const [label, opt, code] of cases) {
+    const row = inv.rows.get(made.backupId);
+    const before = { ...row };
+    if (opt.patch) opt.patch(row);
+    const r = await backupGate({ env: opt.env || ENV, now: opt.at || now,
+                                 run: opt.run || F.run, inventory: inv,
+                                 backupId: opt.backupId || made.backupId });
+    Object.assign(row, before);
+    assert.equal(r.ok, false, t(`B9-c: ★ ${label} 인데 게이트가 열렸다 — migration 이 진행된다`));
+    assert.equal(r.code, code, t(`B9-c: ${label} 의 사유가 ${r.code} 다 (${code} 여야 한다)`));
   }
+
+  // ── d. 상태가 `ready` 가 아니면 막는다.
+  for (const st of ["pending", "uploaded", "failed"]) {
+    const row = inv.rows.get(made.backupId);
+    const was = row.status; row.status = st;
+    const r = await backupGate({ env: ENV, now, run: F.run, inventory: inv, backupId: made.backupId });
+    row.status = was;
+    assert.equal(r.ok, false, t(`B9-d: ★ ${st} 상태인데 게이트가 열렸다`));
+    assert.equal(r.code, "not_ready", t(`B9-d: ${st} 의 사유가 ${r.code} 다`));
+  }
+
+  // ── e. 설정 부재.
   const { miss } = readConfig({});
-  assert.ok(miss.length >= 4, t("B9: 설정 부재를 못 센다"));
-  assert.equal((await backupGate({ env: {}, now })).code, "config",
-    t("B9: 설정이 없는데 게이트가 통과했다"));
+  assert.ok(miss.length >= 4, t("B9-e: 설정 부재를 못 센다"));
+  assert.equal((await backupGate({ env: {}, now, backupId: made.backupId })).code, "config",
+    t("B9-e: 설정이 없는데 게이트가 통과했다"));
+
+  // ── f. inventory 를 못 읽으면 **막는다**(모름은 허가가 아니다).
+  const downInv = fakeInv({ failOn: "row" });
+  const down = await backupGate({ env: ENV, now, run: F.run, inventory: downInv,
+                                  backupId: made.backupId });
+  assert.equal(down.ok, false, t("B9-f: ★ inventory 를 못 읽었는데 게이트가 열렸다"));
+  assert.equal(down.code, "unreadable", t(`B9-f: 사유가 ${down.code} 다`));
+}
+
+// ══ B22. 안에 든 것이 실제로 실리는가 — 임시 SQLite 적재 ══
+// 「크기와 해시가 맞다」는 **그 바이트가 그대로 있다**는 말일 뿐, 그 안에 DB 가 들어 있다는
+// 말이 아니다. 표가 빠진 덤프도 크기·해시는 완벽하게 맞는다.
+{
+  const now = Date.now();
+  // 필수 표 하나가 빠진 덤프로 진짜 백업을 만든다 — `runBackup` 의 검증을 우회해야 하므로
+  // 번들을 **여기서 직접 만들어** R2 에 올려 두고 inventory 행을 맞춘다.
+  const craft = async (mainSql, ledgerSql) => {
+    const { createCipheriv, randomBytes } = await import("node:crypto");
+    const id = randomBytes(16).toString("hex");
+    const mainB = Buffer.from(mainSql), ledgerB = Buffer.from(ledgerSql);
+    const mh = createHash("sha256").update(mainB).digest("hex");
+    const lh = createHash("sha256").update(ledgerB).digest("hex");
+    const bundle = Buffer.concat([
+      Buffer.from(JSON.stringify({ v: 1, id, snapshot_at: now, main: mh, ledger: lh }) + "\n"),
+      mainB, Buffer.from(BUNDLE_SEP), ledgerB]);
+    const iv = randomBytes(12);
+    const c = createCipheriv("aes-256-gcm", Buffer.from(KEY, "base64"), iv);
+    const enc = Buffer.concat([iv, c.update(bundle), c.final(), c.getAuthTag()]);
+    const key = objectKeyFor(id);
+    const put = new Map([[key, enc]]);
+    const inv = fakeInv({ list: [{ backup_id: id, status: "ready", snapshot_at: now,
+      object_key: key, object_bytes: enc.length,
+      object_hash: createHash("sha256").update(enc).digest("hex"),
+      main_db_hash: mh, ledger_db_hash: lh, maintenance_epoch: 7,
+      key_fingerprint: keyFingerprint(Buffer.from(KEY, "base64")) }] });
+    return { id, inv, run: fakeRun({ putMap: put }).run };
+  };
+
+  // ── a. 양성 대조 — 온전한 덤프는 실린다.
+  {
+    const c = await craft(dump("main"), dump("ledger"));
+    const r = await verifyBackup({ backupId: c.id, env: ENV, now, run: c.run, inventory: c.inv });
+    assert.equal(r.ok, true, t(`B22-a: 온전한 백업을 거부했다 (${r.code} ${r.missing || ""})`));
+  }
+  // ── b. 표가 빠진 덤프는 크기·해시가 맞아도 거부된다.
+  for (const [which, drop] of [["main", "policy_events"], ["ledger", "transitions"],
+                               ["ledger", "lease_resolutions"]]) {
+    const c = await craft(which === "main" ? dump("main", { drop }) : dump("main"),
+                          which === "ledger" ? dump("ledger", { drop }) : dump("ledger"));
+    const r = await verifyBackup({ backupId: c.id, env: ENV, now, run: c.run, inventory: c.inv });
+    assert.equal(r.ok, false, t(`B22-b: ★ ${which} 에 ${drop} 이 없는데 통과했다`));
+    assert.equal(r.code, "load_" + which, t(`B22-b: ${drop} 의 사유가 ${r.code} 다`));
+    assert.equal(r.missing, drop, t(`B22-b: 빠진 것이 ${r.missing} 라고 한다`));
+  }
+  // ── c. 인덱스가 빠져도 거부된다(유일성이 사라진 사본이다).
+  {
+    const c = await craft(dump("main", { drop: "invite_codes_active" }), dump("ledger"));
+    const r = await verifyBackup({ backupId: c.id, env: ENV, now, run: c.run, inventory: c.inv });
+    assert.equal(r.ok, false, t("B22-c: ★ 부분 유니크 인덱스가 없는 사본을 통과시켰다"));
+  }
+  // ── d. SQL 이 아예 안 실리는 경우.
+  {
+    const c = await craft("this is not sql;", dump("ledger"));
+    const r = await verifyBackup({ backupId: c.id, env: ENV, now, run: c.run, inventory: c.inv });
+    assert.equal(r.ok, false, t("B22-d: ★ 실리지도 않는 덤프를 통과시켰다"));
+    assert.equal(r.missing, "load", t(`B22-d: 사유가 ${r.missing} 다`));
+  }
+  // ── e. manifest 의 id 를 바꾼 사본은 거부된다(다른 백업의 객체를 끼워 넣는 길).
+  {
+    const c = await craft(dump("main"), dump("ledger"));
+    const other = await craft(dump("main"), dump("ledger"));
+    // other 의 행에 c 의 객체 크기·해시를 그대로 적어도, 안쪽 id 가 달라 걸린다.
+    const r = await verifyBackup({ backupId: other.id, env: ENV, now, run: c.run,
+                                   inventory: other.inv });
+    assert.equal(r.ok, false, t("B22-e: ★ 다른 백업의 객체를 끼워 넣었는데 통과했다"));
+  }
+  // ── g. **크기·해시는 맞는데 복호화가 실패하는** 사본. 이 갈래가 없으면 「태그를 봤다」를
+  //    아무도 재지 않는다(돌연변이 M132 가 처음에 살아남았다 — B9-c 의 손상 사본은 길이가
+  //    달라져 **크기 검사에서 먼저** 걸렸다).
+  {
+    const c = await craft(dump("main"), dump("ledger"));
+    const row = c.inv.rows.get(c.id);
+    const key = row.object_key;
+    // 길이를 유지한 채 암호문 한 바이트를 뒤집고, **바뀐 바이트의 해시를 기록에 적는다.**
+    const store = new Map();
+    const orig = await (async () => {
+      const tmpd = await mkdtemp(path.join(tmpdir(), "shhh-flip-"));
+      const f = path.join(tmpd, "o");
+      await c.run("npx", ["wrangler", "r2", "object", "get", `x/${key}`, "--file", f, "--remote"]);
+      const b = await readFile(f); await rm(tmpd, { recursive: true, force: true }); return b;
+    })();
+    const flipped = Buffer.from(orig);
+    flipped[20] ^= 0xff;                       // 태그도 nonce 도 아닌 본문 한 바이트
+    store.set(key, flipped);
+    row.object_bytes = flipped.length;
+    row.object_hash = createHash("sha256").update(flipped).digest("hex");
+    const r = await verifyBackup({ backupId: c.id, env: ENV, now,
+                                   run: fakeRun({ putMap: store }).run, inventory: c.inv });
+    assert.equal(r.ok, false, t("B22-g: ★ 크기·해시만 맞으면 열리지도 않는 사본을 통과시켰다"));
+    assert.equal(r.code, "decrypt", t(`B22-g: 사유가 ${r.code} 다`));
+  }
+
+  // ── f. 한도. 기록된 크기가 한도를 넘으면 받아 보지도 않는다.
+  {
+    const c = await craft(dump("main"), dump("ledger"));
+    c.inv.rows.get(c.id).object_bytes = MAX_VERIFY_BYTES + 1;
+    const r = await verifyBackup({ backupId: c.id, env: ENV, now, run: c.run, inventory: c.inv });
+    assert.equal(r.code, "too_large", t(`B22-f: 큰 객체의 사유가 ${r.code} 다`));
+  }
+}
+
+// ══ B23. 상태를 바꾸는 문장은 **정확히 한 행**을 바꾼다 ══
+// 종료 코드 0 은 「문장이 돌았다」이지 「그 행이 바뀌었다」가 아니다. 0행을 성공으로 읽으면
+// 전이표를 SQL 에 넣어 둔 의미가 사라진다.
+{
+  const mk = (changes) => makeInventory({ ledgerDb: "shhh-ledger" },
+    async () => ({ code: 0, out: JSON.stringify([{ results: [], meta: { changes } }]), err: "" }));
+  const id = "a".repeat(32), h = "b".repeat(64);
+  for (const changes of [0, 2]) {
+    const inv = mk(changes);
+    await assert.rejects(() => inv.setReady(id),
+      t(`B23: ★ ${changes}행을 바꾼 setReady 가 성공으로 끝났다`));
+    await assert.rejects(() => inv.setUploaded(id, h, h, "shhh/x.enc", 1, 2, h),
+      t(`B23: ★ ${changes}행을 바꾼 setUploaded 가 성공으로 끝났다`));
+    await assert.rejects(() => inv.insertPending(id, 1, 7, "0".repeat(16)),
+      t(`B23: ★ ${changes}행을 바꾼 insertPending 이 성공으로 끝났다`));
+    await assert.rejects(() => inv.setVerified(id, 1, VERIFY_VERSION),
+      t(`B23: ★ ${changes}행을 바꾼 setVerified 가 성공으로 끝났다`));
+  }
+  // 양성 대조.
+  await mk(1).setReady(id);
+  // `meta` 가 아예 없으면 **모른다** — 성공으로 읽지 않는다.
+  const blind = makeInventory({ ledgerDb: "l" },
+    async () => ({ code: 0, out: JSON.stringify([{ results: [] }]), err: "" }));
+  await assert.rejects(() => blind.setReady(id), t("B23: ★ changes 를 모르는데 성공으로 끝났다"));
 }
 
 // ══ B10. SQL 로 나가는 값의 모양이 고정돼 있다 ══

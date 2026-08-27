@@ -573,12 +573,15 @@ const call = (env, token, path, method = "GET") => worker.fetch(new Request("htt
   const seed = (env) => env.LEDGER._db.exec(
     `INSERT INTO deletions (mark, key_version, pending_at, confirmed_at, pending_alert_at, expires_at)
      VALUES ('${MARK}', 1, 1, ${confirmedAt}, ${now - 1}, ${now - 1})`);
-  // ⚠️ `ready` 는 두 DB 해시와 객체 키가 **전부** 있어야 한다(표의 CHECK). 여기서 채워 넣는
-  //    이유는 그 제약이 진짜로 걸려 있기 때문이다 — 안 채우면 INSERT 자체가 실패한다.
+  // ⚠️ `ready` 는 **대조에 필요한 값이 전부** 있어야 한다(표의 CHECK — 2026-08-27 에 넓혔다).
+  //    여기서 채워 넣는 이유는 그 제약이 진짜로 걸려 있기 때문이다 — 안 채우면 INSERT 자체가
+  //    실패한다. 즉 「크기·해시·세대·키 지문을 모르는 채 올라간」 객체는 `ready` 가 될 수 없다.
   const backup = (env, id, snapAt, status, deletedAt = "NULL") => env.LEDGER._db.exec(
     `INSERT INTO backups (backup_id, snapshot_at, created_at, status, deleted_at,
-                          main_db_hash, ledger_db_hash, object_key)
-     VALUES ('${id}', ${snapAt}, ${snapAt}, '${status}', ${deletedAt}, 'h1', 'h2', 'k')`);
+                          main_db_hash, ledger_db_hash, object_key, object_bytes, object_hash,
+                          maintenance_epoch, key_fingerprint)
+     VALUES ('${id}', ${snapAt}, ${snapAt}, '${status}', ${deletedAt}, 'h1', 'h2', 'k', 1, 'oh',
+             1, 'fp')`);
   const left = (env) => env.LEDGER._db.prepare(
     "SELECT COUNT(*) n FROM deletions WHERE mark = ?").get(MARK).n;
 

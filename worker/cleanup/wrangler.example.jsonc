@@ -30,5 +30,16 @@
     { "binding": "DB", "database_name": "shhh-db", "database_id": "c279078b-cb82-4926-a593-461993cd1f77" },
     // ⬇️ 아직 만들지 않은 DB 다. `wrangler d1 create shhh-ledger` 가 주는 id 로 **복사본에서** 바꾼다.
     { "binding": "LEDGER", "database_name": "shhh-ledger", "database_id": "0000PLACEHOLDER-0000-0000-0000-000000000000" }
+  ],
+  // ⚠️ **백업 inventory 를 자동으로 맞추는 데 쓴다**(2026-08-27 · 위협 85). R2 lifecycle 은
+  //    알려 주지 않고 객체를 지우는데, 그 객체가 「아직 있다」는 이유로 삭제 표식이 막혀
+  //    있으므로 아무도 물어보지 않으면 그 표식이 영원히 남는다.
+  //    크론이 `head()` 로 존재만 확인한다 — **본문은 받지 않는다**(백업 하나가 Worker
+  //    메모리 한도 128MB 를 그대로 넘긴다).
+  // ⛔ 막는 행이 있는데 이 바인딩이 없으면 정리 회차가 **실패로 끝난다.** 조용히 넘어가지
+  //    않는다 — 그 배포는 백업 inventory 를 영원히 못 닫기 때문이다.
+  // ⬇️ 버킷도 아직 만들지 않았다(`docs/OPS_RUNBOOK.md` §18-2).
+  "r2_buckets": [
+    { "binding": "BACKUPS", "bucket_name": "shhh-backups" }
   ]
 }

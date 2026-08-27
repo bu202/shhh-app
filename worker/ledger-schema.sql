@@ -202,20 +202,33 @@ CREATE TABLE IF NOT EXISTS backups (
   main_db_hash     TEXT,
   ledger_db_hash   TEXT,
   object_key       TEXT,                 -- R2 객체 키. 버킷 이름은 설정에 있고 여기 안 적는다
-  -- 올린 **암호문**의 크기와 SHA-256 (migration `0006`). 복호화 없이 「그때 그 객체가 맞나」를
-  -- 대조하는 값이다 — 없으면 reconcile 은 존재만 확인하고 내용이 바뀐 것을 못 본다.
+  -- 올린 **암호문**의 크기와 SHA-256. 복호화 없이 「그때 그 객체가 맞나」를 대조하는 값이다 —
+  -- 없으면 reconcile 은 존재만 확인하고 내용이 바뀐 것을 못 본다.
   object_bytes     INTEGER,
   object_hash      TEXT,
+  -- **이 백업이 어느 유지보수 세대의 것인가.** 세대가 다르면 그 사본은 지금 상태의 복원본이
+  -- 아니다 — 복원 검증이 그것을 물어보려면 값이 백업 쪽에도 있어야 한다.
+  maintenance_epoch INTEGER,
+  -- 암호화 키의 **지문**(비밀값이 아니다). 키를 갈아 끼운 뒤 옛 백업을 「복원 가능」이라
+  -- 부르는 일을 막는다. ⛔ 키 자체는 담지 않는다.
+  key_fingerprint  TEXT,
+  -- 복원 **가능성 증명**의 영수증. `ready`(= 올렸다)와 다른 사실이다.
+  -- ⚠️ 게이트는 이 값을 **믿지 않고 사용 시점에 다시 잰다.**
+  verified_at      INTEGER,
+  verify_version   TEXT,
   expires_expected_at INTEGER,           -- lifecycle 만료 **예정** 시각. 실제 삭제 시각이 아니다
   deletion_checked_at INTEGER,           -- 마지막으로 「아직 있나」를 물어본 시각
   deleted_at       INTEGER,              -- 객체가 **실제로 없음을 확인한** 시각
   status           TEXT NOT NULL
                    CHECK (status IN ('pending','uploaded','ready','deleted','aborted','failed')),
   last_error_code  TEXT,                 -- 우리가 정한 짧은 코드. 오류 전문이 아니다
-  -- `ready` 는 두 DB 해시와 객체 키가 **전부** 있어야 한다. 한 DB 만 성공한 반쪽 백업이
-  -- `ready` 로 기록되는 것이 이 표가 막으려는 첫 번째 사고다.
+  -- `ready` 는 **대조에 필요한 값이 전부** 있어야 한다. 반쪽 백업이나 「크기·해시를 모르는 채
+  -- 올라간」 객체가 `ready` 로 기록되는 것이 이 표가 막으려는 사고다.
   CHECK (status <> 'ready' OR (main_db_hash IS NOT NULL AND ledger_db_hash IS NOT NULL
-                               AND object_key IS NOT NULL)),
+                               AND object_key IS NOT NULL AND object_bytes IS NOT NULL
+                               AND object_hash IS NOT NULL AND maintenance_epoch IS NOT NULL
+                               AND key_fingerprint IS NOT NULL)),
+  CHECK ((verified_at IS NULL) = (verify_version IS NULL)),
   -- `deleted` 는 확인 시각이 있어야 한다. 「아마 지워졌을 것」을 삭제로 적지 않는다.
   CHECK (status <> 'deleted' OR deleted_at IS NOT NULL)
 );

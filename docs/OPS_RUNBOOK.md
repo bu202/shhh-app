@@ -306,26 +306,48 @@ npx wrangler d1 execute shhh-ledger --remote --command \
 
 **중단 기준:** ②가 실패하면 정리 Worker 를 배포하지 않는다.
 
-## 6-6. ledger 에 `0006` 적용 — 백업 객체 요약 (2026-08-27)
+## 6-6. 백업용 R2 버킷과 `BACKUPS` 바인딩 (2026-08-27)
 
-`0006` 은 `backups` 에 `object_bytes`·`object_hash` 두 칸을 더한다. 이 값이 없으면
-`node scripts/backup.mjs reconcile` 은 **객체가 있는지만** 알고 **그때 올린 그 객체가 맞는지**는
-모른다 — 키가 같은 다른 내용도 「있다」로 읽힌다.
+⚠️ **ledger 의 `0006` 은 없어졌다.** `object_bytes`·`object_hash` 를 비롯한 백업 inventory 의
+칸이 전부 **`0005` 하나** 안으로 들어갔다 — ledger D1 이 아직 만들어지지도 않았으므로
+적용된 적 없는 `ALTER` 를 따로 들고 있을 이유가 없다. 적용은 §6-5 의 `0005` 하나로 끝난다.
 
-⛔ **`ALTER TABLE ... ADD COLUMN` 은 재실행할 수 없다.** 두 번 돌리면 실패한다.
-⛔ **`0005` 다음이고 정리 Worker 배포보다 앞이다.**
+정리 Worker 가 백업 inventory 를 **자동으로** 맞추려면 R2 에 「그 객체가 아직 있나」를 물어야
+하고, Worker 안에서는 REST API 가 아니라 **바인딩**으로 묻는다(공식 Workers best practices —
+`https://developers.cloudflare.com/workers/best-practices/workers-best-practices/`).
+
+⛔ **막는 백업 행이 있는데 `BACKUPS` 바인딩이 없으면 정리 회차가 실패한다.** 조용히 넘어가지
+않는다 — 그 배포는 inventory 를 영원히 못 닫고, 그러면 삭제 표식의 보유기간이 사실상 무한이 된다.
+(막는 행이 하나도 없으면 바인딩 없이도 정상이다. 아직 백업을 안 쓰는 배포가 그 상태다.)
 
 ```bash
-# 1) 칸이 이미 있는지 먼저 본다 (없어야 진행한다)
-npx wrangler d1 execute shhh-ledger --remote --command "PRAGMA table_info(backups)"
-# 2) 적용
-npx wrangler d1 execute shhh-ledger --remote --file migrations-ledger/0006_backup_object_digest.sql
-# 3) 확인
+# 1) 버킷 생성 — 이름은 backup 도구의 BACKUP_R2_BUCKET 과 같아야 한다
+npx wrangler r2 bucket create shhh-backups
+# 2) 7일 만료 lifecycle 규칙을 대시보드에서 건다 (prefix: shhh/)
+#    ⚠️ 「7일에 삭제」가 아니다 — 표시 뒤 실제 삭제까지 통상 하루가 더 걸린다
+# 3) 정리 Worker 설정의 r2_buckets 에 BACKUPS 를 적는다 (템플릿에 이미 있다)
+#    worker/cleanup/wrangler.jsonc
+# 4) 배포 후 확인 — 다음 회차의 cleanup_runs 에 실패가 없어야 한다
 npx wrangler d1 execute shhh-ledger --remote --command \
-  "SELECT COUNT(*) AS n FROM backups WHERE object_hash IS NULL OR object_hash IS NOT NULL"
+  "SELECT last_ok_at, fail_streak, last_error FROM cleanup_runs WHERE id = 1"
 ```
 
-**중단 기준:** ①에서 칸이 이미 보이면 **적용하지 않는다**(이미 적용된 것이다).
+**중단 기준:** ①이 실패하면 정리 Worker 를 배포하지 않는다 — 배포하면 매 회차가 실패한다.
+
+### 6-6-1. 자동 reconciliation 이 안 도는지 어떻게 아나
+
+크론이 한 회차에 보는 것은 **막는 행 25개까지**이고, 각 행마다 `head()` 한 번이다.
+아래 셋 중 하나라도 있으면 그 회차는 **실패**로 끝나고 `fail_streak` 가 오른다.
+연속 3회에 닿으면 `/api/ready` 의 `cleanupAlert` 가 참이 된다.
+
+| 무엇 | 뜻 | 사람이 할 일 |
+|---|---|---|
+| `unknown` | R2 가 답을 못 했다 — **부재가 아니다** | R2 상태·바인딩·자격증명을 본다. 그동안 행은 계속 막는다(맞는 방향) |
+| `overdue` | 만료 예정 + 2일이 지났는데 **아직 있다** | lifecycle 규칙이 실제로 걸렸는지 본다. ⛔ 시각을 근거로 행을 닫지 않는다 |
+| `failed` | 전이표가 막았거나 그 사이에 누가 옮겼다 | 그 `backup_id` 의 `status` 를 직접 본다 |
+
+⛔ **`node scripts/backup.mjs reconcile` 은 보조 수단이다.** 자동화의 대체물이 아니다 —
+사람이 잊으면 그대로이고, 잊었다는 사실조차 아무 데도 안 남는다.
 
 ## 6-2-1. 확정되지 않은 삭제 표식이 남았을 때 (2026-08-27 · 독립 검토 #5)
 
@@ -847,7 +869,8 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<프로젝트>.pages.dev/
 | **G1** | **개인정보 문의 전용 도메인 이메일** | ❌ 없다. 방침은 지금 도착하는 주소를 적는다 | 도메인 확보 → `privacy@<도메인>` 생성 → **실제로 보내서 받아 보기**(수신 테스트) → `privacy.html`·`policies-src/*` 개정 → `node scripts/policies.mjs stamp` → 새 `pv` 배포 |
 | **G2** | **Turnstile 원격 구성** | ❌ ①(로컬 준비)만 | widget 생성 → `TURNSTILE_SITE_KEY`(vars)·`TURNSTILE_SECRET`(secret) 등록 → **운영 호스트·action 검증** → 실브라우저 확인 |
 | **G3** | **백업 절차**(B1~B9) | ⚠️ **스크립트는 있다**(`scripts/backup.mjs` · 2026-08-26) · **R2 버킷·키 파일은 없다** → 지금은 `config` 로 fail-closed | R2 비공개 버킷 생성 → lifecycle **7일 만료** → 암호화 키 파일을 **버킷 밖**에 두기 → `BACKUP_*` 4개 설정 → `node scripts/backup.mjs backup --dry-run` 통과 → 실제 1회 → **B1~B9 전부 참** |
-| **G6** | **원격 migration `0007`·ledger `0005`·`0006`** | ❌ 미적용 | §6-4 · §6-5 · **§6-6**. ⛔ **ledger `0005`→`0006` 순서로, 둘 다 정리 Worker 배포보다 먼저** — 없으면 표식 정리가 fail-closed 로 실패한다. ⛔ `0006` 은 `ALTER` 라 **재실행 불가** |
+| **G6** | **원격 migration `0007`·ledger `0005`** | ❌ 미적용 | §6-4 · §6-5. ⛔ **정리 Worker 배포보다 먼저** — 없으면 표식 정리가 fail-closed 로 실패한다. ⚠️ 옛 ledger `0006` 은 2026-08-27 에 `0005` 안으로 **합쳐졌다**(적용된 적이 없는 migration 이라 `ALTER` 로 따로 들 이유가 없다) |
+| **G6-1** | **R2 버킷 `shhh-backups` 와 정리 Worker 의 `BACKUPS` 바인딩** | ❌ 없음 | **§6-6**. 백업 inventory 를 자동으로 맞추는 데 쓴다. ⛔ **막는 백업 행이 생기기 전에** 붙인다 — 막는 행이 있는데 바인딩이 없으면 정리 회차가 매번 실패한다 |
 | **G4** | **D1 요금제 대시보드 확인** | ⚠️ 사용자 선언(Free)만 | 대시보드에서 실제 등급 확인. ⛔ 경과일·bookmark 로 **추론하지 않는다** |
 | **G5** | **최신 정책 번들 원격 반영** | ❌ 라이브는 옛 `pv` | 배포 후 `GET /api/policies` 의 `pv` 가 `worker/policies.js` 와 같은지 실측 |
 

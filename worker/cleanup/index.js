@@ -15,7 +15,7 @@
 //    `drained:true` 라고 답했다(T47b). 「크론이니까 예외」가 정확히 그 구멍이었다.
 import { withFence } from "../fence.js";
 import { DELETIONS_SWEEP_SQL, acquireLease, releaseLease, LEASE_MODES_CLEANUP,
-         pendingAlertCount, sweepCutoff } from "../ledger.js";
+         pendingAlertCount, sweepCutoff, BACKUP_OBJECT_KEY, backupFroms } from "../ledger.js";
 
 // 무료 플랜의 scheduled Worker CPU 한도는 10ms 다. 한 번에 다 지우려다 시간 초과로
 // **매번 아무것도 못 지우는** 상태가 가장 나쁘다 — 대상별로 잘라 여러 번에 걸쳐 지운다.
@@ -67,6 +67,74 @@ const JOBS = [
   //    이유로 지우면 그 증거가 사라져 복원 금지가 저절로 풀린다.
 ];
 
+// ── 백업 inventory 자동 reconciliation (2026-08-27 · 위협 85) ────────────
+//
+// 왜 크론인가: R2 lifecycle 은 우리에게 알려 주지 않고 객체를 지운다. 그런데 그 객체가
+// 「아직 있다」는 이유로 삭제 표식이 막혀 있으므로, **아무도 물어보지 않으면 그 표식은
+// 영원히 남는다** — 방침이 약속한 보유기간이 사실상 무한이 된다.
+// ⛔ runbook 의 「주기적으로 reconcile 을 실행하세요」 한 줄은 그 상태를 막지 못한다.
+//    사람이 잊으면 그대로이고, 잊었다는 사실조차 아무 데도 안 남는다.
+//
+// ⚠️ **R2 는 바인딩으로 만진다**(공식 Workers best practices: "Bindings are direct,
+//    in-process references … Using the REST API from within a Worker wastes time").
+// ⚠️ **`head()` 만 부른다.** 본문을 받으면 백업 하나가 Worker 메모리 한도(128MB)를 그대로
+//    넘긴다. 우리가 묻는 것은 「있나 없나」 하나다.
+// ⚠️ **부재를 확인했을 때만 닫는다.** 조회가 실패하면 아무것도 적지 않는다 —
+//    확인 시각조차 적지 않는다(적으면 다음 사람이 「확인했다」로 읽는다).
+const RECON_LIMIT = 25;
+// 만료 예정 시각이 지나고도 객체가 남아 있을 수 있는 여유(R2 lifecycle 은 표시 뒤 실제
+// 삭제까지 통상 하루가 더 걸린다). 이 여유마저 지났는데 아직 있으면 **비정상**이다.
+const RECON_OVERDUE_GRACE = 2 * 86400e3;
+
+export async function reconcileBackups(env, now) {
+  const out = { scanned: 0, present: 0, gone: 0, unknown: 0, overdue: 0, failed: 0 };
+  // 막는 행만 본다. 이미 닫힌 행(`aborted`·`deleted`)은 다시 묻지 않는다 — 멱등하다.
+  const rows = (await env.LEDGER.prepare(
+    `SELECT backup_id, status, object_key, expires_expected_at, deletion_checked_at
+       FROM backups WHERE deleted_at IS NULL AND status NOT IN ('aborted','deleted')
+      ORDER BY snapshot_at LIMIT ?`).bind(RECON_LIMIT).all()).results || [];
+  if (!rows.length) return out;
+  // ⛔ 막는 행이 있는데 바인딩이 없으면 **조용히 넘어가지 않는다.** 그 배포는 이 표를
+  //    영원히 닫지 못한다 — 그 사실이 경보로 올라가야 한다.
+  if (!env.BACKUPS) throw new Error("backup reconcile: R2 binding missing");
+
+  for (const r of rows) {
+    out.scanned++;
+    // 키가 기록되지 않았어도(= pending 에서 죽었어도) **결정적으로 재구성**한다.
+    const key = r.object_key || BACKUP_OBJECT_KEY(r.backup_id);
+    let head;
+    try { head = await env.BACKUPS.head(key); }
+    catch { out.unknown++; continue; }          // 「모른다」 — 아무것도 안 적는다
+    if (head === null || head === undefined) {
+      // `pending` 은 업로드가 시작되지 않았다는 뜻이므로 `aborted`,
+      // 그 밖(uploaded·ready·failed)은 있었던 것이 사라졌으므로 `deleted` 다.
+      const to = r.status === "pending" ? "aborted" : "deleted";
+      // ⚠️ **자리표시자를 익명 `?` 로만 쓴다.** 번호형(`?3`)과 섞으면 `deleted` 갈래에만 있는
+      //    칸 때문에 `aborted` 갈래에서 **바인드 개수가 안 맞는다** — 로컬 SQLite 는 넘어가도
+      //    D1 은 거절할 수 있고, 그러면 배포한 뒤 첫 회차에서 처음 드러난다.
+      const sets = ["status = ?", "deletion_checked_at = ?"];
+      const args = [to, now];
+      if (to === "deleted") { sets.push("deleted_at = ?"); args.push(now); }
+      const upd = await env.LEDGER.prepare(
+        `UPDATE backups SET ${sets.join(", ")} WHERE backup_id = ? AND ${backupFroms(to)}`)
+        .bind(...args, r.backup_id).run();
+      // 전이표가 막았거나 그 사이에 누가 옮겼다 — 「했다」로 넘기지 않는다.
+      if (!(upd.meta && upd.meta.changes === 1)) { out.failed++; continue; }
+      out.gone++;
+      continue;
+    }
+    out.present++;
+    const upd = await env.LEDGER.prepare(
+      "UPDATE backups SET deletion_checked_at = ? WHERE backup_id = ?").bind(now, r.backup_id).run();
+    if (!(upd.meta && upd.meta.changes === 1)) { out.failed++; continue; }
+    // 만료 예정 + 여유가 지났는데 아직 있다 → lifecycle 이 안 걸렸을 수 있다.
+    // ⛔ **여기서 지우지 않는다.** 만료 예정 시각은 삭제의 근거가 아니다 — 알리기만 한다.
+    if (r.expires_expected_at && now > Number(r.expires_expected_at) + RECON_OVERDUE_GRACE)
+      out.overdue++;
+  }
+  return out;
+}
+
 export async function runCleanup(env, now = Date.now()) {
   // ⚠️ C14 — 게이트 확인과 임차증 획득이 **한 문장**이다(`LEASE_MODES_CLEANUP` = `open` 만).
   //    읽고 나서 지우면 그 사이의 전환이 창을 빠져나간다 — 그것이 2026-08-18 의 재현이다.
@@ -107,7 +175,16 @@ export async function runCleanup(env, now = Date.now()) {
     //    ⚠️ **경보 대상 개수다**(`pending_alert_at` 이 지난 것). 복원·재개방의 안전 조건이 쓰는
     //       「전체 미확정 개수」와 다른 질문이라 함수를 갈라 뒀다(ledger.js · 재현 R3).
     //       여기서 전체를 세면 방금 실패한 삭제마다 경보가 울려 아무도 경보를 안 보게 된다.
-    return { counts, openPending: await pendingAlertCount(env, now) };
+    // ⚠️ **정리(삭제)가 다 끝난 뒤에 본다.** 앞에 두면 reconcile 하나가 실패할 때
+    //    지울 수 있었던 것까지 못 지운다.
+    const backups = await reconcileBackups(env, now);
+    const result = { counts, backups, openPending: await pendingAlertCount(env, now) };
+    // ⛔ **일부 실패를 성공으로 적지 않는다.** 모르는 행·만료 초과·못 바꾼 행이 하나라도
+    //    있으면 이 회차는 실패다 — `tick()` 이 연속 실패로 세고 `/api/ready` 의
+    //    `cleanupAlert` 가 켜진다. 그것이 「아무도 안 보는 상태」를 막는 유일한 통로다.
+    if (backups.unknown || backups.overdue || backups.failed)
+      throw new Error("backup reconcile incomplete");
+    return result;
   } finally {
     // ⚠️ **여기가 유일한 해제 자리다**(worker/index.js 와 같은 무늬). 해제에 실패해도 삼킨다 —
     //    남은 행은 만료 뒤 `stale` 로 세어져 **복원을 계속 막는다.** 그게 맞는 실패 방향이다.
