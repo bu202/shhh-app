@@ -306,6 +306,47 @@ npx wrangler d1 execute shhh-ledger --remote --command \
 
 **중단 기준:** ②가 실패하면 정리 Worker 를 배포하지 않는다.
 
+## 6-6. ledger 에 `0006` 적용 — 백업 객체 요약 (2026-08-27)
+
+`0006` 은 `backups` 에 `object_bytes`·`object_hash` 두 칸을 더한다. 이 값이 없으면
+`node scripts/backup.mjs reconcile` 은 **객체가 있는지만** 알고 **그때 올린 그 객체가 맞는지**는
+모른다 — 키가 같은 다른 내용도 「있다」로 읽힌다.
+
+⛔ **`ALTER TABLE ... ADD COLUMN` 은 재실행할 수 없다.** 두 번 돌리면 실패한다.
+⛔ **`0005` 다음이고 정리 Worker 배포보다 앞이다.**
+
+```bash
+# 1) 칸이 이미 있는지 먼저 본다 (없어야 진행한다)
+npx wrangler d1 execute shhh-ledger --remote --command "PRAGMA table_info(backups)"
+# 2) 적용
+npx wrangler d1 execute shhh-ledger --remote --file migrations-ledger/0006_backup_object_digest.sql
+# 3) 확인
+npx wrangler d1 execute shhh-ledger --remote --command \
+  "SELECT COUNT(*) AS n FROM backups WHERE object_hash IS NULL OR object_hash IS NOT NULL"
+```
+
+**중단 기준:** ①에서 칸이 이미 보이면 **적용하지 않는다**(이미 적용된 것이다).
+
+## 6-2-1. 확정되지 않은 삭제 표식이 남았을 때 (2026-08-27 · 독립 검토 #5)
+
+**증상:** `/api/ready` 의 `cleanupAlert` 가 참으로 걸려 있고, ledger 의 `deletions` 에
+`confirmed_at IS NULL` 인 행이 있는데 **그 계정은 주 D1 에 멀쩡히 살아 있다.**
+
+**왜 생기나:** `DELETE /api/me` 는 표식(`pending`)을 **먼저** 남기고 주 D1 을 지운다. 그 사이에
+다른 기기가 로그아웃하면 행위자 세대가 어긋나 삭제 문장이 0행이 되고, 요청은 **401** 로 끝난다 —
+계정은 그대로이고 표식만 남는다. 사용자는 다시 로그인해서 한 번 더 누르면 되지만, **표식은
+자동으로 사라지지 않는다.**
+
+⛔ **자동으로 지우지 않는 것이 의도다.** 표식과 계정은 **다른 DB** 에 있어 한 문장으로 확인할 수
+없다 — 「계정이 있으니 표식을 지운다」를 코드로 하면, 그 확인과 삭제 사이에 진짜 탈퇴가 끼어들
+때 **되살아난 계정을 다시 지울 근거가 사라진다.** 잃는 방향이 반대다.
+
+**대응:** `reconcile()` 이 이런 행을 **`keep`** 으로 분류한다(승격도 삭제도 하지 않는다).
+지워야 한다면 `removeStalePending` 의 **5개 조건**(계정 존재 재확인 포함)을 사람이 밟는다 —
+`docs/STAGE3_SIGNUP_SECURITY_DESIGN.md` §10-5-1 S6·Q7b.
+
+⚠️ **경보가 켜져 있다는 것 자체가 맞는 동작이다.** 조용히 지우는 것보다 사람이 보는 쪽이 낫다.
+
 ## 6-3. stale write lease 사고 대응 (2026-08-25)
 
 **증상:** `/api/ready` 가 정상인데 `drainState()` 의 `stale` 이 0 이 아니고, 그래서
@@ -806,7 +847,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<프로젝트>.pages.dev/
 | **G1** | **개인정보 문의 전용 도메인 이메일** | ❌ 없다. 방침은 지금 도착하는 주소를 적는다 | 도메인 확보 → `privacy@<도메인>` 생성 → **실제로 보내서 받아 보기**(수신 테스트) → `privacy.html`·`policies-src/*` 개정 → `node scripts/policies.mjs stamp` → 새 `pv` 배포 |
 | **G2** | **Turnstile 원격 구성** | ❌ ①(로컬 준비)만 | widget 생성 → `TURNSTILE_SITE_KEY`(vars)·`TURNSTILE_SECRET`(secret) 등록 → **운영 호스트·action 검증** → 실브라우저 확인 |
 | **G3** | **백업 절차**(B1~B9) | ⚠️ **스크립트는 있다**(`scripts/backup.mjs` · 2026-08-26) · **R2 버킷·키 파일은 없다** → 지금은 `config` 로 fail-closed | R2 비공개 버킷 생성 → lifecycle **7일 만료** → 암호화 키 파일을 **버킷 밖**에 두기 → `BACKUP_*` 4개 설정 → `node scripts/backup.mjs backup --dry-run` 통과 → 실제 1회 → **B1~B9 전부 참** |
-| **G6** | **원격 migration `0007`·ledger `0005`** | ❌ 미적용 | §6-4 · §6-5. ⛔ **ledger `0005` 는 정리 Worker 배포보다 먼저** — 없으면 표식 정리가 fail-closed 로 실패한다 |
+| **G6** | **원격 migration `0007`·ledger `0005`·`0006`** | ❌ 미적용 | §6-4 · §6-5 · **§6-6**. ⛔ **ledger `0005`→`0006` 순서로, 둘 다 정리 Worker 배포보다 먼저** — 없으면 표식 정리가 fail-closed 로 실패한다. ⛔ `0006` 은 `ALTER` 라 **재실행 불가** |
 | **G4** | **D1 요금제 대시보드 확인** | ⚠️ 사용자 선언(Free)만 | 대시보드에서 실제 등급 확인. ⛔ 경과일·bookmark 로 **추론하지 않는다** |
 | **G5** | **최신 정책 번들 원격 반영** | ❌ 라이브는 옛 `pv` | 배포 후 `GET /api/policies` 의 `pv` 가 `worker/policies.js` 와 같은지 실측 |
 
@@ -833,20 +874,44 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<프로젝트>.pages.dev/
 
 ```
 migration 승인 요청
+  → [두 DB 를 멈춘다]              ← 유지보수 전환 → drain 확인 (§7 · §10)
   → node scripts/backup.mjs backup
-      → inventory 에 pending 기록  (실패하면 여기서 중단 — export 도 시작하지 않는다)
-      → 주 D1 export              (실패하면 중단)
-      → ledger D1 export          (실패하면 중단)
-      → 크기·필수 표 존재·해시 검증  (실패하면 중단)
-      → 암호화                     (성공해야만 다음)
-      → R2 비공개 버킷 업로드
-      → inventory uploaded
-      → 되읽어 확인               (실패하면 ready 로 안 적는다)
+      → 정지(quiescence) 확인       (모드·전환·drain 증거·임차증 0·fence==epoch)
+                                    ⛔ **하나라도 못 읽으면 여기서 끝난다. inventory 에 행도 안 남는다**
+      → inventory 에 pending 기록  (실패하면 중단 — export 도 시작하지 않는다)
+      → 주 D1 export              (실패 → **aborted**: 업로드를 안 냈으므로 부재를 안다)
+      → ledger D1 export          (실패 → aborted)
+      → 크기·필수 표 존재·해시 검증  (실패 → aborted)
+      → 암호화                     (실패 → aborted)
+      → R2 비공개 버킷 업로드       (실패 → **failed**: 객체가 생겼는지 모른다 → 계속 막는다)
+      → inventory uploaded (+ 암호문 크기·해시)
+      → --file 로 되읽어 크기·해시 대조 (실패 → failed)
       → inventory ready
   → node scripts/backup.mjs gate   ← 0이 아니면 **migration 을 실행하지 않는다**
   → [사람의 migration 승인]        ← 백업 성공이 이 승인을 대신하지 않는다
   → npx wrangler d1 migrations apply …   ← 사람이 따로 친다
 ```
+
+### 18-2-1. `reconcile` — inventory 와 R2 의 실제를 맞춘다 (2026-08-27)
+
+**주기적으로, 그리고 백업 실패 뒤에 한 번 돌린다.** 없으면 백업 행은 어느 것도 스스로 닫히지
+않고, 「모른다」로 남은 행이 **삭제 표식 정리를 영원히 막는다.**
+
+```bash
+node scripts/backup.mjs reconcile      # 0 이 아니면 사람이 봐야 할 것이 있다
+```
+
+| 답 | 무엇을 한다 |
+|---|---|
+| 객체가 **있다** · 크기·해시 일치 | `deletion_checked_at` 만 적는다 |
+| 객체가 **있다** · 값이 다르거나 우리가 아는 값이 없다 | `failed`(계속 막는다) · **0이 아닌 코드** |
+| 객체가 **없다**(부재 확인) | `pending` → `aborted`, 그 밖 → `deleted` + `deleted_at` |
+| **조회가 실패했다** | ⛔ **아무것도 적지 않는다**(확인 시각조차) · **0이 아닌 코드** |
+| 만료 예정 + 여유가 지났는데 아직 있다 | ⛔ 지우지 않는다. **경보**만 낸다 — lifecycle 규칙을 사람이 본다 |
+
+⛔ **만료 예상 시각을 「지워졌다」의 근거로 쓰지 않는다.** R2 는 만료 표시 뒤 실제 삭제까지
+통상 하루가 더 걸릴 수 있고, 규칙이 애초에 안 걸려 있었을 수도 있다.
+⛔ **이 명령은 복원하지 않는다.** 내는 R2 명령은 `get` 하나다(`test-backup` B18).
 
 **설정 네 가지**(전부 있어야 한다. 하나라도 없으면 fail-closed):
 
