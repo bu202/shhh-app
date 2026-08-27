@@ -351,7 +351,7 @@ export const MUTATIONS = [
     // ⚠️ **이 앵커는 개수가 바뀔 때마다 함께 바꾼다**(D21 을 더하며 세 번째로 고쳤다).
     //    자기가 건드리는 숫자를 앵커에 담는 변이라 피할 수 없다 — 대신 낡으면 실행기가
     //    ANCHOR-MISS 로 종료 코드 1 을 내므로 **조용히 썩지는 않는다.**
-    find: "`scripts/mutations.mjs`(목록 190종",
+    find: "`scripts/mutations.mjs`(목록 192종",
     replace: "`scripts/mutations.mjs`(목록 22종",
   },
   {
@@ -601,7 +601,7 @@ export const MUTATIONS = [
     id: "D21", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "「종」이 없는 괄호형 내역을 낡은 「정적 21」로 되돌린다",
     invariant: "총계뿐 아니라 **하위 내역**도 MUTATIONS 에서 파생한다 — 「N종」이라고 안 적은 괄호형 내역도 센다(총계만 보면 66 ≠ 40+21 이 남는다)",
-    find: "목록 190종 — **동작 142종 · 정적 48종**",
+    find: "목록 192종 — **동작 144종 · 정적 48종**",
     replace: "목록 188종 — **동작 40종 · 정적 21종**",
   },
   // ── 위협 70 · 불완전한 OAuth 주소가 세션 폐기 재시도를 막던 결함의 방어들 ──
@@ -1102,8 +1102,8 @@ export const MUTATIONS = [
     id: "M96", file: "scripts/backup.mjs", suite: "test-backup",
     what: "정지 확인 결과를 무시하고 export 를 시작한다",
     invariant: "두 DB export 전에 쓰기가 멈춘 것을 확인한다 — 안 하면 백업 안에서 두 DB 가 다른 시점을 가리킨다",
-    find: "  const q = await quiescence({ cfg, run });\n  if (!q.ok) {",
-    replace: "  const q = await quiescence({ cfg, run });\n  if (false && !q.ok) {",
+    find: "  const q = await quiescence({ cfg, run });\n  if (!q.ok) {\n    log(`두 DB 가 멈춘 상태가 아니다: ${q.why}`);",
+    replace: "  const q = await quiescence({ cfg, run });\n  if (false && !q.ok) {\n    log(`두 DB 가 멈춘 상태가 아니다: ${q.why}`);",
   },
   {
     id: "M97", file: "scripts/backup.mjs", suite: "test-backup",
@@ -1426,6 +1426,14 @@ export const MUTATIONS = [
     replace: "    void changed; void what;",
   },
 
+  {
+    id: "M146", file: "scripts/backup.mjs", suite: "test-backup",
+    what: "게이트가 지금도 멈춰 있는지 확인하지 않는다",
+    invariant: "백업이 만들어진 뒤에 문이 다시 열렸으면 그 사본은 지금 상태의 복원본이 아니다",
+    find: "  if (!q.ok) { log(`두 DB 가 멈춘 상태가 아니다: ${q.why}`); return { ok: false, code: \"quiescence\", why: q.why }; }",
+    replace: "  void q.ok;",
+  },
+
   // ── 2026-08-27 K2-D · 자동 inventory reconciliation (위협 85) ───────────
   {
     id: "M137", file: "worker/cleanup/index.js", suite: "test-cleanup",
@@ -1485,6 +1493,14 @@ export const MUTATIONS = [
         + "            + (SELECT COUNT(*) FROM lease_resolutions WHERE expires_keep IS NOT NULL)\n"
         + "            + (SELECT COUNT(*) FROM backups WHERE status IS NOT NULL) AS n`).first();",
     replace: " AS n`).first();",
+  },
+
+  {
+    id: "M147", file: "migrations-ledger/0005_backup_inventory.sql", suite: "test-migrations",
+    what: "ledger 이전에서 칸 하나를 빼 스키마 원본과 갈라 놓는다",
+    invariant: "`migrations-ledger/` 와 `worker/ledger-schema.sql` 은 같은 모양이어야 한다 — 갈라진 걸 알아채는 자리가 원격 D1 이면 그때는 늦다",
+    find: "  key_fingerprint  TEXT,",
+    replace: "",
   },
 
   // ── 2026-08-27 K4 · 보관함의 current / past / draft ────────────────────

@@ -134,5 +134,25 @@ if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
   assert.equal(alive[0].code, "new", "가장 최근 코드가 아니라 옛 코드를 남겼다 — 방금 공유한 링크가 죽는다");
   assert.equal(dirtyCodes.prepare("SELECT COUNT(*) n FROM invite_codes").get().n, 2, "정리하면서 행을 지웠다");
 
-  console.log(`test-migrations: 통과 — ${files.length}개 이전, schema.sql 과 같은 모양, 중복 정리, users CASCADE 전수, 활성 초대 코드 1개`);
+  // 10. **ledger 도 같은 대조를 받는다** (2026-08-27 · K2 중간 항목 3).
+  //     `migrations-ledger/` 와 `worker/ledger-schema.sql` 이 갈라지면, 갈라진 걸 알아채는
+  //     자리가 하필 **아직 만들어지지도 않은 원격 ledger D1** 이다. 실제로 이번에 두 파일을
+  //     손으로 나란히 고쳤다 — 그런 편집이야말로 갈라지는 방식이다.
+  const LEDGER_DIR = path.join(ROOT, "migrations-ledger");
+  const lfiles = readdirSync(LEDGER_DIR).filter((f) => f.endsWith(".sql")).sort();
+  assert.ok(lfiles.length >= 2, "migrations-ledger/ 에 파일이 없다");
+  const lnums = lfiles.map((f) => f.slice(0, 4));
+  assert.equal(new Set(lnums).size, lnums.length, "ledger 이전 번호가 겹친다: " + lfiles.join(", "));
+  for (const [i, n] of lnums.entries())
+    assert.equal(Number(n), i + 1, `ledger 이전 번호가 이어지지 않는다: ${lfiles.join(", ")}`);
+  const lmig = fresh(lfiles.map((f) => readFileSync(path.join(LEDGER_DIR, f), "utf8")));
+  const ldec = fresh([readFileSync(path.join(ROOT, "worker/ledger-schema.sql"), "utf8")]);
+  assert.deepEqual(shape(lmig), shape(ldec),
+    "migrations-ledger/ 를 돌린 결과가 worker/ledger-schema.sql 과 다르다");
+  // 11. **`0001` 은 재실행해도 안전하다**(주 D1 의 5번과 같은 이유 — 중간에 끊긴 적용을 이어받는다).
+  lmig.exec(readFileSync(path.join(LEDGER_DIR, lfiles[0]), "utf8"));
+  assert.deepEqual(shape(lmig), shape(ldec), "ledger 0001 을 두 번 돌리면 모양이 바뀐다");
+
+  console.log(`test-migrations: 통과 — 주 ${files.length}개 · ledger ${lfiles.length}개 이전, `
+    + `각자 schema 와 같은 모양, 중복 정리, users CASCADE 전수, 활성 초대 코드 1개`);
 }
