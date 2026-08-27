@@ -297,14 +297,14 @@ export const MUTATIONS = [
     id: "D07", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "재감사 결함 합계와 위협 범위를 22건 · 39~60 으로 되돌린다",
     invariant: "결함 합계와 위협 범위는 설계서의 위협 표에서 파생된다 — 낡은 숫자는 「이미 다 봤다」는 착각을 만든다",
-    find: "차례로 재현했다(위협 **39~78** · **여섯 판 연속**",
+    find: "차례로 재현했다(위협 **39~81** · **여섯 판 연속**",
     replace: "차례로 재현했다(위협 39~60 · 다섯 판 연속",
   },
   {
     id: "D08", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "재감사 결함 합계만 22건으로 되돌린다(위협 범위는 그대로 둔다)",
     invariant: "합계는 판별 문형(`4+5+…건` · `N건을 차례로 재현`) 어느 쪽으로 적어도 파생값과 같아야 한다",
-    find: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4+3+1+1+4+3+6건 = **40건** 수정",
+    find: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4+3+1+1+4+3+6+3건 = **43건** 수정",
     replace: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4건 = **22건** 수정",
   },
   {
@@ -351,7 +351,7 @@ export const MUTATIONS = [
     // ⚠️ **이 앵커는 개수가 바뀔 때마다 함께 바꾼다**(D21 을 더하며 세 번째로 고쳤다).
     //    자기가 건드리는 숫자를 앵커에 담는 변이라 피할 수 없다 — 대신 낡으면 실행기가
     //    ANCHOR-MISS 로 종료 코드 1 을 내므로 **조용히 썩지는 않는다.**
-    find: "`scripts/mutations.mjs`(목록 128종",
+    find: "`scripts/mutations.mjs`(목록 161종",
     replace: "`scripts/mutations.mjs`(목록 22종",
   },
   {
@@ -445,7 +445,7 @@ export const MUTATIONS = [
     id: "M36", file: "worker/index.js", suite: "test-friends",
     what: "초대 코드 생성 POST 를 라우트 표에서 뺀다 (= 404 로 만든다)",
     invariant: "코드 생성은 라우트 표에 등재된 same-origin·인증 POST 하나다",
-    find: "  [/^\\/friends\\/code\\/ensure$/, [\"POST\"], true, \"write\", true],\n",
+    find: "  [/^\\/friends\\/code\\/ensure$/, [\"POST\"], true, \"write\", true, \"header\"],\n",
     replace: "",
   },
   {
@@ -486,8 +486,17 @@ export const MUTATIONS = [
     invariant: "현재 방침 판은 실제로 나가는 외부 요청을 전부 설명한다 (가입 화면의 challenges.cloudflare.com)",
     // ⚠️ **앵커는 「현재 번들의 privacy 경로」다.** 새 판이 나올 때마다 여기를 갱신한다 —
     //    안 하면 앵커 실패로 `mutate.mjs` 가 0 이 아닌 코드로 끝난다(조용히 통과하지 않는다).
-    find: "        \"path\": \"policies/privacy-ec20ee0ec725.html\",",
-    replace: "        \"path\": \"policies/privacy-1d3d2d870876.html\",",
+    // ⚠️ **경로를 손으로 적지 않는다.** 판을 새로 stamp 할 때마다 바뀌어 앵커가 낡는다
+    //    (실제로 두 번 낡았다). 지금 번들이 가리키는 판을 **Turnstile 설명이 없는 옛 판**으로
+    //    바꿔치기한다 — 그 옛 판은 지우지 않으므로 언제나 실재한다.
+    transform: (src) => {
+      const OLD = "privacy-1d3d2d870876.html";
+      const m = JSON.parse(src);
+      const old = m.versions.find((v) => v.file === OLD);
+      if (!old) throw new Error("M41: 옛 판이 사라졌다 — 불변 판을 지우면 안 된다");
+      m.bundle.docs.privacy = { path: "policies/" + old.file, hash: old.hash };
+      return JSON.stringify(m, null, 2) + "\n";
+    },
   },
   {
     id: "M59", file: "scripts/test-policies.mjs", suite: "test-policies", kind: "정적",
@@ -499,7 +508,10 @@ export const MUTATIONS = [
     // ⚠️ **`.at(-1)` 이 아니라 `.at(0)` 이다**(2026-08-26). 그날 만든 판의 해시가 우연히
     //    배열 마지막으로 정렬되면서 `.at(-1)` 이 **현재 판과 같은 파일**을 집었고, 그래서 이
     //    변이가 동치가 되어 살아남았다(실측). 「확실히 현재가 아닌 항목」을 집게 고쳤다.
-    replace: "  const curPath = \"policies/\" + m.versions.filter((v) => v.kind === \"privacy\").at(0).file;",
+    // ⚠️ **`.at(0)`·`.at(-1)` 을 쓰지 않는다** — 새 판의 해시가 우연히 그 자리에 오면
+    //    변이가 현재 판을 고르게 되어 **동등 변이**가 된다(실제로 두 번 그랬다).
+    //    번들이 가리키는 것과 **다른 판**을 고르면 언제나 불변식을 깬다.
+    replace: "  const curPath = \"policies/\" + m.versions.filter((v) => v.kind === \"privacy\")\n      .find((v) => \"policies/\" + v.file !== m.bundle.docs.privacy.path).file;",
   },
   {
     id: "M60", file: "scripts/build.mjs", suite: "test-policies", kind: "정적",
@@ -561,7 +573,7 @@ export const MUTATIONS = [
     id: "D17", file: "docs/STAGE3_SIGNUP_SECURITY_DESIGN.md", suite: "test-docs", kind: "정적",
     what: "§13-6 매핑 합계를 낡은 79 로 되돌린다",
     invariant: "매핑 절의 「N건 전부 연결됐다」는 표의 최대 T 번호에서 파생한다 — 표만 늘리고 합계를 안 고치면 검사가 그것을 잡아야 한다",
-    find: "**97건 전부 실행 가능한 단언으로 연결됐다.**",
+    find: "**100건 전부 실행 가능한 단언으로 연결됐다.**",
     replace: "**79건 전부 실행 가능한 단언으로 연결됐다.**",
   },
   {
@@ -589,7 +601,7 @@ export const MUTATIONS = [
     id: "D21", file: "docs/STAGE3_SIGNUP_SECURITY_DESIGN.md", suite: "test-docs", kind: "정적",
     what: "「종」이 없는 괄호형 내역을 낡은 「정적 21」로 되돌린다",
     invariant: "총계뿐 아니라 **하위 내역**도 MUTATIONS 에서 파생한다 — 「N종」이라고 안 적은 괄호형 내역도 센다(총계만 보면 66 ≠ 40+21 이 남는다)",
-    find: "(동작 85 · 정적 43).",
+    find: "(동작 115 · 정적 46).",
     replace: "(동작 40 · 정적 21).",
   },
   // ── 위협 70 · 불완전한 OAuth 주소가 세션 폐기 재시도를 막던 결함의 방어들 ──
@@ -648,8 +660,8 @@ export const MUTATIONS = [
     id: "M49", file: "worker/fence.js", suite: "test-fence",
     what: "fence 술어를 항상 참으로 만든다",
     invariant: "옛 epoch 을 든 요청은 주 D1 에 한 줄도 못 쓴다 — 술어가 참이면 유지보수 전환이 아무것도 막지 못한다",
-    find: "const FENCE_SQL = \"EXISTS (SELECT 1 FROM write_fence WHERE id = 1 AND epoch = ?)\";",
-    replace: "const FENCE_SQL = \"(? IS NOT NULL)\";",
+    find: "const fenceSql = (e) => `EXISTS (SELECT 1 FROM write_fence WHERE id = 1 AND epoch = ${e})`;",
+    replace: "const fenceSql = (e) => `(${e} IS NOT NULL)`;",
   },
   {
     id: "M50", file: "worker/fence.js", suite: "test-fence",
@@ -958,8 +970,8 @@ export const MUTATIONS = [
     id: "M83", file: "scripts/backup.mjs", suite: "test-backup",
     what: "업로드 검증 실패를 무시하고 ready 로 적는다",
     invariant: "되읽어 확인하기 전에는 `ready` 가 아니다",
-    find: '    if (head.code !== 0) return await fail("upload_verify", "upload_verify");',
-    replace: "    if (head.code !== 0) { /* 무시 */ }",
+    find: '    if (got !== "present") return await fail("upload_verify", "upload_verify");',
+    replace: '    if (got !== "present") { /* 무시 */ }',
   },
   {
     id: "M84", file: "scripts/backup.mjs", suite: "test-backup",
@@ -967,7 +979,7 @@ export const MUTATIONS = [
     invariant: "빈 덤프·표가 빠진 덤프를 백업이라 부르지 않는다",
     find: "      for (const tbl of REQUIRED_TABLES[which]) {\n"
         + "        if (!new RegExp(`CREATE TABLE[^;]*\\\\b${tbl}\\\\b`, \"i\").test(text))\n"
-        + "          return await fail(\"verify\", \"verify\");\n      }",
+        + "          return await abort(\"verify\", \"verify\");\n      }",
     replace: "      void text;",
   },
   {
@@ -1033,5 +1045,245 @@ export const MUTATIONS = [
     invariant: "정지된 사람의 단어장은 친구에게도 열리지 않는다",
     find: "               JOIN users o ON o.id = ?2 AND o.suspended_at IS NULL\n",
     replace: "",
+  },
+  // ── 2026-08-27 K1 · 사용자 단위 fencing (위협 79) ─────────────────────
+  {
+    id: "M89", file: "worker/fence.js", suite: "test-actor-fence",
+    what: "행위자 술어를 통째로 끈다",
+    invariant: "정지·로그아웃·탈퇴가 끝난 뒤에는 그보다 먼저 인증된 요청도 사용자 데이터를 만질 수 없다",
+    find: "  const actor = withActor && !only;",
+    replace: "  const actor = false;",
+  },
+  {
+    id: "M90", file: "worker/fence.js", suite: "test-actor-fence",
+    what: "행위자 술어에서 「정지되지 않았다」를 뺀다",
+    invariant: "처리정지는 **문장 안에서** 막힌다 — 요청 초입의 한 번 조회는 TOCTOU 라 방어가 아니다",
+    find: "WHERE id = ${u} AND suspended_at IS NULL AND session_version = ${g})",
+    replace: "WHERE id = ${u} AND (suspended_at IS NULL OR 1 = 1) AND session_version = ${g})",
+  },
+  {
+    id: "M91", file: "worker/fence.js", suite: "test-actor-fence",
+    what: "행위자 술어에서 「인증 당시 세대」를 뺀다",
+    invariant: "모든 기기 로그아웃과 탈퇴가 끝난 뒤에는 옛 요청이 쓰지 못한다",
+    find: "AND suspended_at IS NULL AND session_version = ${g})",
+    replace: "AND suspended_at IS NULL AND (session_version = ${g} OR 1 = 1))",
+  },
+  {
+    id: "M92", file: "worker/index.js", suite: "test-actor-fence",
+    what: "요청에 행위자를 결속하지 않는다",
+    invariant: "인증을 통과한 요청은 그 뒤의 모든 주 D1 문장에 자기 계정 술어를 들고 나간다",
+    find: "    if (me) bindActor(env, me);",
+    replace: "    if (me && false) bindActor(env, me);",
+  },
+  {
+    id: "M93", file: "worker/fence.js", suite: "test-actor-fence",
+    what: "0행을 「정상」으로만 읽고 행위자 소멸을 안 던진다",
+    invariant: "행위자가 사라진 뒤의 0행은 정상 결과가 아니다 — 화면이 빈 응답을 진짜 답으로 받는다",
+    find: '  if (u && u.s !== null && u.s !== undefined) throw new ActorGone("suspended");',
+    replace: '  if (u && u.s !== null && u.s !== undefined) return;',
+  },
+  {
+    id: "M94", file: "worker/index.js", suite: "test-rights",
+    what: "세션 철거에도 행위자 술어를 건다",
+    invariant: "정지된 계정에게 **로그아웃 하나는 열려 있어야 한다** — 스스로 끝낼 길이 없으면 갇힌다",
+    find: 'env.DB.prepare("DELETE FROM sessions WHERE user_id = ? AND {FENCE_ONLY}").bind(uid),\n    env.DB.prepare("UPDATE users SET session_version = session_version + 1 WHERE id = ? AND {FENCE_ONLY}").bind(uid),',
+    replace: 'env.DB.prepare("DELETE FROM sessions WHERE user_id = ? AND {FENCE}").bind(uid),\n    env.DB.prepare("UPDATE users SET session_version = session_version + 1 WHERE id = ? AND {FENCE}").bind(uid),',
+  },
+  {
+    id: "M95", file: "worker/index.js", suite: "test-actor-fence",
+    what: "탈퇴 문장에서 행위자 술어를 뺀다",
+    invariant: "정지된 계정은 옛 요청으로도 지워지지 않는다 — 탈퇴는 되돌릴 수 없다",
+    find: '            await env.DB.prepare("DELETE FROM users WHERE id = ? AND {FENCE}").bind(uid).run();',
+    replace: '            await env.DB.prepare("DELETE FROM users WHERE id = ? AND {FENCE_ONLY}").bind(uid).run();',
+  },
+
+  // ── 2026-08-27 K2 · 백업 상태 머신 (위협 81) ───────────────────────────
+  {
+    id: "M96", file: "scripts/backup.mjs", suite: "test-backup",
+    what: "정지 확인 결과를 무시하고 export 를 시작한다",
+    invariant: "두 DB export 전에 쓰기가 멈춘 것을 확인한다 — 안 하면 백업 안에서 두 DB 가 다른 시점을 가리킨다",
+    find: "  if (!q.ok) {",
+    replace: "  if (false && !q.ok) {",
+  },
+  {
+    id: "M97", file: "scripts/backup.mjs", suite: "test-backup",
+    what: "살아 있는 임차증이 있어도 정지로 본다",
+    invariant: "진행 중인 요청이 하나라도 있으면 백업하지 않는다",
+    find: '  if (Number(leases.n) !== 0) return { ok: false, why: "live_lease" };',
+    replace: "",
+  },
+  {
+    id: "M98", file: "scripts/backup.mjs", suite: "test-backup",
+    what: "정지 상태를 못 읽어도 진행한다",
+    invariant: "「질의가 실패했다」는 「멈췄다」가 아니다 — 모르면 시작하지 않는다",
+    find: '  } catch { return { ok: false, why: "unreadable" }; }',
+    replace: "  } catch { return { ok: true, why: \"unreadable\" }; }",
+  },
+  {
+    id: "M99", file: "scripts/backup.mjs", suite: "test-backup",
+    what: "업로드 전 확실한 실패도 `failed`(모른다) 로 적는다",
+    invariant: "객체가 없다는 것을 아는 실패는 `aborted` 다 — `failed` 로 적으면 그 행이 영영 표식 정리를 막는다",
+    find: "      if (r.code !== 0) return await abort(`${which}_export`, `${which}_export`);",
+    replace: "      if (r.code !== 0) return await fail(`${which}_export`, `${which}_export`);",
+  },
+  {
+    id: "M100", file: "scripts/backup.mjs", suite: "test-backup",
+    what: "R2 조회 실패를 「없다」로 읽는다",
+    invariant: "조회 실패는 부재의 증거가 아니다 — 그렇게 읽으면 근거 없이 삭제 표식이 지워진다",
+    find: '  return "unknown";',
+    replace: '  return "absent";',
+  },
+  {
+    id: "M101", file: "scripts/backup.mjs", suite: "test-backup",
+    what: "되읽은 객체의 크기·해시를 대조하지 않는다",
+    invariant: "업로드는 **되읽어 같은 것임을 확인한 뒤에만** ready 다",
+    find: "    if ((await stat(back)).size !== encBytes || (await sha256File(back)) !== encHash)\n      return await fail(\"upload_verify\", \"upload_verify\");",
+    replace: "",
+  },
+  {
+    id: "M102", file: "scripts/backup.mjs", suite: "test-backup",
+    what: "reconcile 이 모르는 행도 닫는다",
+    invariant: "부재를 확인하지 못한 행은 계속 표식 정리를 막는다",
+    find: '      if (state === "unknown") {',
+    replace: '      if (false && state === "unknown") {',
+  },
+  {
+    id: "M103", file: "scripts/backup.mjs", suite: "test-backup",
+    what: "reconcile 이 내용 불일치를 정상으로 본다",
+    invariant: "키가 같은 다른 내용은 복구에 쓸 수 없다 — 정상으로 읽으면 못 쓰는 사본을 믿게 된다",
+    find: "        if (!same) {",
+    replace: "        if (false && !same) {",
+  },
+  {
+    id: "M104", file: "scripts/backup.mjs", suite: "test-backup",
+    what: "전이표를 무시하고 어느 상태에서든 옮긴다",
+    invariant: "종결 상태(`deleted`·`aborted`)는 되살아나지 않는다",
+    find: "export const canTransition = (from, to) =>\n  Object.prototype.hasOwnProperty.call(NEXT, from) && NEXT[from].includes(to);",
+    replace: "export const canTransition = () => true;",
+  },
+  {
+    id: "M105", file: "scripts/backup.mjs", suite: "test-backup",
+    what: "만료 예정이 한참 지나도 경보하지 않는다",
+    invariant: "만료 표시 뒤에도 남아 있는 객체는 비정상이고 사람이 봐야 한다",
+    find: "      if (r.expires_expected_at && now > Number(r.expires_expected_at) + OVERDUE_GRACE) {",
+    replace: "      if (false && r.expires_expected_at && now > Number(r.expires_expected_at) + OVERDUE_GRACE) {",
+  },
+
+  // ── 2026-08-27 K3 · 서버 강제 클라이언트 호환성 (위협 80) ───────────────
+  {
+    id: "M106", file: "worker/index.js", suite: "test-compat",
+    what: "빌드 계약을 검사하지 않는다",
+    invariant: "지원되지 않는 옛 클라이언트는 인증·제공자 호출·DB 접근 전에 서버가 거절한다",
+    find: "      if (claimed !== BUILD_ID) {",
+    replace: "      if (false && claimed !== BUILD_ID) {",
+  },
+  {
+    id: "M107", file: "worker/index.js", suite: "test-compat",
+    what: "계약이 **없는** 요청은 통과시킨다(모르면 연다)",
+    invariant: "빠진 값을 「모르니 통과」로 읽지 않는다 — 그것이 정확히 옛 클라이언트의 모양이다",
+    find: "      if (claimed !== BUILD_ID) {",
+    replace: "      if (claimed != null && claimed !== BUILD_ID) {",
+  },
+  {
+    id: "M108", file: "worker/index.js", suite: "test-compat",
+    what: "로그인 시작에는 계약을 안 건다",
+    invariant: "최상위 이동도 계약을 나른다 — 안 걸면 옛 화면이 제공자까지 갔다가 콜백에서 죽는다",
+    find: '    if (rt.compat === "header" || rt.compat === "query") {',
+    replace: '    if (rt.compat === "header") {',
+  },
+  {
+    id: "M109", file: "worker/index.js", suite: "test-compat",
+    what: "콜백이 state 안의 빌드를 안 본다",
+    invariant: "제공자 호출 **앞에서** 대조한다 — 뒤에 두면 옛 화면 하나가 `code` 를 태운다",
+    find: "        if (st.b !== BUILD_ID)",
+    replace: "        if (false && st.b !== BUILD_ID)",
+  },
+  {
+    id: "M110", file: "js/authApi.js", suite: "test-client",
+    what: "화면이 계정 요청에 세대를 안 싣는다",
+    invariant: "계정 API 호출은 전부 한 자리에서 세대를 싣는다 — 한 곳만 빠져도 그 기능이 426 으로 죽는다",
+    find: "  return b ? { [BUILD_HEADER]: b } : {};",
+    replace: "  return b ? {} : {};",
+  },
+  {
+    id: "M111", file: "js/authApi.js", suite: "test-client",
+    what: "로그인 시작 주소에서 세대를 뺀다",
+    invariant: "로그인 시작은 쿼리로 계약을 나른다",
+    find: '  + `&b=${encodeURIComponent(clientBuild() || "")}`;',
+    replace: "  ;",
+  },
+  {
+    id: "M112", file: "js/authApi.js", suite: "test-client",
+    what: "426 을 평범한 서버 오류로 읽는다",
+    invariant: "426 은 로그아웃이 아니라 갱신 안내다 — 표시를 지우면 이유 없는 로그아웃으로 보인다",
+    find: "  if (res.status === 426) {\n    setAccountState(\"ok\");\n    setBuildOk(false);\n    return { ok: false, status: 426, kind: \"outdated\", data: null };\n  }",
+    replace: "",
+  },
+
+  {
+    id: "M113", file: "worker/fence.js", suite: "test-fence",
+    what: "`{FENCE_ONLY}` 를 아무것도 안 붙는 자리표시자로 만든다",
+    invariant: "예외가 빼는 것은 **행위자 술어뿐**이다 — 유지보수 fence 까지 빠지면 그 문장은 전환 뒤에도 쓴다",
+    find: "    let pred = fenceSql(slot(at));",
+    replace: '    let pred = only ? "1 = 1" : fenceSql(slot(at));',
+  },
+  // ── 2026-08-27 독립 검토 반영 ──────────────────────────────────────────
+  {
+    id: "M114", file: "worker/fence.js", suite: "test-actor-fence",
+    what: "한 batch 안에서 자리표시자를 섞는 것을 허용한다",
+    invariant: "batch 의 판별(하나라도 바뀌었으면 통과)은 **문장이 같은 술어를 들 때만** 참이다 — 섞으면 실패한 작업이 성공으로 보고된다",
+    find: "  if (new Set(marks).size > 1)",
+    replace: "  if (false && new Set(marks).size > 1)",
+  },
+  {
+    id: "M115", file: "worker/index.js", suite: "test-actor-fence",
+    what: "정지 batch 의 세션 삭제를 다시 `{FENCE_ONLY}` 로 되돌린다",
+    invariant: "정지는 **전부 되거나 전부 안 된다** — 세션만 지워지고 정지는 안 된 상태가 있으면 안 된다",
+    find: '      "DELETE FROM sessions WHERE user_id = ? AND {FENCE}").bind(uid),\n    env.DB.prepare(\n      `UPDATE users SET suspended_at',
+    replace: '      "DELETE FROM sessions WHERE user_id = ? AND {FENCE_ONLY}").bind(uid),\n    env.DB.prepare(\n      `UPDATE users SET suspended_at',
+  },
+  {
+    id: "M116", file: "scripts/backup.mjs", suite: "test-backup",
+    what: "부재 판정을 다시 넓게 잡는다(버킷 오류·일반 404 도 「없다」)",
+    invariant: "부재의 증거는 **객체 수준**이어야 한다 — 설정 오타 하나로 삭제 표식이 근거 없이 지워진다",
+    find: "const ABSENT_RE = /\\b10007\\b|no such key|specified key does not exist/i;",
+    replace: "const ABSENT_RE = /does not exist|not\\s*found|no such key|10007|404/i;",
+  },
+  {
+    id: "M117", file: "scripts/backup.mjs", suite: "test-backup",
+    what: "export 뒤의 정지 재확인을 없앤다",
+    invariant: "검사와 사용이 같은 경계에 있어야 한다 — 두 export 사이에 문이 다시 열리면 두 덤프가 다른 시점을 담는다",
+    find: "      const q2 = await quiescence({ cfg, run });\n      if (!q2.ok || q2.epoch !== q.epoch) {",
+    replace: "      const q2 = { ok: true, epoch: q.epoch };\n      if (!q2.ok || q2.epoch !== q.epoch) {",
+  },
+  {
+    id: "M118", file: "worker/index.js", suite: "test-compat",
+    what: "계약 헤더를 CORS 허용 목록에서 뺀다",
+    invariant: "커스텀 헤더는 preflight 를 만든다 — 허용 목록에 없으면 다른 origin 에서 계정 기능이 통째로 죽는다",
+    find: '"Access-Control-Allow-Headers": "Authorization,Content-Type,X-Shh-Build"',
+    replace: '"Access-Control-Allow-Headers": "Authorization,Content-Type"',
+  },
+
+  // ── 2026-08-27 K4 · 방침이 코드와 같은 말을 하나 ────────────────────────
+  {
+    id: "D41", file: "privacy.html", suite: "test-policies", kind: "정적",
+    what: "로그아웃을 다시 「이 기기만」이라고 적는다",
+    invariant: "로그아웃은 그 계정의 **모든 기기** 세션을 끊는다 — 방침이 기기 하나로 적으면 거짓이다",
+    find: "로그아웃은 <b>지금 로그인돼 있는 모든 기기의 접속을\n       한꺼번에 끝내는 것</b>이고(저희는 기기별로 따로 끊지 않습니다),",
+    replace: "로그아웃은 <b>이 기기의 접속을 끝내는 것</b>이고,",
+  },
+  {
+    id: "D42", file: "policies-src/summary.txt", suite: "test-policies", kind: "정적",
+    what: "요약에서도 로그아웃을 「이 기기만」으로 되돌린다",
+    invariant: "요약과 본문이 같은 사실을 말한다 — 한쪽만 고치면 문서가 스스로 모순이 된다",
+    find: "  로그아웃은 로그인돼 있는 모든 기기의 접속을 한꺼번에 끝내는 것일 뿐,\n  처리정지도 삭제도 아닙니다. 기기 안에 담긴 단어장은 그대로 남습니다.",
+    replace: "  로그아웃은 이 기기의 접속을 끝내는 것일 뿐, 처리정지도 삭제도 아닙니다.",
+  },
+  {
+    id: "D43", file: "privacy.html", suite: "test-policies", kind: "정적",
+    what: "한 줄 요약에서 「단어장도 안 만든다」를 서버 한정 없이 되돌린다",
+    invariant: "비회원도 **기기 안에는** 단어장을 만든다 — 서버로 한정하지 않은 문장은 거짓이다",
+    find: "— <b>저희 서버에는</b> 계정도 단어장도 별명도 만들지 않기 때문입니다.",
+    replace: "— 계정도, 단어장도, 별명도 만들지 않기 때문입니다.",
   },
 ];

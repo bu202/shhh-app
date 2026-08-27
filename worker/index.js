@@ -26,7 +26,7 @@
 // `curl` 반복만으로 무료 한도를 태울 수 있다 — 서명해서 들려 보낸다(makeState).
 
 import { POLICY_BUNDLE } from "./policies.js";
-import { withFence, FenceMismatch, fenceInSync } from "./fence.js";
+import { withFence, bindActor, FenceMismatch, ActorGone, fenceInSync } from "./fence.js";
 import { overdueResolutions } from "./ledger.js";
 // 빌드가 만들어 박는 값. **손으로 고치지 않는다** — `scripts/build.mjs` 가 다시 쓰고
 // `scripts/test-dist.mjs` 가 서버 값과 화면 값이 같은 원본에서 나왔는지 대조한다.
@@ -137,7 +137,7 @@ const logSafe = (v, max = 80) => String(v ?? "").replace(/[\u0000-\u001f\u007f]+
 const cors = (env, req) => {
   const o = req.headers.get("Origin");
   return allowed(env, o)
-    ? { ...SEC, "Access-Control-Allow-Origin": o, "Access-Control-Allow-Headers": "Authorization,Content-Type", "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS" }
+    ? { ...SEC, "Access-Control-Allow-Origin": o, "Access-Control-Allow-Headers": "Authorization,Content-Type,X-Shh-Build", "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS" }
     : { ...SEC };
 };
 
@@ -422,8 +422,13 @@ const dbAnswers = async (env) => {
 //
 // txn 은 **서버가 만들어 그 브라우저에만 심어 둔 값의 해시**다. state 에는 해시만 싣는다:
 // state 는 주소에 실려 남에게 보일 수 있으므로 원본을 실으면 표를 베낄 수 있게 된다.
-const makeState = async (env, provider, back, nonce, txn) => {
-  const body = b64u(ENC.encode(JSON.stringify([provider, back, Date.now() + 600e3, nonce || "", txn || ""])));
+// build 는 **이 왕복을 시작한 화면의 세대**다(2026-08-27 · 위협 80). 콜백은 최상위 이동이라
+// 헤더도 쿼리도 우리가 붙일 수 없어서, 계약을 서명 안으로 들고 간다. 읽혀도 되는 값이다 —
+// 같은 값이 `/api/health` 와 선캐시된 `js/build.js` 에 공개돼 있다.
+// ⛔ **인증 값이 아니다.** 흉내낼 수 있고, 흉내내도 인증·CSRF·readiness 는 그대로 막는다.
+export const makeState = async (env, provider, back, nonce, txn, build = BUILD_ID) => {
+  const body = b64u(ENC.encode(JSON.stringify(
+    [provider, back, Date.now() + 600e3, nonce || "", txn || "", build])));
   return body + "." + (await sign(env, body));
 };
 
@@ -435,9 +440,9 @@ async function takeState(env, state) {
   if (!(await sameSecret(await sign(env, body), state.slice(i + 1)))) return null;
   let p;
   try { p = JSON.parse(new TextDecoder().decode(unb64u(body))); } catch { return null; }
-  const [provider, back, exp, nonce, txn] = p;
+  const [provider, back, exp, nonce, txn, build] = p;
   if (!(Date.now() < exp)) return null;
-  return { provider, back, nonce: nonce || "", txn: txn || "" };
+  return { provider, back, nonce: nonce || "", txn: txn || "", b: build || "" };
 }
 
 // ── 정책 문서와 가입 기록 ────────────────────────────────────────────────
@@ -493,7 +498,9 @@ export async function makeSignupState(env, provider, payload) {
   // ⚠️ nonce 는 **요청마다 CSPRNG** 다. 카운터·시각·해시에서 유도하지 않는다 —
   //    GCM 은 같은 키로 nonce 를 두 번 쓰면 평문이 복원되고 위조까지 가능해진다.
   const nonce = crypto.getRandomValues(new Uint8Array(12));
-  const plain = ENC.encode(JSON.stringify({ ...payload, provider, exp }));
+  // 이 왕복을 시작한 화면의 세대(위협 80). 부르는 쪽이 안 적으면 **지금 배포**다 —
+  // 콜백이 제공자 호출 앞에서 대조한다.
+  const plain = ENC.encode(JSON.stringify({ b: BUILD_ID, ...payload, provider, exp }));
   const ct = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv: nonce, additionalData: signupAad(env, provider, exp) },
     await signupKey(env), plain);
@@ -719,7 +726,7 @@ export async function newSession(env, userId) {
     "INSERT INTO sessions (token_hash, user_id, session_version, expires_at) SELECT ?, ?, ?, ? WHERE {FENCE}")
     .bind(await sha256(token), userId, u ? u.session_version : 0, expires).run();
   // ⚠️ **죽은 행을 여기서 치운다.** whoAmI 는 만료를 판정에서만 걸러내고 행은 그대로 뒀다 —
-  //    그래서 다시 오지 않는 사용자의 세션 행이 영원히 남았다. 방침(180일 뒤 만료)이 거짓말은
+  //    그래서 다시 오지 않는 사용자의 세션 행이 영원히 남았다. 방침(`SESSION_DAYS` 뒤 만료)이 거짓말은
   //    아니지만, 만료된 뒤에도 보관할 이유가 없는 것을 보관하고 있었다.
   //    정리 크론(`worker/cleanup/`)이 같은 일을 하지만, 여기도 **로그인이라는 드문 자리**라
   //    둘 다 있어도 무해하다(크론이 배포되기 전까지는 여기가 유일한 청소다).
@@ -745,12 +752,16 @@ export async function newSession(env, userId) {
 async function whoAmI(env, token) {
   if (!token) return null;
   const row = await env.DB.prepare(
-    `SELECT s.user_id AS uid, u.suspended_at AS susp
+    `SELECT s.user_id AS uid, u.suspended_at AS susp, u.session_version AS gen
        FROM sessions s JOIN users u ON u.id = s.user_id
       WHERE s.token_hash = ? AND s.revoked_at IS NULL AND s.expires_at > ?
         AND s.session_version = u.session_version AND {FENCE}`)
     .bind(await sha256(token), Date.now()).first();
-  return row ? { uid: row.uid, suspended: row.susp !== null && row.susp !== undefined } : null;
+  // ⚠️ **세대를 같이 돌려준다.** 이 값이 곧 「이 요청이 인증된 시점」이고, 그 뒤의 모든 주 D1
+  //    문장이 같은 문장 안에서 이 값을 다시 요구한다(`bindActor` · `worker/fence.js`).
+  return row
+    ? { uid: row.uid, gen: Number(row.gen), suspended: row.susp !== null && row.susp !== undefined }
+    : null;
 }
 
 // 처리정지 중에도 **열어 두는 자리.** 로그아웃 하나뿐이다.
@@ -771,8 +782,13 @@ export const suspendAllows = (path, method) =>
 // 행 삭제는 청소일 뿐이고 **판정은 세대가 한다**(그래서 삭제가 실패해도 안전하다).
 async function killSessions(env, uid) {
   await env.DB.batch([
-    env.DB.prepare("UPDATE users SET session_version = session_version + 1 WHERE id = ? AND {FENCE}").bind(uid),
-    env.DB.prepare("DELETE FROM sessions WHERE user_id = ? AND {FENCE}").bind(uid),
+    // ⚠️ **`{FENCE_ONLY}` 다 — 세션 철거에는 행위자 술어를 걸지 않는다**(2026-08-27 · 위협 79).
+    //    걸면 두 가지가 깨진다: ① 정지된 계정이 **스스로 로그아웃할 길이 없어진다**(정지 상태에서
+    //    유일하게 열어 둔 자리가 이것이다) ② 같은 batch 의 뒤 문장이 앞 문장이 올린 세대 때문에
+    //    거짓이 되어 세션 행이 남는다. 그리고 **걸어서 지키는 것도 없다** — 이 문장이 하는 일은
+    //    접근을 **줄이는** 것뿐이라 늦게 도착해도 데이터를 읽거나 쓰거나 노출하지 않는다.
+    env.DB.prepare("DELETE FROM sessions WHERE user_id = ? AND {FENCE_ONLY}").bind(uid),
+    env.DB.prepare("UPDATE users SET session_version = session_version + 1 WHERE id = ? AND {FENCE_ONLY}").bind(uid),
   ]);
 }
 
@@ -787,9 +803,16 @@ async function killSessions(env, uid) {
 async function suspendAccount(env, uid, now = Date.now()) {
   await env.DB.batch([
     env.DB.prepare(
+      // ⚠️ **여기서는 `{FENCE}` 다**(2026-08-27 · 독립 검토 H1). `killSessions` 와 다르다 —
+      //    정지는 **살아 있고 정지되지 않은 계정만** 할 수 있으므로 행위자 술어가 걸림돌이 아니고,
+      //    무엇보다 **한 batch 안에서 자리표시자를 섞으면 안 된다**: 섞으면 세션만 지워지고
+      //    정지는 안 된 채 `{ok:true}` 가 나가는 상태가 생긴다(`worker/fence.js` 의 batch 주석).
+      // ⚠️ **세션 삭제가 먼저다.** 뒤 문장이 세대를 올리므로, 순서를 바꾸면 자기 앞 문장 때문에
+      //    술어가 거짓이 되어 세션이 남는다.
+      "DELETE FROM sessions WHERE user_id = ? AND {FENCE}").bind(uid),
+    env.DB.prepare(
       `UPDATE users SET suspended_at = COALESCE(suspended_at, ?), session_version = session_version + 1
         WHERE id = ? AND {FENCE}`).bind(now, uid),
-    env.DB.prepare("DELETE FROM sessions WHERE user_id = ? AND {FENCE}").bind(uid),
   ]);
 }
 
@@ -1393,6 +1416,15 @@ async function briefOne(env, other, withCount) {
 const MAINT_READS = [
   [/^\/book$/, "GET"], [/^\/me$/, "GET"], [/^\/friends\/[^/]+\/book$/, "GET"],
 ];
+// ── 클라이언트 호환성 계약 (2026-08-27 · 위협 80) ────────────────────────
+// 이미 설치된 PWA 는 옛 화면 코드를 계속 돈다. 화면 쪽 `buildMatches()` 는 **옛 세대에 그 코드
+// 자체가 없어서** 옛 PWA 를 막지 못한다 — 그래서 서버가 판정한다.
+// 계약을 나르는 방법은 셋이고, **라우트 표가 정한다**:
+//   header  앱이 fetch 로 부르는 계정 API — `X-Shh-Build`
+//   query   최상위 이동이라 헤더를 못 붙인다(`/login/:provider`) — `?b=`
+//   state   제공자가 돌려보내는 자리라 우리가 아무것도 못 붙인다 — **서명된 state 안**
+//   null    면제. 정적 화면·상태·정책 — ⛔ **막으면 옛 PWA 가 새 코드를 받을 길이 없어진다**
+export const BUILD_HEADER = "x-shh-build";
 const ALWAYS_OPEN = [/^\/health$/, /^\/ready$/, /^\/policies$/];
 
 // ⚠️ **모드별 허용을 전부 적는다.** 예전에는 마지막 줄이 `return MAINT_READS.some(...)` 이라
@@ -1428,35 +1460,35 @@ const publicMode = (m) => (m === "open" || m === "maintenance" || m === "restore
 //           ⚠️ 이건 인증이 아니라 **값싼 문**이다 — 통과해도 `whoAmI()` 가 그대로 돈다
 const PROVIDER_RE = Object.keys(P).join("|");
 const ROUTES = [
-  [/^\/health$/, ["GET"], false, null, false],
-  [/^\/ready$/, ["GET"], false, null, false],
-  [/^\/policies$/, ["GET"], false, null, false],
+  [/^\/health$/, ["GET"], false, null, false, null],
+  [/^\/ready$/, ["GET"], false, null, false, null],
+  [/^\/policies$/, ["GET"], false, null, false, null],
   // 로그인 시작. **DB 를 아예 안 만진다** — 302 하나와 서명 하나다(그래서 세지도 않는다).
   // 모르는 제공자 이름은 여기서 안 걸린다 = 알 수 없는 라우트 = 404, 쓰기 0건.
-  [new RegExp(`^/login/(?:${PROVIDER_RE})$`), ["GET"], false, null, false],
-  [/^\/signup\/start$/, ["POST"], true, "signup", false],
-  [new RegExp(`^/(?:cb|exchange)/(?:${PROVIDER_RE})$`), ["GET"], true, "login", false],
-  [/^\/session$/, ["DELETE"], true, "write", true],
-  [/^\/book$/, ["GET"], true, "read", true],
-  [/^\/book$/, ["PUT"], true, "write", true],
-  [/^\/me$/, ["GET"], true, "read", true],
-  [/^\/me$/, ["PUT", "DELETE"], true, "write", true],
+  [new RegExp(`^/login/(?:${PROVIDER_RE})$`), ["GET"], false, null, false, "query"],
+  [/^\/signup\/start$/, ["POST"], true, "signup", false, "header"],
+  [new RegExp(`^/(?:cb|exchange)/(?:${PROVIDER_RE})$`), ["GET"], true, "login", false, "state"],
+  [/^\/session$/, ["DELETE"], true, "write", true, "header"],
+  [/^\/book$/, ["GET"], true, "read", true, "header"],
+  [/^\/book$/, ["PUT"], true, "write", true, "header"],
+  [/^\/me$/, ["GET"], true, "read", true, "header"],
+  [/^\/me$/, ["PUT", "DELETE"], true, "write", true, "header"],
   // 개인정보 열람 — **자기 계정만.** 세션의 uid 만 쓰고 입력에서 uid 를 받지 않는다.
-  [/^\/me\/export$/, ["GET"], true, "read", true],
+  [/^\/me\/export$/, ["GET"], true, "read", true, "header"],
   // 처리정지. 로그아웃(`DELETE /session`)과 **다른 라우트다** — 같은 자리에 두면 화면도
   // 문서도 둘을 같은 것으로 쓰게 된다(그게 이번에 고친 그 결함이다).
-  [/^\/me\/suspend$/, ["POST"], true, "write", true],
+  [/^\/me\/suspend$/, ["POST"], true, "write", true, "header"],
   // 재개. **세션이 없다**(정지가 세션을 전부 끊었다) — 그래서 `auth:false` 이고, 신원은
   // 1회용 재개 티켓 쿠키가 말한다. 세션을 새로 만드는 자리라 버킷은 로그인과 같다.
-  [/^\/me\/resume$/, ["POST"], true, "login", false],
-  [/^\/friends$/, ["GET"], true, "read", true],
-  [/^\/friends$/, ["POST"], true, "friends", true],
+  [/^\/me\/resume$/, ["POST"], true, "login", false, "header"],
+  [/^\/friends$/, ["GET"], true, "read", true, "header"],
+  [/^\/friends$/, ["POST"], true, "friends", true, "header"],
   // 초대 코드 **최초 생성**. 회전과 갈라 둔다 — 회전은 남에게 보낸 링크를 죽이는 파괴적
   // 행위라 실수로 불려서는 안 되고, 생성은 멱등이라 한도도 다르다(위협 68).
-  [/^\/friends\/code\/ensure$/, ["POST"], true, "write", true],
-  [/^\/friends\/code$/, ["POST"], true, "rotate", true],
-  [/^\/friends\/[^/]+\/book$/, ["GET"], true, "read", true],
-  [/^\/friends\/[^/]+$/, ["PUT", "DELETE"], true, "write", true],
+  [/^\/friends\/code\/ensure$/, ["POST"], true, "write", true, "header"],
+  [/^\/friends\/code$/, ["POST"], true, "rotate", true, "header"],
+  [/^\/friends\/[^/]+\/book$/, ["GET"], true, "read", true, "header"],
+  [/^\/friends\/[^/]+$/, ["PUT", "DELETE"], true, "write", true, "header"],
 ];
 
 // 표가 실제로 쓰는 버킷 전부. 테스트가 이것과 `RL_MAX` 를 대조한다 — 표에 새 버킷을 적고
@@ -1471,14 +1503,24 @@ export const authRoutes = () =>
 // 표의 크기. 테스트가 「대표 경로 목록이 표를 전부 덮었나」를 이 값으로 확인한다 —
 // 라우트를 더하고 목록에 안 적으면 그 라우트만 검사 밖에 남는다.
 export const routeCount = () => ROUTES.length;
+// 표 전체를 읽기 전용으로 내준다. 검사가 소스를 정규식으로 파싱하면 정규식 리터럴 안의
+// 괄호 하나에 조용히 몇 줄을 빠뜨린다(실제로 겪었다) — 표는 표가 답한다.
+export const routeTable = () =>
+  ROUTES.map(([re, methods, lease, bucket, auth, compat]) =>
+    ({ src: String(re), methods: [...methods], lease, bucket, auth, compat }));
+// 이 (method, path) 가 어떤 방식으로 빌드 계약을 나르나. 모르는 라우트는 `undefined`.
+export const compatMode = (method, path) => {
+  const rt = routeFor(method, path);
+  return rt ? rt.compat : undefined;
+};
 
 // 모르는 경로·허용되지 않은 method 는 `null`. 부르는 쪽은 그때 **아무것도 하기 전에** 404 다.
 export function routeFor(method, path) {
   // `HEAD` 는 `GET` 과 같은 라우트다. 런타임이 본문을 떼고 보내므로 판정을 갈라 둘 이유가 없고,
   // 가르면 `curl -sI` 로 확인하라고 적어 둔 절차(worker/SETUP.md)가 404 를 받는다.
   const m = method === "HEAD" ? "GET" : method;
-  for (const [re, methods, lease, bucket, auth] of ROUTES) {
-    if (methods.includes(m) && re.test(path)) return { lease, bucket, auth };
+  for (const [re, methods, lease, bucket, auth, compat] of ROUTES) {
+    if (methods.includes(m) && re.test(path)) return { lease, bucket, auth, compat };
   }
   return null;
 }
@@ -1548,6 +1590,33 @@ export default {
       const edge = await edgeVerdict(env, req, rt.bucket || "route");
       if (edge === BROKEN) return guardClosed(env, req);
       if (edge === OVER) return tooMany(env, req);
+    }
+
+    // ── 0-0-1-1. **클라이언트 호환성 계약** (2026-08-27 · 위협 80) ──
+    //
+    // 이미 설치된 PWA 는 옛 화면 코드를 계속 돈다. 화면 쪽 대조(`buildMatches()`)는 **옛 세대에
+    // 그 코드가 없어서** 옛 PWA 를 막지 못한다 — 판정이 서버에 있어야 실효가 있다.
+    //
+    // ⚠️ **자리가 곧 계약이다**: 라우트 판정 **뒤**(없는 주소는 그냥 404), 인증·제공자 호출·
+    //    D1/ledger 접근 **앞**. 그래서 옛 클라이언트는 자원을 한 줄도 태우지 못한다.
+    // ⚠️ **`state` 방식(콜백)은 예외다** — 그 값은 제공자가 돌려보내는 자리에 있어서 여기서
+    //    볼 수 없고, 핸들러 안에서 본다. 그 앞에 리미터와 임차증이 이미 지나가므로 **ledger
+    //    쓰기 둘은 난다.** 지키는 것은 「제공자 호출과 주 D1 쓰기 앞」이다(`test-compat` C6).
+    // ⚠️ **인증이 아니다.** 값은 공개돼 있고 흉내낼 수 있다 — 막는 것은 옛 클라이언트이지
+    //    공격자가 아니다. 인증·CSRF·readiness·EDGE_GUARD 는 각자 그대로 막는다.
+    // ⚠️ `state` 방식(콜백)은 여기서 안 본다 — 제공자가 돌려보내는 자리라 헤더도 쿼리도
+    //    우리 것이 아니다. 서명된 state 안의 값을 **제공자 호출 앞에서** 대조한다(아래 2a·2b).
+    if (rt.compat === "header" || rt.compat === "query") {
+      const claimed = rt.compat === "header"
+        ? req.headers.get(BUILD_HEADER) : url.searchParams.get("b");
+      if (claimed !== BUILD_ID) {
+        // 426 Upgrade Required. 화면이 「앱을 새로고침해 주세요」로 바꿔 말한다.
+        // ⛔ 응답에 서버 세대 말고는 아무것도 싣지 않는다.
+        const msg = "앱이 오래된 판이에요. 새로고침하거나 앱을 다시 열어 주세요";
+        return rt.compat === "query"
+          ? new Response(msg, { status: 426, headers: { ...SEC, "Content-Type": "text/plain; charset=utf-8" } })
+          : json(env, req, { error: msg, updateRequired: true, build: BUILD_ID }, 426);
+      }
     }
 
     // ── 0-0-2. 우리가 발급한 쿠키인가 — **CPU 만 쓴다** ──
@@ -1649,6 +1718,15 @@ export default {
       if (e instanceof FenceMismatch)
         return json(env, req, { error: "잠시 점검 중이에요. 조금 뒤에 다시 시도해 주세요" }, 503,
           { "Retry-After": "60" });
+      // 행위자가 사라졌다 — 이 요청이 인증된 뒤에 정지·로그아웃·탈퇴가 **완료됐다**는 뜻이다.
+      // ⛔ 이 요청은 아무것도 쓰지 않았다(문장 안의 술어가 막았다).
+      // 답은 **같은 사람이 요청을 한 번 더 보냈을 때 받는 답과 같다** — 그래야 화면이
+      // 경합인지 아닌지에 따라 다른 말을 하지 않는다. 내부값은 싣지 않는다.
+      if (e instanceof ActorGone)
+        return e.reason === "suspended"
+          ? json(env, req, { error: "처리정지 중인 계정이에요. 다시 시작하시려면 로그인해 주세요",
+                             suspended: true }, 403)
+          : json(env, req, { error: "로그인이 필요해요" }, 401);
       // ⚠️ **경로를 그대로 찍지 않는다.** `/friends/<uid>` 에는 계정 id 가 들어 있어서
       //    운영 로그가 곧 "누가 누구와 친구인가"의 기록이 된다. 고치는 데 필요한 건 어느 **종류**의
       //    요청이 죽었나뿐이라 id 자리를 `:id` 로 바꿔 찍는다. 예외 메시지도 200자에서 자른다
@@ -1826,6 +1904,8 @@ async function route(req, env, rc) {
           // 공격자는 `/signup/start` 를 건너뛰고 제공자 인증만으로 계정을 만들려 할 수 있다.
           // 이 값은 AEAD 안에 있으므로 위조도 열람도 안 된다(§5-4).
           hv: 1, hvAt: occurredAt,
+          // 이 왕복을 시작한 화면의 세대(위협 80). 콜백이 제공자 호출 **앞에서** 대조한다.
+          b: BUILD_ID,
           n: String(body.n || "").slice(0, 64), txn: await sha256(txn),
         });
       } catch {
@@ -1919,16 +1999,29 @@ async function route(req, env, rc) {
         const st = isSignup ? await takeSignupState(env, raw, name) : await takeState(env, raw);
         if (!st || (!isSignup && st.provider !== name))
           return fail("로그인 요청이 만료됐어요. 다시 눌러 주세요.", 400);
-        // **표를 먼저 본다.** 공격자가 자기 code/state 링크를 남에게 보내도 여기서 끝난다 —
+        // 복귀 주소는 서명·암호문 안에 있지만 **리다이렉트 목적지**라 한 번 더 본다 —
+        // allowed 가 좁아진 직후 옛 state 가 돌아오는 경우가 여기서 걸린다.
+        // ⚠️ **이 검사가 맨 앞이다** — 아래 갈래들이 `st.back` 으로 리다이렉트하기 때문이다.
+        let backOrigin = null;
+        try { backOrigin = new URL(st.back).origin; } catch { /* 아래에서 400 */ }
+        if (!allowed(env, backOrigin)) return fail("허용되지 않은 주소예요", 400);
+
+        // ── 이 왕복을 시작한 화면이 **지금 배포와 같은 세대인가** (2026-08-27 · 위협 80) ──
+        // ⚠️ **제공자 호출보다 한참 앞이다.** 뒤에 두면 옛 화면 하나가 `code` 를 태우고,
+        //    그 code 는 되돌릴 수 없다. 시작과 콜백 사이에 새 배포가 나가면 여기서 걸린다 —
+        //    그 화면은 이미 낡았으므로 처음부터 다시 하는 것이 맞다.
+        // ⛔ **인증이 아니다.** 값은 공개돼 있다. 아래 브라우저 결속(`bound`)이 그대로 남는다.
+        if (st.b !== BUILD_ID)
+          return viaApp
+            ? json(env, req, { error: "앱이 오래된 판이에요. 새로고침한 뒤 다시 시도해 주세요",
+                               updateRequired: true, build: BUILD_ID }, 426)
+            : fail(null, 302, st.back + "#login=outdated");
+
+        // **표를 본다.** 공격자가 자기 code/state 링크를 남에게 보내도 여기서 끝난다 —
         // 그 사람 브라우저에는 우리가 심은 표가 없다. code 교환·세션 생성 **이전**이라
         // 실패해도 남는 것이 없다(제공자 호출도 안 나간다).
         if (!(await bound(env, req, st)))
           return fail("이 기기에서 시작한 로그인이 아니에요. 앱에서 다시 로그인해 주세요.", 400);
-        // 복귀 주소는 서명·암호문 안에 있지만 **리다이렉트 목적지**라 한 번 더 본다 —
-        // allowed 가 좁아진 직후 옛 state 가 돌아오는 경우가 여기서 걸린다.
-        let backOrigin = null;
-        try { backOrigin = new URL(st.back).origin; } catch { /* 아래에서 400 */ }
-        if (!allowed(env, backOrigin)) return fail("허용되지 않은 주소예요", 400);
 
         if (isSignup) {
           // 화면이 본 문서와 우리가 기록할 문서가 다르면 **기록하지 않는다.**
@@ -2057,6 +2150,14 @@ async function route(req, env, rc) {
     const token = readCookie(req);
     const me = await whoAmI(env, token);
     const uid = me ? me.uid : null;
+
+    // ── 3-0. **사용자 단위 fencing** (2026-08-27 · 위협 79) ──
+    // 이 줄 아래의 모든 주 D1 문장은 「그 계정이 아직 있고 · 정지되지 않았고 · 세대가 인증
+    // 당시와 같다」를 **같은 문장 안에서** 요구한다. 아래 처리정지 게이트는 그 위에 얹은
+    // 값싼 문일 뿐이고, 경합을 막는 것은 문장 안의 술어다.
+    // ⚠️ **이 줄보다 앞은 행위자가 없다** — OAuth 콜백·가입·세션 생성은 아직 「누구」가
+    //    정해지지 않았거나 다른 계정을 만드는 자리다. 위치가 곧 계약이다.
+    if (me) bindActor(env, me);
 
     // ── CSRF ──
     // 쿠키는 **브라우저가 알아서 붙인다.** 그래서 남의 사이트가 우리에게 보내는 요청에도 실린다 —
@@ -2236,17 +2337,37 @@ async function route(req, env, rc) {
               { "Retry-After": "60" });
           // **한 문장.** users 를 지우면 sessions·books·friendships·invite_codes·policy_events 가
           // 외래키 CASCADE 로 같이 사라진다 — 중간 상태가 존재할 수 없다.
-          await env.DB.prepare("DELETE FROM users WHERE id = ? AND {FENCE}").bind(uid).run();
+          // ⚠️ **행위자 술어를 그대로 든다** — 살아 있고 정지되지 않은, 인증 당시 세대의
+          //    계정만 스스로를 지운다. 0행이면 `ActorGone` 이 오는데, 그중 `stale` 은
+          //    **다른 탭이 방금 지웠다**는 뜻일 수 있어 아래 부재 확인이 판정한다.
+          //    `suspended` 는 그대로 던져 바깥이 403 으로 바꾼다.
+          let raced = false;
+          try {
+            await env.DB.prepare("DELETE FROM users WHERE id = ? AND {FENCE}").bind(uid).run();
+          } catch (e) {
+            if (!(e instanceof ActorGone) || e.reason !== "stale") throw e;
+            raced = true;
+          }
           // 지운 행이 0 이어도 성공이다(다른 탭이 먼저 지웠다). 확인하는 것은 **부재**다.
-          const still = await env.DB.prepare("SELECT 1 AS x FROM users WHERE id = ? AND {FENCE}")
+          // ⚠️ **`{FENCE_ONLY}` 다**(2026-08-27 · 위협 79). 이 문장이 확인하는 것은 **행위자
+          //    자신의 부재**다 — 행위자가 살아 있기를 요구하면 성공한 삭제가 오류로 보인다.
+          //    유지보수 fence 는 그대로 지난다.
+          const still = await env.DB.prepare("SELECT 1 AS x FROM users WHERE id = ? AND {FENCE_ONLY}")
             .bind(uid).first();
+          // 계정이 남아 있는데 행위자 술어가 막았다 = 그 사이에 **다른 기기에서 로그아웃**됐다.
+          // 지우지 못한 이유가 장애가 아니므로 500 이 아니라 401 이다.
+          if (still && raced) return json(env, req, { error: "로그인이 필요해요" }, 401);
           if (still) return failDelete();          // 있을 수 없는 상태. 재시도 + 조사 대상
           // 여기부터는 **계정이 실제로 없다.** 아래가 실패해도 사용자에게는 성공이다.
           try {
             await markConfirmed(env, lease, mark, Date.now());
             await sweepConfirmed(env, Date.now());
           } catch { /* 확정 기록 실패는 reconciliation 이 승격한다 */ }
-        } catch {
+        } catch (e) {
+          // ⚠️ **fence·행위자 실패를 500 으로 덮지 않는다.** 둘 다 「이 요청은 더 이상 이 계정을
+          //    대신할 수 없다」는 뜻이고, 바깥 한 자리가 503·403·401 로 바꾼다. 여기서 삼키면
+          //    사용자는 지워지지 않은 이유를 「잠시 문제」로만 듣는다.
+          if (e instanceof ActorGone || e instanceof FenceMismatch) throw e;
           return failDelete();
         }
         // 해제는 가장 바깥 `finally`(`export default.fetch`) 하나가 맡는다.
@@ -2344,7 +2465,8 @@ async function route(req, env, rc) {
     }
 
     // ── 3-2. 처리정지 ──
-    // 로그아웃과 **다른 일이다.** 로그아웃은 이 기기의 접근을 끝내고, 정지는 계정의 처리를 멈춘다.
+    // 로그아웃과 **다른 일이다.** 로그아웃은 이 계정의 **모든 기기** 접속을 끊고(세대를 올린다),
+    // 정지는 그 위에 **처리 자체**를 멈춘다 — 데이터는 그대로 두고 친구에게도 안 보이게 한다.
     // 되돌릴 수 있다(재개) — 그래서 삭제와도 다르다.
     if (path === "/me/suspend" && req.method === "POST") {
       if (!uid) return json(env, req, { error: "로그인이 필요해요" }, 401);

@@ -5,7 +5,7 @@
 // 이 검사는 **빌드를 직접 돌린 뒤** 결과물을 훑는다 — 사람이 기억해서 돌리는 검사는 안 돈다.
 import assert from "node:assert";
 import { build, FORBIDDEN, swCacheName } from "./build.mjs";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
 const files = await build();
 
@@ -209,9 +209,17 @@ assert.equal(cacheName, await swCacheName(), "캐시 이름이 지금 dist 자�
 // `scripts/_workers-shim.mjs` 는 Node 스위트가 `crypto.subtle.timingSafeEqual` 을 쓸 수 있게
 // 채워 주는 어댑터다. **운영 번들에 들어가면 그 순간 운영이 어느 구현으로 도는지 알 수 없다** —
 // 약한 쪽이 조용히 이기는 길이라, 여기서 전수로 막는다.
+// ⚠️ **어댑터는 하나가 아니다**(2026-08-27). `scripts/_build-contract.mjs` 가 하나 더 생겼다 —
+//    테스트 요청에 클라이언트 호환성 계약을 붙이는 자리다. 운영 번들에 들어가면 서버가 자기
+//    요청에 계약을 스스로 붙이는 셈이 되어 **위협 80 의 방어가 통째로 무의미해진다.**
+//    ⛔ 목록을 손으로 늘리지 않는다 — `scripts/` 의 `_` 로 시작하는 파일 **전부**를 막는다.
+const ADAPTERS = readdirSync(new URL("../scripts", import.meta.url))
+  .filter((f) => f.startsWith("_") && f.endsWith(".mjs")).map((f) => f.replace(/\.mjs$/, ""));
 {
+  assert.ok(ADAPTERS.length >= 2, `테스트 어댑터를 못 찾았다 (${ADAPTERS.length}개) — 검사가 헛돈다`);
   for (const f of files)
-    assert.ok(!/_workers-shim/.test(f), `dist/ 에 테스트 어댑터가 있다: ${f}`);
+    for (const a of ADAPTERS)
+      assert.ok(!f.includes(a), `dist/ 에 테스트 어댑터가 있다: ${f} (${a})`);
   // Pages 가 따로 번들하는 `functions/` 와 그것이 끌어가는 `worker/` 도 같이 본다.
   // **부르는 자리만** 본다 — 「어댑터가 어디 사는가」를 적은 주석까지 막으면 규칙을 설명하는
   // 것이 벌이 된다.
@@ -219,8 +227,9 @@ assert.equal(cacheName, await swCacheName(), "캐시 이름이 지금 dist 자�
                    "worker/index.js", "worker/ledger.js", "worker/ops.js",
                    "worker/policies.js", "worker/cleanup/index.js"]) {
     const body = readFileSync(new URL("../" + f, import.meta.url), "utf8");
-    assert.ok(!/(import|require)[^\n]*_workers-shim/.test(body),
-      `${f} 가 테스트 어댑터를 import 한다 — 운영 번들에 들어간다`);
+    for (const a of ADAPTERS)
+      assert.ok(!new RegExp(`(import|require)[^\\n]*${a}`).test(body),
+        `${f} 가 테스트 어댑터를 import 한다 — 운영 번들에 들어간다 (${a})`);
   }
   // 그리고 운영 코드는 **런타임 API 를 직접 부른다.** 자기 구현으로 덮어쓰면 그것도 fallback 이다.
   const w = readFileSync(new URL("../worker/index.js", import.meta.url), "utf8");

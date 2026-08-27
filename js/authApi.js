@@ -93,9 +93,21 @@ const takeNonce = () => {
 
 // 로그인은 리다이렉트다. 팝업은 폰 브라우저에서 자주 막히고, 설치된 PWA 에선 창이 아예 안 뜬다.
 // return 은 지금 주소 — 서버가 이 주소를 서명한 state 로 검증하므로 아무 데로나 못 보낸다.
+// ⚠️ **`b` 는 이 화면의 세대다**(2026-08-27 · 위협 80). 로그인 시작은 최상위 이동이라 헤더를
+//    붙일 수 없어서 쿼리로 나른다. 서버는 이 값이 자기 세대와 다르면 **제공자로 보내기 전에**
+//    426 으로 끝낸다 — 옛 PWA 가 왕복을 다 돌고 나서 실패하지 않게 한다.
 const loginUrl = (provider) =>
   `${API}/login/${provider}?return=${encodeURIComponent(location.origin + location.pathname)}`
-  + `&n=${encodeURIComponent(newNonce())}`;
+  + `&n=${encodeURIComponent(newNonce())}`
+  + `&b=${encodeURIComponent(clientBuild() || "")}`;
+
+// 계정 API 요청에 싣는 세대. **값이 없으면 헤더를 안 붙인다** — 서버가 426 으로 끝내는 것이
+// 맞는 방향이다(「모르면 통과」가 정확히 이 저장소가 여러 번 겪은 fail-open 무늬다).
+const BUILD_HEADER = "X-Shh-Build";
+const buildHeaders = () => {
+  const b = clientBuild();
+  return b ? { [BUILD_HEADER]: b } : {};
+};
 
 // ── 정책 문서 ──
 // 서버가 주는 것은 **경로와 해시**뿐이다. 내용은 정적 파일로 따로 받는다 —
@@ -148,7 +160,7 @@ async function apiSignupStart(provider, { terms, age14, pv, turnstile }) {
   try {
     const res = await fetch(API + "/signup/start", {
       method: "POST", credentials: "same-origin", signal: t.signal,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...buildHeaders() },
       body: JSON.stringify({
         provider, terms, age14, pv, turnstile,
         back: location.origin + location.pathname, n: newNonce(),
@@ -158,7 +170,8 @@ async function apiSignupStart(provider, { terms, age14, pv, turnstile }) {
     if (res.ok && d && d.url) return { ok: true, url: d.url };
     // 원인이 다르면 사용자가 할 일도 다르다. 서버가 준 문구를 그대로 쓰되 종류를 함께 준다.
     // 사람 확인 실패는 **사용자가 할 일이 다르다**(위젯을 다시 풀어야 한다). 그래서 따로 센다.
-    const kind = d && d.policyStale ? "policy_stale"
+    const kind = res.status === 426 ? "outdated"
+      : d && d.policyStale ? "policy_stale"
       : d && d.humanCheck ? "human_check"
       : res.status === 429 ? "rate_limited"
       : res.status === 503 ? "not_ready"
@@ -215,7 +228,7 @@ async function request(path, opts = {}) {
       signal: t.signal,
       // 쿠키를 실어 보낸다. **같은 origin 에만** — 앱과 API 가 한 Pages 프로젝트라 성립한다.
       credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...buildHeaders() },
     });
   } catch (e) {
     // 시간 초과와 오프라인을 가른다. 화면에는 둘 다 "연결이 안 돼요"로 말하지만,
@@ -229,13 +242,21 @@ async function request(path, opts = {}) {
   } finally {
     t.done();
   }
-  // 세션이 죽었다 — 만료(180일)거나, 다른 기기에서 로그아웃·탈퇴했거나(세대가 올랐다).
+  // 세션이 죽었다 — 만료(`SESSION_DAYS`)거나, 다른 기기에서 로그아웃·탈퇴했거나(세대가 올랐다).
   // 표시만 지우면 화면은 로그인 상태로 남아, 담기를 눌러도 왜 안 되는지 말해주지 않는다.
   if (res.status === 401) {
     // 서버가 **대답은 했다** — 계정 기능 자체는 살아 있고, 이 세션이 죽었을 뿐이다.
     setAccountState("ok");
     setAuth(null); authLost?.();
     return { ok: false, status: 401, kind: "unauthenticated", data: null };
+  }
+  // 426 = **이 화면이 낡았다.** 서버가 자기 세대와 다르다고 답했다.
+  // ⚠️ 표시를 지우지 않는다 — 로그아웃된 것이 아니다. 계정 UI 를 닫고 갱신을 안내한다.
+  // ⚠️ `setBuildOk(false)` 한 자리로 화면 전체가 같은 판정을 쓴다(각자 판정하면 갈라진다).
+  if (res.status === 426) {
+    setAccountState("ok");
+    setBuildOk(false);
+    return { ok: false, status: 426, kind: "outdated", data: null };
   }
   // 503 = 계정 기능이 열리지 않았다(LEDGER·EDGE_GUARD·시크릿 미구성). 표시는 **지우지 않는다.**
   if (res.status === 503) setAccountState("down");
@@ -292,7 +313,7 @@ const apiPutBook = async (words, name) => {
   return r;
 };
 const apiDeleteAccount = () => request("/me", { method: "DELETE" });
-// 로그아웃은 **서버에도** 알린다. 브라우저에서 토큰만 지우면 D1 의 세션 행은 180일을 더 살아서,
+// 로그아웃은 **서버에도** 알린다. 브라우저에서 토큰만 지우면 D1 의 세션 행은 만료일까지 더 살아서,
 // 한 번 샌 토큰이 로그아웃 뒤에도 그대로 쓰인다. 이 계정에 로그인한 기기가 전부 함께 끊긴다.
 const apiLogout = () => request("/session", { method: "DELETE" });
 // 로그인 표시가 아직 없는 상태에서 세션을 끊어야 할 때(네이버 갈래에서 nonce 가 안 맞은 경우).
@@ -305,7 +326,7 @@ const apiLogout = () => request("/session", { method: "DELETE" });
 // ⚠️ **실패를 삼키지 않는다**(2026-08-25 · 위협 69). 예전에는 catch 가 통째로 삼키고
 //    주석만 「못 끊은 세션은 다음 실행에서 다시 시도된다」고 적었다 — **그 다음 실행이
 //    코드에 없었다.** 영속 표식도 boot 재시도도 존재하지 않았고, 그동안 쿠키는 이미
-//    심어져 있어 화면은 로그아웃인데 **서버 세션은 180일을 살았다**(재현 T85).
+//    심어져 있어 화면은 로그아웃인데 **서버 세션은 그때의 유효기간(180일)을 다 살았다**(재현 T85).
 //    그래서 이제 이 함수는 **끝났는지 아닌지**를 돌려주고, 부르는 쪽이 표식을 관리한다.
 //
 // 「끝났다」의 정의는 **서버 계약**에서 온다:
@@ -320,7 +341,7 @@ const apiLogoutRaw = async () => {
   const t = timeoutSignal(REQUEST_TIMEOUT);
   try {
     const res = await fetch(API + "/session",
-      { method: "DELETE", credentials: "same-origin", signal: t.signal });
+      { method: "DELETE", credentials: "same-origin", signal: t.signal, headers: buildHeaders() });
     return REVOKED(res.status);
   } catch {
     return false;                 // 오프라인·시간 초과 — 「모른다」이지 「끝났다」가 아니다
@@ -499,7 +520,7 @@ async function apiResume() {
   try {
     const res = await fetch(API + "/me/resume", {
       method: "POST", credentials: "same-origin", signal: t.signal,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...buildHeaders() },
     });
     const d = await res.json().catch(() => null);
     if (res.ok && d && d.ok) return { ok: true, via: d.via || "" };
@@ -525,11 +546,14 @@ async function apiExchange(provider, code, state) {
   const q = new URLSearchParams({ code, state });
   const t = timeoutSignal(REQUEST_TIMEOUT);
   try {
-    const res = await fetch(`${API}/exchange/${provider}?${q}`, { credentials: "same-origin", signal: t.signal });
+    const res = await fetch(`${API}/exchange/${provider}?${q}`,
+      { credentials: "same-origin", signal: t.signal, headers: buildHeaders() });
     const d = await res.json().catch(() => null);
     // ⚠️ **실패를 한 덩어리로 뭉개지 않는다.** 「아직 가입 안 했다」와 「이미 쓴 가입 요청이다」와
     //    「서버가 거절했다」는 사용자가 할 일이 전부 다르다 — 같은 말을 하면 헛수고를 시킨다.
     if (!res.ok) {
+      // 이 화면이 낡았다. 서버가 **제공자를 부르기 전에** 끝냈으므로 되돌릴 것이 없다.
+      if (res.status === 426) { setBuildOk(false); return { ok: false, kind: "outdated" }; }
       // 정지된 계정. **세션은 안 왔고 재개 티켓 쿠키만 심어졌다** — 화면이 재개를 물어야 한다.
       if (d && d.suspended) return { ok: false, kind: "suspended", suspended: true };
       if (d && d.signupRequired) return { ok: false, kind: "signup_required" };

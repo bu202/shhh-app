@@ -361,7 +361,7 @@ if (typeof document !== "undefined") {
     out.className = "btn-ghost logout"; out.type = "button"; out.textContent = "로그아웃";
     out.addEventListener("click", async () => {
       // 서버에 **먼저** 알린다. 표시를 지운 뒤에 부르면 request 가 표시가 없다고 그냥 돌아가서
-      // D1 의 세션이 180일을 더 산다.
+      // D1 의 세션이 만료일까지 더 산다(`SESSION_DAYS`).
       //
       // ⚠️ **서버가 끊었다고 대답해야만 로그아웃한다.** 예전엔 결과를 안 보고 무조건 화면을
       //    정리해서, 오프라인이나 500 일 때 "화면은 로그아웃, 서버는 로그인"이 남았다.
@@ -1032,7 +1032,7 @@ if (typeof document !== "undefined") {
   //    앞은 참인데 뒤는 거짓이라, `#login=` · `?code=&state=` · `?code=x&state=` ·
   //    `?code=&state=x` 가 **「복귀다」로 읽혀 세션 폐기 재시도를 건너뛰면서 주소에서는
   //    지워지지 않았다.** 새로고침할 때마다 같은 일이 반복돼 재시도가 **영구히** 막히고,
-  //    그동안 끊어야 할 서버 세션은 180일을 산다(위협 69 가 닫으려던 그 상태다).
+  //    그동안 끊어야 할 서버 세션은 만료일까지 산다(위협 69 가 닫으려던 그 상태다).
   //
   // 돌려주는 값은 넷 중 하나다 — **부르는 쪽은 이 판정 하나만 본다.**
   //   null          OAuth 복귀가 아니다. 평범한 부팅이다
@@ -1091,6 +1091,17 @@ if (typeof document !== "undefined") {
       openSignup(SIGNUP_BACK[status]);
       return false;
     }
+    // 이 화면이 낡았다 — 서버가 **제공자를 부르기 전에** 끝냈다(위협 80).
+    // ⚠️ 「로그인 실패」로 말하지 않는다. 다시 눌러도 같은 결과이고, 사용자가 할 일은
+    //    **앱을 새로 여는 것**이다. 여기서 스스로 reload 하지 않는다 — 옛 캐시를 다시 읽어
+    //    고리가 된다(2026-08-26 에 같은 이유로 정한 규칙이다).
+    if (status === "outdated") {
+      takeNonce();
+      setBuildOk(false);
+      requestAppUpdate();
+      toast("앱이 오래된 판이에요. 앱을 닫았다가 다시 열어 주세요.");
+      return false;
+    }
     // 정지된 계정. **세션이 없다** — 서버가 재개 티켓만 심었다.
     if (status === "suspended") {
       takeNonce();
@@ -1125,6 +1136,13 @@ if (typeof document !== "undefined") {
       if (r.suspended) {
         GATE_TAKEN = true;
         openResume();
+        return false;
+      }
+      // 네이버 갈래의 낡은 화면(`426`). 같은 이유로 「실패」가 아니라 **갱신 안내**다.
+      if (r.kind === "outdated") {
+        setBuildOk(false);
+        requestAppUpdate();
+        toast("앱이 오래된 판이에요. 앱을 닫았다가 다시 열어 주세요.");
         return false;
       }
       const BACK = {

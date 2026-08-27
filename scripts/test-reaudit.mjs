@@ -8,6 +8,7 @@
 // ⚠️ **가장 먼저 온다.** 운영 코드는 `crypto.subtle.timingSafeEqual()` 을 부르는데
 //    Node 에는 그 메서드가 없다 — 어댑터는 `scripts/` 에만 살고 배포되지 않는다.
 import "./_workers-shim.mjs";
+import "./_build-contract.mjs";   // 요청에 빌드 계약을 붙인다(위협 80 · 테스트 전용)
 import assert from "node:assert";
 import worker, { createAccountWithPolicy, newSession } from "../worker/index.js";
 import {

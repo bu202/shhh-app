@@ -13,6 +13,7 @@
 //   ③ 로그인 성공만으로 **자동 재개되지 않는가**
 //   ④ 재개 티켓이 1회용이고 replay·만료·제공자 바꿔치기가 막히는가
 import "./_workers-shim.mjs";
+import "./_build-contract.mjs";   // 요청에 빌드 계약을 붙인다(위협 80 · 테스트 전용)
 import assert from "node:assert";
 import worker, {
   createAccountWithPolicy, newSession, makeResumeTicket, takeResumeTicket, suspendAllows,

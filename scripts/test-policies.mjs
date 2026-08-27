@@ -503,5 +503,98 @@ for (const f of readdirSync(DIR))
     t("14-h: 표식 삭제 SQL 에 백업 조건이 없다 — 방침이 거짓이 된다"));
 }
 
+// ── 15. **로그아웃의 범위 · 비회원 기기 단어장** (2026-08-27 · K4) ─────────
+//
+// ⛔ 왜 생겼나: 두 문장이 코드와 반대였다.
+//   ① 「로그아웃은 **이 기기의** 접속을 끝내는 것」 — 실제로는 `killSessions()` 가 세대를 올리고
+//      그 계정의 세션 행을 **전부** 지운다. 다른 기기도 그 자리에서 끊긴다
+//   ② 한 줄 요약의 「계정도, **단어장도**, 별명도 만들지 않는다」 — 서버에는 안 만들지만
+//      **기기 안에는 만든다**(같은 문서가 몇 문단 뒤에서 반대로 적고 있었다 = 내부 모순)
+//
+// ⚠️ **「있어야 할 문장」과 「있으면 안 되는 문장」을 함께 잰다.** 한쪽만 재면 새 문장을 더하고
+//    옛 문장을 그대로 둔 문서가 통과한다 — 그러면 문서가 스스로 모순인 채로 초록불이 된다.
+{
+  const cur = String(await R(POLICY_BUNDLE.docs.privacy.path)).replace(/\s+/g, " ");
+  const sum = String(await R(POLICY_BUNDLE.docs.summary.path)).replace(/\s+/g, " ");
+  const src = (f) => readFileSync(new URL("../" + f, import.meta.url), "utf8");
+
+  // ── a. 로그아웃은 **모든 기기**다. 코드에서 그 성질을 확인한 뒤 문서를 잰다.
+  {
+    const w = src("worker/index.js");
+    const kill = w.slice(w.indexOf("async function killSessions("), w.indexOf("async function killSessions(") + 900);
+    assert.ok(/UPDATE users SET session_version = session_version \+ 1/.test(kill),
+      t("15-a: killSessions 가 세대를 안 올린다 — 「모든 기기」 문장의 근거가 사라졌다"));
+    assert.ok(/DELETE FROM sessions WHERE user_id = \?/.test(kill),
+      t("15-a: killSessions 가 그 계정의 세션을 전부 안 지운다"));
+    for (const [doc, label] of [[cur, "방침"], [sum, "요약"]]) {
+      assert.ok(/모든 기기/.test(doc),
+        t(`15-a: ${label} 이 로그아웃의 범위를 「모든 기기」로 적지 않았다`));
+      // ⛔ 반대 문장이 남아 있으면 안 된다.
+      assert.ok(!/로그아웃은 (이 기기의 접속을 끝내는 것|「이 기기에서 그만 보기」)/.test(doc),
+        t(`15-a: ${label} 에 「로그아웃 = 이 기기만」 이라는 옛 문장이 남아 있다`));
+    }
+  }
+
+  // ── b. 비회원도 **기기 안에는** 단어장을 만든다. 한 줄 요약이 그 사실과 어긋나면 안 된다.
+  {
+    assert.ok(/BOOK_KEY\s*=\s*"shh-wordbook"/.test(src("js/app.js")),
+      t("15-b: 기기 단어장 키가 사라졌다 — 이 검사의 전제가 무너졌다"));
+    // 「단어장을 만들지 않는다」류의 문장은 **반드시 「서버」로 한정돼 있어야** 한다.
+    for (const m of cur.matchAll(/[^.。]{0,80}단어장[^.。]{0,20}만들지 않[^.。]{0,20}/g)) {
+      assert.ok(/서버/.test(m[0]),
+        t(`15-b: 「단어장을 만들지 않는다」가 서버로 한정되지 않았다 — "${m[0].trim().slice(0, 60)}"`));
+    }
+    assert.ok(/이 기기 안에는 단어장이 만들어집니다/.test(cur),
+      t("15-b: 기기 안에 단어장이 만들어진다는 사실이 방침에 없다"));
+  }
+
+  // ── c. **남용 방어 기록을 지우는 경로가 몇 개인가.** 방침이 세는 수와 코드가 같아야 한다.
+  //    (2026-08-27 · 독립 검토 H1) 방침은 「로그인할 때 함께 지워지고, 정기 정리 작업도 지운다」로
+  //    **둘**을 적고 있었는데, 카운터가 ledger 로 옮겨간 날(2026-08-20 · 위협 49) 로그인 시점
+  //    청소는 `sessions` 한 표만 남았다 — 실제 경로는 **하나**이고 그 하나가 미배포다.
+  {
+    const worker = src("worker/index.js");
+    const cron = src("worker/cleanup/index.js");
+    const inWorker = (worker.match(/DELETE FROM rate_limits/g) || []).length;
+    const inCron = (cron.match(/DELETE FROM rate_limits/g) || []).length;
+    assert.equal(inWorker, 0,
+      t("15-c: 요청 경로가 rate_limits 를 지운다 — 방침의 「경로는 하나」가 거짓이 된다"));
+    assert.equal(inCron, 1,
+      t(`15-c: 정리 크론의 rate_limits 삭제가 ${inCron}곳이다 — 하나여야 한다`));
+    assert.ok(/지우는 경로는 .{0,20}정기 정리 작업 하나뿐/.test(cur),
+      t("15-c: 방침이 삭제 경로를 「하나뿐」이라고 적지 않았다"));
+    // ⛔ 반대 문장이 남아 있으면 안 된다.
+    assert.ok(!/누군가 로그인할 때.{0,20}함께 지워지고/.test(cur),
+      t("15-c: 「로그인할 때 함께 지워진다」는 옛 문장이 남아 있다"));
+    // 로그인 시점 청소가 **무엇을** 지우는지도 코드에서 확인한다.
+    assert.ok(/DELETE FROM sessions WHERE \(expires_at < \? OR revoked_at IS NOT NULL\)/.test(worker),
+      t("15-c: 로그인 시점의 세션 청소가 사라졌다 — 방침의 정정 문장이 근거를 잃는다"));
+  }
+
+  // ── d. **지금 나가는 판의 이름표는 유일하다.** (2026-08-27 · 독립 검토 M2)
+  //
+  // 왜: `privacy-ec20ee0ec725.html` 과 `privacy-1cba78c8fc89.html` 은 **내용이 다른데** 둘 다
+  // 「2026-08-26 (8차)」였다. 보관함의 쓸모는 「그때 그 사람이 본 문서가 이것이다」인데,
+  // 이름표가 겹치면 사람이 사본을 지목할 수 없다.
+  //
+  // ⚠️ **옛 판을 고쳐서 맞추지 않는다.** 불변 사본이라 고치는 순간 그때의 기록이 거짓이 된다.
+  //    실제로 옛 충돌이 **둘** 남아 있다 — `2026-08-18 (4차)` ×2, `2026-08-25 (5차)` ×2.
+  //    그건 역사이고 지우지 않는다. 여기서 막는 것은 **앞으로 새로 나가는 판**이다.
+  {
+    const label = (body) =>
+      (String(body).match(/마지막 수정:\s*([0-9-]+)\s*\(([^)]+)\)/) || []).slice(1).join("|");
+    const curLabel = label(cur);
+    assert.ok(curLabel, t("15-d: 현재 방침 판에 「마지막 수정」 표기가 없다"));
+    const others = m.versions.filter((v) => v.kind === "privacy"
+      && "policies/" + v.file !== m.bundle.docs.privacy.path);
+    assert.ok(others.length >= 2, t(`15-d: 비교할 옛 판이 ${others.length}개다 — 검사가 헛돈다`));
+    for (const v of others) {
+      const l = label(await R("policies/" + v.file));
+      assert.notEqual(l, curLabel,
+        t(`15-d: 지금 나가는 판이 옛 판 ${v.file} 과 같은 이름표(${curLabel})를 단다 — 내용은 다르다`));
+    }
+  }
+}
+
 console.log(`test-policies: 통과 — 단언 ${n}개 · 판 ${m.versions.length}개 · pv ${m.bundle.pv} · `
   + `필수 이벤트 ${REQUIRED_POLICY_EVENTS}종(${requiredPolicyKinds.map(([k, a]) => k + "/" + a).join(" ")})`);

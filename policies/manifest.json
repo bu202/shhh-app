@@ -8,6 +8,12 @@
     },
     {
       "kind": "privacy",
+      "file": "privacy-1cba78c8fc89.html",
+      "hash": "1cba78c8fc893c8218494739b54aa2f08c4f09758f51bcf53d43d7b4716675f9",
+      "added": "2026-08-27"
+    },
+    {
+      "kind": "privacy",
       "file": "privacy-1d3d2d870876.html",
       "hash": "1d3d2d870876cd4c5390fdcb5e99d5624bacbd9f79761f6e4db6cb1cc70699b7",
       "added": "2026-08-19"
@@ -23,6 +29,12 @@
       "file": "privacy-bdb5b38f1baf.html",
       "hash": "bdb5b38f1baf8513b2a9f75421631755e905a7f9fcfc0e4f4c860c684b9f10ca",
       "added": "2026-08-25"
+    },
+    {
+      "kind": "privacy",
+      "file": "privacy-c3f9fc60cca6.html",
+      "hash": "c3f9fc60cca6e7c0eba5053fc1b5d6a747da9596f4412a14c056db017578fa20",
+      "added": "2026-08-27"
     },
     {
       "kind": "privacy",
@@ -62,6 +74,12 @@
     },
     {
       "kind": "summary",
+      "file": "summary-ba7335967c27.txt",
+      "hash": "ba7335967c27ff725fe19c7dab01b60ae2da295d29098136c15d4d4f29fec7b7",
+      "added": "2026-08-27"
+    },
+    {
+      "kind": "summary",
       "file": "summary-d474a58df31c.txt",
       "hash": "d474a58df31cd4566e8883b8df605f78320ef3af9b12006d136ab6cb4164a350",
       "added": "2026-08-18"
@@ -74,19 +92,19 @@
     }
   ],
   "bundle": {
-    "pv": "fa0f9d082d72",
+    "pv": "a9525896f710",
     "docs": {
       "age14": {
         "path": "policies/age14-2303810b39a1.txt",
         "hash": "2303810b39a19391051142bcb2ca2f7cec81ff5ea0a9f2a051596af2c8c108b1"
       },
       "privacy": {
-        "path": "policies/privacy-ec20ee0ec725.html",
-        "hash": "ec20ee0ec725e1778ce233ffc8de64ada196f1cb94b16105623fb247ddc957a1"
+        "path": "policies/privacy-c3f9fc60cca6.html",
+        "hash": "c3f9fc60cca6e7c0eba5053fc1b5d6a747da9596f4412a14c056db017578fa20"
       },
       "summary": {
-        "path": "policies/summary-2c778c53e315.txt",
-        "hash": "2c778c53e315032b59838c79952e3126221ad7a62e42784ebd5adeefc685378d"
+        "path": "policies/summary-ba7335967c27.txt",
+        "hash": "ba7335967c27ff725fe19c7dab01b60ae2da295d29098136c15d4d4f29fec7b7"
       },
       "terms": {
         "path": "policies/terms-245e3ae48884.html",

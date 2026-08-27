@@ -39,11 +39,43 @@ import { assertLeaseContext } from "./ledger.js";
 
 // 문장이 반드시 담아야 하는 자리표시자.
 export const FENCE_MARK = "{FENCE}";
-const FENCE_SQL = "EXISTS (SELECT 1 FROM write_fence WHERE id = 1 AND epoch = ?)";
+// **행위자 술어를 빼는 자리표시자.** 유지보수 fence 는 그대로 지나고 사용자 술어만 빠진다.
+// ⛔ **이유 없이 쓰지 않는다** — `scripts/test-fence.mjs` 가 사용처를 전수로 세고, 등재되지
+//    않은 자리가 하나라도 있으면 실패한다.
+export const FENCE_ONLY_MARK = "{FENCE_ONLY}";
+// ⚠️ **문자열 `.replace("?", …)` 로 자리를 채우지 않는다.** 채운 값 자체가 `?3` 처럼 `?` 를
+//    담고 있어서, 두 번째 replace 가 **첫 번째가 넣은 `?` 를 다시 잡는다**(`?54` 가 나온다).
+//    실제로 그렇게 만들었다가 친구 단어장 질의가 조용히 틀린 컬럼을 비교했다 — 자리는
+//    템플릿 리터럴로 **한 번에** 짠다.
+const fenceSql = (e) => `EXISTS (SELECT 1 FROM write_fence WHERE id = 1 AND epoch = ${e})`;
+
+// ── 행위자(actor) 술어 — **사용자 단위 fencing** (2026-08-27 · 위협 79) ──
+// 유지보수 fence 는 「지금 전체가 멈췄나」를 묻는다. 그것만으로는 **처리정지**를 못 막는다:
+// `POST /me/suspend` 가 끝난 뒤에도, 그보다 먼저 `whoAmI()` 를 통과한 요청은 자기 SQL 을
+// 그대로 던진다. 요청 초입의 한 번 조회는 검사와 사용 사이에 창이 있는 TOCTOU 이고,
+// **사전조회를 하나 더 붙여도 창이 하나 더 생길 뿐이다.**
+//
+// 그래서 검사를 **문장 안**에 넣는다. 요구하는 것은 셋이다:
+//   ① 그 계정이 아직 있다      — 탈퇴가 끝난 뒤의 옛 요청을 막는다
+//   ② `suspended_at IS NULL`   — 처리정지가 끝난 뒤의 옛 요청을 막는다
+//   ③ 세대가 인증 당시와 같다  — 로그아웃(모든 기기)이 끝난 뒤의 옛 요청을 막는다
+// 셋 다 **쓰기와 같은 문장**이라 그 사이에 창이 없다.
+const actorSql = (u, g) =>
+  `EXISTS (SELECT 1 FROM users WHERE id = ${u} AND suspended_at IS NULL AND session_version = ${g})`;
 
 // fence 불일치. 부르는 쪽은 이것을 **503** 으로 바꾼다(사용자 오류가 아니다).
 export class FenceMismatch extends Error {
   constructor() { super("write fence epoch mismatch"); this.name = "FenceMismatch"; }
+}
+
+// 행위자가 더 이상 유효하지 않다. `reason` 은 **부르는 쪽이 상태코드를 고르는 데만** 쓴다 —
+// 응답 본문에는 싣지 않는다(정지 시각·세대·uid 는 전부 내부값이다).
+//   "suspended"  그 계정이 처리정지 중이다        → 403 (다음 요청이 게이트에서 받는 답과 같다)
+//   "stale"      계정이 없거나 세대가 지났다       → 401 (로그아웃·탈퇴가 받는 답과 같다)
+// ⚠️ 두 값을 가르는 것이 새로 알려주는 정보는 **없다** — 같은 사람이 요청을 한 번 더 보내면
+//    게이트가 정확히 같은 답을 준다. 가르지 않으면 로그아웃한 사람에게 「정지 중」이라고 말하게 된다.
+export class ActorGone extends Error {
+  constructor(reason) { super("actor no longer live"); this.name = "ActorGone"; this.reason = reason; }
 }
 
 // `{FENCE}` 가 몇 번 나오나. **여러 번 적을 수 있다**(UNION·서브쿼리) — 나온 수만큼 epoch 을
@@ -53,19 +85,32 @@ export class FenceMismatch extends Error {
 //    「column index out of range」로 죽거나 **더 나쁘게는 엉뚱한 값을 비교한다.**
 //    그래서 이미 번호형을 쓰는 문장에는 `?<다음번호>` 를 명시적으로 만들어 붙인다.
 //    (실제로 겪었다 — `?1..?5` 를 쓰는 books upsert 가 이 오류로 죽었다.)
-function expand(sql) {
+function expand(sql, withActor) {
   const src = String(sql);
-  const parts = src.split(FENCE_MARK);
+  const only = src.includes(FENCE_ONLY_MARK);
+  if (only && src.replace(new RegExp(FENCE_ONLY_MARK.replace(/[{}]/g, "\\$&"), "g"), "").includes(FENCE_MARK))
+    throw new Error("statement mixes " + FENCE_MARK + " and " + FENCE_ONLY_MARK + ": " + src.slice(0, 70));
+  const mark = only ? FENCE_ONLY_MARK : FENCE_MARK;
+  const parts = src.split(mark);
   if (parts.length < 2)
     throw new Error("fenced statement must contain " + FENCE_MARK + ": " + src.slice(0, 70));
   const uses = parts.length - 1;
+  const actor = withActor && !only;
+  // 자리표시자 하나가 쓰는 파라미터 수. 행위자가 붙으면 epoch + uid + 세대 셋이다.
+  const per = actor ? 3 : 1;
   const numbered = [...src.matchAll(/\?(\d+)/g)].map((m) => Number(m[1]));
+  const base = numbered.length ? Math.max(...numbered) : 0;
+  // ⚠️ **번호형과 익명형을 섞지 않는다.** 이미 번호형을 쓰는 문장에는 다음 번호를 명시적으로
+  //    만들어 붙인다(그러지 않으면 드라이버마다 번호를 다르게 매겨 **엉뚱한 값을 비교한다**).
+  const slot = (k) => (numbered.length ? "?" + (base + 1 + k) : "?");
   let out = parts[0];
   for (let i = 0; i < uses; i++) {
-    const mark = numbered.length ? "?" + (Math.max(...numbered) + 1 + i) : "?";
-    out += FENCE_SQL.replace("?", mark) + parts[i + 1];
+    const at = i * per;
+    let pred = fenceSql(slot(at));
+    if (actor) pred += " AND " + actorSql(slot(at + 1), slot(at + 2));
+    out += pred + parts[i + 1];
   }
-  return { sql: out, uses };
+  return { sql: out, uses, actor };
 }
 
 // 지금 fence 가 이 epoch 인가. **판별용이고 방어가 아니다** — 방어는 문장 안의 술어다.
@@ -75,37 +120,62 @@ async function fenceCurrent(raw, epoch) {
   return !!r;
 }
 
-// 0행이 나왔다. 정상인가 fence 불일치인가.
-async function classifyEmpty(raw, epoch) {
+// 0행이 나왔다. 정상인가, fence 불일치인가, 행위자가 사라졌나.
+// ⚠️ **0행일 때만 묻는다** — 성공한 요청에 질의를 하나 더 붙이지 않는다.
+// ⚠️ 순서가 있다: fence 가 먼저다. 전환 중에는 행위자 조회 자체가 옛 세대를 볼 수 있다.
+async function classifyEmpty(raw, epoch, actor) {
   if (!(await fenceCurrent(raw, epoch))) throw new FenceMismatch();
+  if (!actor) return;
+  const u = await raw.prepare("SELECT suspended_at AS s, session_version AS v FROM users WHERE id = ?")
+    .bind(actor.uid).first();
+  if (u && u.s !== null && u.s !== undefined) throw new ActorGone("suspended");
+  if (!u || Number(u.v) !== Number(actor.gen)) throw new ActorGone("stale");
 }
 
 // 감싼 문장. `bind()` 로 받은 사용자 바인딩 **뒤에** epoch 을 붙인다.
 class FencedStmt {
-  constructor(raw, epoch, sql) {
-    this.raw = raw; this.epoch = epoch;
-    const e = expand(sql);
-    this.sql = e.sql; this.uses = e.uses; this.args = [];
+  // ⚠️ **확장을 생성자가 아니라 실행 시점에 한다.** 행위자는 요청 초입의 `whoAmI()` 뒤에야
+  //    정해지는데, 그 앞뒤가 같은 감싼 env 를 쓴다. 셀 하나를 들고 있다가 실행할 때 읽으면
+  //    「인증 전 문장은 행위자 없이, 인증 후 문장은 행위자와 함께」가 저절로 된다.
+  constructor(raw, epoch, sql, cell) {
+    this.raw = raw; this.epoch = epoch; this.src = String(sql); this.cell = cell; this.args = [];
+    // ⚠️ **자리표시자 유무는 여기서 본다.** 확장은 실행 시점으로 미뤘지만, 「빠뜨렸다」는
+    //    준비하는 그 자리에서 터져야 어느 문장인지가 바로 보인다.
+    if (!this.src.includes(FENCE_MARK) && !this.src.includes(FENCE_ONLY_MARK))
+      throw new Error("fenced statement must contain " + FENCE_MARK + ": " + this.src.slice(0, 70));
   }
   bind(...args) { this.args = args; return this; }
-  #prep() { return this.raw.prepare(this.sql).bind(...this.args, ...Array(this.uses).fill(this.epoch)); }
+  #actor() { return this.cell && this.cell.current ? this.cell.current : null; }
+  #plan() {
+    const a = this.#actor();
+    const e = expand(this.src, !!a);
+    const extra = [];
+    for (let i = 0; i < e.uses; i++) {
+      extra.push(this.epoch);
+      if (e.actor) extra.push(a.uid, a.gen);
+    }
+    return { stmt: this.raw.prepare(e.sql).bind(...this.args, ...extra), actor: e.actor ? a : null };
+  }
   async run() {
-    const r = await this.#prep().run();
-    if (!((r.meta && r.meta.changes) || 0)) await classifyEmpty(this.raw, this.epoch);
+    const p = this.#plan();
+    const r = await p.stmt.run();
+    if (!((r.meta && r.meta.changes) || 0)) await classifyEmpty(this.raw, this.epoch, p.actor);
     return r;
   }
   async first(col) {
-    const row = await this.#prep().first(col);
-    if (row === null || row === undefined) await classifyEmpty(this.raw, this.epoch);
+    const p = this.#plan();
+    const row = await p.stmt.first(col);
+    if (row === null || row === undefined) await classifyEmpty(this.raw, this.epoch, p.actor);
     return row;
   }
   async all() {
-    const r = await this.#prep().all();
-    if (!((r && r.results && r.results.length) || 0)) await classifyEmpty(this.raw, this.epoch);
+    const p = this.#plan();
+    const r = await p.stmt.all();
+    if (!((r && r.results && r.results.length) || 0)) await classifyEmpty(this.raw, this.epoch, p.actor);
     return r;
   }
   // batch 안에서 쓰기 위한 **준비된 문장**. 판별은 batch 가 모아서 한다.
-  _forBatch() { return this.#prep(); }
+  _forBatch() { const p = this.#plan(); this._actorUsed = p.actor; return p.stmt; }
 }
 
 // ── batch (원칙 3) ──────────────────────────────────────────────────────
@@ -121,11 +191,26 @@ async function fencedBatch(raw, epoch, stmts) {
   for (const s of stmts)
     if (!(s instanceof FencedStmt))
       throw new Error("fenced batch got an unfenced statement — every statement must carry " + FENCE_MARK);
-  const rs = await raw.batch(stmts.map((s) => s._forBatch()));
+  // ★ **한 batch 안에서 자리표시자를 섞지 않는다**(2026-08-27 · 독립 검토 H1).
+  //
+  // 아래 판별은 「하나라도 바뀌었으면 술어는 통과한 것」이라는 성질에 기댄다. 그 성질은
+  // **모든 문장이 같은 술어를 들 때만** 참이다. `{FENCE}` 와 `{FENCE_ONLY}` 를 한 batch 에
+  // 섞으면 깨진다 — 술어가 약한 문장이 쓰고 강한 문장이 0행일 때 판별이 아예 안 돌아,
+  // **실패한 작업이 성공으로 보고된다.**
+  // 실제로 그럴 뻔했다: `suspendAccount` 가 세션 삭제(`{FENCE_ONLY}`)와 정지 표시(`{FENCE}`)를
+  // 한 batch 로 보냈고, 그 사이에 다른 기기가 로그아웃하면 **세션만 지워지고 정지는 안 된 채
+  // `{ok:true}`** 가 나갔다. 섞는 것을 금지하면 그 상태가 존재할 수 없다.
+  const marks = stmts.map((s) => (s.src.includes(FENCE_ONLY_MARK) ? "only" : "fence"));
+  if (new Set(marks).size > 1)
+    throw new Error("fenced batch mixes " + FENCE_MARK + " and " + FENCE_ONLY_MARK
+      + " — 한 batch 안에서는 같은 자리표시자만 쓴다");
+  const prepared = stmts.map((s) => s._forBatch());
+  const actor = stmts.map((s) => s._actorUsed).find(Boolean) || null;
+  const rs = await raw.batch(prepared);
   const changes = rs.map((r) => (r && r.meta && r.meta.changes) || 0);
-  // 하나도 안 바뀌었으면 fence 불일치일 수 있다. 하나라도 바뀌었으면 fence 는 통과한 것이다
-  // (술어가 모든 문장에 같은 값으로 붙으므로 fence 때문이라면 전부 0행이어야 한다).
-  if (!changes.some((c) => c > 0)) await classifyEmpty(raw, epoch);
+  // 하나도 안 바뀌었으면 술어 불일치일 수 있다. 하나라도 바뀌었으면 통과한 것이다
+  // (위에서 자리표시자가 같음을 강제했으므로 술어도 같은 값으로 붙는다).
+  if (!changes.some((c) => c > 0)) await classifyEmpty(raw, epoch, actor);
   return rs;
 }
 
@@ -137,16 +222,35 @@ export function withFence(env, lease) {
   const raw = env.DB;
   if (!raw) throw new Error("withFence needs env.DB");
   const epoch = lease.epoch;
+  // 행위자 셀. `bindActor()` 가 **요청당 한 번** 채운다.
+  const cell = { current: null };
   return {
     ...env,
     DB: {
-      prepare: (sql) => new FencedStmt(raw, epoch, sql),
+      prepare: (sql) => new FencedStmt(raw, epoch, sql, cell),
       batch: (stmts) => fencedBatch(raw, epoch, stmts),
+      _actor: cell,
       // 감싸기 전의 바인딩. **운영 예외 하나만** 쓴다(`worker/ops.js` 의 `setFenceEpoch`).
       // 아키텍처 검사가 이 이름의 사용처를 전수로 센다.
       _raw: raw,
     },
   };
+}
+
+// 이 요청을 인증한 사람. **이 뒤로 나가는 모든 주 D1 문장이** 그 계정의 생존·비정지·세대를
+// 같은 문장 안에서 요구한다.
+// ⚠️ 한 번만 부른다. 요청 하나에 행위자가 둘이면 어느 술어가 붙었는지 읽는 사람이 알 수 없다.
+// ⚠️ 감싸지 않은 env(=lease 없는 라우트)에는 **아무것도 하지 않는다** — 그 라우트는 사용자
+//    데이터를 만지지 않으므로 감쌀 것도 없다. `ROUTES` 의 `auth:true` 는 전부 `lease:true` 다
+//    (`scripts/test-fence.mjs` 가 그 성질을 전수로 잰다).
+export function bindActor(env, me) {
+  const cell = env && env.DB && env.DB._actor;
+  if (!cell) return env;
+  if (cell.current) throw new Error("actor already bound for this request");
+  if (!me || !me.uid || !Number.isFinite(Number(me.gen)))
+    throw new Error("bindActor needs { uid, gen }");
+  cell.current = { uid: me.uid, gen: Number(me.gen) };
+  return env;
 }
 
 // ── 두 DB 가 서로를 가리키고 있나 ────────────────────────────────────────

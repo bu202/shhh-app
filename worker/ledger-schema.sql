@@ -202,6 +202,10 @@ CREATE TABLE IF NOT EXISTS backups (
   main_db_hash     TEXT,
   ledger_db_hash   TEXT,
   object_key       TEXT,                 -- R2 객체 키. 버킷 이름은 설정에 있고 여기 안 적는다
+  -- 올린 **암호문**의 크기와 SHA-256 (migration `0006`). 복호화 없이 「그때 그 객체가 맞나」를
+  -- 대조하는 값이다 — 없으면 reconcile 은 존재만 확인하고 내용이 바뀐 것을 못 본다.
+  object_bytes     INTEGER,
+  object_hash      TEXT,
   expires_expected_at INTEGER,           -- lifecycle 만료 **예정** 시각. 실제 삭제 시각이 아니다
   deletion_checked_at INTEGER,           -- 마지막으로 「아직 있나」를 물어본 시각
   deleted_at       INTEGER,              -- 객체가 **실제로 없음을 확인한** 시각

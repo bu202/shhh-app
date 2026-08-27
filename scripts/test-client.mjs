@@ -98,7 +98,10 @@ function loadClient({ store = {}, routes, loc = {} } = {}) {
     const path = String(url).replace(/^\/api/, "");
     // 시간 제한이 **붙었는지**도 기록한다. 이 스텁은 진짜 타이머를 돌리지 않으므로
     // "12초 뒤에 끊기나"는 못 재지만, "끊을 수단을 들려 보냈나"는 여기서 잴 수 있다.
-    calls.push({ method, path, aborts: !!opt.signal, body: opt.body });
+    // ⚠️ **헤더도 기록한다**(2026-08-27 · 위협 80). 「빌드 계약을 실었나」는 화면 코드의
+    //    책임이고, 안 재면 한 자리만 빠져도 그 요청이 서버에서 426 을 받는다.
+    calls.push({ method, path, aborts: !!opt.signal, body: opt.body,
+                 headers: opt.headers || {} });
     const r = await route(method, path, opt);
     if (r.throw) throw new Error("offline");           // 네트워크 끊김
     // 시간 초과. **실제 타이머를 기다리지 않는다** — 12초를 세는 것은 브라우저 기능이고
@@ -1520,7 +1523,7 @@ await T("down → 401: 옛 친구·초대 데이터가 되살아나지 않는다
 // 고치기 전(재현): `apiLogoutRaw()` 가 timeout·네트워크 오류를 통째로 삼키고,
 // 주석만 「못 끊은 세션은 다음 실행에서 다시 시도된다」고 적혀 있었다 —
 // **그 다음 실행이 없었다.** 영속 표식도 boot 재시도도 코드에 존재하지 않았다.
-// 그동안 쿠키는 이미 심어져 있으므로, 화면은 로그아웃인데 **서버 세션은 180일 산다.**
+// 그동안 쿠키는 이미 심어져 있으므로, 화면은 로그아웃인데 **서버 세션은 만료일까지 산다.**
 {
   const MISMATCH = { hash: "#login=ok&via=kakao&n=남이-보낸-값" };
   const PENDING = "shh-revoke";     // 표식 키. boolean 하나 이상은 안 적는다
@@ -1622,7 +1625,7 @@ await T("down → 401: 옛 친구·초대 데이터가 되살아나지 않는다
 // 그래서 `#login=` · `?code=&state=` · `?code=x&state=` · `?code=&state=x` 는
 // 「복귀다」로 읽혀 재시도를 건너뛰는데, 아무도 그 주소를 지우지 않는다 —
 // **새로고침할 때마다 같은 일이 반복돼 폐기 재시도가 영구히 억제된다.**
-// 그동안 서버 세션은 180일 산다(위협 69 가 닫으려던 바로 그 상태다).
+// 그동안 서버 세션은 만료일까지 산다(위협 69 가 닫으려던 바로 그 상태다).
 {
   const PENDING = "shh-revoke";
   const del = (resp) => (m, p) => (m === "DELETE" && p === "/session" ? resp : defaultRoutes(m, p));
@@ -1915,6 +1918,64 @@ await T("down → 401: 옛 친구·초대 데이터가 되살아나지 않는다
     const c = await boot({ routes: hbOpen({ ...OKB, build: "v11-deadbeefdead" }) });
     assert.equal(c.reloads.n, 0,
       "세대 불일치에서 화면이 스스로 다시 읽었다 — 옛 캐시라 무한 고리가 된다");
+  });
+}
+
+// ══ T98. **계정 요청에 빌드 계약을 싣는다** (2026-08-27 · 위협 80) ═════════
+//
+// 서버는 이제 계정 라우트에서 `X-Shh-Build` 를 요구하고, 없거나 다르면 **DB 를 만지기 전에**
+// 426 이다. 화면이 한 자리라도 빠뜨리면 그 기능만 조용히 죽는다 — 그래서 전수로 잰다.
+{
+  const hv = (call) => (call.headers || {})["X-Shh-Build"];
+  // 면제 라우트(서버의 `ALWAYS_OPEN`)와 정적 파일은 빼고 전부 검사한다.
+  const EXEMPT = /^\/(health|ready|policies)$/;
+
+  await T("T98-a 계정 요청 전부에 세대가 실린다", async () => {
+    const c = await boot();
+    openFriends(c);
+    await tick(6);
+    findText(c.document.getElementById("settings"), "로그아웃").click();
+    await tick(6);
+    const account = c.calls.filter((x) => x.path.startsWith("/") && !EXEMPT.test(x.path));
+    assert.ok(account.length >= 3, `계정 요청이 ${account.length}건뿐이다 — 검사가 헛돈다`);
+    const missing = account.filter((x) => hv(x) !== CLIENT_BUILD).map((x) => x.method + " " + x.path);
+    assert.deepEqual(missing, [], `세대가 안 실린 요청: ${missing.join(", ")}`);
+    // 면제 라우트에 억지로 붙이지도 않는다(붙어도 해는 없지만, 계약을 한 곳에서만 읽게 둔다).
+    assert.ok(c.calls.some((x) => EXEMPT.test(x.path)), "상태 조회 자체가 없다 — 검사가 헛돈다");
+  });
+
+  await T("T98-b 로그인 시작 주소에 세대가 실린다", async () => {
+    const c = await boot({ store: {} });
+    const gate = c.document.getElementById("gate");
+    // 첫 화면은 가입 게이트다. 로그인 갈래로 옮긴 뒤 제공자 버튼을 누른다.
+    const toLogin = walk(gate).find((e) => e._text === "이미 계정이 있어요 — 로그인");
+    if (toLogin) { toLogin.click(); await tick(4); }
+    const b = walk(c.document.getElementById("gate")).find((e) => e._text === "카카오로 로그인");
+    assert.ok(b, "로그인 버튼을 못 찾았다");
+    b.click();
+    await tick(4);
+    assert.ok(/[?&]b=/.test(c.location.href),
+      `로그인 시작 주소에 세대가 없다: ${c.location.href}`);
+    assert.ok(c.location.href.includes("b=" + encodeURIComponent(CLIENT_BUILD)),
+      "로그인 시작 주소의 세대가 이 화면의 값이 아니다");
+  });
+
+  await T("T98-c 426 은 로그아웃이 아니라 갱신 안내다", async () => {
+    // ⚠️ **서버가 426 을 주는 상태로 부팅한다.** `/health` 는 세대가 **맞다**고 답한다 —
+    //    그래야 「화면 대조」가 아니라 **서버 판정**을 받아서 닫히는지가 재어진다.
+    const c = await boot({ routes: (m, p) => (p === "/health"
+      ? { status: 200, body: { ok: true, build: CLIENT_BUILD, ready: true, signupReady: true,
+                               providers: ["kakao", "naver"] } }
+      : { status: 426, body: { error: "앱이 오래된 판이에요", updateRequired: true } }) });
+    await tick(8);
+    assert.equal(c.store["shh-via"], "kakao", "426 에 로그인 표시를 지웠다 — 로그아웃이 아니다");
+    assert.equal(c.reloads.n, 0, "426 에서 스스로 다시 읽었다 — 옛 캐시라 고리가 된다");
+    // ★ **닫혔는지도 잰다**(2026-08-27 · 돌연변이 M112 생존). 표시를 안 지운 것만 재면,
+    //   426 을 평범한 서버 오류로 읽고 **계정 UI 를 그대로 열어 두는** 코드가 통과한다.
+    assert.equal(c.document.getElementById("share-btn").hidden, true,
+      "426 을 받고도 계정 기능이 열려 있다 — 옛 화면이 새 서버에 계속 말을 건다");
+    assert.ok(allText(c.document.getElementById("mypage")).includes("새 버전이 필요해요"),
+      "426 을 받고도 이유를 말하지 않는다");
   });
 }
 

@@ -51,8 +51,8 @@ const ASSETS = [
   "policies/manifest.json",
   "policies/index.html",
   "policies/age14-2303810b39a1.txt",
-  "policies/privacy-ec20ee0ec725.html",
-  "policies/summary-2c778c53e315.txt",
+  "policies/privacy-c3f9fc60cca6.html",
+  "policies/summary-ba7335967c27.txt",
   "policies/terms-245e3ae48884.html",
   // policies:end
 ];

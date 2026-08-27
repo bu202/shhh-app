@@ -25,3 +25,5 @@ dist/
 # 여기에는 만들어진 ledger D1 의 database_id 가 들어간다(비밀값은 아니지만, 저장소에 두면
 # 다음 사람이 템플릿과 실제 설정을 구분하지 못한다 — docs/OPS_RUNBOOK.md §3).
 worker/cleanup/wrangler.jsonc
+# 로컬 개발용 환경변수(`wrangler pages dev`). 시크릿이 들어갈 수 있는 자리라 커밋하지 않는다.
+.dev.vars

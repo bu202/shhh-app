@@ -19,7 +19,9 @@ import assert from "node:assert";
 import { readFileSync, readdirSync } from "node:fs";
 import { makeD1, makeLedger, asRequest } from "./_d1.mjs";
 import { acquireLease, releaseLease, LEASE_TTL } from "../worker/ledger.js";
-import { withFence, FenceMismatch, FENCE_MARK } from "../worker/fence.js";
+import { withFence, bindActor, FenceMismatch, ActorGone, FENCE_MARK, FENCE_ONLY_MARK }
+  from "../worker/fence.js";
+import { routeFor, routeCount, routeTable } from "../worker/index.js";
 import { setMode, fenceEpoch, fenceInSync, resumeTransition,
          resolveStaleLeases, RESOLUTION_GRACE } from "../worker/ops.js";
 import { drainState, CONFIRMED_RETENTION } from "../worker/ledger.js";
@@ -116,6 +118,12 @@ const EXCEPTIONS = [
        + "하나는 있어야 하기 때문이다. 이 문장이 사용자 데이터를 밖으로 내보내면 예외가 깨진다.",
   },
   {
+    file: "worker/fence.js", must: /SELECT suspended_at AS s, session_version AS v FROM users/,
+    why: "D fence 통로 자신 — 0행이 나왔을 때 「정상 0행인가 행위자가 사라졌나」를 가르는 판별 "
+       + "질의다. 방어가 아니라 **판별**이고(방어는 문장 안의 술어다), 결과는 상태코드 선택에만 "
+       + "쓰여 응답 본문으로 나가지 않는다. 스스로에게 술어를 걸면 무한히 되돈다.",
+  },
+  {
     file: "worker/ops.js", must: /SELECT id FROM users/,
     why: "B 운영 명령 — reconciliation·재개방 판정의 근거 수집. 임차증을 씌우면 복원 작업이 "
        + "자기 게이트에 막힌다(§10-9-6 B). 읽기 전용이고 사용자에게 응답하지 않는다.",
@@ -151,13 +159,98 @@ const EXCEPTIONS = [
         continue;
       }
       if (!touchesUserTable(st.sql)) continue;
-      if (st.sql.includes(FENCE_MARK)) continue;
+      if (st.sql.includes(FENCE_MARK) || st.sql.includes(FENCE_ONLY_MARK)) continue;
       if (EXCEPTIONS.some((x) => x.file === f && x.must.test(st.sql))) continue;
       offenders.push(`${f}:${st.at} [${st.recv}] ${st.sql.replace(/\s+/g, " ").trim().slice(0, 70)}`);
     }
   }
   assert.deepEqual(offenders, [],
     t("fence: 사용자 데이터 표를 만지는데 {FENCE} 가 없는 문장이 있다:\n      " + offenders.join("\n      ")));
+}
+
+// ══ 2-1. ★ `{FENCE_ONLY}` — **행위자 술어를 빼는 자리**는 등재된 것뿐이다 ══
+//
+// 사용자 단위 fencing(위협 79)은 「이 요청을 인증한 계정이 아직 살아 있고·정지되지 않았고·
+// 세대가 같은가」를 **문장 안에서** 묻는다. 그 술어를 빼는 자리는 곧 방어 밖이므로,
+// **이유와 함께 여기 등재된 문장만** 뺄 수 있다. 등재되지 않은 자리가 하나라도 있으면 실패한다.
+const ACTOR_EXEMPTIONS = [
+  {
+    file: "worker/index.js", must: /DELETE FROM sessions WHERE user_id = \? AND \{FENCE_ONLY\}/,
+    count: 1,
+    why: "세션 철거. 행위자 술어를 걸면 **정지된 계정이 스스로 로그아웃할 길이 없어지고**"
+       + "(정지 상태에서 유일하게 열어 둔 자리다), 같은 batch 의 뒤 문장이 앞 문장이 올린 세대 "
+       + "때문에 거짓이 되어 세션 행이 남는다. 걸어서 지키는 것도 없다 — 이 문장은 접근을 "
+       + "**줄이기만** 하므로 늦게 도착해도 데이터를 읽거나 쓰거나 노출하지 않는다.",
+  },
+  {
+    file: "worker/index.js",
+    must: /UPDATE users SET session_version = session_version \+ 1 WHERE id = \? AND \{FENCE_ONLY\}/,
+    count: 1,
+    why: "로그아웃의 세대 증가. 위와 같은 이유다 — 모든 기기의 로그인을 끊는 것뿐이고, 늦게 "
+       + "도착해도 결과는 「더 많이 로그아웃된다」뿐이다. 정지된 계정도 스스로 끝낼 수 있어야 한다.",
+  },
+  {
+    file: "worker/index.js", must: /SELECT 1 AS x FROM users WHERE id = \? AND \{FENCE_ONLY\}/,
+    count: 1,
+    why: "탈퇴 뒤의 **부재 확인**. 확인 대상이 행위자 자신의 부재라, 행위자가 살아 있기를 "
+       + "요구하면 **성공한 삭제가 오류로 보인다**. 유지보수 fence 는 그대로 지난다.",
+  },
+];
+{
+  const found = [];
+  for (const f of Object.keys(CLASSIFIED))
+    for (const st of preparedStatements(R(f)))
+      if (st.sql && st.sql.includes(FENCE_ONLY_MARK)) found.push({ f, st });
+  const stray = found
+    .filter(({ f, st }) => !ACTOR_EXEMPTIONS.some((x) => x.file === f && x.must.test(st.sql)))
+    .map(({ f, st }) => `${f}:${st.at} ${st.sql.replace(/\s+/g, " ").slice(0, 70)}`);
+  assert.deepEqual(stray, [],
+    t("fence: 등재되지 않은 {FENCE_ONLY} 가 있다 — 행위자 술어가 이유 없이 빠졌다:\n      "
+      + stray.join("\n      ")));
+  // ⚠️ **개수까지 잰다**(2026-08-27 · 독립 검토 caveat). 정규식 하나가 여러 자리를 덮으면,
+  //    같은 모양의 문장이 새로 생겨도 등재 없이 조용히 면제된다.
+  let covered = 0;
+  for (const x of ACTOR_EXEMPTIONS) {
+    const hits = found.filter(({ f, st }) => f === x.file && x.must.test(st.sql)).length;
+    assert.equal(hits, x.count,
+      t(`fence: {FENCE_ONLY} 예외 「${x.must.source.slice(0, 40)}」 가 ${hits}자리를 덮는다 `
+        + `(등재는 ${x.count}) — 개수가 다르면 등재 없이 면제된 자리가 있다`));
+    assert.ok(x.why.length > 60, t("fence: {FENCE_ONLY} 예외에 이유가 없다"));
+    covered += hits;
+  }
+  assert.equal(covered, found.length,
+    t(`fence: {FENCE_ONLY} 사용처 ${found.length}곳 중 ${covered}곳만 등재됐다`));
+  assert.ok(found.length >= 3, t(`fence: {FENCE_ONLY} 사용처를 못 찾았다 (${found.length}) — 검사가 헛돈다`));
+}
+
+// ══ 2-2. ★ 인증이 필요한 라우트는 **전부** 임차증을 든다 ═══════════════════
+// 행위자 술어는 감싼 env 에서만 붙는다. `auth:true` 인데 `lease:false` 인 라우트가 하나라도
+// 생기면 그 라우트는 **감싸지지 않은 env** 로 돌아 술어가 통째로 빠진다.
+{
+  const src = stripComments(R("worker/index.js"));
+  // ⚠️ **표는 표가 답한다.** 소스를 정규식으로 파싱하면 정규식 리터럴 안의 괄호 하나에
+  //    조용히 몇 줄을 빠뜨린다(실제로 그렇게 18/20 만 읽었다).
+  const rows = routeTable();
+  assert.equal(rows.length, routeCount(), t("fence: routeTable 이 표를 다 안 준다"));
+  const bad2 = rows.filter((r) => r.auth && !r.lease).map((r) => r.src);
+  assert.deepEqual(bad2, [],
+    t("fence: auth:true 인데 lease:false 인 라우트가 있다 — 행위자 술어가 없는 인증 경로다:\n      "
+      + bad2.join("\n      ")));
+}
+
+// ══ 2-3. ★ 행위자 결속은 **한 자리**이고 인증 바로 뒤다 ════════════════════
+{
+  const src = stripComments(R("worker/index.js"));
+  const uses = [...src.matchAll(/bindActor\(/g)];
+  assert.equal(uses.length, 1,
+    t(`fence: bindActor 를 부르는 자리가 ${uses.length}곳이다 — 하나여야 한다`));
+  const who = src.indexOf("const me = await whoAmI(");
+  assert.ok(who !== -1 && uses[0].index > who,
+    t("fence: bindActor 가 whoAmI 보다 앞이다 — 결속할 행위자가 아직 없다"));
+  // 그 자리 뒤에 라우트 처리가 온다. 콜백·가입은 **앞**이어야 한다(행위자가 없는 자리다).
+  const cb = src.indexOf("const mx = path.match(");
+  assert.ok(cb !== -1 && cb < uses[0].index,
+    t("fence: OAuth 콜백이 행위자 결속보다 뒤다 — 다른 계정의 세션 생성에 술어가 붙는다"));
 }
 
 // ══ 3. 예외는 **실재해야** 한다 (죽은 예외를 남겨 두지 않는다) ═════════════
@@ -304,6 +397,57 @@ const makeEnv = () => ({ DB: makeD1(), LEDGER: makeLedger() });
     const again = await fe.DB.prepare(ins).bind("a2", "kakao", "dup", 1).run();
     assert.equal(again.meta.changes, 0, t("fence: ON CONFLICT DO NOTHING 이 0행이 아니다"));
   });
+}
+
+// ══ 8-1. ★ `{FENCE_ONLY}` 도 **유지보수 fence 는 그대로 지난다** ══════════
+// 빼는 것은 행위자 술어뿐이다. 둘 다 빠지면 그 문장은 전환 뒤에도 쓸 수 있다 —
+// 그러면 예외 목록이 「fence 자체를 건너뛰는 목록」이 된다.
+{
+  const env = makeEnv();
+  await asRequest(env, async (fe) => {
+    await fe.DB.prepare("INSERT INTO users (id, provider, provider_subject, session_version, created_at) SELECT ?, ?, ?, 0, ? WHERE {FENCE}")
+      .bind("uo", "kakao", "so", 1).run();
+  });
+  const stale = await acquireLease(env);
+  await setMode(env, "maintenance");
+  const fenced = withFence(env, stale);
+  await assert.rejects(
+    () => fenced.DB.prepare("DELETE FROM sessions WHERE user_id = ? AND {FENCE_ONLY}").bind("uo").run(),
+    (e) => e instanceof FenceMismatch,
+    t("fence: {FENCE_ONLY} 문장이 옛 epoch 으로도 통과했다 — 예외가 fence 까지 건너뛴다"));
+  assert.equal(env.DB._db.prepare("SELECT COUNT(*) n FROM users").get().n, 1,
+    t("fence: {FENCE_ONLY} 확인 중에 계정이 사라졌다"));
+}
+
+// ══ 8-2. ★ 행위자 술어는 **같은 문장 안**에 있다 (사전조회가 아니다) ══════
+// 이 성질이 깨지면 검사와 쓰기 사이에 창이 생긴다. 문장 문자열을 직접 본다.
+{
+  const env = makeEnv();
+  const seen = [];
+  const raw = env.DB;
+  env.DB = { ...raw, prepare: (sql) => { seen.push(sql); return raw.prepare(sql); } };
+  await asRequest(env, async (fe) => {
+    bindActor(fe, { uid: "ua", gen: 0 });
+    await fe.DB.prepare("SELECT words FROM books WHERE user_id = ? AND {FENCE}").bind("ua").first()
+      .catch(() => {});
+  });
+  const stmt = seen.find((q) => /FROM books/.test(q));
+  assert.ok(stmt, t("fence: 문장을 못 잡았다 — 검사가 헛돈다"));
+  assert.ok(/suspended_at IS NULL/.test(stmt) && /session_version = \?/.test(stmt),
+    t("fence: 행위자 술어가 문장 안에 없다 — 사전조회로 되돌아갔다:\n      " + stmt));
+  assert.ok(/EXISTS \(SELECT 1 FROM write_fence/.test(stmt),
+    t("fence: 같은 문장에 유지보수 fence 가 없다"));
+  // 결속 전에는 붙지 않는다(콜백·가입은 행위자가 없다).
+  const seen2 = [];
+  const env2 = { DB: { ...makeD1() }, LEDGER: makeLedger() };
+  const raw2 = env2.DB;
+  env2.DB = { ...raw2, prepare: (sql) => { seen2.push(sql); return raw2.prepare(sql); } };
+  await asRequest(env2, async (fe) => {
+    await fe.DB.prepare("SELECT words FROM books WHERE user_id = ? AND {FENCE}").bind("ua").first()
+      .catch(() => {});
+  });
+  assert.ok(!/suspended_at/.test(seen2.find((q) => /FROM books/.test(q)) || ""),
+    t("fence: 행위자를 결속하지 않았는데 술어가 붙었다 — 가입·콜백이 남의 계정 술어를 지고 돈다"));
 }
 
 // ══ 9. {FENCE} 를 빠뜨린 문장은 **던진다** ═════════════════════════════════
