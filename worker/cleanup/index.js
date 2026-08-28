@@ -81,18 +81,51 @@ const JOBS = [
 //    넘긴다. 우리가 묻는 것은 「있나 없나」 하나다.
 // ⚠️ **부재를 확인했을 때만 닫는다.** 조회가 실패하면 아무것도 적지 않는다 —
 //    확인 시각조차 적지 않는다(적으면 다음 사람이 「확인했다」로 읽는다).
-const RECON_LIMIT = 25;
+export const RECON_LIMIT = 25;
 // 만료 예정 시각이 지나고도 객체가 남아 있을 수 있는 여유(R2 lifecycle 은 표시 뒤 실제
 // 삭제까지 통상 하루가 더 걸린다). 이 여유마저 지났는데 아직 있으면 **비정상**이다.
 const RECON_OVERDUE_GRACE = 2 * 86400e3;
+// `uploading` 이 이만큼 지나도록 안 끝났으면 **비정상**이다. ⛔ **닫는 근거가 아니다** —
+// 시간이 지났다고 생산자가 죽었다고 단정하지 않는다. 사람이 보라고 경보로만 올린다.
+// migration 직전 백업 하나는 길어야 수십 분이고, 이 값은 그 열 배가 넘는다.
+const RECON_UPLOADING_STUCK = 6 * 3600e3;
+
+// ── 회차마다 어디서부터 볼지 (2026-08-28 · 위협 89) ──────────────────────
+// ⛔ **옛 방식은 `ORDER BY snapshot_at LIMIT 25` 뿐이었다.** 크론은 회차마다 새 실행이라
+//    커서가 없으면 언제나 처음으로 돌아간다 — 실측: 60행 중 앞 25개가 계속 살아 있으면
+//    26번째는 **3회차까지 한 번도 검사되지 않았다.** 그 행이 삭제 표식 정리를 막으므로
+//    방침이 약속한 보유기간이 사실상 무한이 된다.
+// ⚠️ 정렬 기준을 `backup_id`(PK · hex32 · 전순서)로 바꾼다 — `snapshot_at` 은 같은 값이
+//    여럿일 수 있어 커서로 쓰면 건너뛴다. 나이 순서를 잃는 대신 **모든 행이 유한 회차 안에
+//    검사되는 것**을 얻는다(한 바퀴 = ⌈N/25⌉ 회차).
+// ⚠️ **커서는 SELECT 직후에 옮긴다.** 뒤에 두면 어떤 행에서 매번 던지는 배포가 그 페이지를
+//    영영 다시 읽어, 고치려던 기아가 그대로 돌아온다. 못 본 행은 다음 바퀴에 다시 온다.
+// ⛔ 무작위 정렬·메모리 커서를 쓰지 않는다 — 둘 다 「언젠가는 본다」만 말하고 유한 시간을
+//    보장하지 못한다.
+async function reconPage(env, limit) {
+  const cur = await env.LEDGER.prepare(
+    "SELECT recon_cursor FROM cleanup_runs WHERE id = 1").first();
+  const from = (cur && cur.recon_cursor) || "";
+  const rows = (await env.LEDGER.prepare(
+    `SELECT backup_id, status, created_at, object_key, expires_expected_at, deletion_checked_at
+       FROM backups WHERE deleted_at IS NULL AND status NOT IN ('aborted','deleted')
+        AND backup_id > ?
+      ORDER BY backup_id LIMIT ?`).bind(from, limit).all()).results || [];
+  // 한 페이지를 다 못 채웠다 = 이 바퀴의 끝이다. 다음 회차는 처음부터 본다.
+  const next = rows.length < limit ? "" : rows[rows.length - 1].backup_id;
+  await env.LEDGER.prepare("UPDATE cleanup_runs SET recon_cursor = ? WHERE id = 1")
+    .bind(next).run();
+  // 커서가 끝에 있었고 그 뒤가 비었으면, 이 회차는 처음부터 다시 한 페이지를 본다 —
+  // 안 그러면 「빈 회차」가 한 번 끼어 확인이 한 주기씩 늦어진다.
+  if (!rows.length && from) return reconPage(env, limit);
+  return rows;
+}
 
 export async function reconcileBackups(env, now) {
-  const out = { scanned: 0, present: 0, gone: 0, unknown: 0, overdue: 0, failed: 0 };
+  const out = { scanned: 0, present: 0, gone: 0, unknown: 0, overdue: 0, failed: 0,
+                uploading: 0, stuck: 0 };
   // 막는 행만 본다. 이미 닫힌 행(`aborted`·`deleted`)은 다시 묻지 않는다 — 멱등하다.
-  const rows = (await env.LEDGER.prepare(
-    `SELECT backup_id, status, object_key, expires_expected_at, deletion_checked_at
-       FROM backups WHERE deleted_at IS NULL AND status NOT IN ('aborted','deleted')
-      ORDER BY snapshot_at LIMIT ?`).bind(RECON_LIMIT).all()).results || [];
+  const rows = await reconPage(env, RECON_LIMIT);
   if (!rows.length) return out;
   // ⛔ 막는 행이 있는데 바인딩이 없으면 **조용히 넘어가지 않는다.** 그 배포는 이 표를
   //    영원히 닫지 못한다 — 그 사실이 경보로 올라가야 한다.
@@ -106,7 +139,16 @@ export async function reconcileBackups(env, now) {
     try { head = await env.BACKUPS.head(key); }
     catch { out.unknown++; continue; }          // 「모른다」 — 아무것도 안 적는다
     if (head === null || head === undefined) {
-      // `pending` 은 업로드가 시작되지 않았다는 뜻이므로 `aborted`,
+      // ⛔ **`uploading` 은 순간 부재만으로 닫지 않는다**(2026-08-28 · 위협 88). 그 순간
+      //    `r2 object put` 이 도는 중일 수 있다 — 닫으면 그 뒤에 객체가 생겨 「없음을
+      //    확인했다」가 거짓이 된다. 계속 막고, 오래 방치된 것만 **경보로** 올린다.
+      //    ⛔ 시간은 **닫는 근거가 아니라 알리는 근거**다.
+      if (r.status === "uploading") {
+        out.uploading++;
+        if (now - Number(r.created_at || 0) > RECON_UPLOADING_STUCK) out.stuck++;
+        continue;
+      }
+      // `pending` 은 업로드 권리를 아무도 못 땄다는 뜻이므로 `aborted`,
       // 그 밖(uploaded·ready·failed)은 있었던 것이 사라졌으므로 `deleted` 다.
       const to = r.status === "pending" ? "aborted" : "deleted";
       // ⚠️ **자리표시자를 익명 `?` 로만 쓴다.** 번호형(`?3`)과 섞으면 `deleted` 갈래에만 있는
@@ -115,9 +157,13 @@ export async function reconcileBackups(env, now) {
       const sets = ["status = ?", "deletion_checked_at = ?"];
       const args = [to, now];
       if (to === "deleted") { sets.push("deleted_at = ?"); args.push(now); }
+      // ⚠️ **읽은 그 상태에서만 옮긴다**(CAS). `backupFroms(to)` 만으로는 부족하다 — 조회와
+      //    이 문장 사이에 생산자가 `pending → uploading → failed` 로 옮기면 `failed` 도
+      //    `aborted` 의 출발 상태였던 시절엔 그대로 통과했다. 관측한 값을 그대로 조건에 건다.
       const upd = await env.LEDGER.prepare(
-        `UPDATE backups SET ${sets.join(", ")} WHERE backup_id = ? AND ${backupFroms(to)}`)
-        .bind(...args, r.backup_id).run();
+        `UPDATE backups SET ${sets.join(", ")} WHERE backup_id = ? AND status = ?`
+        + ` AND ${backupFroms(to)}`)
+        .bind(...args, r.backup_id, r.status).run();
       // 전이표가 막았거나 그 사이에 누가 옮겼다 — 「했다」로 넘기지 않는다.
       if (!(upd.meta && upd.meta.changes === 1)) { out.failed++; continue; }
       out.gone++;
@@ -182,7 +228,10 @@ export async function runCleanup(env, now = Date.now()) {
     // ⛔ **일부 실패를 성공으로 적지 않는다.** 모르는 행·만료 초과·못 바꾼 행이 하나라도
     //    있으면 이 회차는 실패다 — `tick()` 이 연속 실패로 세고 `/api/ready` 의
     //    `cleanupAlert` 가 켜진다. 그것이 「아무도 안 보는 상태」를 막는 유일한 통로다.
-    if (backups.unknown || backups.overdue || backups.failed)
+    // ⚠️ `uploading` 자체는 실패가 아니다(정상적인 백업이 도는 중일 수 있다). **오래 방치된**
+    //    것만 실패로 센다 — 아니면 백업을 돌릴 때마다 크론이 경보를 내고, 그러면 아무도
+    //    경보를 안 보게 된다.
+    if (backups.unknown || backups.overdue || backups.failed || backups.stuck)
       throw new Error("backup reconcile incomplete");
     return result;
   } finally {

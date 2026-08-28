@@ -17,7 +17,10 @@
 // ⚠️ **이번 세션에서는 실제 원격 작업을 하지 않았다.** `--dry-run` 만 돌렸다.
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
+// ⚠️ **`node:sqlite` 를 여기서 정적으로 부르지 않는다**(2026-08-28 · 위협 90). 지원하지 않는
+//    Node 에서는 이 줄이 **모듈을 읽는 순간** `ERR_UNKNOWN_BUILTIN_MODULE` 로 터져, 운영자가
+//    보는 것이 「백업 도구가 원래 안 되는 것」처럼 보이는 스택 하나다. 아래 `assertNode()` 가
+//    먼저 말할 수 있도록 실제로 쓰는 자리에서 지연해 부른다.
 import { readFile, writeFile, mkdtemp, rm, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -81,11 +84,40 @@ export const objectKeyFor = BACKUP_OBJECT_KEY;
 // 이 여유마저 지났는데 아직 있으면 **비정상**이고 사람이 봐야 한다.
 export const OVERDUE_GRACE = 2 * 86400e3;
 
+// `uploading` 이 이만큼 지나도록 안 끝났으면 **비정상**이다. ⛔ **닫는 근거가 아니다** —
+// 시간이 지났다고 생산자가 죽었다고 단정하지 않는다. 사람이 보라고 알리기만 한다.
+// `worker/cleanup/index.js` 의 `RECON_UPLOADING_STUCK` 과 같은 값이다.
+export const UPLOADING_STUCK = 6 * 3600e3;
+
 // R2 lifecycle 만료까지. 방침이 적는 값과 같다.
 export const BACKUP_TTL_DAYS = 7;
 // `gate` 가 「방금 만든 백업」으로 인정하는 최대 나이. 어제 백업으로 오늘 migration 을 돌리면
 // 그 사이의 쓰기가 복구 대상에서 빠진다.
 export const GATE_MAX_AGE = 2 * 3600e3;
+
+// ── Node 런타임 계약 (2026-08-28 · 위협 90) ──────────────────────────────
+// 이 도구는 복원 가능성을 증명할 때 **덤프를 실제 SQLite 에 싣는다**(`loadTemp`). 그 기능은
+// `node:sqlite` 이고, **플래그 없이 쓸 수 있는 최소 판이 22.13.0** 이다(그 아래는 22.5~22.12 가
+// `--experimental-sqlite` 를 요구하고, 그보다 아래는 모듈 자체가 없다).
+//
+// ⛔ **「지금 Node 24 에서 되니까 됐다」로 끝내지 않는다.** 운영자의 기기·CI·나중의 나는
+//    다른 판일 수 있고, 그때 나오는 것은 이해할 수 없는 import 오류다 — 그 상태에서 백업
+//    없이 migration 을 돌리는 것이 이 계약이 막으려는 결과다.
+// ⚠️ **값의 원본은 여기 하나다.** `package.json` 의 `engines.node` 와 `.nvmrc` 를
+//    `test-ops-race` R9 가 이 상수와 대조한다 — 손으로 세 곳에 적으면 반드시 갈라진다.
+export const MIN_NODE = "22.13.0";
+const partsOf = (v) => String(v).split(".").map((x) => parseInt(x, 10) || 0);
+export function nodeOk(v = process.versions.node) {
+  const a = partsOf(v), b = partsOf(MIN_NODE);
+  for (let i = 0; i < 3; i++) { if (a[i] > b[i]) return true; if (a[i] < b[i]) return false; }
+  return true;
+}
+// ⛔ **fail-closed 다.** 던지고, 필요한 판을 말한다.
+export function assertNode(v = process.versions.node) {
+  if (!nodeOk(v))
+    throw new Error(`백업 도구는 Node ${MIN_NODE} 이상이 필요하다 (지금 ${v}). `
+      + "복원 가능성 증명이 node:sqlite 를 쓰고, 그 아래 판에서는 플래그 없이 열리지 않는다.");
+}
 
 // ── 값 검증 — SQL 로 나가기 전에 모양을 고정한다 ─────────────────────────
 // ⚠️ **정규식으로 SQL 을 고쳐 쓰지 않는다.** 여기서 하는 것은 그 반대다: 값이 정해진 모양이
@@ -235,7 +267,10 @@ export function decryptBundle(buf, key) {
 // 운영 DB 는 물론이고 디스크에도 남기지 않는다.
 // ⛔ 이것이 이 저장소에서 「복원」에 가장 가까운 코드이고, **어디에도 쓰지 않는다.**
 //    돌려주는 것은 boolean 하나이고 내용은 함수 밖으로 나가지 않는다.
-export function loadTemp(sqlText, which) {
+export async function loadTemp(sqlText, which) {
+  // ⚠️ 여기서 판을 확인한다 — 아래 `import` 가 지원하지 않는 Node 에서 터지기 전에.
+  assertNode();
+  const { DatabaseSync } = await import("node:sqlite");
   const db = new DatabaseSync(":memory:");
   try {
     db.exec(String(sqlText));
@@ -278,6 +313,15 @@ export const makeInventory = (cfg, run) => ({
       + ` VALUES (${sqlValue(id, "id")}, ${sqlValue(snapshotAt, "int")},`
       + ` ${sqlValue(snapshotAt, "int")}, 'pending', ${sqlValue(epoch, "int")},`
       + ` ${sqlValue(fingerprint, "fp")})`, "insertPending");
+  },
+  // **업로드 권리를 딴다**(2026-08-28 · 위협 88). `r2 object put` 직전에 이것이 1행을 바꿔야
+  // 올릴 수 있다. reconciler 의 `pending → aborted` 와 **같은 행의 같은 상태**를 두고 다투므로
+  // 둘 중 하나만 이긴다 — 그래서 「`aborted` 인데 객체가 있다」가 만들어질 수 없다.
+  // ⛔ **`execOne` 이다.** 0행을 성공으로 넘기면 권리가 없는데 올리게 되고, 그 순간 이 자물쇠는
+  //    있으나 마나가 된다.
+  setUploading(id) {
+    return this.execOne(`UPDATE backups SET status = 'uploading' WHERE backup_id = ${sqlValue(id, "id")}`
+      + ` AND ${froms("uploading")}`, "setUploading");
   },
   setUploaded(id, mainHash, ledgerHash, key, expiresAt, bytes, objHash) {
     return this.execOne(`UPDATE backups SET status = 'uploaded',`
@@ -323,8 +367,8 @@ export const makeInventory = (cfg, run) => ({
   },
   // ── reconcile ──
   async openRows() {
-    const out = await this.exec("SELECT backup_id, status, snapshot_at, object_key, object_bytes,"
-      + " object_hash, expires_expected_at FROM backups"
+    const out = await this.exec("SELECT backup_id, status, snapshot_at, created_at, object_key,"
+      + " object_bytes, object_hash, expires_expected_at FROM backups"
       + " WHERE deleted_at IS NULL AND status NOT IN ('aborted','deleted')");
     const parsed = typeof out === "string" ? JSON.parse(out) : out;
     const first = Array.isArray(parsed) ? parsed[0] : parsed;
@@ -335,11 +379,16 @@ export const makeInventory = (cfg, run) => ({
       + ` WHERE backup_id = ${sqlValue(id, "id")}`);
   },
   // ⛔ **부재를 확인했을 때만 부른다.** `deleted` 는 `deleted_at` 을 함께 적는다.
-  markGone(id, at, to) {
-    return this.exec(`UPDATE backups SET status = ${sqlValue(to, "status")},`
+  // ⚠️ **관측한 상태를 조건에 건다**(2026-08-28 · CAS). 조회와 이 문장 사이에 생산자가 상태를
+  //    옮겼으면 0행이고, 부르는 쪽은 그것을 「닫았다」로 읽지 않는다.
+  // ⛔ 바뀐 행 수를 돌려준다 — 안 돌려주면 진 싸움이 이긴 것처럼 보인다.
+  async markGone(id, at, to, from) {
+    return changesOf(await this.exec(
+      `UPDATE backups SET status = ${sqlValue(to, "status")},`
       + ` deletion_checked_at = ${sqlValue(at, "int")}`
       + (to === "deleted" ? `, deleted_at = ${sqlValue(at, "int")}` : "")
-      + ` WHERE backup_id = ${sqlValue(id, "id")} AND ${froms(to)}`);
+      + ` WHERE backup_id = ${sqlValue(id, "id")} AND status = ${sqlValue(from, "status")}`
+      + ` AND ${froms(to)}`));
   },
 });
 
@@ -471,6 +520,17 @@ export async function runBackup({
     const encBytes = (await stat(encFile)).size;
     const encHash = await sha256File(encFile);
 
+    // ── 4-2. **업로드 권리를 딴다**(2026-08-28 · 위협 88) ──
+    // ⚠️ **`r2 object put` 직전이어야 한다.** 앞에 두면 그 사이에 죽었을 때 「올리는 중」인
+    //    행이 남고, 뒤에 두면 이미 올린 뒤라 아무것도 못 막는다.
+    // ⛔ **실패하면 `abort` 도 `fail` 도 부르지 않는다.** 그 행은 이미 남의 것이다 —
+    //    덮어쓰면 상대가 적은 사실(부재 확인)을 우리가 지우는 셈이 된다.
+    try { await inv.setUploading(id); }
+    catch {
+      log("업로드 권리를 못 땄다 — 그 사이에 이 백업이 닫혔다");
+      return { ok: false, backupId: id, step: "claim", code: "claim" };
+    }
+
     // ── 5. 업로드 ──
     const up = await run("npx", ["wrangler", "r2", "object", "put",
                                  `${cfg.bucket}/${objectKey}`, "--file", encFile, "--remote"]);
@@ -524,7 +584,8 @@ export async function reconcile({ env = process.env, now = Date.now(), run = rea
   catch { log("inventory 를 못 읽었다"); return { ok: false, code: "unreadable" }; }
 
   const dir = await mkdtemp(path.join(tmpdir(), "shhh-reconcile-"));
-  const out = { ok: true, checked: 0, closed: 0, unknown: 0, overdue: 0, mismatch: 0 };
+  const out = { ok: true, checked: 0, closed: 0, unknown: 0, overdue: 0, mismatch: 0,
+                uploading: 0, stuck: 0, raced: 0 };
   try {
     for (const r of rows) {
       const id = r.backup_id;
@@ -540,10 +601,24 @@ export async function reconcile({ env = process.env, now = Date.now(), run = rea
         continue;
       }
       if (state === "absent") {
-        // `pending` 은 업로드가 시작되지 않았다는 뜻이 되므로 `aborted`,
+        // ⛔ **`uploading` 은 순간 부재만으로 닫지 않는다**(2026-08-28 · 위협 88) —
+        //    그 순간 다른 프로세스의 `r2 object put` 이 도는 중일 수 있다.
+        //    ⚠️ **자동 크론과 같은 규칙이다.** 수동 명령이 더 약하면 운영자가 손으로 부르는
+        //       순간 자물쇠가 없어진다.
+        if (r.status === "uploading") {
+          out.uploading++; out.ok = false;
+          if (now - Number(r.created_at || 0) > UPLOADING_STUCK) { out.stuck++; log(`방치: ${id}`); }
+          else log(`업로드 진행 중: ${id}`);
+          continue;
+        }
+        // `pending` 은 업로드 권리를 아무도 못 땄다는 뜻이 되므로 `aborted`,
         // 그 밖(uploaded·ready·failed)은 있었던 것이 사라졌으므로 `deleted` 다.
         const to = r.status === "pending" ? "aborted" : "deleted";
-        await inv.markGone(id, now, to);
+        // 관측한 상태에서만 옮긴다. 0행이면 그 사이에 생산자가 이겼다는 뜻이다.
+        if (await inv.markGone(id, now, to, r.status) !== 1) {
+          out.raced++; out.ok = false; log(`경합: ${id}`);
+          continue;
+        }
         out.closed++; log(`부재 확인: ${id} → ${to}`);
         continue;
       }
@@ -637,7 +712,7 @@ export async function verifyBackup({ backupId, env = process.env, now = Date.now
       return bad("inventory_hash");
 
     for (const which of ["main", "ledger"]) {
-      const r = loadTemp(parts[which].toString("utf8"), which);
+      const r = await loadTemp(parts[which].toString("utf8"), which);
       if (!r.ok) return bad("load_" + which, { missing: r.missing });
     }
   } finally {
@@ -707,6 +782,13 @@ export async function backupGate({ backupId, env = process.env, now = Date.now()
 // ── CLI ──────────────────────────────────────────────────────────────────
 // 함정 20·53: import 한 스크립트의 하단이 실행되면 안 된다.
 if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
+  // ⛔ **어느 하위 명령보다 먼저다.** 지원하지 않는 Node 에서 부분적으로 도는 것이 가장 나쁘다 —
+  //    export 는 되고 검증만 안 되면, 검증 안 된 사본을 백업이라 부르게 된다.
+  if (!nodeOk()) {
+    console.error(`[backup] Node ${MIN_NODE} 이상이 필요합니다 (지금 ${process.versions.node}).`);
+    console.error("[backup] nvm 을 쓰신다면 저장소 안에서 `nvm use` 하시면 됩니다 (.nvmrc).");
+    process.exit(3);
+  }
   const cmd = process.argv[2];
   const dryRun = process.argv.includes("--dry-run");
   const log = (m) => console.log("[backup]", m);

@@ -306,7 +306,7 @@ export const restoreWindow = (env) => {
 // 표식 삭제를 **막는** 백업의 정의. 한 자리에만 적는다 — 두 곳에 적으면 갈라진다.
 //   · `deleted_at IS NULL`  객체가 아직 있거나, **있는지 모른다**
 //   · `status <> 'aborted'` `aborted` 만이 「객체가 없음을 확인했다」이다
-// ⚠️ **「모른다」는 삭제 허가가 아니다.** `pending`·`uploaded`·`failed` 는 전부 막는다.
+// ⚠️ **「모른다」는 삭제 허가가 아니다.** `pending`·`uploading`·`uploaded`·`failed` 는 전부 막는다.
 export const BACKUP_BLOCKS_SQL =
   "b.deleted_at IS NULL AND b.status <> 'aborted'";
 
@@ -318,14 +318,42 @@ export const BACKUP_OBJECT_KEY = (id) => `shhh/${id}.enc`;
 
 // 백업 inventory 의 상태 전이. **한 방향이다.** 각 상태가 답하는 질문은
 // 「지금 R2 에 그 객체가 있나」 하나다:
-//   pending  모른다(업로드 명령을 아직 안 냈다) · uploaded 있다 · ready 있고 검증됐다
-//   failed   **모른다** · aborted **없다(시작 안 됨)** · deleted **없다(사라짐)**
+//   pending   모른다 — 업로드 **권리를 아직 안 땄다**
+//   uploading 모른다 — 권리를 땄고 `r2 object put` 이 도는 중이거나 결과를 모른다
+//   uploaded  있다 · ready 있고 검증됐다 · failed **모른다**
+//   aborted   **없다(시작 안 됨)** · deleted **없다(사라짐)**
 // 막지 않는 것은 `aborted`·`deleted` 둘뿐이다 — 나머지는 전부 「모른다 이상」이라 막는다.
+//
+// ── `uploading` 은 왜 생겼나 (2026-08-28 · 위협 88) ──────────────────────
+// 재현: `insertPending` 뒤 첫 export 앞에 reconciliation 이 끼어들면, R2 가 아직 「없다」고
+// 답하므로 `pending → aborted` 로 닫힌다. 그 뒤 생산자가 깨어나 **실제로 업로드했다** —
+// 결과는 `{ status: "aborted", objectPresent: true }` 였다. `aborted` 는 삭제 표식 정리를
+// **막지 않는** 유일한 실패 상태이므로, 데이터를 담은 백업이 살아 있는데 표식이 지워진다.
+//
+// **불변식: `aborted` 인 backup_id 로는 그 뒤 어떤 생산자도 객체를 올릴 수 없다.**
+// 그 보장을 시간이나 R2 조회로 만들 수는 없다(둘 다 창이 남는다). 그래서 `pending` 에서
+// 나가는 길을 **둘로 갈라 서로 배타로** 만든다:
+//   · 생산자는 `put` **직전에** `pending → uploading` CAS 를 성공해야 올릴 수 있다
+//   · reconciler 는 `pending → aborted` CAS 를 성공해야 닫을 수 있다
+// 한 행이 `pending` 인 것은 한 순간뿐이므로 **둘 중 하나만 이긴다.** 생산자가 지면 업로드를
+// 아예 시작하지 않고, reconciler 가 지면 그 행을 닫지 못하고 실패로 말한다.
+//
+// ⛔ **`uploading` 은 순간 부재만으로 자동 종결하지 않는다** — 그 순간 `put` 이 도는 중일 수
+//    있다. 오래 방치된 것은 **닫지 않고 경보로** 올린다(사람이 판단한다).
+// ⛔ **`failed → aborted` 를 지웠다.** `failed` 는 `pending` 에서 왔는지 `uploading` 에서
+//    왔는지 상태만으로는 모르므로, 「올린 적이 없다」를 주장할 근거가 없다. 실제 부재를
+//    확인했을 때 가는 `failed → deleted` 만 남긴다.
+//
+// ⚠️ **비교하고 버린 안**: ⓐ reconciler 가 `pending` 을 아예 안 닫고 경보만 낸다 — 가장 짧지만
+//    생산자가 죽으면 그 행이 **영원히** 표식 정리를 막는다(위협 85 가 고친 그 상태로 되돌아간다).
+//    ⓑ `pending → cancelling → aborted` 3단계 — CAS 가 이미 배타적이라 중간 상태가 하는 일이
+//    없다. 1인 운영·migration 직전 백업이라는 규모에 분산 시스템을 얹지 않는다.
 export const BACKUP_NEXT = {
-  pending: ["uploaded", "aborted", "failed"],
+  pending: ["uploading", "aborted", "failed"],
+  uploading: ["uploaded", "failed"],
   uploaded: ["ready", "failed", "deleted"],
   ready: ["deleted", "failed"],
-  failed: ["deleted", "aborted"],
+  failed: ["deleted"],
   aborted: [], deleted: [],
 };
 export const backupCanTransition = (from, to) =>

@@ -84,7 +84,18 @@ CREATE TABLE IF NOT EXISTS cleanup_runs (
   last_counts  TEXT NOT NULL DEFAULT '{}',
   -- 확정되지 않은 pending 표식 수. **지우지 않는다. 세어서 알린다.**
   open_pending INTEGER NOT NULL DEFAULT 0,
-  last_error   TEXT
+  last_error   TEXT,
+  -- 백업 inventory reconciliation 이 **다음 회차에 어디서부터 볼지**(2026-08-28 · 위협 89).
+  --
+  -- 왜 영속인가: 크론은 회차마다 새 실행이라 메모리 커서는 언제나 처음으로 돌아간다.
+  -- 그래서 한 회차가 보는 범위를 `ORDER BY snapshot_at LIMIT 25` 로만 자르면, **앞 25개가
+  -- 계속 살아 있는 한 26번째는 몇 회차가 지나도 검사되지 않는다**(실측: 3회차까지 그대로).
+  -- 그 행이 삭제 표식 정리를 막으므로 방침이 약속한 보유기간이 사실상 무한이 된다.
+  --
+  -- 값은 마지막으로 본 `backup_id`(hex32) 이고, 한 바퀴를 다 돌면 `''` 로 되돌아간다.
+  -- ⚠️ **정렬 기준이 `backup_id` 여야 한다** — 커서가 전순서 위에 있어야 건너뛰지 않는다.
+  --    (`snapshot_at` 은 같은 값이 여럿일 수 있어 커서로 쓸 수 없다.)
+  recon_cursor TEXT NOT NULL DEFAULT ''
 );
 INSERT OR IGNORE INTO cleanup_runs (id) VALUES (1);
 
@@ -220,7 +231,7 @@ CREATE TABLE IF NOT EXISTS backups (
   deletion_checked_at INTEGER,           -- 마지막으로 「아직 있나」를 물어본 시각
   deleted_at       INTEGER,              -- 객체가 **실제로 없음을 확인한** 시각
   status           TEXT NOT NULL
-                   CHECK (status IN ('pending','uploaded','ready','deleted','aborted','failed')),
+                   CHECK (status IN ('pending','uploading','uploaded','ready','deleted','aborted','failed')),
   last_error_code  TEXT,                 -- 우리가 정한 짧은 코드. 오류 전문이 아니다
   -- `ready` 는 **대조에 필요한 값이 전부** 있어야 한다. 반쪽 백업이나 「크기·해시를 모르는 채
   -- 올라간」 객체가 `ready` 로 기록되는 것이 이 표가 막으려는 사고다.

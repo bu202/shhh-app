@@ -14,12 +14,19 @@
 --    담는 것은 우리가 정한 짧은 코드 하나(`last_error_code`)뿐이다.
 --
 -- 상태 전이는 **한 방향**이다:
---   pending → uploaded → ready → deleted
---   pending → aborted            (업로드가 시작되지 않았음을 확인했다)
---   어느 상태에서든 → failed     (재시도는 새 backup_id 로 한다)
+--   pending → uploading → uploaded → ready → deleted
+--   pending → aborted               (업로드 권리를 아무도 못 따게 못박았다)
+--   어느 상태에서든 → failed        (재시도는 새 backup_id 로 한다)
+--
+-- ⚠️ **`uploading` 은 「업로드 권리」다**(2026-08-28 · 위협 88). 생산자는 `r2 object put` 직전에
+--    `pending → uploading` CAS 를 성공해야 올릴 수 있고, reconciler 는 `pending → aborted` CAS 를
+--    성공해야 닫을 수 있다. 한 행이 `pending` 인 것은 한 순간뿐이라 **둘 중 하나만 이긴다** —
+--    그래서 「`aborted` 인데 객체가 있다」가 만들어질 수 없다. 규칙의 원본은 `worker/ledger.js`
+--    의 `BACKUP_NEXT` 이고, 이 CHECK 는 그 표에 없는 이름이 들어오는 것만 막는다.
 --
 -- 표식 삭제를 **막는** 행: `deleted_at IS NULL AND status <> 'aborted'`.
---   · `pending`·`uploaded`·`failed` 는 **객체가 있는지 모른다** → 막는다(모름은 삭제 허가가 아니다)
+--   · `pending`·`uploading`·`uploaded`·`failed` 는 **객체가 있는지 모른다** → 막는다
+--     (모름은 삭제 허가가 아니다)
 --   · `ready` 는 객체가 확실히 있다 → 막는다
 --   · `aborted` 는 **객체가 없음을 확인했다** → 막지 않는다
 --   · `deleted` 는 `deleted_at` 이 채워져 있다 → 막지 않는다
@@ -60,7 +67,7 @@ CREATE TABLE IF NOT EXISTS backups (
   verified_at      INTEGER,
   verify_version   TEXT,
   status           TEXT NOT NULL
-                   CHECK (status IN ('pending','uploaded','ready','deleted','aborted','failed')),
+                   CHECK (status IN ('pending','uploading','uploaded','ready','deleted','aborted','failed')),
   last_error_code  TEXT,                 -- 우리가 정한 짧은 코드. 오류 전문이 아니다
   -- `ready` 는 **대조에 필요한 값이 전부** 있어야 한다. 한 DB 만 성공한 반쪽 백업이나
   -- 「크기·해시를 모르는 채 올라간」 객체가 `ready` 로 기록되는 것이 이 표가 막으려는 사고다.

@@ -72,6 +72,11 @@ CREATE TABLE IF NOT EXISTS write_leases (
 -- ⛔ 인덱스를 두지 않는다. 조회는 `COUNT(*)`·PK 조회 둘뿐이라 인덱스가 고를 것이 없고,
 --    D1 은 **인덱스 갱신도 rows_written 으로 센다**(공식 요금 문서) — 요청마다 쓰기만 늘린다.
 
+-- ⚠️ **2026-08-28 에 `cleanup_runs` 에 칸 하나(`recon_cursor`)를 더했다.** 후속 migration 이
+--    아니라 이 파일을 고친 이유: ledger D1 은 **아직 원격에 만들어진 적이 없다**(같은 날
+--    `wrangler d1 list` 실측 — 계정에 있는 D1 은 `shhh-db` 하나뿐이다). 적용된 적 없는
+--    migration 위에 `ALTER TABLE` 을 쌓으면 ⓐ 순서가 곧 조건이 되고 ⓑ `ALTER` 는 재실행이
+--    안 되며 ⓒ 운영자가 지켜야 할 단계만 는다. **원격에 없다는 것이 확실할 때만** 이렇게 한다.
 -- 정리 Worker 의 기록. **행 하나.**
 -- 없으면 「안 돌았다」와 「돌았는데 지울 게 없었다」를 구분할 수 없다.
 CREATE TABLE IF NOT EXISTS cleanup_runs (
@@ -83,6 +88,17 @@ CREATE TABLE IF NOT EXISTS cleanup_runs (
   last_counts  TEXT NOT NULL DEFAULT '{}',
   -- 확정되지 않은 pending 표식 수. **지우지 않는다. 세어서 알린다.**
   open_pending INTEGER NOT NULL DEFAULT 0,
-  last_error   TEXT
+  last_error   TEXT,
+  -- 백업 inventory reconciliation 이 **다음 회차에 어디서부터 볼지**(2026-08-28 · 위협 89).
+  --
+  -- 왜 영속인가: 크론은 회차마다 새 실행이라 메모리 커서는 언제나 처음으로 돌아간다.
+  -- 그래서 한 회차가 보는 범위를 `ORDER BY snapshot_at LIMIT 25` 로만 자르면, **앞 25개가
+  -- 계속 살아 있는 한 26번째는 몇 회차가 지나도 검사되지 않는다**(실측: 3회차까지 그대로).
+  -- 그 행이 삭제 표식 정리를 막으므로 방침이 약속한 보유기간이 사실상 무한이 된다.
+  --
+  -- 값은 마지막으로 본 `backup_id`(hex32) 이고, 한 바퀴를 다 돌면 `''` 로 되돌아간다.
+  -- ⚠️ **정렬 기준이 `backup_id` 여야 한다** — 커서가 전순서 위에 있어야 건너뛰지 않는다.
+  --    (`snapshot_at` 은 같은 값이 여럿일 수 있어 커서로 쓸 수 없다.)
+  recon_cursor TEXT NOT NULL DEFAULT ''
 );
 INSERT OR IGNORE INTO cleanup_runs (id) VALUES (1);

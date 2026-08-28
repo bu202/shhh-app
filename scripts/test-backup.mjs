@@ -54,6 +54,8 @@ function fakeInv(opts = {}) {
       const r = rows.get(id);
       assert.ok(r && r.status === "ready", `ready 가 아닌 행에 영수증을 적는다: ${id}`);
       r.verified_at = at; r.verify_version = v; },
+    // **업로드 권리**(2026-08-28 · 위협 88). `r2 object put` 직전에 이것이 성공해야 올린다.
+    async setUploading(id) { guard("uploading"); calls.push("uploading"); move(id, "uploading"); },
     async setUploaded(id, m, l, k, exp, bytes, hash) { guard("uploaded"); calls.push("uploaded");
       Object.assign(move(id, "uploaded"), { main_db_hash: m, ledger_db_hash: l, object_key: k,
         expires_expected_at: exp, object_bytes: bytes, object_hash: hash }); },
@@ -69,9 +71,13 @@ function fakeInv(opts = {}) {
       return [...rows.values()].filter((r) => !r.deleted_at && r.status !== "aborted"
                                               && r.status !== "deleted"); },
     async markChecked(id, at) { calls.push("checked"); rows.get(id).deletion_checked_at = at; },
-    async markGone(id, at, to) { calls.push("gone:" + to);
+    // 관측한 상태에서만 옮긴다(CAS). 바뀐 행 수를 돌려준다.
+    async markGone(id, at, to, from) { calls.push("gone:" + to);
+      const r = rows.get(id);
+      if (!r || (from !== undefined && r.status !== from)) return 0;
       Object.assign(move(id, to), { deleted_at: to === "deleted" ? at : undefined,
-                                    deletion_checked_at: at }); },
+                                    deletion_checked_at: at });
+      return 1; },
   };
 }
 
@@ -227,12 +233,18 @@ for (const which of ["main", "ledger"]) {
 
 // ══ B5. inventory 기록 실패 → 백업이 실패다 ══
 // 「기록만 실패했으니 성공으로 치자」가 있으면 migration 게이트가 근거를 잃는다.
-for (const failOn of ["insert", "uploaded", "ready"]) {
+for (const failOn of ["insert", "uploading", "uploaded", "ready"]) {
   const f = fakeRun();
   const inv = fakeInv({ failOn });
   const r = await runBackup({ env: ENV, run: f.run, inventory: inv });
   assert.equal(r.ok, false, t(`B5: inventory ${failOn} 실패인데 성공이라 한다`));
-  assert.equal(r.code, "inventory", t(`B5: inventory ${failOn} 실패 코드가 안 맞다`));
+  // ⚠️ 업로드 권리(`uploading`)를 못 딴 것은 **다른 사실**이다 — 「기록이 안 됐다」가 아니라
+  //    「그 사이에 이 백업이 닫혔다」이고, 그때는 `abort`·`fail` 로 덮어쓰면 안 된다.
+  assert.equal(r.code, failOn === "uploading" ? "claim" : "inventory",
+    t(`B5: inventory ${failOn} 실패 코드가 안 맞다`));
+  if (failOn === "uploading")
+    assert.ok(!f.calls.some((c) => c.includes("r2 object put")),
+      t("B5: ★ 업로드 권리를 못 땄는데 올렸다"));
   if (failOn === "insert")
     // ⚠️ 정지 확인 질의(읽기 3건)는 이 앞이다. 재는 것은 **export·업로드**가 없었나다.
     assert.ok(!f.calls.some((c) => /d1 export|r2 /.test(c)),
@@ -252,7 +264,9 @@ for (const failOn of ["insert", "uploaded", "ready"]) {
   assert.notEqual(row.main_db_hash, row.ledger_db_hash, t("B6: 두 해시가 같다 — 같은 파일을 두 번 쟀다"));
   assert.equal(row.expires_expected_at, now + BACKUP_TTL_DAYS * 86400e3,
     t("B6: 만료 예정 시각이 lifecycle 과 다르다"));
-  assert.deepEqual(inv.calls, ["insert", "uploaded", "ready"], t("B6: 상태 전이 순서가 다르다"));
+  // ⚠️ `uploading` 이 **`uploaded` 앞**에 있어야 한다 — 업로드 권리를 딴 뒤에만 올린다.
+  assert.deepEqual(inv.calls, ["insert", "uploading", "uploaded", "ready"],
+    t("B6: 상태 전이 순서가 다르다"));
   // 업로드 **뒤에** 검증한다. 순서가 뒤집히면 없는 객체를 검증하게 된다.
   const put = f.calls.findIndex((c) => c.includes("r2 object put"));
   const get = f.calls.findIndex((c) => c.includes("r2 object get"));
