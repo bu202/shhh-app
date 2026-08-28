@@ -18,6 +18,7 @@ import { mkdtempSync, writeFileSync, copyFileSync, mkdirSync, rmSync, existsSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { BUILD_ID } from "../worker/build-id.js";
 
 let n = 0;
 const t = (m) => { n++; return m; };
@@ -136,10 +137,20 @@ const mainWorker :Workers.Worker = (
 
   // ── W5. 같은 런타임에서 **로그인 왕복 표 서명**도 돈다(`sameSecret` 의 다른 호출부).
   //   `/login/kakao` 는 설정이 없으므로 503 이어야 하고, 그 판정이 예외 없이 나와야 한다.
+  //   ⚠️ **빌드 계약을 실어 보낸다**(2026-08-28 · 위협 87). 안 실으면 계약 검사가 먼저 426 을
+  //      돌려주고, 이 검사가 재려던 자리에 아예 닿지 못한다.
   {
-    const r = await fetch(base + "/api/login/kakao", { redirect: "manual" });
+    const r = await fetch(`${base}/api/login/kakao?b=${BUILD_ID}`, { redirect: "manual" });
     assert.ok(r.status === 503 || r.status === 403,
       t(`W5: 설정이 없는데 /login/kakao 가 ${r.status} 다`));
+    // 최상위 이동이라 **사람이 읽을 화면**이어야 한다 — 진짜 workerd 에서도 그런지 본다.
+    assert.match(r.headers.get("content-type") || "", /^text\/html/,
+      t(`W5: ★ 폐쇄 배포의 로그인 시작이 raw JSON 이다 (${r.headers.get("content-type")})`));
+    // 옛 클라이언트(빌드 없음)는 갱신 안내 화면이다.
+    const old = await fetch(base + "/api/login/kakao", { redirect: "manual" });
+    assert.equal(old.status, 426, t(`W5: 옛 빌드 로그인 시작이 ${old.status} 다`));
+    assert.match(old.headers.get("content-type") || "", /^text\/html/,
+      t("W5: ★ 옛 빌드 안내가 HTML 이 아니다"));
   }
 
   // ── W6. ★ **어댑터 없이 돌았다.** 이 프로세스에 `_workers-shim` 은 들어가지 않았다.

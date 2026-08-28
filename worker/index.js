@@ -1035,9 +1035,16 @@ const tooMany = (env, req) =>
     { status: 429, headers: { "Content-Type": "application/json", "Retry-After": "60", ...cors(env, req) } });
 // 방어가 고장 났다. **429 로 말하지 않는다** — 「좀 있다 다시」가 아니라 「지금 우리가 셀 수
 // 없다」이고, 그 상태로 계정 경로를 여는 것은 방어가 없는 것과 같다. 이유는 밖으로 안 나간다.
-const guardClosed = (env, req) =>
-  json(env, req, { error: "계정 기능이 아직 열리지 않았어요", mode: "unknown" }, 503,
-    { "Retry-After": "3600" });
+// ⚠️ **최상위 이동에는 사람이 읽을 화면을 준다**(2026-08-28 · 위협 87). 재현: 지금 라이브와
+//    같은 폐쇄 구성에서 옛 PWA 의 `GET /api/login/naver` 가 이 JSON 을 **화면에 그대로 그렸다.**
+//    브라우저가 주소창으로 들어온 응답의 본문을 그리기 때문이고, 옛 세대에는 그 JSON 을 읽을
+//    코드가 없다 — 사용자가 할 수 있는 일이 하나도 없다.
+//    ⛔ **상태코드는 그대로 503 이다.** 바뀌는 것은 모양뿐이고, 문이 열리는 일은 없다.
+const guardClosed = (env, req, path) =>
+  isNavPath(path)
+    ? closedPage(env)
+    : json(env, req, { error: "계정 기능이 아직 열리지 않았어요", mode: "unknown" }, 503,
+        { "Retry-After": "3600" });
 
 // 신뢰 경계. 무료 플랜 Worker 는 메모리가 128MB 인데 요청 본문 한도는 100MB 라,
 // 안 막으면 한 번의 요청으로 밀어붙일 수 있다.
@@ -1465,14 +1472,26 @@ const MAINT_READS = [
 //    사용자가 누르는 링크 하나만 둔다.
 // ⛔ **OAuth code·state·토큰·쿠키를 화면에도 로그에도 싣지 않는다.** 이 화면이 그리는 값은
 //    앱 주소와 빌드 식별자뿐이고, 둘 다 이미 공개돼 있다.
-const updatePage = (env, why) => {
+//
+// ⚠️ **자리를 정하는 것은 헤더가 아니라 경로다**(2026-08-28 · 위협 87). `Accept` 나
+//    `Sec-Fetch-Mode` 로 고르면 응답 형식을 클라이언트가 정하게 되고, 라우트마다 적으면
+//    갈라진다. `/login/:p` 와 `/cb/:p` 는 **언제나** 브라우저가 주소창으로 들어오는 자리다.
+//    (`/exchange/:p` 는 앱이 `fetch` 로 부르므로 여기 없다 — 거기는 JSON 계약이다.)
+export const isNavPath = (p) => /^\/(?:login|cb)\//.test(p);
+
+// 자립형 안내 화면 **한 벌**. 갱신 안내(426)와 폐쇄 안내(503)가 같은 틀을 쓴다 —
+// 두 벌로 만들면 한쪽만 고치는 날 다른 쪽이 다시 raw JSON 이 된다.
+// ⚠️ **제목도 `h1` 에서 온다**(2026-08-28 · 실브라우저에서 잡았다). 고정 문자열로 두었더니
+//    「계정 기능이 아직 열리지 않았어요」 화면의 탭 제목이 **「앱을 업데이트해 주세요」**였다 —
+//    사용자는 그 글자를 탭과 방문 기록에서 보고 앱을 지웠다 깔았다 하게 된다.
+const noticePage = (env, { status, h1, para, steps = false, headers = {} }) => {
   // ⚠️ `appOrigin()` 은 값이 없거나 모양이 다르면 **`null`** 을 돌려준다. 그대로 쓰면
   //    화면에 `null/` 이 박혀 **누를 수는 있는데 아무 데도 안 가는 링크**가 된다 —
   //    이 화면의 유일한 쓸모가 그 링크다. 모를 때는 **같은 호스트의 루트**로 보낸다.
   const home = appOrigin(env) || "";
   const body = `<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>앱을 업데이트해 주세요 · shhh!</title>
+<title>${h1} · shhh!</title>
 <style>
 :root{color-scheme:light dark}
 *{box-sizing:border-box}
@@ -1489,21 +1508,20 @@ small{display:block;margin-top:24px;color:#7a6f66;font-size:.8rem;word-break:bre
 @media (prefers-color-scheme:dark){body{background:#17140f;color:#efe9e0}
   a.go{background:#efe9e0;color:#17140f}small{color:#9a8f85}}
 </style></head><body><main>
-<h1>앱이 오래된 판이에요</h1>
-<p>지금 열려 있는 화면이 서버가 아는 판보다 오래됐어요. 그래서 ${why} 진행할 수 없어요.
-아래 버튼으로 최신 화면을 열어 주세요.</p>
+<h1>${h1}</h1>
+<p>${para}</p>
 <a class="go" href="${home}/">최신 화면 열기</a>
-<p><b>홈 화면에 설치해 두셨다면</b></p>
+${steps ? `<p><b>홈 화면에 설치해 두셨다면</b></p>
 <ol>
 <li>이 화면을 닫아 주세요.</li>
 <li>설치된 앱을 완전히 종료했다가 다시 열어 주세요.</li>
 <li>그래도 같으면 아래 주소를 브라우저에서 직접 열어 주세요.</li>
 </ol>
-<p>${home}/</p>
+<p>${home}/</p>` : ""}
 <small>build ${BUILD_ID}</small>
 </main></body></html>`;
   return new Response(body, {
-    status: 426,
+    status,
     headers: {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
@@ -1512,9 +1530,39 @@ small{display:block;margin-top:24px;color:#7a6f66;font-size:.8rem;word-break:bre
       // 이 화면은 자기 안의 style 말고는 아무것도 안 쓴다. 그 사실을 정책으로도 적는다.
       "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; "
         + "img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      ...headers,
     },
   });
 };
+
+// 옛 세대라 진행할 수 없다.
+const updatePage = (env, why) => noticePage(env, {
+  status: 426, h1: "앱이 오래된 판이에요", steps: true,
+  para: `지금 열려 있는 화면이 서버가 아는 판보다 오래됐어요. 그래서 ${why} 진행할 수 없어요. `
+    + "아래 버튼으로 최신 화면을 열어 주세요.",
+});
+// 이 배포는 계정 기능이 아직 안 열렸다(엣지 방어·ledger·시크릿 중 무엇이 없는지는 **안 말한다**).
+// ⚠️ 옛 판이 아니라 **서버가 닫혀 있는 것**이므로 갱신 절차를 적지 않는다 — 적으면 사용자가
+//    앱을 지웠다 깔았다 하며 고치려 든다.
+const closedPage = (env) => noticePage(env, {
+  status: 503, h1: "계정 기능이 아직 열리지 않았어요",
+  para: "로그인과 회원가입은 아직 준비 중이에요. 단어 찾아보기는 그대로 쓰실 수 있어요. "
+    + "조금 뒤에 다시 눌러 주세요.",
+  headers: { "Retry-After": "3600" },
+});
+// 콜백이 끝까지 못 갔다. **최상위 이동 전용**이다(앱이 부르는 자리는 JSON 계약을 그대로 쓴다).
+// ⚠️ 전에는 `new Response(msg, { status })` — charset 도 링크도 없는 평문 한 줄이었다.
+//    브라우저가 그 글자를 그대로 그리고, 사용자에게는 앱으로 돌아갈 길이 없었다(위협 87).
+const loginFailPage = (env, msg, status) => noticePage(env, {
+  status, h1: "로그인을 마치지 못했어요",
+  para: `${msg || "로그인을 끝내지 못했어요."} 아래 버튼으로 앱을 다시 열고 처음부터 해 주세요.`,
+});
+// 유지보수·복원 중이다. 무엇을 왜 하는지는 말하지 않는다.
+const maintPage = (env) => noticePage(env, {
+  status: 503, h1: "잠시 점검 중이에요",
+  para: "계정 기능을 잠깐 멈춰 두었어요. 조금 뒤에 다시 열어 주세요.",
+  headers: { "Retry-After": "60" },
+});
 
 export const BUILD_HEADER = "x-shh-build";
 const ALWAYS_OPEN = [/^\/health$/, /^\/ready$/, /^\/policies$/];
@@ -1661,36 +1709,22 @@ export default {
     const rt = routeFor(req.method, path);
     if (!rt) return new Response("shhh! api", { status: 404, headers: cors(env, req) });
 
-    // ── 0-0-1. 남용 방어가 준비됐나 ──
-    // **게이트보다도 먼저다** — 게이트는 ledger 를 읽고, 그 질의부터가 우리가 막으려는 비용이다.
-    // 여기서 돌아가는 응답은 **어느 DB 도 만지지 않는다**(T65-a·T67-a 가 두 저장소를 잰다).
-    // 열어 두는 것은 상태를 보는 셋뿐이다 — 운영자가 무엇이 덜 됐는지 볼 수단이 그것뿐이다.
-    // ⚠️ `GET /login/:provider` 도 닫는다. 열어 두면 제공자까지 갔다가 콜백에서 죽는다.
-    // ⚠️ 응답에 「무엇이 없다」를 쓰지 않는다 — 인증 없이 열린 자리에 설정 정보를 흘리지 않는다.
-    const open = ALWAYS_OPEN.some((re) => re.test(path));
-    if (!open) {
-      const mode = guardMode(env);
-      if (!guardOpens(mode)) return guardClosed(env, req);
-      // ⚠️ **호스트 잠금은 `waf` 모드의 짝이다.** WAF 규칙은 우리 존에만 걸리므로
-      //    `*.pages.dev` 로 오는 요청은 규칙을 **통째로 건너뛴다** — 그 우회로를 열어 두면
-      //    「WAF 를 붙였다」가 계정 API 에 대해 거짓이 된다(위협 55).
-      //    정적 화면까지 막지는 못한다(그건 Pages 가 준다). 막는 것은 **계정 API** 다.
-      if (mode === "waf" && url.host !== wafHost(env))
-        return json(env, req, { error: "이 주소에서는 계정 기능을 쓸 수 없어요" }, 403);
-      // 엣지 사전 거름. 버킷이 없는 계정 라우트(`/login/:provider`)도 **엣지에서는 센다** —
-      // 우리 카운터의 이중 집계(2026-08-16 사고)와 다른 층이라 겹치지 않는다.
-      const edge = await edgeVerdict(env, req, rt.bucket || "route");
-      if (edge === BROKEN) return guardClosed(env, req);
-      if (edge === OVER) return tooMany(env, req);
-    }
-
     // ── 0-0-1-1. **클라이언트 호환성 계약** (2026-08-27 · 위협 80) ──
     //
     // 이미 설치된 PWA 는 옛 화면 코드를 계속 돈다. 화면 쪽 대조(`buildMatches()`)는 **옛 세대에
     // 그 코드가 없어서** 옛 PWA 를 막지 못한다 — 판정이 서버에 있어야 실효가 있다.
     //
-    // ⚠️ **자리가 곧 계약이다**: 라우트 판정 **뒤**(없는 주소는 그냥 404), 인증·제공자 호출·
-    //    D1/ledger 접근 **앞**. 그래서 옛 클라이언트는 자원을 한 줄도 태우지 못한다.
+    // ⚠️ **자리가 곧 계약이다**: 라우트 판정 **뒤**(없는 주소는 그냥 404), 그리고 **남용 방어·
+    //    게이트·인증·제공자 호출·D1/ledger 접근 전부의 앞**. 그래서 옛 클라이언트는 자원을 한
+    //    줄도 태우지 못한다.
+    // ⚠️ **2026-08-28 에 남용 방어보다 앞으로 옮겼다**(위협 87). 뒤에 있을 때는 **지금 라이브와
+    //    같은 폐쇄 구성**(`EDGE_GUARD` 없음)에서 옛 PWA 가 이 안내에 **아예 닿지 못했다** —
+    //    받는 것은 raw JSON 503 이었고 최상위 이동이라 그 글자가 화면에 그대로 그려졌다.
+    //    ⛔ **게이트를 우회시키는 것이 아니다.** 여기서 나가는 응답은 426 하나뿐이고, 값이
+    //       **맞으면 그대로 아래 남용 방어로 떨어진다**(`test-deploy-matrix` D2 가 전수로 잰다).
+    //    ⚠️ 대가: 계약이 안 맞는 요청은 엣지 사전 거름 카운터를 지나지 않는다. 그 응답은 DB 를
+    //       한 줄도 안 만지는 고정 화면이라 없는 주소의 404 와 같은 비용이고, WAF 모드에서는
+    //       엣지가 Worker 앞에 있어 그대로 센다.
     // ⚠️ **`state` 방식(콜백)은 예외다** — 그 값은 제공자가 돌려보내는 자리에 있어서 여기서
     //    볼 수 없고, 핸들러 안에서 본다. 그 앞에 리미터와 임차증이 이미 지나가므로 **ledger
     //    쓰기 둘은 난다.** 지키는 것은 「제공자 호출과 주 D1 쓰기 앞」이다(`test-compat` C6).
@@ -1705,13 +1739,35 @@ export default {
         // 426 Upgrade Required. 화면이 「앱을 새로고침해 주세요」로 바꿔 말한다.
         // ⛔ 응답에 서버 세대 말고는 아무것도 싣지 않는다.
         const msg = "앱이 오래된 판이에요. 새로고침하거나 앱을 다시 열어 주세요";
-        // `query` 방식은 **`GET /login/:provider` 하나**이고 그것은 언제나 top-level
-        // navigation 이다 — 브라우저가 본문을 그대로 그리므로 사람이 읽을 화면을 준다.
+        // 최상위 이동이면 브라우저가 본문을 그대로 그린다 — 사람이 읽을 화면을 준다.
         // 나머지(계정 API)는 화면 코드가 받아 자기 말로 바꾼다.
-        return rt.compat === "query"
+        return isNavPath(path)
           ? updatePage(env, "로그인을")
           : json(env, req, { error: msg, updateRequired: true, build: BUILD_ID }, 426);
       }
+    }
+
+    // ── 0-0-1. 남용 방어가 준비됐나 ──
+    // **게이트보다도 먼저다** — 게이트는 ledger 를 읽고, 그 질의부터가 우리가 막으려는 비용이다.
+    // 여기서 돌아가는 응답은 **어느 DB 도 만지지 않는다**(T65-a·T67-a 가 두 저장소를 잰다).
+    // 열어 두는 것은 상태를 보는 셋뿐이다 — 운영자가 무엇이 덜 됐는지 볼 수단이 그것뿐이다.
+    // ⚠️ `GET /login/:provider` 도 닫는다. 열어 두면 제공자까지 갔다가 콜백에서 죽는다.
+    // ⚠️ 응답에 「무엇이 없다」를 쓰지 않는다 — 인증 없이 열린 자리에 설정 정보를 흘리지 않는다.
+    const open = ALWAYS_OPEN.some((re) => re.test(path));
+    if (!open) {
+      const mode = guardMode(env);
+      if (!guardOpens(mode)) return guardClosed(env, req, path);
+      // ⚠️ **호스트 잠금은 `waf` 모드의 짝이다.** WAF 규칙은 우리 존에만 걸리므로
+      //    `*.pages.dev` 로 오는 요청은 규칙을 **통째로 건너뛴다** — 그 우회로를 열어 두면
+      //    「WAF 를 붙였다」가 계정 API 에 대해 거짓이 된다(위협 55).
+      //    정적 화면까지 막지는 못한다(그건 Pages 가 준다). 막는 것은 **계정 API** 다.
+      if (mode === "waf" && url.host !== wafHost(env))
+        return json(env, req, { error: "이 주소에서는 계정 기능을 쓸 수 없어요" }, 403);
+      // 엣지 사전 거름. 버킷이 없는 계정 라우트(`/login/:provider`)도 **엣지에서는 센다** —
+      // 우리 카운터의 이중 집계(2026-08-16 사고)와 다른 층이라 겹치지 않는다.
+      const edge = await edgeVerdict(env, req, rt.bucket || "route");
+      if (edge === BROKEN) return guardClosed(env, req, path);
+      if (edge === OVER) return tooMany(env, req);
     }
 
     // ── 0-0-2. 우리가 발급한 쿠키인가 — **CPU 만 쓴다** ──
@@ -1724,7 +1780,7 @@ export default {
     //    D1 에서 최종 판정한다. 여기서 하는 말은 「이건 우리가 만든 쿠키다」 하나뿐이다.
     // ⚠️ 키가 없으면 **검증할 수 없다** — 통과시키지 않는다(계정 라우트는 어차피 열 수 없다).
     if (rt.auth) {
-      if (!env.SESSION_ENVELOPE_KEY) return guardClosed(env, req);
+      if (!env.SESSION_ENVELOPE_KEY) return guardClosed(env, req, path);
       if (!(await envelopeOk(env, readCookie(req))))
         return json(env, req, { error: "로그인이 필요해요" }, 401);
     }
@@ -1752,8 +1808,10 @@ export default {
     }
     if (gate && !maintenanceAllows(gate.mode, path, req.method)) {
       // 무엇을·왜 복원하는지는 말하지 않는다. 「지금 안 된다」와 「언제 다시 와라」만 말한다.
-      return json(env, req, { error: "잠시 점검 중이에요. 조금 뒤에 다시 열어주세요", mode: publicMode(gate.mode) },
-        503, { "Retry-After": "60" });
+      // ⚠️ 최상위 이동이면 화면이다(위협 87) — 상태코드는 그대로 503 이다.
+      return isNavPath(path) ? maintPage(env)
+        : json(env, req, { error: "잠시 점검 중이에요. 조금 뒤에 다시 열어주세요", mode: publicMode(gate.mode) },
+          503, { "Retry-After": "60" });
     }
 
     // ── 0-1-0. 레이트리밋 ──
@@ -1771,7 +1829,7 @@ export default {
     //    전환 뒤에 깨어난 요청은 0행을 쓰고 막히는 쪽으로 끝난다.
     if (rt.bucket) {
       const v = await countVerdict(env, req, rt.bucket);
-      if (v === BROKEN) return guardClosed(env, req);
+      if (v === BROKEN) return guardClosed(env, req, path);
       if (v === OVER) return tooMany(env, req);
     }
 
@@ -1790,12 +1848,14 @@ export default {
       try {
         lease = await acquireLease(env, LEASE_MODES_REQUEST);
       } catch {
-        return json(env, req, { error: "잠시 점검 중이에요", mode: "unknown" }, 503,
-          { "Retry-After": "60" });
+        return isNavPath(path) ? maintPage(env)
+          : json(env, req, { error: "잠시 점검 중이에요", mode: "unknown" }, 503,
+            { "Retry-After": "60" });
       }
       if (!lease)
-        return json(env, req, { error: "잠시 점검 중이에요. 조금 뒤에 다시 열어주세요", mode: publicMode(gate.mode) },
-          503, { "Retry-After": "60" });
+        return isNavPath(path) ? maintPage(env)
+          : json(env, req, { error: "잠시 점검 중이에요. 조금 뒤에 다시 열어주세요", mode: publicMode(gate.mode) },
+            503, { "Retry-After": "60" });
     }
 
     // ⚠️ **여기부터 주 D1 은 fence 를 지난다**(2026-08-25 · 원칙 1·3). lease 를 든 요청은
@@ -2033,8 +2093,10 @@ async function route(req, env, rc) {
       // ⚠️ **제공자별 검사도 여기 있다**(2026-08-22). 전에는 `id` 하나만 봐서 secret 이 없는
       //    네이버·구글도 302 로 제공자까지 보냈다 — 사용자는 거기서 로그인하고 돌아와
       //    토큰 교환에서 실패한다. 실패를 **왕복 앞**으로 당긴다.
-      if (!providerPossible(env, m[1]) || !loginPossible(env))
-        return new Response(m[1] + " 로그인이 아직 설정되지 않았어요", { status: 503 });
+      // ⚠️ **최상위 이동이라 화면을 준다**(2026-08-28 · 위협 87). 전에는 charset 도 링크도
+      //    없는 평문 한 줄이었다 — 브라우저가 그 글자를 그대로 그리고, 사용자는 앱으로
+      //    돌아갈 길이 없었다. 어느 제공자인지도 말하지 않는다(설정 정보다).
+      if (!providerPossible(env, m[1]) || !loginPossible(env)) return closedPage(env);
       const { id } = creds(env, m[1]);
       // ⚠️ **여기서는 세지 않는다.** 예전엔 `/cb`·`/exchange` 와 같은 `login` 버킷으로 셌는데,
       //    한 번의 로그인이 두 자리를 지나므로 **한도 10 이 실제로는 완전한 로그인 5회**였다
@@ -2082,7 +2144,7 @@ async function route(req, env, rc) {
         // 도착하므로 사람이 읽는 글이거나 리다이렉트다.
         const fail = (msg, status, hash) => {
           const r = viaApp ? json(env, req, { error: msg }, status)
-                           : (hash ? redir(hash) : new Response(msg, { status, headers: { ...SEC } }));
+                           : (hash ? redir(hash) : loginFailPage(env, msg, status));
           r.headers.append("Set-Cookie", clearTxn());
           return r;
         };
@@ -2109,10 +2171,12 @@ async function route(req, env, rc) {
         if (st.b !== BUILD_ID)
           // ⚠️ 리다이렉트 갈래는 **조각이 아니라 화면**이다(2026-08-27 · 위협 83).
           //    `#login=outdated` 를 읽을 코드가 옛 세대에는 없다 — 사용자에게는 빈 화면이다.
-          return viaApp
-            ? json(env, req, { error: "앱이 오래된 판이에요. 새로고침한 뒤 다시 시도해 주세요",
-                               updateRequired: true, build: BUILD_ID }, 426)
-            : updatePage(env, "로그인을");
+          // ⚠️ 기준은 **경로**다(2026-08-28). `viaApp` 은 제공자 설정이라 「이 요청이 최상위
+          //    이동으로 들어왔나」와 다른 질문이고, 둘을 섞으면 `/cb/naver` 같은 조합에서 갈린다.
+          return isNavPath(path)
+            ? updatePage(env, "로그인을")
+            : json(env, req, { error: "앱이 오래된 판이에요. 새로고침한 뒤 다시 시도해 주세요",
+                               updateRequired: true, build: BUILD_ID }, 426);
 
         // **표를 본다.** 공격자가 자기 code/state 링크를 남에게 보내도 여기서 끝난다 —
         // 그 사람 브라우저에는 우리가 심은 표가 없다. code 교환·세션 생성 **이전**이라
