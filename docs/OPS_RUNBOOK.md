@@ -306,6 +306,17 @@ npx wrangler d1 execute shhh-ledger --remote --command \
 
 **중단 기준:** ②가 실패하면 정리 Worker 를 배포하지 않는다.
 
+⚠️ **2026-08-28 에 `0001` 과 `0005` 를 고쳤다**(후속 migration 이 아니다). `cleanup_runs` 에
+`recon_cursor` 칸이, `backups` 의 CHECK 에 `'uploading'` 이 들어갔다. 그렇게 한 근거는
+같은 날 `npx wrangler d1 list` 실측이다 — **계정에 있는 D1 은 `shhh-db` 하나뿐이고 ledger D1 은
+만들어진 적이 없다.** 적용된 적 없는 migration 위에 `ALTER` 를 쌓으면 순서가 곧 조건이 되고,
+SQLite 는 `CHECK` 를 `ALTER` 로 바꾸지도 못한다.
+
+⛔ **이 전제가 깨졌다면**(누군가 그 사이에 ledger D1 을 만들었다면) 이 파일들을 그대로 적용하지
+않는다. 먼저 `npx wrangler d1 list` 로 다시 확인하고, 이미 있으면 `backups` 재생성 migration 과
+`ALTER TABLE cleanup_runs ADD COLUMN recon_cursor TEXT NOT NULL DEFAULT ''` 를 **후속 번호**로
+써야 한다.
+
 ## 6-6. 백업용 R2 버킷과 `BACKUPS` 바인딩 (2026-08-27)
 
 ⚠️ **ledger 의 `0006` 은 없어졌다.** `object_bytes`·`object_hash` 를 비롯한 백업 inventory 의
@@ -906,6 +917,10 @@ migration 승인 요청
       → ledger D1 export          (실패 → aborted)
       → 크기·필수 표 존재·해시 검증  (실패 → aborted)
       → 암호화                     (실패 → aborted)
+      → **업로드 권리 CAS**         pending → uploading
+                                    ⛔ **0행이면 그 사이에 reconciliation 이 이 백업을 닫았다** —
+                                       업로드를 아예 시작하지 않고 `claim` 으로 끝난다.
+                                       그 행은 남의 것이므로 `abort`·`fail` 로 덮어쓰지 않는다
       → R2 비공개 버킷 업로드       (실패 → **failed**: 객체가 생겼는지 모른다 → 계속 막는다)
       → inventory uploaded (+ 암호문 크기·해시)
       → --file 로 되읽어 크기·해시 대조 (실패 → failed)
@@ -928,13 +943,39 @@ node scripts/backup.mjs reconcile      # 0 이 아니면 사람이 봐야 할 �
 |---|---|
 | 객체가 **있다** · 크기·해시 일치 | `deletion_checked_at` 만 적는다 |
 | 객체가 **있다** · 값이 다르거나 우리가 아는 값이 없다 | `failed`(계속 막는다) · **0이 아닌 코드** |
-| 객체가 **없다**(부재 확인) | `pending` → `aborted`, 그 밖 → `deleted` + `deleted_at` |
+| 객체가 **없다**(부재 확인) · 상태가 `uploading` | ⛔ **닫지 않는다**(2026-08-28 · 위협 88) — 그 순간 다른 프로세스의 `put` 이 도는 중일 수 있다. 계속 막고 **0이 아닌 코드**. 6시간 넘게 그대로면 `stuck` 으로 알린다 |
+| 객체가 **없다**(부재 확인) · 그 밖 | `pending` → `aborted`, 그 밖 → `deleted` + `deleted_at`. **관측한 상태를 조건에 건 CAS** 라, 그 사이에 생산자가 옮겼으면 0행이고 `raced` 로 센다 |
 | **조회가 실패했다** | ⛔ **아무것도 적지 않는다**(확인 시각조차) · **0이 아닌 코드** |
 | 만료 예정 + 여유가 지났는데 아직 있다 | ⛔ 지우지 않는다. **경보**만 낸다 — lifecycle 규칙을 사람이 본다 |
 
 ⛔ **만료 예상 시각을 「지워졌다」의 근거로 쓰지 않는다.** R2 는 만료 표시 뒤 실제 삭제까지
 통상 하루가 더 걸릴 수 있고, 규칙이 애초에 안 걸려 있었을 수도 있다.
 ⛔ **이 명령은 복원하지 않는다.** 내는 R2 명령은 `get` 하나다(`test-backup` B18).
+
+#### `uploading` 이 남아 있을 때 — **사람이 판단한다** (2026-08-28 · 위협 88)
+
+`uploading` 은 「업로드 권리를 딴 생산자가 있다」는 뜻이다. 자동으로 닫는 경로가 **없다** —
+시간이 지났다는 것은 생산자가 죽었다는 증거가 아니기 때문이다. 그래서 방치된 행은
+`cleanupAlert` 로 올라오고, 다음을 **사람이** 확인한다.
+
+1. **정말 도는 백업이 없나** — `node scripts/backup.mjs backup` 을 돌린 창이 살아 있나.
+2. **객체가 있나** — `npx wrangler r2 object get <버킷>/shhh/<backup_id>.enc --file /tmp/x --remote`
+   (⛔ 크기가 크면 받지 말고 `head` 성격의 확인만 한다).
+3. 판단:
+   - 객체가 **있다** → 그 백업은 신뢰할 수 없다(크기·해시를 기록하지 못했다).
+     `failed` 로 두고 **새 backup_id 로 다시 만든다.** 옛 객체는 lifecycle 이 지운다.
+   - 객체가 **없고** 생산자도 없다 → `uploading` → `failed` 로 옮긴다. `aborted` 로 옮기지 않는다
+     (「올린 적 없다」를 우리가 증명할 수 없다). 그 뒤 `reconcile` 이 부재를 확인하면 `deleted` 다.
+
+```bash
+# 3의 둘째 갈래. **backup_id 를 손으로 확인한 뒤에만** 친다.
+npx wrangler d1 execute shhh-ledger --remote --command \
+  "UPDATE backups SET status = 'failed', last_error_code = 'stuck_upload' \
+     WHERE backup_id = '<backup_id>' AND status = 'uploading'"
+```
+
+⛔ **`aborted` 로 직접 옮기는 명령을 절차에 두지 않는다.** `aborted` 만이 삭제 표식 정리를
+막지 않는 상태이고, 그 주장은 「업로드 명령이 나간 적이 없다」를 아는 자리에서만 할 수 있다.
 
 **설정 네 가지**(전부 있어야 한다. 하나라도 없으면 fail-closed):
 
@@ -944,6 +985,12 @@ node scripts/backup.mjs reconcile      # 0 이 아니면 사람이 봐야 할 �
 | `BACKUP_LEDGER_DB` | `shhh-ledger` | |
 | `BACKUP_R2_BUCKET` | 비공개 R2 버킷 이름 | **공개 접근 끄기** · lifecycle 7일 만료 |
 | `BACKUP_KEY_FILE` | 32바이트 키(base64) **파일 경로** | ⛔ **저장소 안에 두지 않는다** · ⛔ **백업 버킷 안에 두지 않는다** — 같은 곳에 두면 버킷 하나가 새는 순간 암호화가 아무 일도 안 한 것이 된다 |
+
+**실행 환경**: **Node 22.13.0 이상**(2026-08-28 · 위협 90). 복원 가능성 증명이 `node:sqlite` 를
+쓰고, 그 아래 판에서는 플래그 없이 열리지 않는다. 저장소에 `.nvmrc` 가 있으므로 `nvm use` 하면
+된다. ⛔ **지원하지 않는 판에서는 어느 하위 명령도 시작하지 않고 종료 코드 3 으로 끝난다** —
+부분적으로 도는 것(export 는 되고 검증만 안 되는 것)이 가장 나쁘다. 값의 원본은
+`scripts/backup.mjs` 의 `MIN_NODE` 이고 `package.json` 의 `engines.node`·`.nvmrc` 가 거기서 온다.
 
 - ⛔ **키를 값으로 넘기지 않는다**(`BACKUP_KEY=...`). 프로세스 목록과 셸 기록에 남는다.
 - **dry-run 은 원격에 한 글자도 쓰지 않는다**: `node scripts/backup.mjs backup --dry-run`.

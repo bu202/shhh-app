@@ -357,7 +357,7 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 >
 > <!-- 현재상태:끝 -->
 
-`npm test` **31개 스위트** 전부 통과한다(2026-08-22 실측, exit 0). 단, **테스트 통과는 보안 완료가 아니다** —
+`npm test` **34개 스위트** 전부 통과한다(2026-08-28 실측, exit 0). 단, **테스트 통과는 보안 완료가 아니다** —
 이 저장소는 "초록불인데 P0 가 살아 있던" 사고를 **두 번** 겪었다(§5 참고). 두 번째가 더 중요하다:
 96개 서버 테스트가 통과하는 동안 **클라이언트 실패 처리 경로에는 테스트가 하나도 없었고**,
 계정 삭제가 500 이어도 "계정을 지웠어요"라고 말하고 있었다.
@@ -398,10 +398,10 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 | 항목 | 상태 |
 |---|---|
 | 브랜치 | `cf-pages`. ⚠️ **push 되지 않은 로컬 커밋이 있다** — 개수는 자주 바뀌니 `git status --short --branch` 로 본다 |
-| 테스트 | **31개 스위트** 통과(2026-08-22 실측, exit 0). `test-workerd` 가 진짜 workerd 를 띄워 운영 경로를 밟는다. 4단계에서 `test-policies` · `test-signup` · `test-deletion-ledger` · `test-cleanup` 이 늘었다. 개수의 원본은 `package.json` 의 `test` 스크립트이고 `scripts/test-docs.mjs` 가 거기서 읽어 문서와 대조한다 |
+| 테스트 | **34개 스위트** 통과(2026-08-28 실측, exit 0). `test-workerd` 가 진짜 workerd 를 띄워 운영 경로를 밟는다. 4단계에서 `test-policies` · `test-signup` · `test-deletion-ledger` · `test-cleanup` 이 늘었고, **2026-08-28 에 `test-deploy-matrix`(배포 구성 8종) · `test-ops-race`(운영 교차) · `test-verifier`(검증 장치 자체)가 늘었다** — 앞의 것은 다른 fixture 가 전부 `DEV_RATE_LIMIT` 으로 문을 열어 둔 채 재고 있었기 때문이고, 뒤의 것은 백업·reconcile·크론을 각각 혼자만 재고 있었기 때문이며, 마지막 것은 **완료 판정을 만드는 돌연변이 실행기가 종료하지 않는 변이 앞에서 멈추고 손자를 남긴 채 아무 실패도 표시하지 않았기 때문이다**(위협 91·92). 개수의 원본은 `package.json` 의 `test` 스크립트이고 `scripts/test-docs.mjs` 가 거기서 읽어 문서와 대조한다 |
 | 돌연변이 | `node scripts/mutate.mjs` 로 **다시 돌릴 수 있다**. 목록의 원본은 `scripts/mutations.mjs`. 개수를 여기 적지 않는다 — 실행기 출력이 원본이다 |
 | 배포본 | 파일 수·선캐시 수·캐시 이름은 **빌드가 정한다** — `npm run build` 의 마지막 줄과 `scripts/test-dist.mjs` 의 출력이 원본이다. 손으로 적으면 다음 빌드에 낡는다(2026-08-20 정정: 여기 적혀 있던 「57개」는 그때 이미 58개였다). 내부 파일 0개는 `test-dist` 가 매번 검사한다 |
-| **라이브 (production)** | **배포 `7362d2f0`**(Production / branch `main` / source **`e02e810`**) — 2026-08-24 안전 동기화. **위협 57~65** 의 수정이 여기 들어 있다. ⛔ **위협 66 이후는 여기 없다** — 66~69 도, 70~72 도 로컬 커밋뿐이다(`git log --oneline e02e810..HEAD` 가 원본이다). 2026-08-24 12:35 KST 실측: 계정 API 전부 **503**(두 DB 를 만지기 전 · `GET`·`PUT /book` · `/login/{kakao,naver}` · `POST /signup/start`) · 키 없는·틀린 키 `/api/ready` **503 `{"ok":true,"ready":false,"diagnostics":false}`** · `/api/health` `ready:false`·`providers:[]`·`ledgerBound:false`·`abuseReady:false`·`signupReady:false` · `/api/policies` **200** · `/` **200** · 없는 주소 **404** · 내부 파일 7종 **SPA 폴백**(sha256 `7d809fa2268d…`) · SW·핵심 JS 4개가 빌드와 **바이트 동일** · 브라우저 리소스 19개 중 실패 0 · 콘솔 오류 0. ⚠️ **계정 기능을 여는 배포가 아니다** — `EDGE_GUARD` 부재가 그대로다. 실측 원본은 `docs/OPS_RUNBOOK.md` §16-5 |
+| **라이브 (production)** | **배포 `7362d2f0`**(Production / branch `main` / source **`e02e810`**) — 2026-08-24 안전 동기화. **위협 57~65** 의 수정이 여기 들어 있다. ⛔ **위협 66 이후는 여기 없다** — 66~69 도, 70~72 도, **87~90 도** 로컬 커밋뿐이다(`git log --oneline e02e810..HEAD` 가 원본이다). 2026-08-24 12:35 KST 실측: 계정 API 전부 **503**(두 DB 를 만지기 전 · `GET`·`PUT /book` · `/login/{kakao,naver}` · `POST /signup/start`) · 키 없는·틀린 키 `/api/ready` **503 `{"ok":true,"ready":false,"diagnostics":false}`** · `/api/health` `ready:false`·`providers:[]`·`ledgerBound:false`·`abuseReady:false`·`signupReady:false` · `/api/policies` **200** · `/` **200** · 없는 주소 **404** · 내부 파일 7종 **SPA 폴백**(sha256 `7d809fa2268d…`) · SW·핵심 JS 4개가 빌드와 **바이트 동일** · 브라우저 리소스 19개 중 실패 0 · 콘솔 오류 0. ⚠️ **계정 기능을 여는 배포가 아니다** — `EDGE_GUARD` 부재가 그대로다. 실측 원본은 `docs/OPS_RUNBOOK.md` §16-5 |
 | **남은 배포** | **넷이다**(2026-08-24 실측) — `7362d2f0`(Production · source `e02e810`) · `cae28bf6`(Preview / `cf-pages` · source `e02e810`) · `19e69dee`(옛 Production · source `7477867`) · `8e16c92e`(옛 Preview · source `7f9078a`). ⚠️ **옛 둘을 지우지 않았다** — `19e69dee` 는 검증된 안전 롤백 후보다. 넷 다 계정 라우트가 닫힌 세대이고, `<해시>` 주소는 전부 Access 뒤에 있다 |
 | **옛 배포 — 제어면** | ✅ **15개 삭제 완료 2026-08-22.** `deployment list` 에 없고 개별 조회는 `8000009 does not exist` 다 |
 | **옛 배포 — 공개 접근** | ✅ **Access 로 차단 2026-08-23 10:23 KST.** 프리뷰 액세스(`*.shhh-app.pages.dev`)를 켜서 옛 해시 **15개 전부가 302 → `cloudflareaccess.com`** 이 됐다(적용 전에는 전부 401). 정책은 **Allow · 운영자 이메일 1개**이고 Everyone·Bypass 가 아니다. 브라우저로도 「Sign in ・ Cloudflare Access」 화면을 확인했다(`auth_status: NONE`). ⚠️ **404 가 아니다** — 배포는 여전히 존재하고 Access 뒤에서 실행될 수 있다. ⚠️ **가역적이다** — 끄면 다시 401 이다. ⛔ **제어면 삭제 · 공개 접근 차단 · 404 는 서로 다른 세 사건이다.** 복원 금지 해제 조건 ⑦(D1~D12) 충족 여부는 **별도 검토 대상**이고 이 실험이 답하지 않는다 |
@@ -415,7 +415,7 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 | **ledger D1** | **아직 없다**(`d1 list` 에 `shhh-ledger` 가 없다). 스키마·migration 은 `worker/ledger-schema.sql` · `migrations-ledger/0001`~**`0005`** 에 있고(2026-08-27 에 옛 `0006` 을 `0005` 안으로 합쳤다 — **적용된 적이 없는 migration** 이라 `ALTER` 로 따로 들 이유가 없다), 생성·바인딩은 **별도 승인** 사항이다. 바인딩이 없으면 `readMode()` 가 `unbound` 라 사용자 데이터 API 가 전부 503 이다 |
 | 정리 크론 | **로컬 구현만 · 미배포.** `worker/cleanup/` 에 있고, 설정은 **템플릿(`wrangler.example.jsonc`)과 실제 설정(`wrangler.jsonc`)으로 갈라져 있다**(2026-08-19). 실제 설정은 저장소에 없고(`.gitignore`) `docs/OPS_RUNBOOK.md` §3 이 만든다 — **배포 가능한 설정 파일에 placeholder 가 들어갈 수 없는 구조다**(`scripts/test-config.mjs` 가 잰다). 실패·경보는 2026-08-18 에 마감했다: 실패한 회차는 `ctx.waitUntil()` Promise 를 **거부해** Cron Trigger 에 실패로 남고, 확정 안 된 삭제 표식·연속 실패 3회는 `/api/ready` 의 **`cleanupAlert`** boolean 으로 나온다. **외부 알림(Slack·이메일 등)은 붙이지 않았다.** ⚠️ **배포 전까지 운영에서는 아무도 만료 데이터를 안 치운다** |
 | legacy KV | **아직 살아 있다.** 5개(`b:1 c:1 s:2 u:1`, 접두사 개수만 확인 — **이번에 재조회하지 않았다**). 새 코드는 쓰지 않는다. 폐기 방향은 승인, **실행은 별도 승인**이고 **이번 범위에서 제외**다 |
-| **배포된 source 와 로컬** | **production source 는 `e02e810` 이다**(2026-08-24). **위협 57~65** 의 수정이 배포됐다. ⛔ **위협 66~86 은 배포되지 않았다** — 로컬 커밋에만 있다. ⚠️ **여기에 「최신 커밋」 해시를 적지 않는다** — HEAD 는 커밋할 때마다 움직여서 손으로 유지하면 반드시 낡는다(실제로 한 번 낡았다). 확인은 `git rev-parse HEAD` · `git log -1 --oneline` 이 원본이고, 배포 지점과의 차이는 `git log --oneline e02e810..HEAD` 로 본다. **push 0건**은 그대로다 |
+| **배포된 source 와 로컬** | **production source 는 `e02e810` 이다**(2026-08-24). **위협 57~65** 의 수정이 배포됐다. ⛔ **위협 66~92 은 배포되지 않았다** — 로컬 커밋에만 있다. ⚠️ **여기에 「최신 커밋」 해시를 적지 않는다** — HEAD 는 커밋할 때마다 움직여서 손으로 유지하면 반드시 낡는다(실제로 한 번 낡았다). 확인은 `git rev-parse HEAD` · `git log -1 --oneline` 이 원본이고, 배포 지점과의 차이는 `git log --oneline e02e810..HEAD` 로 본다. **push 0건**은 그대로다 |
 | 2단계(회원가입·개인정보) | **완료 2026-08-26** → `docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md` §21·§22. 정책 결정 2026-08-17 · 처리 근거·국외 처리·연령·CASCADE 확정 2026-08-18 · **2026-08-26 공식 법령·실제 서비스 사례 대조로 마감**. **외부 전문가 상담: 해당 없음 — 필수 범위에서 제외.** ⚠️ 사용자가 공식 자료를 보고 내린 **운영 결정**이지 변호사 검토 결과가 아니고, **법적 적합성 보증도 아니다** |
 | 3단계·4단계 재마감 | **2026-08-27 로컬 완료 · 미배포**(위협 79~81). 처리정지 경합(사용자 단위 fencing) · 서버 강제 클라이언트 호환성(426) · 백업 inventory 종결(`reconcile`). 스위트 둘 신설(`test-actor-fence`·`test-compat`) · 정책 번들 **pv `a9525896f710`**. ⛔ **원격 반영 0건** |
 | 3·4단계 행동 불변식 재마감 | **2026-08-27 로컬 완료 · 미배포**(위협 82~85). 세션 **발급** 경합 · 옛 PWA 가 읽을 수 있는 안내 화면 · 백업의 **복원 가능성 증명**(지정 id · 복호화 · 임시 SQLite 적재) · **자동** inventory reconciliation(정리 크론 · R2 바인딩). ⛔ **원격 의존이 둘 늘었다** — R2 버킷 `shhh-backups` 와 정리 Worker 의 `BACKUPS` 바인딩(`docs/OPS_RUNBOOK.md` §6-6). ⛔ **원격 반영 0건** |
@@ -775,7 +775,7 @@ AI 는 후보를 좁힐 뿐 **최종 수어 판정을 하지 않는다**. 문장
 ```bash
 python3 scripts/serve.py 8000        # 정적 화면만
 npm run build && npx wrangler pages dev dist   # Functions + 로컬 D1
-npm test                              # 31개 스위트 (빌드·dist·workerd 검사 포함)
+npm test                              # 34개 스위트 (빌드·dist·workerd 검사 포함)
 node scripts/mutate.mjs               # 돌연변이 검증 (목록: scripts/mutations.mjs)
 npm audit
 ```
