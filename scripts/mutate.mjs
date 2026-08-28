@@ -10,7 +10,8 @@
 //       제외 목록을 손으로 적지 않는다(손으로 적은 목록은 낡는다).
 // ⚠️ `node_modules` 는 복사하지 않고 **심볼릭 링크**를 건다(수백 MB 를 매번 복사할 이유가 없다).
 import { MUTATIONS } from "./mutations.mjs";
-import { execFileSync, spawnSync } from "node:child_process";
+import { runWithTimeout, tally, VERDICTS } from "./_mutate-lib.mjs";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, readFileSync,
          rmSync, symlinkSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,6 +25,10 @@ const arg = (k) => {
 };
 const only = (arg("--only") || "").split(",").filter(Boolean);
 const jsonOut = arg("--json");
+// 제한 시간의 원본은 **측정한 기준선**이다(손으로 고른 상수가 아니다). 기준선의 20배,
+// 최소 15초. ⚠️ 이 값이 없으면 종료하지 않는 변이 하나가 전체 검증을 멈춘다(위협 91).
+const TIMEOUT_FLOOR = 15_000;
+const timeoutArg = Number(arg("--timeout")) || 0;
 const list = only.length ? MUTATIONS.filter((m) => only.includes(m.id)) : MUTATIONS;
 if (only.length && list.length !== only.length) {
   console.error("모르는 돌연변이 id 가 있다:", only.filter((i) => !MUTATIONS.some((m) => m.id === i)).join(","));
@@ -61,14 +66,25 @@ try {
   // ── 0. 기준선. 변이 없이 대상 스위트가 **통과**해야 한다.
   //    안 그러면 아래의 「죽었다」는 변이 때문인지 원래 빨간지 구분이 안 된다.
   const suites = [...new Set(list.map((m) => m.suite))];
+  const budget = new Map();
   for (const s of suites) {
-    const r = spawnSync("node", [`scripts/${s}.mjs`],
-      { cwd: dir, encoding: "utf8", env: { ...process.env, SHHH_GIT_ROOT: ROOT } });
+    const t0 = Date.now();
+    const r = await runWithTimeout("node", [`scripts/${s}.mjs`],
+      { cwd: dir, env: { ...process.env, SHHH_GIT_ROOT: ROOT }, timeoutMs: 120_000 });
+    // ⛔ **기준선 timeout 은 즉시 전체 실패다.** 기준선이 안 끝나면 그 스위트의 변이 결과는
+    //    전부 「제한 시간에 걸렸다」가 되어 아무것도 재지 못한다.
+    if (r.timedOut) {
+      baselineFail++;
+      console.error(`⛔ 기준선 timeout: ${s} 가 변이 없이도 120초 안에 안 끝난다`);
+      continue;
+    }
     if (r.status !== 0) {
       baselineFail++;
       console.error(`⛔ 기준선 실패: ${s} 가 변이 없이도 실패한다 (exit ${r.status})`);
-      console.error((r.stderr || r.stdout || "").split("\n").filter((l) => /Assertion|✗/.test(l))[0] || "");
+      console.error(r.out.split("\n").filter((l) => /Assertion|✗/.test(l))[0] || "");
+      continue;
     }
+    budget.set(s, timeoutArg || Math.max(TIMEOUT_FLOOR, (Date.now() - t0) * 20));
   }
   if (baselineFail) { console.error("기준선이 빨간 상태에서는 돌연변이 결과를 믿을 수 없다."); process.exit(2); }
 
@@ -92,13 +108,17 @@ try {
     //    않음」이 나온다. 답은 기능이 아니라 **검사 쪽에 자기검사를 붙이는 것**이었다
     //    (`test-docs` 의 `exemptByDate` 합성 입력). 안 쓰는 기능은 남기지 않는다.
     writeFileSync(p, mutated);
-    const r = spawnSync("node", [`scripts/${m.suite}.mjs`],
-      { cwd: dir, encoding: "utf8", env: { ...process.env, SHHH_GIT_ROOT: ROOT } });
+    const timeoutMs = budget.get(m.suite) ?? TIMEOUT_FLOOR;
+    const r = await runWithTimeout("node", [`scripts/${m.suite}.mjs`],
+      { cwd: dir, env: { ...process.env, SHHH_GIT_ROOT: ROOT }, timeoutMs });
     writeFileSync(p, src);
-    const out = (r.stderr || "") + (r.stdout || "");
-    const why = out.split("\n").find((l) => /AssertionError|✗/.test(l)) || "";
-    rows.push({ ...pick(m), verdict: r.status === 0 ? "SURVIVED" : "KILLED", exit: r.status,
-                detail: why.trim().slice(0, 120) });
+    const why = r.out.split("\n").find((l) => /AssertionError|✗/.test(l)) || "";
+    // ⛔ **timeout 을 KILLED 로 접지 않는다.** 종료하지 않는 변이는 「잡혔다」가 아니라
+    //    「재지 못했다」이고, 둘을 합치면 그 변이가 곧 만점이 된다(위협 91).
+    const verdict = r.timedOut ? "TIMEOUT" : r.status === 0 ? "SURVIVED" : "KILLED";
+    rows.push({ ...pick(m), verdict, exit: r.status,
+                detail: r.timedOut ? `제한 시간 ${Math.round(timeoutMs / 1000)}초를 넘겼다`
+                                   : why.trim().slice(0, 120) });
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });
@@ -114,11 +134,13 @@ console.log("");
 console.log(`${w("ID", 5)} ${w("판정", 12)} ${w("종류", 6)} ${w("스위트", 22)} 무엇을 바꿨나`);
 console.log("-".repeat(108));
 for (const r of rows) console.log(`${w(r.id, 5)} ${w(r.verdict, 12)} ${w(r.kind, 6)} ${w(r.suite, 22)} ${r.what}`);
-const killed = rows.filter((r) => r.verdict === "KILLED").length;
+const sum = tally(rows);
 const survived = rows.filter((r) => r.verdict === "SURVIVED");
 const missed = rows.filter((r) => r.verdict === "ANCHOR-MISS");
+const timedOut = rows.filter((r) => r.verdict === "TIMEOUT");
 console.log("-".repeat(108));
-console.log(`총 ${rows.length}종 · 사망 ${killed} · 생존 ${survived.length} · 앵커 실패 ${missed.length}`);
+console.log(`총 ${sum.total}종 · 사망 ${sum.KILLED} · 생존 ${sum.SURVIVED}`
+  + ` · 앵커 실패 ${sum["ANCHOR-MISS"]} · 제한 시간 초과 ${sum.TIMEOUT}`);
 // ⚠️ **정적 검사와 동작 검사를 한 숫자로 합쳐 읽지 않는다.** 문서 일관성이 아무리 촘촘해도
 //    런타임 방어를 증명하지 못한다 — 그 착각이 이 저장소가 여섯 판 연속 겪은 사고의 모양이다.
 for (const k of ["동작", "정적"]) {
@@ -126,15 +148,20 @@ for (const k of ["동작", "정적"]) {
   if (!g.length) continue;
   console.log(`  · ${k} 검사 ${g.length}종 — 사망 ${g.filter((r) => r.verdict === "KILLED").length}`
     + ` · 생존 ${g.filter((r) => r.verdict === "SURVIVED").length}`
-    + ` · 앵커 실패 ${g.filter((r) => r.verdict === "ANCHOR-MISS").length}`);
+    + ` · 앵커 실패 ${g.filter((r) => r.verdict === "ANCHOR-MISS").length}`
+    + ` · 제한 시간 초과 ${g.filter((r) => r.verdict === "TIMEOUT").length}`);
 }
 for (const r of survived)
   console.log(`  ⚠️ 생존 ${r.id} — ${r.what}\n     깨진 불변식: ${r.invariant}`);
 for (const r of missed) console.log(`  ⛔ 앵커 실패 ${r.id} — ${r.what}`);
+for (const r of timedOut)
+  console.log(`  ⛔ 제한 시간 초과 ${r.id} — ${r.what}\n     재지 못했다(사망이 아니다): ${r.detail}`);
 
 if (jsonOut) {
-  writeFileSync(jsonOut, JSON.stringify({ at: new Date().toISOString(), rows }, null, 2));
+  writeFileSync(jsonOut, JSON.stringify({ at: new Date().toISOString(), verdicts: VERDICTS,
+                                          summary: sum, rows }, null, 2));
   console.log(`\n결과를 ${jsonOut} 에 적었다.`);
 }
-// **생존이나 앵커 실패가 하나라도 있으면 0 이 아니다.** 설명은 사람이 하되, 기본값은 실패다.
-process.exit(survived.length + missed.length ? 1 : 0);
+// **생존·앵커 실패·제한 시간 초과가 하나라도 있으면 0 이 아니다.** 설명은 사람이 하되,
+// 기본값은 실패다.
+process.exit(sum.fatal ? 1 : 0);

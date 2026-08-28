@@ -297,14 +297,14 @@ export const MUTATIONS = [
     id: "D07", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "재감사 결함 합계와 위협 범위를 22건 · 39~60 으로 되돌린다",
     invariant: "결함 합계와 위협 범위는 설계서의 위협 표에서 파생된다 — 낡은 숫자는 「이미 다 봤다」는 착각을 만든다",
-    find: "차례로 재현했다(위협 **39~86** · **여섯 판 연속**",
+    find: "차례로 재현했다(위협 **39~92** · **여섯 판 연속**",
     replace: "차례로 재현했다(위협 39~60 · 다섯 판 연속",
   },
   {
     id: "D08", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "재감사 결함 합계만 22건으로 되돌린다(위협 범위는 그대로 둔다)",
     invariant: "합계는 판별 문형(`4+5+…건` · `N건을 차례로 재현`) 어느 쪽으로 적어도 파생값과 같아야 한다",
-    find: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4+3+1+1+4+3+6+3+5건 = **48건** 수정",
+    find: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4+3+1+1+4+3+6+3+5+4+2건 = **54건** 수정",
     replace: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4건 = **22건** 수정",
   },
   {
@@ -351,7 +351,7 @@ export const MUTATIONS = [
     // ⚠️ **이 앵커는 개수가 바뀔 때마다 함께 바꾼다**(D21 을 더하며 세 번째로 고쳤다).
     //    자기가 건드리는 숫자를 앵커에 담는 변이라 피할 수 없다 — 대신 낡으면 실행기가
     //    ANCHOR-MISS 로 종료 코드 1 을 내므로 **조용히 썩지는 않는다.**
-    find: "`scripts/mutations.mjs`(목록 192종",
+    find: "`scripts/mutations.mjs`(목록 217종",
     replace: "`scripts/mutations.mjs`(목록 22종",
   },
   {
@@ -573,7 +573,7 @@ export const MUTATIONS = [
     id: "D17", file: "docs/STAGE3_SIGNUP_SECURITY_DESIGN.md", suite: "test-docs", kind: "정적",
     what: "§13-6 매핑 합계를 낡은 79 로 되돌린다",
     invariant: "매핑 절의 「N건 전부 연결됐다」는 표의 최대 T 번호에서 파생한다 — 표만 늘리고 합계를 안 고치면 검사가 그것을 잡아야 한다",
-    find: "**105건 전부 실행 가능한 단언으로 연결됐다.**",
+    find: "**111건 전부 실행 가능한 단언으로 연결됐다.**",
     replace: "**79건 전부 실행 가능한 단언으로 연결됐다.**",
   },
   {
@@ -601,7 +601,7 @@ export const MUTATIONS = [
     id: "D21", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "「종」이 없는 괄호형 내역을 낡은 「정적 21」로 되돌린다",
     invariant: "총계뿐 아니라 **하위 내역**도 MUTATIONS 에서 파생한다 — 「N종」이라고 안 적은 괄호형 내역도 센다(총계만 보면 66 ≠ 40+21 이 남는다)",
-    find: "목록 192종 — **동작 144종 · 정적 48종**",
+    find: "목록 217종 — **동작 165종 · 정적 52종**",
     replace: "목록 188종 — **동작 40종 · 정적 21종**",
   },
   // ── 위협 70 · 불완전한 OAuth 주소가 세션 폐기 재시도를 막던 결함의 방어들 ──
@@ -1335,8 +1335,8 @@ export const MUTATIONS = [
     id: "M125", file: "worker/index.js", suite: "test-compat",
     what: "콜백 세대 불일치를 다시 조각 redirect 로 돌린다",
     invariant: "옛 세대에는 `#login=outdated` 를 읽을 코드가 없다 — 사용자에게는 빈 화면이다",
-    find: "            : updatePage(env, \"로그인을\");",
-    replace: "            : fail(null, 302, st.back + \"#login=outdated\");",
+    find: "          return isNavPath(path)\n            ? updatePage(env, \"로그인을\")",
+    replace: "          return false\n            ? updatePage(env, \"로그인을\")",
   },
   {
     id: "M126", file: "worker/index.js", suite: "test-compat",
@@ -1401,7 +1401,7 @@ export const MUTATIONS = [
     id: "M133", file: "scripts/backup.mjs", suite: "test-backup",
     what: "임시 SQLite 적재 검증을 없앤다",
     invariant: "크기·해시가 맞아도 그 안에 DB 가 들어 있다는 뜻은 아니다 — 실어 봐야 안다",
-    find: "      const r = loadTemp(parts[which].toString(\"utf8\"), which);\n      if (!r.ok) return bad(\"load_\" + which, { missing: r.missing });",
+    find: "      const r = await loadTemp(parts[which].toString(\"utf8\"), which);\n      if (!r.ok) return bad(\"load_\" + which, { missing: r.missing });",
     replace: "      void which;",
   },
   {
@@ -1460,7 +1460,7 @@ export const MUTATIONS = [
     id: "M140", file: "worker/cleanup/index.js", suite: "test-cleanup",
     what: "reconciliation 의 실패·초과를 경보로 올리지 않는다",
     invariant: "일부 실패가 회차 전체를 성공으로 만들면 아무도 그 상태를 못 본다",
-    find: "    if (backups.unknown || backups.overdue || backups.failed)\n      throw new Error(\"backup reconcile incomplete\");",
+    find: "    if (backups.unknown || backups.overdue || backups.failed || backups.stuck)\n      throw new Error(\"backup reconcile incomplete\");",
     replace: "    void backups.unknown;",
   },
   {
@@ -1481,8 +1481,8 @@ export const MUTATIONS = [
     id: "M143", file: "worker/cleanup/index.js", suite: "test-cleanup",
     what: "한 회차에 보는 행의 상한을 없앤다",
     invariant: "무료 크론의 CPU 는 10ms 다 — 상한이 없으면 매번 시간 초과로 아무것도 못 한다",
-    find: "      ORDER BY snapshot_at LIMIT ?`).bind(RECON_LIMIT).all()).results || [];",
-    replace: "      ORDER BY snapshot_at`).bind().all()).results || [];",
+    find: "      ORDER BY backup_id LIMIT ?`).bind(from, limit).all()).results || [];",
+    replace: "      ORDER BY backup_id`).bind(from).all()).results || [];",
   },
 
   {
@@ -1503,6 +1503,165 @@ export const MUTATIONS = [
     replace: "",
   },
 
+  // ── 2026-08-28 · 위협 87 폐쇄 배포의 옛 클라이언트 안내 ────────────────
+  {
+    id: "M148", file: "worker/index.js", suite: "test-deploy-matrix",
+    what: "클라이언트 호환성 검사를 남용 방어 **뒤로** 되돌린다",
+    invariant: "옛 클라이언트 안내는 남용 방어보다 앞이다 — 뒤에 두면 폐쇄 배포(지금 라이브)에서 그 안내에 아예 닿지 못한다",
+    transform: (src) => {
+      const a = src.indexOf("    // ── 0-0-1-1. **클라이언트 호환성 계약**");
+      const b = src.indexOf("    // ── 0-0-1. 남용 방어가 준비됐나 ──");
+      const c = src.indexOf("    // ── 0-0-2. 우리가 발급한 쿠키인가");
+      if (a < 0 || b < a || c < b) return null;
+      return src.slice(0, a) + src.slice(b, c) + src.slice(a, b) + src.slice(c);
+    },
+  },
+  {
+    id: "M149", file: "worker/index.js", suite: "test-deploy-matrix",
+    what: "폐쇄 503 을 최상위 이동에서도 JSON 으로 돌려준다",
+    invariant: "브라우저가 주소창으로 들어온 응답은 본문을 그대로 그린다 — 옛 세대에는 그 JSON 을 읽을 코드가 없다",
+    find: "const guardClosed = (env, req, path) =>\n  isNavPath(path)\n    ? closedPage(env)\n    : json(",
+    replace: "const guardClosed = (env, req, path) =>\n  false\n    ? closedPage(env)\n    : json(",
+  },
+  {
+    id: "M150", file: "worker/index.js", suite: "test-deploy-matrix",
+    what: "`/exchange` 까지 최상위 이동으로 본다(앱이 fetch 로 부르는 자리다)",
+    invariant: "fetch 로 부르는 자리는 JSON 계약을 지킨다 — HTML 을 주면 화면 코드가 통째로 깨진다",
+    find: "export const isNavPath = (p) => /^\\/(?:login|cb)\\//.test(p);",
+    replace: "export const isNavPath = (p) => /^\\/(?:login|cb|exchange)\\//.test(p);",
+  },
+  {
+    id: "M151", file: "worker/index.js", suite: "test-deploy-matrix",
+    what: "설정이 덜 된 로그인 시작을 다시 평문 한 줄로 돌려준다",
+    invariant: "최상위 이동의 거절에도 앱으로 돌아갈 길이 있어야 한다",
+    find: "      if (!providerPossible(env, m[1]) || !loginPossible(env)) return closedPage(env);",
+    replace: "      if (!providerPossible(env, m[1]) || !loginPossible(env))\n"
+           + "        return new Response(\"설정되지 않았어요\", { status: 503 });",
+  },
+  {
+    id: "M152", file: "worker/index.js", suite: "test-deploy-matrix",
+    what: "콜백 실패 안내를 다시 charset 없는 평문으로 돌려준다",
+    invariant: "콜백은 최상위 이동이다 — 사람이 읽을 화면이 아니면 사용자가 할 수 있는 일이 없다",
+    find: "                           : (hash ? redir(hash) : loginFailPage(env, msg, status));",
+    replace: "                           : (hash ? redir(hash) : new Response(msg, { status }));",
+  },
+  {
+    id: "M153", file: "scripts/test-deploy-matrix.mjs", suite: "test-deploy-matrix", kind: "정적",
+    what: "폐쇄 구성 fixture 에 `DEV_RATE_LIMIT` 을 몰래 끼워 넣는다",
+    invariant: "배포에 없는 값으로 문을 열어 둔 fixture 는 라이브를 재지 못한다 — 그 fixture 가 곧 거짓 통과다",
+    find: "  none: () => ({ APP_ORIGIN: ORIGIN }),",
+    replace: "  none: () => ({ APP_ORIGIN: ORIGIN, DEV_RATE_LIMIT: \"1\" }),",
+  },
+
+  // ── 2026-08-28 · 위협 88 백업 생산자와 reconciliation 의 교차 ──────────
+  {
+    id: "M154", file: "scripts/backup.mjs", suite: "test-ops-race",
+    what: "업로드 권리(CAS)를 따지 않고 바로 올린다",
+    invariant: "`aborted` 인 backup_id 로는 그 뒤 어떤 생산자도 객체를 올릴 수 없다",
+    find: "    try { await inv.setUploading(id); }",
+    replace: "    try { if (false) await inv.setUploading(id); }",
+  },
+  {
+    id: "M155", file: "scripts/backup.mjs", suite: "test-ops-race",
+    what: "업로드 권리 CAS 가 0행을 바꿔도 성공으로 넘긴다",
+    invariant: "권리를 못 땄다는 것은 그 사이에 이 백업이 닫혔다는 뜻이다 — 넘기면 자물쇠가 없는 것과 같다",
+    find: "  setUploading(id) {\n    return this.execOne(",
+    replace: "  setUploading(id) {\n    return this.exec(",
+  },
+  {
+    id: "M156", file: "worker/ledger.js", suite: "test-ops-race",
+    what: "`pending → uploaded` 를 전이표에 되살린다",
+    invariant: "업로드는 권리를 딴 뒤에만 기록된다 — 이 전이가 있으면 권리 자체를 건너뛸 수 있다",
+    find: "  pending: [\"uploading\", \"aborted\", \"failed\"],",
+    replace: "  pending: [\"uploading\", \"uploaded\", \"aborted\", \"failed\"],",
+  },
+  {
+    id: "M157", file: "worker/ledger.js", suite: "test-ops-race",
+    what: "`failed → aborted` 를 되살린다",
+    invariant: "`failed` 는 업로드가 있었는지 상태만으로 알 수 없다 — 「없음을 확인했다」로 닫을 근거가 없다",
+    find: "  failed: [\"deleted\"],",
+    replace: "  failed: [\"deleted\", \"aborted\"],",
+  },
+  {
+    id: "M158", file: "worker/cleanup/index.js", suite: "test-ops-race",
+    what: "크론이 `uploading` 도 순간 부재만 보고 닫는다",
+    invariant: "`put` 이 도는 중일 수 있다 — 닫으면 그 뒤에 객체가 생겨 「없음을 확인했다」가 거짓이 된다",
+    find: "      if (r.status === \"uploading\") {\n        out.uploading++;",
+    replace: "      if (false) {\n        out.uploading++;",
+  },
+  {
+    id: "M159", file: "worker/cleanup/index.js", suite: "test-ops-race",
+    what: "부재 확인 UPDATE 에서 관측 상태 CAS 를 뺀다",
+    invariant: "조회와 UPDATE 사이에 생산자가 옮긴 행을 「닫았다」로 적지 않는다",
+    find: "        `UPDATE backups SET ${sets.join(\", \")} WHERE backup_id = ? AND status = ?`\n"
+        + "        + ` AND ${backupFroms(to)}`)\n"
+        + "        .bind(...args, r.backup_id, r.status).run();",
+    replace: "        `UPDATE backups SET ${sets.join(\", \")} WHERE backup_id = ?`\n"
+           + "        + ` AND ${backupFroms(to)}`)\n"
+           + "        .bind(...args, r.backup_id).run();",
+  },
+  {
+    id: "M160", file: "scripts/backup.mjs", suite: "test-ops-race",
+    what: "수동 reconcile 만 `uploading` 을 닫게 한다(크론보다 약한 규칙)",
+    invariant: "수동 명령이 자동 크론보다 약하면, 운영자가 손으로 부르는 순간 자물쇠가 사라진다",
+    find: "        if (r.status === \"uploading\") {\n          out.uploading++; out.ok = false;",
+    replace: "        if (false) {\n          out.uploading++; out.ok = false;",
+  },
+  {
+    id: "M161", file: "scripts/backup.mjs", suite: "test-ops-race",
+    what: "수동 reconcile 이 markGone 의 결과(바뀐 행 수)를 안 본다",
+    invariant: "0행은 그 사이에 생산자가 이겼다는 뜻이다 — 「닫았다」로 세면 경합이 통계에서 사라진다",
+    find: "        if (await inv.markGone(id, now, to, r.status) !== 1) {",
+    replace: "        if (await inv.markGone(id, now, to, r.status) === -1) {",
+  },
+
+  // ── 2026-08-28 · 위협 89 reconciliation 의 기아 ────────────────────────
+  {
+    id: "M162", file: "worker/cleanup/index.js", suite: "test-ops-race",
+    what: "커서를 저장하지 않는다(회차마다 처음부터 본다)",
+    invariant: "모든 행이 유한 회차 안에 검사된다 — 앞 25개가 계속 살아 있어도 26번째가 굶지 않는다",
+    find: "  await env.LEDGER.prepare(\"UPDATE cleanup_runs SET recon_cursor = ? WHERE id = 1\")\n"
+        + "    .bind(next).run();",
+    replace: "",
+  },
+  {
+    id: "M163", file: "worker/cleanup/index.js", suite: "test-ops-race",
+    what: "커서를 안 쓰고 다시 `snapshot_at` 순으로 앞 25개만 본다",
+    invariant: "커서 없는 `LIMIT` 은 「언젠가는 본다」조차 보장하지 않는다",
+    find: "        AND backup_id > ?\n      ORDER BY backup_id LIMIT ?`).bind(from, limit).all()).results || [];",
+    replace: "        AND ? <> ?\n      ORDER BY snapshot_at LIMIT ?`).bind(from, \"x\", limit).all()).results || [];",
+  },
+  {
+    id: "M164", file: "worker/cleanup/index.js", suite: "test-ops-race",
+    what: "한 바퀴를 돌아도 커서를 처음으로 되돌리지 않는다",
+    invariant: "wrap-around 가 없으면 커서가 끝에 닿는 순간 그 뒤로는 아무 행도 다시 검사되지 않는다",
+    // ⚠️ **유한한 변이여야 한다**(2026-08-28 · 위협 91). 처음에는 `next` 만 바꿨는데, 그러면
+    //    빈 페이지에서 `reconPage` 가 **같은 커서로 무한 재귀**해 스위트가 영영 안 끝났다 —
+    //    실행기에 제한 시간이 없던 시절 그것이 검증 전체를 멈췄다. 결함(wrap-around 없음)은
+    //    그대로 두고 **재귀만** 끊는다. 그래야 「굶는다」가 assertion 으로 드러난다.
+    transform: (s) => s
+      .replace("  const next = rows.length < limit ? \"\" : rows[rows.length - 1].backup_id;",
+               "  const next = rows.length ? rows[rows.length - 1].backup_id : from;")
+      .replace("  if (!rows.length && from) return reconPage(env, limit);",
+               "  if (!rows.length && from) return [];"),
+  },
+
+  // ── 2026-08-28 · 위협 90 Node 런타임 계약 ──────────────────────────────
+  {
+    id: "M165", file: "scripts/backup.mjs", suite: "test-ops-race",
+    what: "Node 판 확인을 없앤다(무엇이든 지원한다고 답한다)",
+    invariant: "지원하지 않는 Node 에서는 애매한 import 오류가 아니라 이해할 수 있는 메시지로 즉시 멈춘다",
+    find: "export function nodeOk(v = process.versions.node) {",
+    replace: "export function nodeOk(v = process.versions.node) {\n  return true;",
+  },
+  {
+    id: "M166", file: "package.json", suite: "test-ops-race", kind: "정적",
+    what: "`engines.node` 를 코드의 최소 판과 다르게 적는다",
+    invariant: "지원 판의 원본은 한 자리다 — 설정·문서가 코드와 갈라지면 아무 소용이 없다",
+    find: "    \"node\": \">=22.13.0\"",
+    replace: "    \"node\": \">=18.0.0\"",
+  },
+
   // ── 2026-08-27 K4 · 보관함의 current / past / draft ────────────────────
   {
     id: "D44", file: "scripts/policies.mjs", suite: "test-policies", kind: "정적",
@@ -1517,5 +1676,53 @@ export const MUTATIONS = [
     invariant: "나간 적 없는 문서를 「지난 판」이라 부르면 아무도 본 적 없는 것을 봤다고 말하는 것이다",
     find: "  const past = shipped ? rest.filter((v) => shipped.has(v.file)) : rest;",
     replace: "  const past = rest;",
+  },
+
+  // ── 2026-08-28 · 검증 장치 자체 (위협 91·92) ──────────────────────────
+  // ⚠️ 여기 변이가 살아남으면 **다른 210종의 결과를 믿을 수 없다** — 실행기가 고장 나도
+  //    표에는 아무 실패도 안 뜨고 「아직 안 끝났다」로만 보이기 때문이다.
+  {
+    id: "M167", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "제한 시간에 걸린 자식을 **직계만** 죽인다 (프로세스 그룹이 아니라)",
+    invariant: "스위트가 띄운 손자가 남으면 다음 회차의 판정이 부하 때문인지 변이 때문인지 갈리지 않는다",
+    find: "      try { process.kill(-ch.pid, \"SIGKILL\"); } catch { try { ch.kill(\"SIGKILL\"); } catch {} }",
+    replace: "      try { ch.kill(\"SIGKILL\"); } catch {}",
+  },
+  {
+    id: "M168", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "제한 시간에 걸린 변이를 **사망**으로 접는다",
+    invariant: "재지 못한 것은 잡은 것이 아니다 — 합치면 종료하지 않는 변이가 곧 만점이 된다",
+    find: "export const VERDICTS = [\"KILLED\", \"SURVIVED\", \"ANCHOR-MISS\", \"TIMEOUT\"];",
+    replace: "export const VERDICTS = [\"KILLED\", \"SURVIVED\", \"ANCHOR-MISS\"];",
+  },
+  {
+    id: "M169", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "TIMEOUT 이 완료를 막지 않게 한다",
+    invariant: "완료 조건은 생존 0 · 앵커 실패 0 · **제한 시간 초과 0** 셋 전부다",
+    find: "export const FATAL = [\"SURVIVED\", \"ANCHOR-MISS\", \"TIMEOUT\"];",
+    replace: "export const FATAL = [\"SURVIVED\", \"ANCHOR-MISS\"];",
+  },
+  {
+    id: "M170", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "죽이기는 하되 **제한 시간에 걸렸다는 사실을 안 알린다**",
+    invariant: "그러면 SIGKILL 당한 실행이 종료 코드만 보고 조용히 KILLED 로 접힌다 — 재지 못한 것이 만점이 된다",
+    // ⚠️ 「아예 안 죽인다」로 만들면 그 변이 자체가 안 끝나서 TIMEOUT 이 된다.
+    //    TIMEOUT 은 사망이 아니므로 그런 변이는 **아무것도 증명하지 못한다** — 유한하게 만든다.
+    find: "      timedOut = true;",
+    replace: "      timedOut = false;",
+  },
+  {
+    id: "M171", file: "scripts/mutate.mjs", suite: "test-verifier", kind: "정적",
+    what: "종료 코드에서 제한 시간 초과를 뺀다",
+    invariant: "실행기의 기본값은 실패다 — 재지 못한 변이가 있는 실행을 0 으로 끝내지 않는다",
+    find: "process.exit(sum.fatal ? 1 : 0);",
+    replace: "process.exit(sum.SURVIVED + sum[\"ANCHOR-MISS\"] ? 1 : 0);",
+  },
+  {
+    id: "M172", file: "scripts/test-ops-race.mjs", suite: "test-verifier", kind: "정적",
+    what: "R11 의 마지막 경계에서 reconciliation 을 안 돌리고 통과시킨다",
+    invariant: "실행하지 않은 경계를 「전수」에 세지 않는다",
+    find: "      if (!fired) await cross();          // 마지막 자리: 명령이 없으므로 **반환 직후**에 완주시킨다",
+    replace: "      // (마지막 자리는 건너뛴다)",
   },
 ];
