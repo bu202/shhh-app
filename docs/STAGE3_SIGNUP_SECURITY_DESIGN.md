@@ -2,17 +2,17 @@
 
 **작성 2026-08-17 · 개정 2026-08-22(11판) · 브랜치 `cf-pages`**
 
-**상태: 3단계 기술 상세 설계 11판 완료(2026-08-29 §0-21 보완으로 마감) · 4단계 로컬은 **미완료** — 2026-08-22 에 한 번 닫혔으나(당시 사실) **위협 93 의 구현·테스트·돌연변이가 없다**(§0-21-6) ·
+**상태: 3단계 기술 상세 설계 11판 완료(2026-08-29 §0-21·§0-22 보완으로 마감) · 4단계 로컬은 **미완료** — 2026-08-22 에 한 번 닫혔으나(당시 사실) **위협 93·94 의 구현·테스트·돌연변이가 없다**(§0-21-6·§0-22-13) ·
 원격은 **안전 동기화만 실행**(현재 배포 ID 의 원본은 `CLAUDE.md` §1-1 「현재 라이브」 · `READY_KEY` · 옛 배포 15개 삭제)이고 **계정 인프라는 미실행** · 전역 user-data drain 은 결정 A′ 로 구현 완료 ·
 **외부 전문가 상담은 해당 없음**(2026-08-26 · `docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md` §22 — 법적 적합성 보증은 하지 않는다) ·
 주 D1 restore 금지 유지 · 엣지 방어는 **A(도메인+WAF)로 확정됐고 아직 구성 전**이라 계정
 라우트는 fail-closed · 공개 OAuth·계정 출시 No-Go.**
 
 > ⚠️ **2026-08-29 재마감 — 판 번호는 그대로 11판이다.** 검증기 판정의 fail-closed 상태 모델을
-> 확정하고(**§0-21** · 위협 93), **§0-20-1 이 닫은 범위를 정정했다** — 위협 91 은 `status === null` 을
+> 확정하고(**§0-21** · 위협 93 · **§0-22** · 위협 94), **§0-20-1 이 닫은 범위를 정정했다** — 위협 91 은 `status === null` 을
 > 만드는 생산자 셋 중 **하나**만 갈랐고 **spawn 실패·바깥에서 온 signal 은 그대로 `KILLED`** 였다.
 > ⛔ **이번 회차는 설계뿐이다 — 코드·테스트·`mutations.mjs` 를 한 줄도 고치지 않았다.** 그래서
-> **4단계 로컬은 최종 완료가 아니다**(구현 목록 §0-21-6). 원격(도메인·WAF·R2·Turnstile·OAuth·결제)은
+> **4단계 로컬은 최종 완료가 아니다**(구현 목록 §0-21-6 · §0-22-13). 원격(도메인·WAF·R2·Turnstile·OAuth·결제)은
 > 이번 범위 밖이고 계정 개방·공개 출시는 그대로 **No-Go** 다.
 
 > ⚠️ **9판은 사용자 결정으로 닫혔고, 10판은 전체 재검증 4건을, 11판은 독립 검토 3건을 닫았다.**
@@ -898,7 +898,7 @@ pending ──(생산자 CAS)──► uploading ──► uploaded ──► re
 > 그대로 `KILLED` 였다. **같은 무늬가 한 절 안에서 세 번째다** — 불변식에 적은 것을 재지 않는다.
 > 그리고 「먼저 온 증거가 이긴다」는 한 문장이 **판정 이름과 프로세스 종료 확인을 묶고 있었다** —
 > ⛔ `error` 와 타이머 만료는 **자식이 끝났다는 증거가 아니다.** 이 회차가 그 둘을 닫는다
-> (§0-21-2a 수명주기 · §0-21-2c 우선순위와 여덟 조건). **번호는 그대로 위협 93 이다** —
+> (§0-21-2a 수명주기 · §0-21-2c 우선순위와 필요충분조건 목록). **번호는 그대로 위협 93 이다** —
 > 같은 결함의 **미완성 부분**이지 새 결함이 아니다.
 
 ### 0-21-1. 고치기 전 실측 (2026-08-29 · 코드 수정 전 · 읽기 전용)
@@ -1011,7 +1011,7 @@ signal 종료와 타이머 만료는 **근접해서 겹칠 수 있다.** 그래�
 |---|---|---|
 | ① **증거 수집(latch)** | 각 이벤트가 **자기 필드만** 세운다. 이미 세운 필드는 **덮지 않는다**(첫 값 유지) — 늦게 온 `close(code=-2)` 가 앞선 `error(ENOENT)` 를 덮으면 「시작도 못 했는데 숫자 exit」가 되어 이번 결함이 그대로 되살아난다 | §0-21-2a |
 | ② **판정 이름** | ⛔ 도착 순서가 아니라 **고정 우선순위**가 정한다 — `spawnFailed → started → postSpawnError → timedOut → signal → 숫자 검사` | §0-21-2c |
-| ③ **완료(settle)** | `started === true` 인 자식은 **`close` 를 본 뒤에만** 확정한다. ⛔ `error` 와 타이머는 **종료의 증거가 아니다** | §0-21-2a |
+| ③ **완료(settle)** | `started === true` 인 자식은 **`closeSeen` 과 `groupState === "absent"` 를 둘 다 본 뒤에만** 확정한다. ⛔ `error`·타이머는 **종료의 증거가 아니고**, ⛔ 직접 자식의 `close` 도 **그룹 부재의 증거가 아니다**(§0-22) | §0-21-2a · **§0-22-3** |
 
 ⚠️ **②를 도착 순서에서 떼어낸 것이 이번 보완의 절반이다.** 순서가 이름을 정하면 같은 실행이
 부하에 따라 `TIMEOUT` 도 되고 `INFRA-ERROR` 도 된다 — **재현할 수 없는 판정은 증거가 아니다.**
@@ -1031,19 +1031,20 @@ signal 종료와 타이머 만료는 **근접해서 겹칠 수 있다.** 그래�
    ⛔ **시작된 자식의 종료를 `error` 만으로 확정하지 않는다.** 자식이 아예 존재하지 않는 경우
    (`started:false` · spawn 실패)에만 그 자리에서 확정할 수 있다.
 2. **타이머** — `timedOut` 원인을 latch 하고, `started === true` 이면 **프로세스 그룹 kill 을
-   요청**한 뒤 **`close` 를 기다린다.** ⛔ kill 요청은 종료가 아니라 **요청**이다.
+   요청**한 뒤 **`close` 와 그룹 부재를 확인한다.** ⛔ kill 요청은 종료가 아니라 **요청**이다.
 3. **`started:false` 에서 타이머가 먼저 만료되면** `start-timeout` 을 latch 한다. 그 뒤 **늦게
-   `'spawn'` 이 오면 즉시 그 프로세스 그룹을 kill 하고 `close` 를 기다린다.** ⛔ 먼저 확정하고
-   다음 변이로 넘어가지 않는다 — 그러면 **아무도 모르는 자식이 뒤에서 계속 돈다.**
-4. **시작된 자식은 `close` 를 확인하기 전에 다음 변이를 시작하지 않는다.**
-5. **`cleanup deadline`** — kill 을 요청한 뒤 `close` 를 기다리는 **별도 제한**이다.
+   `'spawn'` 이 오면 즉시 그 프로세스 그룹을 kill 하고 `close` 와 그룹 부재를 확인한다.**
+   ⛔ 먼저 확정하고 다음 변이로 넘어가지 않는다 — 그러면 **아무도 모르는 자식이 뒤에서 계속 돈다.**
+4. **시작된 자식은 `close` 와 `groupAbsent` 를 둘 다 확인하기 전에 다음 변이를 시작하지 않는다.**
+   ⚠️ **첫 판은 여기에 `close` 만 적었다** — 그것이 위협 94 이고 §0-22 가 정정한다.
+5. **`cleanup deadline`** — kill 을 요청한 뒤 **`close` 와 그룹 부재**를 확인하는 **별도 제한**이다.
 
 **두 제한 시간을 같은 뜻으로 쓰지 않는다.**
 
 | 이름 | 무엇을 재나 | 값의 원본 | 넘기면 |
 |---|---|---|---|
-| **mutation timeout** | 테스트가 **너무 오래 실행된다** | 측정한 기준선의 20배(최소 15초) | 그룹 kill 을 **요청**하고 `close` 를 기다린다 → `TIMEOUT` |
-| **cleanup deadline** | **종료 명령 뒤 실제로 닫혔나** | 별도 상수(`CLEANUP_DEADLINE_MS`) | ⛔ **실행기 전체 중단** |
+| **mutation timeout** | 테스트가 **너무 오래 실행된다** | 측정한 기준선의 20배(최소 15초) | 그룹 kill 을 **요청**하고 `close` 와 그룹 부재를 확인한다 → `TIMEOUT` |
+| **cleanup deadline** | **종료 명령 뒤 실제로 닫혔나** — `close` **와** 그룹 부재(§0-22-4) | 별도 상수(`CLEANUP_DEADLINE_MS`) | ⛔ **실행기 전체 중단** |
 
 ⛔ **한 상수를 돌려 쓰지 않는다.** 같은 값을 쓰면 「종료 확인」이 「실행 시간」에 끌려다닌다 —
 무거운 스위트에서는 정리 확인이 한없이 느슨해지고, 가벼운 스위트에서는 멀쩡히 닫히는 중인
@@ -1051,25 +1052,28 @@ signal 종료와 타이머 만료는 **근접해서 겹칠 수 있다.** 그래�
 
 **cleanup 이 실패하면 계속하지 않는다.**
 
-`cleanup deadline` 안에 `close` 가 오지 않거나 kill 자체가 실패하면:
+`cleanup deadline` 안에 **`close` 와 그룹 부재 중 하나라도** 확인되지 않거나 kill 자체가 실패하면:
 
 - 그 변이 한 건을 **`INFRA-ERROR`** 로 적고,
 - ⛔ **남은 변이를 하나도 실행하지 않는다.** 실행기를 **비정상 종료**한다(종료 코드 **2** —
   기준선 중단과 같은 「측정 불능으로 중단」이다),
-- 화면에 **「잔류 프로세스가 없음을 증명하지 못했다」**를 그대로 적고 **그룹 pid** 를 알려
-  운영자가 직접 확인하게 한다(⛔ JSON 에는 고정 문구만 — §0-21-2c 파생 규칙 4).
+- 화면에 **「잔류 프로세스 그룹이 없음을 증명하지 못했다」**를 그대로 적고 **그 실행의 PGID** 를
+  알려 운영자가 직접 확인하게 한다(⛔ JSON 에는 고정 문구만 — §0-21-2c 파생 규칙 4).
 
 ⚠️ **계속 돌리는 쪽이 더 나빠 보이지 않는 것이 함정이다.** 남은 자식이 CPU 를 먹는 채로 다음
 변이를 재면 그 뒤의 모든 판정이 「부하 때문인지 변이 때문인지」 갈리지 않는다 — 위협 91 이
 정확히 그 상태였다. 표가 한 줄 나빠지는 것이 아니라 **표 전체가 무의미해진다.**
 
-> **핵심 불변식**
+> **핵심 불변식** ⚠️ **§0-22-3 이 이 문장을 정정했다 — 아래가 현재 판이다.**
 >
-> **다음 변이는 ⓐ 직전 자식 프로세스 그룹이 종료됐다는 `close` 증거를 얻었거나,
-> ⓑ 검증기 전체가 실패로 중단된 뒤에만 시작된다.**
+> **다음 변이는 ⓐ 직전 실행에서 자식이 아예 생성되지 않았거나(spawn 전 실패),
+> ⓑ 직접 자식의 `close` 와 **검증기가 만든 프로세스 그룹의 부재**가 **둘 다** 확인됐거나,
+> ⓒ 검증기 전체가 실패로 중단된 뒤에만 시작된다.**
 >
-> ⛔ **`resolve` 가 한 번 일어났다는 사실은 ⓐ 가 아니다.** 반환은 **약속**의 상태이고 종료는
+> ⛔ **`resolve` 가 한 번 일어났다는 사실은 증거가 아니다.** 반환은 **약속**의 상태이고 종료는
 > **프로세스**의 상태다 — 이 둘을 같은 말로 적지 않는다.
+> ⛔ **직접 자식의 `close` 도 그것만으로는 증거가 아니다.** 실측(§0-22-1): `close` 가 온 뒤
+> 직접 PID 는 `ESRCH` 인데 **같은 그룹의 손자는 살아 있었다.**
 
 ### 0-21-2b. 실행 결과 상태 전수표
 
@@ -1079,23 +1083,29 @@ signal 종료와 타이머 만료는 **근접해서 겹칠 수 있다.** 그래�
 
 **Ⅰ. 실제 프로세스에서 오는 결과**
 
-⚠️ **「종료 확인」 열이 이번 보완에서 생겼다**(§0-21-2a). 판정이 무엇이든 **시작된 자식은
-`close` 를 본 뒤에만 확정한다** — 그 열이 비어 있는 줄은 자식이 **아예 없는** 줄뿐이다.
+⚠️ **「정리 확인」 열이 이번 보완에서 생겼다**(§0-21-2a). 판정이 무엇이든 **시작된 자식은
+정리를 확인한 뒤에만 확정한다** — 그 열이 비어 있는 줄은 자식이 **아예 없는** 줄뿐이다.
 
-| # | 실행 결과 | `started` | 증거 | **종료 확인** | 정규화 상태 | 판정 |
+⛔ **정정(2026-08-29 · 위협 94): 이 열의 첫 판은 「`close` 를 기다린다」였고 그것은 틀렸다.**
+직접 자식의 `close` 는 **그 자식 하나와 그 stdio** 만 보장한다 — 같은 프로세스 그룹의 손자는
+그대로 살아 있을 수 있고, **실측으로 재현했다**(§0-22-1). 아래 열의 「정리 확인」은 전부
+**`close` + 그룹 부재(§0-22-4)** 를 뜻한다. **그룹이 잔류하는 갈래까지 담은 전수표는 §0-22-6** 이고,
+아래 표는 **판정 축(무엇이 어떤 이름을 받나)** 을 보여 준다.
+
+| # | 실행 결과 | `started` | 증거 | **정리 확인**(= `close` + 그룹 부재) | 정규화 상태 | 판정 |
 |---|---|---|---|---|---|---|
-| 1 | spawn 성공 + `exit 0` | ✅ | `signal:null` · `status:0` · `timedOut:false` | `close` ✅ | `exited` | **`SURVIVED`** |
-| 2 | spawn 성공 + 숫자 non-zero exit | ✅ | 위와 같고 `Number.isInteger(status) && status !== 0` | `close` ✅ | `exited` | **`KILLED`** |
-| 3 | spawn 성공 + **외부 signal** | ✅ | `timedOut:false` · `signal !== null` | `close` ✅ | `signalled` | **`INFRA-ERROR`** |
-| 4 | spawn 성공 + **우리 타이머** 만료 | ✅ | `timedOut:true` | **그룹 kill 요청 → `close` 를 기다린다** | `timeout` | **`TIMEOUT`** |
-| 5 | **spawn 전** ENOENT·EACCES·EMFILE | ⛔ | `spawnFailed:true` · `'spawn'` 없음 · `close(code=-2/-13)` | **자식이 없다 — 기다릴 대상이 없다** | `spawn-failed` | **`INFRA-ERROR`** |
-| 6 | **spawn 후** `error`(`kill()` 실패 · IPC 오류) | ✅ | `postSpawnError:true` · `spawnFailed` 는 **`false` 로 남는다** | **원인만 latch · `close` 를 기다린다** | `post-spawn-error` | **`INFRA-ERROR`** |
+| 1 | spawn 성공 + `exit 0` | ✅ | `signal:null` · `status:0` · `timedOut:false` | `close` ✅ **+ 그룹 부재** | `exited` | **`SURVIVED`** |
+| 2 | spawn 성공 + 숫자 non-zero exit | ✅ | 위와 같고 `Number.isInteger(status) && status !== 0` | `close` ✅ **+ 그룹 부재** | `exited` | **`KILLED`** |
+| 3 | spawn 성공 + **외부 signal** | ✅ | `timedOut:false` · `signal !== null` | `close` ✅ **+ 그룹 부재** | `signalled` | **`INFRA-ERROR`** |
+| 4 | spawn 성공 + **우리 타이머** 만료 | ✅ | `timedOut:true` | **그룹 kill 요청 → `close` 와 그룹 부재를 확인한다** | `timeout` | **`TIMEOUT`** |
+| 5 | **spawn 전** ENOENT·EACCES·EMFILE | ⛔ | `spawnFailed:true` · `'spawn'` 없음 · `close(code=-2/-13)` | **그룹이 만들어지지 않았다 — 확인할 대상이 없다**(§0-22-3 ⓐ) | `spawn-failed` | **`INFRA-ERROR`** |
+| 6 | **spawn 후** `error`(`kill()` 실패 · IPC 오류) | ✅ | `postSpawnError:true` · `spawnFailed` 는 **`false` 로 남는다** | **원인만 latch · `close` 와 그룹 부재를 확인한다** | `post-spawn-error` | **`INFRA-ERROR`** |
 | 7 | **spawn 전** 타이머 만료 | ⛔ | `timedOut:true` · `started:false` | 아직 자식이 없다 — **12번으로 이어진다** | **`start-timeout`** | **`INFRA-ERROR`** |
-| 8 | `error` 뒤 `close` | 그때의 값 | 필드별 latch — **앞선 값을 덮지 않는다** | `close` 로 확정(결과는 **하나**) | 우선순위가 정한다 | **`INFRA-ERROR`** |
-| 9 | signal 과 타이머가 **근접 경합** | ✅ | **둘 다** latch 된다 | `close` 로 확정 | **우선순위** — `timedOut` 이 `signal` 보다 앞이라 `timeout` | **`TIMEOUT`** |
-| 10 | 타이머 kill 요청이 **실패**하고 `close` 도 안 온다 | ✅ | `postSpawnError:true` · `close` 없음 | ⛔ **cleanup deadline 초과** | `post-spawn-error`(**정리 실패**) | **`INFRA-ERROR`** + ⛔ **실행기 중단** |
-| 11 | kill 은 성공했는데 **cleanup deadline 안에 `close` 가 없다** | ✅ | `close` 없음 | ⛔ **초과** | `unobservable`(**정리 실패**) | **`INFRA-ERROR`** + ⛔ **실행기 중단** |
-| 12 | **`start-timeout` 뒤 늦은 `'spawn'`** | 뒤늦게 ✅ | `timedOut:true` · `started` 가 나중에 참이 된다 | **즉시 그룹 kill → `close` 를 기다린다** | `start-timeout` | **`INFRA-ERROR`** |
+| 8 | `error` 뒤 `close` | 그때의 값 | 필드별 latch — **앞선 값을 덮지 않는다** | 정리 확인 뒤 확정(결과는 **하나**) | 우선순위가 정한다 | **`INFRA-ERROR`** |
+| 9 | signal 과 타이머가 **근접 경합** | ✅ | **둘 다** latch 된다 | 정리 확인 뒤 확정 | **우선순위** — `timedOut` 이 `signal` 보다 앞이라 `timeout` | **`TIMEOUT`** |
+| 10 | 타이머 kill 요청이 **실패**하고 정리도 확인 안 된다 | ✅ | `postSpawnError:true` · `close` 없음 또는 **그룹 잔류** | ⛔ **cleanup deadline 초과** | `post-spawn-error`(**정리 실패**) | **`INFRA-ERROR`** + ⛔ **실행기 중단** |
+| 11 | kill 은 성공했는데 **cleanup deadline 안에 정리가 확인 안 된다**(`close` 없음 **또는** 그룹 잔류) | ✅ | `closeSeen:false` 또는 `groupState !== absent` | ⛔ **초과** | `unobservable`(**정리 실패**) | **`INFRA-ERROR`** + ⛔ **실행기 중단** |
+| 12 | **`start-timeout` 뒤 늦은 `'spawn'`** | 뒤늦게 ✅ | `timedOut:true` · `started` 가 나중에 참이 된다 | **즉시 그 PGID 를 kill → `close` 와 그룹 부재를 확인한다** | `start-timeout` | **`INFRA-ERROR`** |
 
 ⛔ **7번을 `timeout` 으로 접지 않는다.** 그 실행에는 **돌연변이가 돌았다는 증거가 없다** —
 「변이가 안 끝난다」와 「자식을 띄우지도 못했다」는 운영자가 할 일이 정반대다.
@@ -1126,11 +1136,11 @@ signal 종료와 타이머 만료는 **근접해서 겹칠 수 있다.** 그래�
 |---|---|---|
 | 21 | **기준선** 실행 | **1번(`started:true` · `exited` · `status:0`)만 허용.** 그 밖은 전부 ⛔ **즉시 전체 중단** — 돌연변이 **0개** 실행 · 종료 코드 **2** · 화면에 정규화 상태를 이름으로 말한다 |
 | 22 | **돌연변이** 실행 | 위 1~20 의 판정 그대로. 완료로 통과하는 것은 **2번뿐**이다 |
-| 23 | **다음 변이를 시작하는 시점** | ⓐ 직전 자식 그룹의 **`close` 를 확인했거나** ⓑ 실행기가 **중단된** 뒤에만. ⛔ **「반환됐다」로 대신하지 않는다**(§0-21-2a 핵심 불변식) |
+| 23 | **다음 변이를 시작하는 시점** | ⓐ 자식이 아예 생성되지 않았거나 ⓑ **`close` 와 그룹 부재가 둘 다** 확인됐거나 ⓒ 실행기가 **중단된** 뒤에만. ⛔ **「반환됐다」로도 「`close` 를 봤다」로도 대신하지 않는다**(§0-22-3) |
 
 ### 0-21-2c. `KILLED` 의 필요충분조건
 
-> **아래 여덟이 **전부** 참일 때만 `KILLED` 다. 하나라도 입증되지 않으면 `KILLED` 가 아니다.**
+> **아래가 **전부** 참일 때만 `KILLED` 다. 하나라도 입증되지 않으면 `KILLED` 가 아니다.**
 >
 > 1. `started === true` (**`'spawn'` 이벤트를 봤다**)
 > 2. `spawnFailed === false`
@@ -1139,12 +1149,21 @@ signal 종료와 타이머 만료는 **근접해서 겹칠 수 있다.** 그래�
 > 5. `signal === null`
 > 6. `Number.isInteger(status)`
 > 7. `status !== 0`
-> 8. 정규화 상태가 `exited`
+> 8. **`closeSeen === true`** (2026-08-29 · 위협 94)
+> 9. **`groupState === "absent"`** (2026-08-29 · 위협 94 — §0-22-4 의 판정표)
+> 10. **`residualGroupDetected === false`** (2026-08-29 · 위협 94)
+> 11. 정규화 상태가 `exited`
 
-⚠️ **3번이 이번 보완에서 들어갔다.** 전 판은 `postSpawnError` 를 **계약에만** 싣고 조건에서
+⛔ **이 목록의 길이를 다른 문서에 손으로 옮겨 적지 않는다.** 「여덟 조건」이라고 적어 둔 문장이
+이번 회차에 **한 번에 네 곳에서** 낡았다. 다른 문서는 **「§0-21-2c 의 목록」**이라고만 부르고,
+개수를 주장하는 문장이 있으면 §0-22-13 의 검사 항목이 그것을 목록 길이와 대조한다.
+
+⚠️ **8~10번은 2026-08-29 위협 94 가 더한 것이다** — 직접 자식이 정상 종료해도 **같은 그룹의
+손자가 살아 있을 수 있다**(§0-22-1 실측). 그 실행은 **잡은 것도 살려 준 것도 아니다.**
+⚠️ **3번이 그 앞 보완에서 들어갔다.** 전 판은 `postSpawnError` 를 **계약에만** 싣고 조건에서
 빠뜨려서, `{started:true, postSpawnError:true, status:7}` 이 그대로 `KILLED` 였다 — 시작 뒤에
 오류가 난 실행은 **끝까지 관측했다고 말할 수 없다.**
-⚠️ 8번은 앞 일곱의 요약이 아니라 **한 자리에서 계산한 결과**다. 판정은 `outcome` 만 보고,
+⚠️ 마지막 항목은 앞의 요약이 아니라 **한 자리에서 계산한 결과**다. 판정은 `outcome` 만 보고,
 `outcome` 은 `classify()` 만 만든다 — 그래야 조건이 두 군데로 갈라지지 않는다.
 
 파생 규칙 다섯:
@@ -1208,7 +1227,7 @@ signal 종료와 타이머 만료는 **근접해서 겹칠 수 있다.** 그래�
 ⚠️ **B안이 A안을 포함한다.** 판정 이름 `INFRA-ERROR` 는 B안에서도 그대로 필요하다 — 두 안은
 「이름을 늘리느냐」가 아니라 **「그 이름을 어디서 결정하느냐」**로 갈린다.
 
-⚠️ **수명주기(§0-21-2a)는 이 비교의 밖에 있다.** 「시작된 자식은 `close` 를 본 뒤에만 확정한다」와
+⚠️ **수명주기(§0-21-2a·§0-22-3)는 이 비교의 밖에 있다.** 「시작된 자식은 정리를 확인한 뒤에만 확정한다」와
 `cleanup deadline` 은 **어느 안을 골라도 `runWithTimeout` 안에 들어간다** — 판정을 어디서 하느냐와
 무관하기 때문이다. 다만 A안은 그 규칙을 **문서로만** 강제하게 되고, B안은 `classify()` 가
 `unobservable`(정리 실패)이라는 **입력 없는 상태**를 가지므로 검사가 그 갈래를 합성 입력으로
@@ -1238,7 +1257,7 @@ signal 종료와 타이머 만료는 **근접해서 겹칠 수 있다.** 그래�
 | V15 | **spawn 전 timeout 과 spawn 후 timeout 을 구분한다** — `started:false`+`timedOut:true` 와 `started:true`+`timedOut:true` | 앞은 **`start-timeout` · `INFRA-ERROR`**, 뒤는 **`timeout` · `TIMEOUT`** | ⛔ 둘 다 `TIMEOUT`. ⚠️ 앞 갈래는 **합성 입력으로 잰다** — 실제 프로세스로는 재현되지 않았다(§0-21-1b) |
 | V16 | **spawn 후 `error` 를 `spawn-failed` 로 거짓 기록하지 않는다** | `started:true` 인 상태의 `error` → `post-spawn-error` · `INFRA-ERROR` · **`spawnFailed` 는 `false` 로 남는다** | ⛔ 무조건 `spawnFailed:true` |
 | V18 | `spawn` → `error`(`AbortController` 로 만든 `ABORT_ERR`) → `exit` → `close` 순서 | ⛔ **`error` 시점에 반환하지 않는다.** 반환은 `close` 뒤이고 결과는 **하나**다 | ⛔ `error` 에서 즉시 `resolve` — 자식이 아직 살아 있을 수 있다 |
-| V19 | 끝나지 않는 자식 + 제한 시간 | **그룹 kill 요청 → `close` 확인 뒤에만 반환.** 반환 시점에 그 그룹이 **실제로 없다**(`process.kill(pid,0)` 이 던진다) | ⚠️ V1 이 손자 잔류를 잰다. **반환 시점의 순서는 아무도 안 잰다** |
+| V19 | 끝나지 않는 자식 + 제한 시간 | **그룹 kill 요청 → `close` 와 그룹 부재를 둘 다 확인한 뒤에만 반환.** 반환 시점에 **`process.kill(-pgid, 0)` 이 `ESRCH`** 다 | ⚠️ V1 이 **알고 있는 손자 하나**를 양수 PID 로 잰다. **그룹 부재도 반환 시점의 순서도 아무도 안 잰다** |
 | V20 | 자식이 외부 signal 로 죽는다 | **`close` 를 본 뒤** `signalled` · `INFRA-ERROR` | ⛔ `KILLED` |
 | V21 | ENOENT 의 `error` → `close(-2)` | **한 결과로 합쳐진다** — `finalize()` 1회 · `spawn-failed` 유지 · ⛔ 늦은 `close(-2)` 가 앞선 `error` 를 덮지 않는다 | ⚠️ 지금도 결과는 하나지만 **Promise 의 성질에 기대고 아무도 안 잰다** |
 
@@ -1256,9 +1275,9 @@ signal 종료와 타이머 만료는 **근접해서 겹칠 수 있다.** 그래�
 | V10-h | **모순** `postSpawnError:true` + `outcome:"exited"` 를 함께 실은 입력 | `unobservable` · `INFRA-ERROR` — `classify()` 는 입력의 `outcome` 을 **다시 계산한다** | ⛔ `KILLED` |
 | V11 | ENOENT 처럼 `error` 뒤 `close` 가 오는 경우 · signal 과 타이머가 근접 경합 | **`finalize()` 가 정확히 한 번** · `clearTimeout` 도 한 번 · **필드별 latch 가 앞선 값을 덮지 않는다** · ⛔ **판정 이름은 도착 순서가 아니라 우선순위가 정한다**(타이머+signal → 언제나 `timeout`) | ⚠️ 결과값은 지금도 한 번이지만 **Promise 의 성질에 기대고 있고 아무도 재지 않는다** |
 | V14 | `FATAL` · `VERDICTS` | `INFRA-ERROR` 가 둘 다에 있다 | ⛔ 없다 |
-| V22 | **`start-timeout` 뒤 늦은 `'spawn'`**(가짜 `ChildProcess`) | **즉시 그룹 kill 이 요청되고** `close` 전에는 반환하지 않는다 · 판정은 `start-timeout` | ⛔ 그런 갈래가 없다. 타이머가 `kill(-undefined)` 로 던지고 **약속이 영원히 안 닫힌다** |
+| V22 | **`start-timeout` 뒤 늦은 `'spawn'`**(가짜 `ChildProcess`) | **정확한 PGID 에 kill 이 요청되고** `close` **와 그룹 부재** 전에는 반환하지 않는다 · 판정은 `start-timeout` | ⛔ 그런 갈래가 없다. 타이머가 `kill(-undefined)` 로 던지고 **약속이 영원히 안 닫힌다** |
 | V23 | **kill 요청이 실패**(post-spawn `error`)하고 `close` 가 아직 없다 | ⛔ **반환 금지** — `cleanup deadline` 까지 기다린다 | ⛔ `error` 에서 즉시 반환 |
-| V24 | **`cleanup deadline` 까지 `close` 없음** | 그 행은 `INFRA-ERROR` · ⛔ **실행기 전체 실패**(남은 변이 0 · 종료 코드 2) · 화면에 **「잔류 프로세스가 없음을 증명하지 못했다」** | ⛔ 그런 개념 자체가 없다 |
+| V24 | **`cleanup deadline` 까지 정리 미확인**(`close` 없음 **또는** 그룹 잔류) | 그 행은 `INFRA-ERROR` · ⛔ **실행기 전체 실패**(남은 변이 0 · 종료 코드 2) · 화면에 **「잔류 프로세스 그룹이 없음을 증명하지 못했다」** + PGID | ⛔ 그런 개념 자체가 없다 |
 | V25 | `error` 뒤에 **숫자 non-zero `close`** 가 온다 | ⛔ **`KILLED` 금지** — 앞선 원인이 남는다 | ⛔ 지금은 `error` 가 먼저 확정해 우연히 안전하다. **규칙이 아니라 순서에 기대고 있다** |
 | V26 | `close` 가 **두 번** 오거나 `error`·타이머·`close` 순서가 뒤바뀐다 | **결과 1회 · 정리 1회** — 어느 순열에서도 같다 | ⚠️ 아무도 안 잰다 |
 
@@ -1269,7 +1288,7 @@ signal 종료와 타이머 만료는 **근접해서 겹칠 수 있다.** 그래�
 | V12 | **기준선**이 1번(`started:true` · `exited` · `status:0`) 이외로 끝난다 — spawn 실패 · signal · 측정 불능 각각 | **돌연변이 0개 실행** · 종료 코드 **2** · 화면이 **정규화 상태를 이름으로** 말한다 | ⚠️ 중단은 하지만 `exit null` 이라고만 말해 **환경 문제가 코드 문제로 읽힌다** |
 | V13-a | `--json` 결과 전체 | **모든 행**에 `started`·`status`·`signal`·`timedOut`·`spawnFailed`·**`postSpawnError`**·`outcome` **일곱**이 있다 | ⛔ 다섯이 없다 |
 | V13-b | 같은 JSON 의 `KILLED` 행 | **전부** `started === true` · **`postSpawnError === false`** · `Number.isInteger(exit)` · `exit !== 0` — 하나라도 아니면 **전체 실패** | ⛔ `exit:null` 인 `KILLED` 가 나올 수 있다 |
-| V27 | **다음 변이 시작 시점** — 실행 순서를 기록해 대조한다 | 직전 자식의 `close` **뒤**에만 다음 변이가 시작된다. 하나라도 앞서면 **실패** | ⛔ 아무도 안 잰다 |
+| V27 | **다음 변이 시작 시점** — 실행 순서를 **실제 타임라인**으로 기록해 대조한다 | 직전 실행의 `close` **와 그룹 부재 확인 뒤**에만 다음 변이가 시작된다. 하나라도 앞서면 **실패** | ⛔ 아무도 안 잰다 |
 | V28 | `cleanup` 실패 뒤의 실행기 | ⛔ **남은 변이를 하나도 실행하지 않는다** · 종료 코드 2 | ⛔ 그런 갈래가 없다 |
 | V17 | 같은 JSON 의 문자열 필드 전수 | ⛔ **오류 원문 · 환경 변수 이름과 값 · 명령 인자 · 자식 출력이 하나도 없다.** 원인 문장은 정규화 상태에서 만든 **고정 문구**뿐이다 | ⚠️ 지금 `detail` 은 자식 출력에서 잘라 온 문자열이다 |
 
@@ -1323,7 +1342,7 @@ signal 종료와 타이머 만료는 **근접해서 겹칠 수 있다.** 그래�
 
 - 코드·테스트·`scripts/mutations.mjs` 를 **한 줄도 안 고쳤다.** 위 표의 「지금은」 칸이 현재 동작이다.
   ⚠️ **이번 보완(§0-21-2a · `postSpawnError` 판정 · V18~V28 · M184~M189)도 설계뿐이다.**
-- `node scripts/mutate.mjs` 를 **돌리지 않았다.** 지금 실행기는 **위협 93 을 못 보는 판**이라
+- `node scripts/mutate.mjs` 를 **돌리지 않았다.** 지금 실행기는 **위협 93·94 를 못 보는 판**이라
   그 출력은 완료의 증거가 될 수 없다.
 - ⚠️ **스위트 34개가 통과한다는 사실은 기존 회귀의 근거일 뿐 4단계 완료의 근거가 아니다.**
   이 저장소는 같은 이유로 여섯 판 연속 잘못 선언했다.
@@ -1346,14 +1365,16 @@ signal 종료와 타이머 만료는 **근접해서 겹칠 수 있다.** 그래�
 | 9 | V8~V28 · **그때 §13-5 에 다음 T 번호를 신설**하고 §13-6 에 매핑을 잇는다 | `scripts/test-verifier.mjs` · 이 문서 §13-5·§13-6 |
 | 10 | M173~M189 | `scripts/mutations.mjs` |
 | 11 | 「판정은 넷이다」를 다섯으로 고친다 | `CLAUDE.md` §8 · 이 문서 §0-20-1 |
-| 12 | **판정 우선순위에 `postSpawnError`** — `spawnFailed → started → postSpawnError → timedOut → signal → 숫자`. `KILLED` 는 **여덟 조건**이고 `exited` 는 `postSpawnError === false` 를 요구한다 | `scripts/_mutate-lib.mjs` |
-| 13 | **lifecycle reaping** — `started === true` 인 자식은 **`close` 를 확인하기 전에 반환하지 않는다.** `error`·타이머는 **원인 latch 만** 한다 | `scripts/_mutate-lib.mjs` |
-| 14 | **`CLEANUP_DEADLINE_MS` 신설** — kill 요청 뒤 `close` 를 기다리는 **별도 상수**. ⛔ mutation timeout 과 같은 값을 쓰지 않는다 | `scripts/_mutate-lib.mjs` |
-| 15 | **cleanup 실패는 중단이다** — 그 행을 `INFRA-ERROR` 로 적고 **남은 변이를 실행하지 않는다**(종료 코드 2). 화면에 **「잔류 프로세스가 없음을 증명하지 못했다」**와 **그룹 pid** | `scripts/_mutate-lib.mjs` · `scripts/mutate.mjs` |
-| 16 | **`start-timeout` 뒤 늦은 `'spawn'`** 을 즉시 그룹 kill 하고 `close` 를 기다린다 | `scripts/_mutate-lib.mjs` |
+| 12 | **판정 우선순위에 `postSpawnError`** — `spawnFailed → started → postSpawnError → timedOut → signal → 숫자`. `KILLED` 는 **§0-21-2c 의 목록 전부**이고 `exited` 는 `postSpawnError === false` 를 요구한다 | `scripts/_mutate-lib.mjs` |
+| 13 | **lifecycle reaping** — `started === true` 인 자식은 **`close` 와 그룹 부재를 확인하기 전에 반환하지 않는다.** `error`·타이머는 **원인 latch 만** 한다 | `scripts/_mutate-lib.mjs` |
+| 14 | **`CLEANUP_DEADLINE_MS` 신설** — kill 요청 뒤 **`close` 와 그룹 부재**를 확인하는 **별도 상수**. ⛔ mutation timeout 과 같은 값을 쓰지 않는다 | `scripts/_mutate-lib.mjs` |
+| 15 | **cleanup 실패는 중단이다** — 그 행을 `INFRA-ERROR` 로 적고 **남은 변이를 실행하지 않는다**(종료 코드 2). 화면에 **「잔류 프로세스 그룹이 없음을 증명하지 못했다」**와 **PGID** | `scripts/_mutate-lib.mjs` · `scripts/mutate.mjs` |
+| 16 | **`start-timeout` 뒤 늦은 `'spawn'`** 을 즉시 그 PGID 로 kill 하고 `close` 와 그룹 부재를 확인한다 | `scripts/_mutate-lib.mjs` |
 | 17 | JSON 증거를 **일곱 필드**로(`postSpawnError` 추가) | `scripts/mutate.mjs` |
 
 ⛔ **11번을 먼저 하지 않는다.** 코드가 다섯 판정을 갖기 전에 문서만 고치면 그 문장이 거짓이 된다.
+⚠️ **위협 94(§0-22-13)의 항목이 이 목록에 이어진다** — 그룹 부재 probe · `groupState` · 잔류 그룹
+검출 · 플랫폼 계약이 없으면 13~16 은 **틀린 완료 조건 위에서** 구현된다.
 ⛔ **13~16 을 「나중에」로 미루지 않는다.** 판정만 고치면 표는 정확해지지만 **잔류 프로세스는
 그대로 남고**, 그 상태에서 나온 표는 위협 91 이 겪은 것과 같은 이유로 **읽을 수 없다.**
 
@@ -1367,8 +1388,340 @@ signal 종료와 타이머 만료는 **근접해서 겹칠 수 있다.** 그래�
 | 18 | 설계서 **상단**과 **§21-0** 의 4단계 상태가 다르면 실패 | 같은 문서 안에서 갈렸던 자리다 |
 | 19 | `CLAUDE.md` · `docs/HANDOFF.md` · `docs/SECURITY_RELEASE_CHECKLIST.md` · 설계서의 **현재 4단계 상태**가 서로 다르면 실패 | 검사 11 은 지금 `CLAUDE.md`·`HANDOFF` **둘만** 본다 |
 | 20 | 실제 최대 T 번호와 **「합계 N건」** 문장이 다르면 실패 | §13-5 의 「합계 96건」이 T111 인 채로 남아 있었다 |
-| 21 | **위협 93 이 열린 상태**에서 「4단계 최종 완료」류 현재형 문장이 있으면 실패 | 열린 결함과 완료 선언이 같은 저장소에 공존하지 않게 한다 |
+| 21 | **위협 93·94 가 열린 상태**에서 「4단계 최종 완료」류 현재형 문장이 있으면 실패 | 열린 결함과 완료 선언이 같은 저장소에 공존하지 않게 한다 |
 | 22 | `started` 없는 결과 · **`postSpawnError:true` 인 결과**가 `KILLED` 로 적힌 JSON 이 있으면 실패 | 문서가 아니라 **산출물**을 재는 검사다(V13-b 와 짝) |
+
+---
+
+## 0-22. 프로세스 그룹 종료 불변식 (2026-08-29) — **위협 94 · 판 번호는 그대로 11판이다**
+
+⛔ **이 절도 설계다. 이번 회차에서 코드·테스트·DB·원격은 하나도 고치지 않았다.**
+구현 목록은 §0-22-13 이고 §0-21-6 에 이어진다.
+
+### 0-22-0. 정정 — §0-21-2a 의 완료 조건이 **틀렸다**
+
+바로 앞 회차가 「시작된 자식은 **`close` 를 본 뒤에만** 확정한다」를 완료 조건으로 적었다.
+그 문장은 **Node 의 `'close'` 를 「프로세스 그룹이 사라졌다」로 읽는다.** 공식 문서가 보장하는
+것은 그것이 아니다 —
+
+> `'close'` 는 **그 프로세스가 종료됐고 그 자식의 stdio 스트림이 닫혔다**는 것만 말한다.
+> (`https://nodejs.org/api/child_process.html#event-close`)
+
+**직접 자식 하나와 그 stdio** 다. 같은 POSIX 프로세스 그룹의 **손자**는 아무 관계가 없다.
+그래서 「`close` 를 봤으니 다음 변이를 시작해도 된다」는 **위협 91 이 닫은 손자 잔류를 다시
+허용한다** — 이번에는 제한 시간도 프로세스 그룹 kill 도 다 있는 채로.
+
+⚠️ **번호를 새로 준다(위협 94).** 위협 93 은 **「측정 불능을 방어 성공으로 접었다」**이고,
+이것은 **「종료 이벤트를 그룹 부재의 증거로 읽었다」**다 — 위협 93 을 글자 그대로 전부 구현해도
+이 결함은 그대로 남는다. 근본 원인이 다르므로 **정정이 아니라 독립된 위협**이다(같은 규칙으로
+위협 91 → 93 도 새 번호를 받았다).
+
+### 0-22-1. 재현 (2026-08-29 · 독립 · 저장소 무수정 · OS 임시 디렉터리)
+
+`node v24.14.0` · Darwin 26.5.2. 저장소 파일은 하나도 고치지 않았고, 재현 스크립트는
+저장소 밖에서만 실행하고 지웠다.
+
+**만든 상황** — 직접 자식을 `detached: true` 로 띄우고(그 자식이 새 그룹의 리더가 된다),
+그 자식이 **`stdio: "ignore"` 로 손자를 띄운 뒤 `unref()` 하고 자신은 `exit(0)`** 한다.
+손자는 계속 돈다. 직접 자식의 `'close'` 가 온 **그 순간** 셋을 각각 쟀다.
+
+| 잰 것 | 결과 |
+|---|---|
+| 직접 자식 `close` | **발생** — `code: 0` · `signal: null` |
+| `process.kill(직접 pid, 0)` | **`ESRCH`** — 직접 자식은 사라졌다 |
+| **`process.kill(-pgid, 0)`** | ⛔ **`alive`** — **그룹은 살아 있다** |
+| `process.kill(손자 pid, 0)` | ⛔ **`alive`** |
+
+그 뒤 **그 그룹만** `kill(-pgid, "SIGKILL")` 하고 300ms 뒤 다시 재니 그룹·손자 둘 다 `ESRCH`
+였다. ⛔ **`pkill node` 같은 광범위한 종료는 쓰지 않았다** — 그런 명령은 사용자의 다른 작업을
+죽이고, 그 자체가 「무엇을 죽였는지 모른다」는 상태다.
+
+**부수 실측 — probe 의 세 가지 답이 전부 실재한다.**
+
+| 대상 | `process.kill(대상, 0)` |
+|---|---|
+| 없는 그룹(`-999999`) | **`ESRCH`** |
+| 우리가 만든 살아 있는 그룹 | **성공**(예외 없음) |
+| **root 소유 그룹**(예: pgid 332) | ⛔ **`EPERM`** |
+
+⚠️ **`EPERM` 은 「없다」가 아니다** — 「있을 수도 있는데 우리가 확인할 권한이 없다」다.
+이것이 실제로 나오는 답이라는 것을 쟀으므로, 설계는 그것을 **부재로 인정하지 않는다.**
+
+### 0-22-2. 용어 셋을 분리한다
+
+⛔ **아래 셋을 같은 뜻으로 쓰지 않는다.** 이번 결함은 정확히 이 셋을 한 단어로 부른 데서 나왔다.
+
+| 이름 | 뜻 | 증거 |
+|---|---|---|
+| **`directClosed`** | 직접 자식이 종료됐고 그 stdio 가 닫혔다 | `'close'` 이벤트 |
+| **`groupAbsent`** | **검증기가 만든 프로세스 그룹에 프로세스가 하나도 없다** | `process.kill(-pgid, 0)` 이 **`ESRCH`**(§0-22-4) |
+| **`cleanupComplete`** | `directClosed === true && groupAbsent === true` | 위 둘 다 |
+
+⚠️ **spawn 자체가 실패해 그룹이 만들어지지 않은 경우는 별도 상태다** — 확인할 그룹이 없으므로
+`groupAbsent` 를 묻지 않는다(§0-22-6 의 1번 · §0-22-3 ⓐ).
+
+**문서 전체에서 금지하는 표현**
+
+- ⛔ 「프로세스 그룹이 종료됐다는 `close` 증거」
+- ⛔ 「`close` 를 봤으므로 그룹이 종료됨」
+- ⛔ 「직전 그룹의 `close` 확인」
+- ⛔ 「`process.kill(pid, 0)` 으로 프로세스 그룹 부재를 확인한다」 — **양수 PID 는 그 프로세스
+  하나**만 말한다
+
+### 0-22-3. 핵심 불변식
+
+> **다음 돌연변이는 직전 실행에 대해 ⓐ 자식이 아예 생성되지 않았거나(spawn 전 실패),
+> ⓑ **직접 자식의 `close` 와 검증기가 만든 프로세스 그룹의 부재가 둘 다 확인된** 뒤에만
+> 시작한다. 둘 중 하나라도 확인되지 않으면 다음 돌연변이를 실행하지 않고 **검증기 전체를
+> 실패로 중단한다.**
+
+```text
+nextMutationAllowed =
+  spawnFailedBeforeStart
+  || (directClosed === true && groupState === "absent")
+```
+
+⛔ **아래는 전부 이 불변식의 대용이 될 수 없다.**
+
+| 잘못된 판정식 | 왜 안 되나 |
+|---|---|
+| `nextMutationAllowed = directClosed` | ⛔ **이번 결함이다.** 실측에서 `close` 와 손자 생존이 **공존**했다 |
+| `= promiseResolved` | 반환은 **약속**의 상태다. 프로세스의 상태가 아니다 |
+| `= killRequested` | kill 은 **요청**이다. `kill` 이 성공을 반환해도 대상이 즉시 사라지지는 않는다 |
+| `= directPidAbsent` | 실측에서 직접 PID 는 `ESRCH` 인데 **그룹은 살아 있었다** |
+
+### 0-22-4. 그룹 부재 probe 판정표
+
+**대상은 검증기가 직접 만든 PGID 하나뿐이다.** `detached: true` 로 띄운 직접 자식이 그 그룹의
+리더이므로 `pgid === child.pid` 이고, **그 값을 실행 시작 시점에 기록해 둔다**(자식이 죽은 뒤에는
+읽을 데가 없다).
+
+```js
+try {
+  process.kill(-pgid, 0);
+  // 그룹이 존재한다
+} catch (error) {
+  if (error.code === "ESRCH") { /* 그룹이 없다 */ }
+  else if (error.code === "EPERM") { /* 있을 수 있는데 확인할 권한이 없다 */ }
+  else { /* 측정 불능 */ }
+}
+```
+
+| probe 결과 | 뜻 | `groupState` | 처리 |
+|---|---|---|---|
+| **반환 성공** | 그룹이 **존재한다** | `present` | ⛔ **다음 변이 금지** — 계속 기다리거나 정리한다 |
+| **`ESRCH`** | 그룹이 **없다** | **`absent`** | ✅ **이 경우에만** 부재로 인정 |
+| **`EPERM`** | 있을 수 있는데 **확인할 권한이 없다** | `unverifiable` | ⛔ **부재로 인정 금지 · fail-closed** |
+| 그 밖의 오류 | 측정 불능 | `unverifiable` | ⛔ **`INFRA-ERROR`** |
+| 아직 안 쟀다 | — | `unknown` | ⛔ 기본값. **`absent` 로 시작하지 않는다** |
+
+⚠️ **`kill(-pgid, signal)` 이 `ESRCH` 를 던져도 그것으로 끝내지 않는다** — 그 호출은 **신호를
+보내는 시점**의 관찰이고, 우리가 원하는 것은 **정리가 끝난 시점**의 관찰이다. 정리 확인은
+**언제나 별도의 probe** 로 한다.
+
+⛔ **광범위한 프로세스 탐색·종료를 설계하지 않는다.** `pkill`·`killall`·이름으로 찾기는
+이 설계에 없다 — 우리가 만든 PGID 하나만 만진다.
+
+**플랫폼 계약.** 이 설계의 대상은 **POSIX(macOS · Linux)** 다. 음수 PGID 의 뜻은 POSIX 계약이고
+**Windows 에는 없다.** ⛔ **지원하지 않는 플랫폼에서 흉내 내지 않는다** — `process.platform` 이
+`win32` 이면 검증기는 **시작 시점에 fail-closed 로 중단**한다(돌연변이 0개 · 종료 코드 2 ·
+「이 플랫폼에서는 프로세스 그룹 부재를 증명할 수 없다」). 조용히 그룹 검사를 건너뛰고 도는 것이
+가장 나쁘다 — 그러면 **잔류 손자가 있는 채로 표가 초록**이다.
+
+### 0-22-5. 상태 모델
+
+§0-21-2 의 결과 계약에 아래가 더해진다. ⛔ **의미를 합치지 않는다** — 필드 이름은 구현에서 더
+적합하게 고를 수 있지만 **하나로 뭉치면 이번 결함이 그대로 돌아온다.**
+
+| 필드 | 형 | 무엇 |
+|---|---|---|
+| `pgid` | `number \| null` | **실행 시작 시점에 기록한** 프로세스 그룹 id(`detached` 라 `child.pid`). spawn 전 실패면 `null` |
+| **`closeSeen`** | `boolean` | `'close'` 이벤트를 봤나 — ⛔ **정리 완료가 아니다** |
+| **`groupState`** | `"unknown" \| "present" \| "absent" \| "unverifiable"` | §0-22-4 의 probe 결과. **기본값 `unknown`** |
+| **`residualGroupDetected`** | `boolean` | 직접 자식이 종료한 뒤 **같은 그룹이 살아 있는 것을 실제로 관찰했나** |
+| `cleanupRequested` | `boolean` | 그 그룹에 종료를 **요청**했나 |
+| `cleanupTimedOut` | `boolean` | `cleanup deadline` 안에 `cleanupComplete` 를 못 봤나 |
+
+기존 `started` · `spawnFailed` · `postSpawnError` · `timedOut`(그리고 `started:false` 갈래의
+`startTimedOut`) · `status` · `signal` 은 그대로다.
+
+### 0-22-6. 수명주기 전수표
+
+각 행은 **증거 · 정규화 상태 · 그룹 정리 필요 · 반환 가능 시점 · 판정 · 다음 변이 허용**을 함께
+정한다. ⚠️ **도착 순서가 판정 이름을 바꾸지 않는다**(§0-21-2c 의 고정 우선순위)는 원칙은 그대로다.
+
+| # | 갈래 | 수집할 증거 | 정규화 상태 | 그룹 정리 | 반환 가능 시점 | 판정 | 다음 변이 |
+|---|---|---|---|---|---|---|---|
+| 1 | **spawn 전** ENOENT·EACCES | `spawnFailed:true` · `started:false` · `pgid:null` | `spawn-failed` | **불필요**(그룹 없음) | 즉시 | `INFRA-ERROR` | ✅ 허용(불변식 ⓐ) |
+| 2 | exit 0 · 그룹 없음 | `status:0` · `closeSeen` · `groupState:absent` | `exited` | 불필요 | 정리 확인 뒤 | **`SURVIVED`** | ✅ |
+| 3 | non-zero exit · 그룹 없음 | `status:n≠0` · `closeSeen` · `absent` | `exited` | 불필요 | 정리 확인 뒤 | **`KILLED`** | ✅ |
+| 4 | **exit 0 · 그룹 잔류** | `closeSeen` · `groupState:present` · `residualGroupDetected:true` | `residual-group` | **필요** | 정리 확인 뒤 | ⛔ **`SURVIVED` 금지 → `INFRA-ERROR`** | 정리 성공 시에만 |
+| 5 | **non-zero exit · 그룹 잔류** | 위와 같고 `status:n≠0` | `residual-group` | **필요** | 정리 확인 뒤 | ⛔ **`KILLED` 금지 → `INFRA-ERROR`** | 정리 성공 시에만 |
+| 6 | 외부 signal · 그룹 없음 | `signal≠null` · `timedOut:false` · `absent` | `signalled` | 불필요 | 정리 확인 뒤 | `INFRA-ERROR` | ✅ |
+| 7 | **외부 signal · 그룹 잔류** | 위 + `residualGroupDetected:true` | `residual-group` | **필요** | 정리 확인 뒤 | `INFRA-ERROR` | 정리 성공 시에만 |
+| 8 | timeout → 그룹 kill → `close` → **부재** | `timedOut:true` · `cleanupRequested` · `absent` | `timeout` | 요청함 | **부재 확인 뒤** | **`TIMEOUT`** | ✅ |
+| 9 | **timeout → `close` 는 왔는데 그룹 잔류** | `timedOut:true` · `present` | `residual-group` | **필요** | 정리 확인 뒤 | `INFRA-ERROR` | 정리 성공 시에만 |
+| 10 | **kill 요청이 실패**(`error`) | `postSpawnError:true` · `cleanupRequested` | `post-spawn-error` | **필요** | 정리 확인 뒤 | `INFRA-ERROR` | 정리 성공 시에만 |
+| 11 | `close` 는 왔는데 **probe 가 성공**(그룹 존재) | `closeSeen` · `present` | `residual-group` | **필요** | 정리 확인 뒤 | `INFRA-ERROR` | 정리 성공 시에만 |
+| 12 | **probe `EPERM`** | `groupState:unverifiable` | `unobservable` | 알 수 없다 | ⛔ **반환 못 한다** | `INFRA-ERROR` | ⛔ **금지 · 중단** |
+| 13 | **probe 가 예상 밖 오류** | `groupState:unverifiable` | `unobservable` | 알 수 없다 | ⛔ **반환 못 한다** | `INFRA-ERROR` | ⛔ **금지 · 중단** |
+| 14 | **`start-timeout` 뒤 늦은 `'spawn'`** | `startTimedOut:true` · 늦은 `pgid` | `start-timeout` | **필요**(정확한 PGID) | `close` **와** 부재 뒤 | `INFRA-ERROR` | 정리 성공 시에만 |
+| 15 | `error` 와 `close` 경합 | 필드별 latch(덮지 않는다) | 우선순위가 정한다 | 그때의 값에 따름 | 정리 확인 뒤 | 우선순위 | 정리 성공 시에만 |
+| 16 | 타이머와 signal 경합 | 둘 다 latch | `timeout`(우선순위) | 요청함 | 정리 확인 뒤 | **`TIMEOUT`** | 정리 성공 시에만 |
+| 17 | **`cleanup deadline` 초과** | `cleanupTimedOut:true` | `unobservable` | 실패 | ⛔ **없다** | `INFRA-ERROR` | ⛔ **금지 · 종료 코드 2** |
+| 18 | **지원하지 않는 플랫폼**(`win32`) | `process.platform` | — | 계약 없음 | ⛔ 시작 자체를 안 한다 | `INFRA-ERROR` | ⛔ **시작 시점 중단** |
+
+⛔ **4·5·7·9·11 이 이번 회차의 핵심이다** — 전부 **직접 자식이 「정상적으로」 끝난 갈래**이고,
+전 판 설계는 그 다섯을 **2·3·6·8 과 구분하지 못했다.**
+
+### 0-22-7. 판정 규칙
+
+**`KILLED`** — §0-21-2c 의 목록 전부. 이번 회차가 거기에 `closeSeen` · `groupState === "absent"` ·
+`residualGroupDetected === false` 셋을 더했다. ⛔ **숫자 non-zero 종료만으로는 여전히 부족하다.**
+
+**`SURVIVED`** — 정상 `exit 0` 이라도 **그룹이 남았으면 `SURVIVED` 가 아니다.**
+
+```text
+survivedOk = status === 0 && closeSeen === true
+             && groupState === "absent" && residualGroupDetected === false
+```
+
+⚠️ **이 방향을 빠뜨리기 쉽다.** `SURVIVED` 는 「방어가 못 잡았다」라 이미 `FATAL` 이니 굳이 더
+엄격하게 볼 이유가 없어 보인다 — 하지만 그 실행은 **잔류 프로세스가 다음 변이의 측정을 오염시킨
+실행**이다. 「생존」으로 적으면 운영자는 **테스트를 보강하러 가고**, 실제 원인인 잔류 그룹은
+아무도 안 본다.
+
+**잔류 그룹을 발견하면**
+
+1. `residualGroupDetected` 를 기록한다.
+2. 그 실행을 **`KILLED` 로도 정상 `SURVIVED` 로도 인정하지 않는다.**
+3. **그 그룹만** 종료를 요청한다.
+4. `cleanup deadline` 까지 **그룹 부재를 확인**한다.
+5. 부재를 확인해도 **판정은 `INFRA-ERROR`** 다.
+6. 부재를 확인하지 못하면 **검증기를 종료 코드 2 로 중단**한다.
+
+⛔ **정리했다는 이유로 원래 실행을 정상 측정으로 소급하지 않는다.** 그 실행이 도는 동안 손자가
+CPU 를 먹고 있었다는 사실은 정리로 사라지지 않는다.
+
+### 0-22-8. `cleanup deadline` 의 완료 조건
+
+```text
+cleanupComplete = closeSeen === true && groupState === "absent"
+```
+
+⛔ **아래는 완료가 아니다.**
+
+```text
+closeSeen === true && groupState === "present"      // 이번 결함
+closeSeen === true && groupState === "unverifiable" // EPERM · 예상 밖 오류
+```
+
+기한 안에 `cleanupComplete` 를 못 보면: 그 실행 **`INFRA-ERROR`** · 다음 돌연변이 **0건** ·
+종료 코드 **2** · 보고 문구 **「잔류 프로세스 그룹이 없음을 증명하지 못했다」** · 운영자에게 그
+실행의 **PGID** 를 준다. ⛔ **JSON 에는 경로·PID 같은 가변 세부정보를 넣지 않는다**(§0-21-2c
+파생 규칙 4는 그대로다) — PGID 는 **화면**에만 적는다.
+⚠️ **`mutation timeout` 과 `cleanup deadline` 은 계속 다른 상수·다른 의미다**(§0-21-2a).
+
+### 0-22-9. 위협 경계 — 그룹을 **벗어나는** 후손
+
+프로세스 그룹 방식이 통제하는 것은 **검증기가 만든 그룹 안에 남아 있는 후손**이다.
+후손이 스스로 `setsid` 하거나 `detached: true` 로 **새 그룹을 만들면** 원래 PGID 검사로는 못 잡는다.
+그래서 저장소를 실제로 검색했다(2026-08-29 · `git grep` · ⛔ `네이버검수-캡처/` 제외 —
+`git ls-files` 에 없어 **구조적으로** 빠진다).
+
+| 찾은 것 | 결과 |
+|---|---|
+| `detached` | **1곳** — `scripts/_mutate-lib.mjs:17`(검증기 자신이 그룹을 만드는 자리) |
+| `setsid` · `daemon` · `unref()` · `fork(` | **0곳** |
+| `child_process` 를 쓰는 스위트의 자식 | `test-workerd.mjs:73`(workerd) · `test-verifier.mjs:26`(손자) · `backup.mjs:145` — **셋 다 `detached` 없음** = 그룹을 상속한다 |
+| `execFileSync` · `execSync` | 동기 실행 · 같은 그룹 |
+
+**판정 — 지금의 돌연변이 실행 경로에는 그룹을 이탈하는 코드가 없다.** 그래서 「그 그룹을
+비우면 그 실행이 만든 프로세스는 전부 없다」를 **설계 전제로 기록한다.**
+⚠️ **이것은 오늘의 실측이지 영구 보장이 아니다.** 그래서 §0-22-13 에 **「스위트가 `detached`·
+`setsid` 를 새로 쓰면 실패하는 검사」**를 구현 항목으로 넣는다 — 전제를 사람의 기억이 아니라
+검사가 지키게 한다.
+⛔ **cgroup·컨테이너 격리를 있는 것처럼 쓰지 않는다** — 이 저장소에는 없다. ⛔ 가능성만으로
+범위를 운영체제 전체의 프로세스 관리 문제로 넓히지도 않는다.
+
+### 0-22-10. RED 테스트 명세 (`scripts/test-verifier.mjs` V29~V38)
+
+⛔ **아직 하나도 쓰지 않았다.** 기존 V8~V28(§0-21-4)과 **겹치는 것은 새 번호를 주지 않고
+그 자리를 고쳤다** — V19(그룹 부재로 반환 조건 정정) · V22(정확한 PGID) · V24(정리 미확인) ·
+V27(타임라인). 아래는 **그 위에 새로 필요한 것**이다.
+
+| 검사 | 입력 | 기대 | 지금은 |
+|---|---|---|---|
+| V29 | 직접 자식이 **손자를 띄우고 정상 종료**(§0-22-1 의 재현) | `close` 발생 · 양수 직접 PID `ESRCH` · **음수 PGID 는 존재** · 손자 존재 → **`residual-group`** · ⛔ **다음 변이 시작 금지** | ⛔ 그대로 반환하고 다음 변이를 시작한다 |
+| V30 | 직접 자식만 **외부 signal** 로 죽고 손자가 남는다 | `signalled` + **잔류 그룹 검출** → `INFRA-ERROR` | ⛔ `KILLED` |
+| V31 | **non-zero 종료 + 그룹 잔류** | ⛔ **`KILLED` 금지** → `INFRA-ERROR` | ⛔ `KILLED` |
+| V32 | **`exit 0` + 그룹 잔류** | ⛔ **`SURVIVED` 금지** → `INFRA-ERROR` | ⛔ `SURVIVED` |
+| V33 | 그룹 probe **성공** | `groupState:present` · ⛔ 다음 변이 금지 | ⛔ probe 자체가 없다 |
+| V34 | 그룹 probe **`EPERM`**(합성) | ⛔ **부재로 인정하지 않는다** · `unverifiable` · `INFRA-ERROR` · 중단 | ⛔ 없다 |
+| V35 | 그룹 probe **`ESRCH`** | ✅ **이 경우에만** `absent` | ⛔ 없다 |
+| V36 | **timeout 그룹 kill** | 직접 자식 `close` **만으로 반환하지 않는다** · **그룹 부재 확인 뒤** 반환 | ⛔ `close` 면 반환 |
+| V37 | `cleanup deadline` 까지 **그룹 잔류** | 남은 돌연변이 **0건** · 종료 코드 **2** · 문구와 PGID | ⛔ 없다 |
+| V38 | **지원하지 않는 플랫폼**(`win32` 합성) | **시작 시점에** 돌연변이 0개 · 종료 코드 2 | ⛔ 조용히 돈다 |
+
+**모든 검사 공통** — 스위트가 끝난 뒤 **그 테스트가 만든 PID·PGID 잔류 0** 을 스스로 확인한다.
+⛔ 광범위한 종료 명령을 쓰지 않고 **자기가 만든 PGID 만** 정리한다.
+⚠️ **V1 도 4단계에서 함께 고친다** — 지금은 **알고 있는 손자 하나**를 양수 PID 로 재는데, 그것은
+「그 손자가 죽었다」이지 **「그룹이 비었다」가 아니다.** 음수 PGID probe 로 바꾼다.
+
+### 0-22-11. 돌연변이 명세
+
+⛔ **`scripts/mutations.mjs` 에 넣지 않았다.** ⛔ **번호를 여기서 고정하지 않는다** — 현재 마지막
+id 는 실측으로 **`M172`**(2026-08-29 · `grep -c 'id: "M' scripts/mutations.mjs` = 172)이고
+§0-21-4 의 M173~M189 도 아직 **명세뿐**이다. **4단계 구현자가 그 시점의 마지막 id 를 직접 확인해
+번호를 부여한다.**
+
+| 무엇을 없애나 | 깨지는 불변식 | 무엇이 잡나 |
+|---|---|---|
+| 음수 PGID probe 를 **양수 PID probe** 로 바꾼다 | 그룹 부재는 그룹에게 묻는다 | V29 · V33 |
+| **`closeSeen` 만으로** 정리 완료 처리 | ⛔ 이번 결함 그 자체 | V29 · V36 |
+| **`EPERM` 을 부재로** 처리 | 확인 못 한 것은 부재가 아니다 | V34 |
+| 그룹 부재 검사를 **항상 참**으로 | 기본값은 실패다 | V29~V33 |
+| **정상 exit** 갈래에서 그룹 확인 제거 | `exit 0` 도 그룹을 남길 수 있다 | V32 |
+| **non-zero exit** 갈래에서 그룹 확인 제거 | 사망 판정이 가장 위험하다 | V31 |
+| **signal** 갈래에서 그룹 확인 제거 | 외부 종료 뒤에도 손자는 남는다 | V30 |
+| **timeout** 갈래에서 그룹 확인 제거 | kill 요청은 종료가 아니다 | V36 |
+| 잔류 그룹을 발견해도 **`KILLED`** 로 | 오염된 실행을 사망으로 세지 않는다 | V31 |
+| 잔류 그룹을 발견해도 **`SURVIVED`** 로 | 오염된 실행을 생존으로도 세지 않는다 | V32 |
+| `cleanup deadline` 뒤 **다음 변이를 계속** | 증명 못 한 잔류 위에서 재지 않는다 | V37 |
+| **그룹 부재 전에 다음 변이 시작** | 핵심 불변식(§0-22-3) | V27 · V29 |
+| `residualGroupDetected` 를 `KILLED` 필요조건에서 제거 | 관찰한 잔류를 무시하지 않는다 | V31 |
+| **지원하지 않는 플랫폼에서 그대로 실행** | 계약 없는 곳에서 초록을 만들지 않는다 | V38 |
+
+### 0-22-12. 이 회차에서 **하지 않은** 것
+
+- `scripts/mutate.mjs` · `scripts/_mutate-lib.mjs` · `scripts/test-verifier.mjs` ·
+  `scripts/mutations.mjs` 를 **한 줄도 안 고쳤다.** 위 표의 「지금은」 칸이 현재 동작이다.
+- `node scripts/mutate.mjs` 를 **돌리지 않았다.** 지금 실행기는 **위협 93·94 를 못 보는 판**이라
+  그 출력은 완료의 증거가 될 수 없다.
+- 애플리케이션 코드·migration·원격은 아무것도 만지지 않았다.
+- ⚠️ **재현 스크립트는 저장소 밖에서만 실행하고 지웠다** — 저장소에 넣지 않았다.
+
+### 0-22-13. 4단계로 넘기는 구현 목록 (§0-21-6 에 이어진다)
+
+| # | 무엇 | 어디 |
+|---|---|---|
+| G1 | **`pgid` 를 실행 시작 시점에 기록**한다(`detached` 라 `child.pid`) — 자식이 죽은 뒤에는 읽을 데가 없다 | `scripts/_mutate-lib.mjs` |
+| G2 | **`probeGroup(pgid)`** 신설 — §0-22-4 의 네 답(`present`·`absent`·`unverifiable`×2)을 그대로 돌려준다. ⛔ 양수 PID probe 금지 | `scripts/_mutate-lib.mjs` |
+| G3 | 결과 계약에 **`closeSeen`·`groupState`·`residualGroupDetected`·`cleanupRequested`·`cleanupTimedOut`** | `scripts/_mutate-lib.mjs` |
+| G4 | 완료 조건을 **`closeSeen && groupState === "absent"`** 로 — ⛔ `close` 하나로 반환하지 않는다 | `scripts/_mutate-lib.mjs` |
+| G5 | **`residual-group` 정규화 상태** 신설 — §0-22-6 의 4·5·7·9·11 | `scripts/_mutate-lib.mjs` |
+| G6 | `KILLED`·`SURVIVED` 에 그룹 조건 추가(§0-22-7) — 잔류 그룹이면 **둘 다 금지** | `scripts/_mutate-lib.mjs` |
+| G7 | `cleanup deadline` 의 완료 조건을 `cleanupComplete` 로 고친다(지금 명세는 `close` 대기다) | `scripts/_mutate-lib.mjs` |
+| G8 | **플랫폼 게이트** — `win32` 이면 **시작 시점에** 돌연변이 0개 · 종료 코드 2 | `scripts/mutate.mjs` |
+| G9 | 중단 문구를 **「잔류 프로세스 그룹이 없음을 증명하지 못했다」**로 하고 **PGID 를 화면에** 적는다(⛔ JSON 에는 안 적는다) | `scripts/mutate.mjs` |
+| G10 | **V29~V38** · V19·V22·V24·V27 정정 · **V1 을 음수 PGID probe 로** · 그때 §13-5 에 T 번호 신설 | `scripts/test-verifier.mjs` · 이 문서 §13-5·§13-6 |
+| G11 | §0-22-11 의 돌연변이 14종 — **번호는 그 시점의 마지막 id 를 확인해 부여** | `scripts/mutations.mjs` |
+| G12 | **전제를 지키는 검사** — 스위트가 `detached`·`setsid` 를 새로 쓰면 실패한다(§0-22-9 의 전제) | `scripts/test-verifier.mjs` |
+| G13 | **문서의 조건 개수 주장**이 §0-21-2c 목록의 실제 길이와 다르면 실패 | `scripts/test-docs.mjs` |
+| G14 | 네 문서에 **「`close` = 그룹 종료」류 문장**이 다시 생기면 실패(§0-22-2 의 금지 표현) | `scripts/test-docs.mjs` |
+
+⛔ **G1~G7 을 §0-21-6 의 13~16 보다 먼저 하거나 함께 한다.** 순서를 뒤집으면 **틀린 완료 조건
+위에** reaping 을 구현하게 된다.
 
 ---
 
@@ -3871,7 +4224,8 @@ D안(문장 안의 게이트)을 함께 제시했으나 **단독 채택하지 �
 | **90** | **백업 도구의 Node 런타임 계약이 없다** | **M** | ① 복원 가능성 증명이 `node:sqlite` 를 쓰고, 플래그 없이 열리는 최소 판이 **22.13.0** 이다 ② `engines.node`·`.nvmrc`·preflight 가 **하나도 없었다** ③ 정적 `import` 라 지원하지 않는 Node 에서는 **모듈을 읽는 순간** 이해할 수 없는 오류로 끝난다 ④ 운영자에게는 「백업 도구가 원래 안 되는 것」으로 보이고, 그 상태에서 백업 없이 migration 을 돌리게 된다 ⑤ 「지금 Node 24 에서 되니까」를 근거로 삼고 있었다 | ⓐ 값의 원본은 `MIN_NODE` **한 자리** — `package.json` 의 `engines.node` 와 `.nvmrc` 를 검사가 그 상수와 대조한다 ⓑ `node:sqlite` 는 `loadTemp()` 안에서 **지연 import** 하고 그 앞에 `assertNode()` 가 선다 ⓒ CLI 는 **어느 하위 명령보다 먼저** 보고 종료 코드 3 과 한국어 안내로 끝낸다 | **T109** · **M165·M166** | ⛔ **부분적으로 도는 것이 가장 나쁘다** — export 는 되고 검증만 안 되면 검증 안 된 사본을 백업이라 부르게 된다 |
 | **91** | **돌연변이 실행기가 측정 불능에 빠졌다 — 종료하지 않는 변이 하나가 검증 전체를 멈추고 손자가 남았다** | **H** | ① M164 가 `reconPage` 를 **같은 커서로 무한 재귀**시켰다 ② 실행기에 제한 시간이 없어 211종 검증이 4번째 변이에서 멈췄다 ③ 표에는 아무것도 안 나와서 **실패가 아니라 침묵**으로 보였다 ④ 바깥에서 실행기를 죽여도 `spawnSync` 는 직계만 죽여 **손자(`test-ops-race`)가 4분 34초째 CPU 를 먹으며 남았다**(실측) ⑤ 죽은 자식은 종료 코드가 `null` 이라 **조용히 `KILLED`** 로 접힌다 — 제한 시간만 붙이고 판정을 안 나눴다면 종료하지 않는 변이가 곧 만점이 된다 | ⓐ `runWithTimeout()` 이 `detached` + `process.kill(-pid)` 로 **프로세스 그룹째** 죽인다 ⓑ **`TIMEOUT`** 을 넷째 판정으로 `KILLED` 와 분리한다 ⓒ 완료 조건은 생존 0 · 앵커 실패 0 · **제한 시간 초과 0** ⓓ 제한 시간은 **측정한 기준선의 20배**(최소 15초) · 기준선 timeout 은 즉시 전체 실패 ⓔ M164 를 **유한한 변이**로 다시 쓰고 R5 에 **두 번째 바퀴**를 더한다 | **T110** · **M164 · M167~M171** | ⛔ **「사망 211 · 생존 0」이 아니라 아무것도 재지 못한 상태였다.** 그때 스위트 33개는 전부 통과했고 `npm audit` 도 0건이었다 |
 | **92** | **「전수」가 실행하지 않은 경계를 셌다** | **M** | ① `test-ops-race` R11 의 `assert.ok(fired || at === steps, …)` 가 예외 통과를 허용했다 ② `run` 은 정확히 `steps` 번 불리므로 `at === steps` 회차는 **reconciliation 을 아예 안 돌린** 평범한 백업 한 번이었다 — 22개 조합 중 **2개가 빈 칸** ③ 게다가 배리어가 `runBackup` 의 runner 에만 걸려 있어 inventory 의 `insertPending`·`setUploading`·`setUploaded`·`setReady` **앞에서는 아무도 끼어들지 않았다** — 정작 위협 88 이 다투는 자리가 그 전이들이다 | ⓐ inventory 도 **같은 runner** 를 지나게 해 상태 전이가 실제 배리어 자리가 된다 ⓑ 마지막 자리는 **반환 직후**에 완주시킨다 ⓒ 예외 통과 제거 — `assert.ok(fired, …)` 하나 ⓓ 실행한 명령 목록에 그 전이들이 실제로 있는지 스위트가 스스로 확인한다 | **T111** · **M172** | 실측: 배리어 자리 10 → **14** · 교차 조합 22 → **30** · 단언 121 → **152** |
-| **93** | **측정 불능이 「방어가 잡았다」로 접혔다 — spawn 실패·signal 종료가 `KILLED`** | **H** | ① `mutate.mjs` 의 판정이 `r.timedOut ? TIMEOUT : r.status === 0 ? SURVIVED : KILLED` 삼항식이다 ② `runWithTimeout()` 은 `status:null` 을 **세 가지 이유**로 돌려주는데 그중 하나(우리 타이머)만 갈라져 있다 ③ **실측**(2026-08-29 · 읽기 전용): 없는 실행 파일 → `spawnFailed:true` · `status:null` → **`KILLED`** · 자식이 SIGTERM 으로 죽음 → **`KILLED`** ④ 그래서 `node` 를 못 띄우는 환경에서는 **217종이 전부 사망 · 종료 코드 0** 이고, 그 표가 완료 판정의 근거다 ⑤ 위협 91 의 ⑤ 가 이미 `null` 을 지목했는데 **설계가 timedOut 갈래만 갈랐다** — 부분 마감이었다 ⑥ 부수 실측: ENOENT 는 `error` → `close(code=-2)` 둘 다 오므로 **「숫자 non-zero」는 실행됐다는 증거가 아니다** | ⓐ 판정 **앞에** 실행 결과를 정규화한다 — `classify()` 가 `exited`·`timeout`·**`start-timeout`**·`spawn-failed`·**`post-spawn-error`**·`signalled`·`unobservable` 로 나누고 **기본값은 `unobservable`**(모순된 결과 객체도 여기로) ⓑ **`started` 를 결과 계약에 싣는다 — `'spawn'` 이벤트에서만 `true`**(실측: ENOENT·EACCES 는 그 이벤트가 없고 `close(code=-2/-13)` 라는 **숫자 non-zero** 를 낸다). ⛔ `pid`·`spawnFailed:false` 로 추정하지 않는다 ⓑ′ `KILLED` 의 필요충분조건은 **여덟**이다 — `started` · `spawnFailed:false` · **`postSpawnError:false`** · `timedOut:false` · `signal:null` · `Number.isInteger(status)` · `status !== 0` · `outcome === exited` ⓒ **`INFRA-ERROR`** 를 다섯째 판정으로 두고 `FATAL` 에 넣는다 — ⛔ `TIMEOUT` 과 합치지 않는다(운영자가 할 일이 다르다) ⓓ `runWithTimeout` 이 **`close` 의 둘째 인자 `signal`** 을 싣고, **`settled` 플래그 + `finalize()` 상태기**로 확정과 `clearTimeout` 이 **정확히 한 번** 일어난다. 증거는 **필드별로 latch 하고 앞선 값을 덮지 않는다.** ⛔ Promise 가 두 번째 `resolve` 를 무시한다는 성질에 기대지 않는다 — 그것은 반환값만 지키고 **부수효과는 안 지킨다** ⓓ′ 타이머가 **spawn 전** 만료되면 `start-timeout`(`INFRA-ERROR`)이고 **spawn 후**여야 `timeout`(`TIMEOUT`)이다. `error` 도 **`started` 기준으로** `spawn-failed`/`post-spawn-error` 로 가른다 ⓔ 기준선이 측정 불능이면 **원인을 이름으로 말하고** 돌연변이 0개로 중단 ⓕ JSON 은 판정과 함께 `started`·`status`·`signal`·`timedOut`·`spawnFailed`·`postSpawnError`·`outcome` **일곱**과 비밀값 없는 **고정 문구** 원인을 적는다 ⓖ **`postSpawnError` 를 판정이 실제로 쓴다** — 우선순위가 `spawnFailed → started → postSpawnError → timedOut → signal → 숫자` 이고 `postSpawnError:true` 이면 `status` 가 무엇이든 `post-spawn-error`·`INFRA-ERROR` 다(전 판은 계약에만 싣고 **어디서도 안 봤다**) ⓗ **판정과 자식 종료 확인을 분리한다**(§0-21-2a) — `error`·타이머는 **원인 latch 일 뿐 종료의 증거가 아니고**, `started` 인 자식은 **`close` 를 본 뒤에만** 확정하며, kill 요청 뒤의 대기는 **`CLEANUP_DEADLINE_MS`**(mutation timeout 과 다른 상수)로 재고, 그 안에 `close` 가 없으면 그 행을 `INFRA-ERROR` 로 적은 뒤 **남은 변이를 실행하지 않고 중단**한다(「잔류 프로세스가 없음을 증명하지 못했다」). **다음 변이는 직전 그룹의 `close` 증거 뒤에만 시작된다** | **§0-21-4 의 V8~V17**(RED 명세) · **M173~M183** — ⛔ **T 번호는 구현 시점에 준다** | ⛔ **설계만 확정했다(2026-08-29) — 코드·테스트는 아직 없다.** 그래서 지금의 돌연변이 표는 **이 결함을 못 보는 실행기가 만든 것**이고 4단계 로컬은 최종 완료가 아니다. ⚠️ 실행기 밖의 측정 불능(호스트가 통째로 죽는 경우)은 이 설계로 못 잡는다 — 그때는 표 자체가 안 나온다. ⚠️ **`start-timeout` 갈래는 재현하지 못했다** — 0ms 타이머 20회 모두 `'spawn'` 이 먼저였다(Node 는 그 이벤트를 nextTick 큐로 올린다). 재현한 결함이 아니라 **계약으로 닫아 두는 갈래**다. ⚠️ **수명주기 결함(ⓗ)은 재현이 아니라 코드 읽기로 확정했다** — `error` 즉시 반환과 kill 요청 직후 반환은 소스에 그대로 있다(`_mutate-lib.mjs:28-35`) |
+| **93** | **측정 불능이 「방어가 잡았다」로 접혔다 — spawn 실패·signal 종료가 `KILLED`** | **H** | ① `mutate.mjs` 의 판정이 `r.timedOut ? TIMEOUT : r.status === 0 ? SURVIVED : KILLED` 삼항식이다 ② `runWithTimeout()` 은 `status:null` 을 **세 가지 이유**로 돌려주는데 그중 하나(우리 타이머)만 갈라져 있다 ③ **실측**(2026-08-29 · 읽기 전용): 없는 실행 파일 → `spawnFailed:true` · `status:null` → **`KILLED`** · 자식이 SIGTERM 으로 죽음 → **`KILLED`** ④ 그래서 `node` 를 못 띄우는 환경에서는 **217종이 전부 사망 · 종료 코드 0** 이고, 그 표가 완료 판정의 근거다 ⑤ 위협 91 의 ⑤ 가 이미 `null` 을 지목했는데 **설계가 timedOut 갈래만 갈랐다** — 부분 마감이었다 ⑥ 부수 실측: ENOENT 는 `error` → `close(code=-2)` 둘 다 오므로 **「숫자 non-zero」는 실행됐다는 증거가 아니다** | ⓐ 판정 **앞에** 실행 결과를 정규화한다 — `classify()` 가 `exited`·`timeout`·**`start-timeout`**·`spawn-failed`·**`post-spawn-error`**·`signalled`·`unobservable` 로 나누고 **기본값은 `unobservable`**(모순된 결과 객체도 여기로) ⓑ **`started` 를 결과 계약에 싣는다 — `'spawn'` 이벤트에서만 `true`**(실측: ENOENT·EACCES 는 그 이벤트가 없고 `close(code=-2/-13)` 라는 **숫자 non-zero** 를 낸다). ⛔ `pid`·`spawnFailed:false` 로 추정하지 않는다 ⓑ′ `KILLED` 의 필요충분조건은 **여덟**이다 — `started` · `spawnFailed:false` · **`postSpawnError:false`** · `timedOut:false` · `signal:null` · `Number.isInteger(status)` · `status !== 0` · `outcome === exited` ⓒ **`INFRA-ERROR`** 를 다섯째 판정으로 두고 `FATAL` 에 넣는다 — ⛔ `TIMEOUT` 과 합치지 않는다(운영자가 할 일이 다르다) ⓓ `runWithTimeout` 이 **`close` 의 둘째 인자 `signal`** 을 싣고, **`settled` 플래그 + `finalize()` 상태기**로 확정과 `clearTimeout` 이 **정확히 한 번** 일어난다. 증거는 **필드별로 latch 하고 앞선 값을 덮지 않는다.** ⛔ Promise 가 두 번째 `resolve` 를 무시한다는 성질에 기대지 않는다 — 그것은 반환값만 지키고 **부수효과는 안 지킨다** ⓓ′ 타이머가 **spawn 전** 만료되면 `start-timeout`(`INFRA-ERROR`)이고 **spawn 후**여야 `timeout`(`TIMEOUT`)이다. `error` 도 **`started` 기준으로** `spawn-failed`/`post-spawn-error` 로 가른다 ⓔ 기준선이 측정 불능이면 **원인을 이름으로 말하고** 돌연변이 0개로 중단 ⓕ JSON 은 판정과 함께 `started`·`status`·`signal`·`timedOut`·`spawnFailed`·`postSpawnError`·`outcome` **일곱**과 비밀값 없는 **고정 문구** 원인을 적는다 ⓖ **`postSpawnError` 를 판정이 실제로 쓴다** — 우선순위가 `spawnFailed → started → postSpawnError → timedOut → signal → 숫자` 이고 `postSpawnError:true` 이면 `status` 가 무엇이든 `post-spawn-error`·`INFRA-ERROR` 다(전 판은 계약에만 싣고 **어디서도 안 봤다**) ⓗ **판정과 자식 종료 확인을 분리한다**(§0-21-2a) — `error`·타이머는 **원인 latch 일 뿐 종료의 증거가 아니고**, kill 요청 뒤의 대기는 **`CLEANUP_DEADLINE_MS`**(mutation timeout 과 다른 상수)로 재며, 기한 안에 정리가 확인되지 않으면 그 행을 `INFRA-ERROR` 로 적은 뒤 **남은 변이를 실행하지 않고 중단**한다. ⚠️ **ⓗ 의 첫 판은 완료 조건을 「`close` 를 본 뒤」로 적었고 그것이 틀렸다 — 위협 94 가 정정한다**(§0-22) | **§0-21-4 의 V8~V17**(RED 명세) · **M173~M183** — ⛔ **T 번호는 구현 시점에 준다** | ⛔ **설계만 확정했다(2026-08-29) — 코드·테스트는 아직 없다.** 그래서 지금의 돌연변이 표는 **이 결함을 못 보는 실행기가 만든 것**이고 4단계 로컬은 최종 완료가 아니다. ⚠️ 실행기 밖의 측정 불능(호스트가 통째로 죽는 경우)은 이 설계로 못 잡는다 — 그때는 표 자체가 안 나온다. ⚠️ **`start-timeout` 갈래는 재현하지 못했다** — 0ms 타이머 20회 모두 `'spawn'` 이 먼저였다(Node 는 그 이벤트를 nextTick 큐로 올린다). 재현한 결함이 아니라 **계약으로 닫아 두는 갈래**다. ⚠️ **수명주기 결함(ⓗ)은 재현이 아니라 코드 읽기로 확정했다** — `error` 즉시 반환과 kill 요청 직후 반환은 소스에 그대로 있다(`_mutate-lib.mjs:28-35`) |
+| **94** | **직접 자식의 `close` 를 「프로세스 그룹이 사라졌다」로 읽었다 — 손자 잔류가 다시 허용된다** | **H** | ① 위협 93 의 보완(§0-21-2a)이 완료 조건을 **「시작된 자식은 `close` 를 본 뒤에만 확정한다」**로 적었다 ② Node 공식 문서의 `'close'` 는 **그 프로세스의 종료와 그 자식의 stdio 닫힘**만 보장한다 — 손자도 POSIX 프로세스 그룹도 아니다 ③ **독립 재현**(2026-08-29 · 저장소 무수정 · OS 임시 디렉터리 · §0-22-1): 직접 자식이 손자를 띄우고 `exit(0)` 한 순간 `close` 발생 · **직접 pid `ESRCH`** · ⛔ **`kill(-pgid,0)` 은 `alive`** · ⛔ **손자도 `alive`** ④ 그 상태에서 다음 변이를 시작하면 **위협 91 이 닫은 손자 잔류가 그대로 돌아온다** — 제한 시간도 그룹 kill 도 다 있는 채로 ⑤ 부수 실측: probe 의 답은 셋 다 실재한다 — 없는 그룹 `ESRCH` · 우리 그룹 성공 · **root 그룹 `EPERM`** | ⓐ **용어 셋을 가른다**(§0-22-2) — `directClosed`(자식 하나) · **`groupAbsent`**(그룹에 아무도 없다) · `cleanupComplete`(둘 다). ⛔ 「그룹의 `close`」라는 말을 쓰지 않는다 ⓑ **불변식**: 다음 변이는 **spawn 전 실패**이거나 **`directClosed && groupState === "absent"`** 뒤에만. ⛔ `promiseResolved`·`killRequested`·`directPidAbsent` 는 대용이 아니다 ⓒ **부재는 음수 PGID 로 묻는다** — `process.kill(-pgid, 0)` 이 **`ESRCH`** 일 때만 `absent`. **`EPERM` 과 예상 밖 오류는 `unverifiable`** 이고 ⛔ **부재로 인정하지 않는다**(fail-closed) ⓓ 계약에 **`pgid`·`closeSeen`·`groupState`·`residualGroupDetected`·`cleanupRequested`·`cleanupTimedOut`** 을 싣는다 ⓔ **잔류 그룹이 관찰되면 `KILLED` 도 정상 `SURVIVED` 도 금지**다 — 정리해도 **소급해서 정상 측정으로 돌리지 않는다** ⓕ `cleanup deadline` 의 완료 조건이 **`closeSeen && groupAbsent`** 다. 못 채우면 그 행 `INFRA-ERROR` · **남은 변이 0** · 종료 코드 **2** · 「잔류 프로세스 그룹이 없음을 증명하지 못했다」 + **PGID**(화면에만) ⓖ **플랫폼 계약** — 대상은 POSIX 다. `win32` 이면 **시작 시점에 fail-closed 중단**. ⛔ 음수 PGID 를 흉내 내지 않는다 ⓗ **전제를 검사가 지킨다** — 실측으로 그룹 이탈 코드가 **0곳**임을 확인했고(§0-22-9), 스위트가 `detached`·`setsid` 를 새로 쓰면 실패하는 검사를 4단계에 넣는다 | **§0-22-10 의 V29~V38** · V19·V22·V24·V27 정정 · **V1 을 음수 PGID probe 로** · §0-22-11 의 돌연변이 14종 — ⛔ **T 번호도 M 번호도 구현 시점에 준다** | ⛔ **설계만 확정했다(2026-08-29) — 코드·테스트는 아직 없다.** ⚠️ **위협 93 을 글자 그대로 전부 구현해도 이 결함은 남는다** — 그래서 정정이 아니라 새 번호다. ⚠️ **그룹을 스스로 벗어나는 후손(`setsid`·새 `detached`)은 이 설계로 못 잡는다** — 오늘 저장소에는 그런 코드가 없다는 실측이 전제이고, 그 전제를 지키는 검사가 4단계 항목 G12 다. ⛔ **cgroup·컨테이너 격리는 이 저장소에 없다 — 있는 것처럼 쓰지 않는다** |
 
 > ⛔ **위협 50 의 「완료」 판정은 9판에서 철회됐다(2026-08-22).** 닫힌 것은 **「`EDGE_GUARD` 가 없을 때
 > 계정 경로가 DB 를 만지기 전에 닫힌다」 하나**다. 「방어가 있다」고 판정되는 조건, 열린 뒤의
@@ -5016,8 +5370,8 @@ policy manifest·정책 버전 파일 생성 · migration 생성 · 테스트 �
 
 | 무엇 | 지금 |
 |---|---|
-| 3단계 설계 | **11판 완료.** 9판이 사용자 결정 0~7 로 닫혔고(§0-9 · 위협 52~56 — 8판 판정은 재감사로 철회됐다), 10판이 전체 재검증 4건, 11판이 독립 검토 3건을 닫았다. 그 뒤 판 번호를 올리지 않은 보완이 이어졌고 **마지막이 2026-08-29 의 §0-21**(위협 93 · 검증기 판정 fail-closed)이다. 확정된 것: 엣지 방어 **A** · B 보류 · Turnstile 은 공개 가입에만 · 세션 envelope 도입 · D1 수치는 추정치 · 잔여 위험 6종 인정 · 출시 조건 9가지 |
-| 4단계 로컬 구현 | ⛔ **미완료(2026-08-29).** 위협 93 의 구현·테스트·돌연변이가 저장소에 없다(§0-21-6) — 설계만 확정됐다. ⚠️ **스위트 34개 통과는 기존 회귀의 근거일 뿐 완료의 근거가 아니다.** **당시 사실 — 2026-08-22 에 한 번 닫혔다**: 위협 52~56 의 코드(`EDGE_GUARD` 계약 · 두 층 리미터 · 운영자 readiness)와 결정 3·4 의 코드(Turnstile · 세션 envelope · 호스트 잠금 미들웨어)가 T65~T72 와 함께 들어갔다. ⚠️ **테스트가 통과한다는 사실은 완료의 근거가 아니다** — 이 저장소는 같은 이유로 여섯 판 연속 잘못 선언했다(6판~11판) |
+| 3단계 설계 | **11판 완료.** 9판이 사용자 결정 0~7 로 닫혔고(§0-9 · 위협 52~56 — 8판 판정은 재감사로 철회됐다), 10판이 전체 재검증 4건, 11판이 독립 검토 3건을 닫았다. 그 뒤 판 번호를 올리지 않은 보완이 이어졌고 **마지막이 2026-08-29 의 §0-21·§0-22**(위협 93 검증기 판정 fail-closed · 위협 94 프로세스 그룹 종료 불변식)이다. 확정된 것: 엣지 방어 **A** · B 보류 · Turnstile 은 공개 가입에만 · 세션 envelope 도입 · D1 수치는 추정치 · 잔여 위험 6종 인정 · 출시 조건 9가지 |
+| 4단계 로컬 구현 | ⛔ **미완료(2026-08-29).** 위협 **93·94** 의 구현·테스트·돌연변이가 저장소에 없다(§0-21-6·§0-22-13) — 설계만 확정됐다. ⚠️ **스위트 34개 통과는 기존 회귀의 근거일 뿐 완료의 근거가 아니다.** **당시 사실 — 2026-08-22 에 한 번 닫혔다**: 위협 52~56 의 코드(`EDGE_GUARD` 계약 · 두 층 리미터 · 운영자 readiness)와 결정 3·4 의 코드(Turnstile · 세션 envelope · 호스트 잠금 미들웨어)가 T65~T72 와 함께 들어갔다. ⚠️ **테스트가 통과한다는 사실은 완료의 근거가 아니다** — 이 저장소는 같은 이유로 여섯 판 연속 잘못 선언했다(6판~11판) |
 | 4단계 원격 반영 | **갈라 읽는다.** ✅ 안전 동기화는 실행됐다 — production 배포 **`7362d2f0`**(source **`e02e810`** · 계정 라우트를 닫아 둔 세대 · 2026-08-24) · preview **`cae28bf6`**(같은 source) · `READY_KEY` 등록 · 옛 배포 15개 삭제(2026-08-22). **직전** production `19e69dee`(**당시** preview `8e16c92e`)는 검증된 **롤백** 후보로 남겼다. ⛔ 계정 인프라는 **아무것도 하지 않았다** — 원격 D1 쓰기 0건 · `0005` 미적용 · ledger D1 미생성 · 새 시크릿 미등록 · 도메인·WAF·Turnstile 위젯 미생성 |
 | 남용 방어 | **A 로 확정됐고 아직 구성 전이다.** `EDGE_GUARD` 가 없으므로 계정 라우트는 **DB 를 만지기 전에 503**. 절차는 `docs/OPS_RUNBOOK.md` §13-2 |
 | 전역 user-data drain | **결정 A′ 로 구현 완료 2026-08-18 · 8판에서 마지막 예외를 닫았다**(§10-9-6 · 위협 49 · T62) |
