@@ -2,7 +2,7 @@
 
 **작성 2026-08-17 · 개정 2026-08-22(11판) · 브랜치 `cf-pages`**
 
-**상태: 3단계 기술 상세 설계 11판 완료 · 4단계 로컬 구현 완료(2026-08-22 전체 재검증 + 독립 검토 보완) ·
+**상태: 3단계 기술 상세 설계 11판 완료(2026-08-29 §0-21 보완으로 마감) · 4단계 로컬은 **미완료** — 2026-08-22 에 한 번 닫혔으나(당시 사실) **위협 93 의 구현·테스트·돌연변이가 없다**(§0-21-6) ·
 원격은 **안전 동기화만 실행**(현재 배포 ID 의 원본은 `CLAUDE.md` §1-1 「현재 라이브」 · `READY_KEY` · 옛 배포 15개 삭제)이고 **계정 인프라는 미실행** · 전역 user-data drain 은 결정 A′ 로 구현 완료 ·
 **외부 전문가 상담은 해당 없음**(2026-08-26 · `docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md` §22 — 법적 적합성 보증은 하지 않는다) ·
 주 D1 restore 금지 유지 · 엣지 방어는 **A(도메인+WAF)로 확정됐고 아직 구성 전**이라 계정
@@ -886,6 +886,12 @@ pending ──(생산자 CAS)──► uploading ──► uploaded ──► re
 갈래가 없었다.** 그래서 §0-20-1 의 기록은 지우지 않고 그대로 두되, 그 절이 닫은 범위를 여기서
 좁히고 **번호를 새로 준다**(위협 93). 남는 무늬는 같다: **판정의 기본값이 「방어가 잡았다」였다.**
 
+> ⚠️ **정정의 정정(2026-08-29 · 같은 날 보완).** 이 절의 첫 판은 불변식에 「자식이 실제로
+> 시작됐고」를 적어 놓고 **결과 계약에 그 증거를 안 실었다** — `spawnFailed:false` 는 「시작 실패
+> 이벤트를 아직 못 봤다」일 뿐 시작의 증거가 아니다. 같은 무늬가 한 칸 안에서 반복된 것이라
+> **번호를 새로 주지 않고 §0-21 을 보완했다**: `started`(§0-21-2) · `start-timeout` 과
+> spawn 전/후 `error` 의 분리(§0-21-2b) · `finalize()` 상태기 · 모순 입력 여섯(§0-21-2b Ⅱ).
+
 ### 0-21-1. 고치기 전 실측 (2026-08-29 · 코드 수정 전 · 읽기 전용)
 
 `scripts/_mutate-lib.mjs` 의 `runWithTimeout()` 을 그대로 부르고, `scripts/mutate.mjs:118` 의
@@ -919,42 +925,155 @@ macOS Node 에서 ENOENT 는 `error` → `close(code=-2, signal=null)` **둘 다
 **「스위트가 실패했다」로 읽힌다** — 원인이 환경인데 코드를 뒤지게 만든다. 판정이 아니라
 **설명이 틀린 자리**이고, 아래 설계가 함께 고친다.
 
-### 0-21-2. 실행 결과 상태 전수표
+### 0-21-1b. 보완 실측 (2026-08-29 · 같은 회차 · 읽기 전용)
+
+첫 실측은 「무엇이 잘못 접히나」였고, 아래는 **「무엇을 증거로 쓸 수 있나」**를 잰 것이다.
+`node v24.14.0` · 저장소 파일 무수정.
+
+| 만든 상황 | `'spawn'` 이벤트 | `pid` | 이어진 이벤트 |
+|---|---|---|---|
+| `process.exit(0)` | **있다** | 숫자 | `close(code=0, signal=null)` |
+| `process.exit(7)` | **있다** | 숫자 | `close(code=7, signal=null)` |
+| 자식이 SIGTERM 자살 | **있다** | 숫자 | `close(code=null, signal=SIGTERM)` |
+| **ENOENT**(없는 실행 파일) | ⛔ **없다** | `undefined` | `error(ENOENT)` → **`close(code=-2, signal=null)`** |
+| **EACCES**(디렉터리를 실행) | ⛔ **없다** | `undefined` | `error(EACCES)` → **`close(code=-13, signal=null)`** |
+
+여기서 셋이 나온다.
+
+1. **`'spawn'` 이벤트가 「시작됐다」의 유일한 양의 증거다.** 시작하지 못한 둘에서는 안 나온다.
+2. ⛔ **`close` 의 숫자 종료 코드는 시작의 증거가 아니다** — 시작조차 못 한 실행이 **`-2`·`-13`**
+   이라는 **숫자 non-zero** 를 낸다. 「숫자이고 0 이 아니면 방어가 잡은 것」은 그래서 틀렸다.
+3. **`pid` 로 추정하지 않는다.** 여기서는 마침 `undefined` 였지만 그것은 이 판 · 이 플랫폼의
+   관찰이고 **계약이 아니다.** 양의 이벤트가 있는데 부산물로 추정할 이유가 없다.
+
+**`close` 는 인자가 둘이다** — `(code, signal)`. 지금 코드는 `ch.on("close", (status) => …)` 로
+**둘째를 버린다.** 그래서 「우리 타이머가 죽였다」와 「바깥에서 누가 죽였다」를 결과 객체만으로는
+구분할 수 없다.
+
+**타이머가 spawn 보다 먼저 만료되면 어떻게 되나 — 재현하지 못했다.**
+0ms 타이머로 20회 시도했고 **20회 모두 `'spawn'` 이 먼저**였다(Node 는 `'spawn'` 을 nextTick 큐로
+올리고 그 큐는 timers 단계보다 먼저 비워진다). ⚠️ **그러니 아래 설계의 `start-timeout` 은
+「재현한 결함」이 아니라 「계약으로 닫아 두는 갈래」다** — 둘을 섞어 적지 않는다.
+다만 **코드를 읽으면 그 갈래의 대가가 크다**: 타이머 콜백은 `process.kill(-ch.pid)` 를 부르는데
+`ch.pid` 가 `undefined` 면 그 호출은 **`ERR_INVALID_ARG_TYPE` 을 던지고**(실측) `catch` 의
+`ch.kill()` 도 죽일 대상이 없어 **아무것도 안 죽는다.** 타이머는 이미 소진됐고 `resolve` 는
+`close`·`error` 에서만 일어나므로, 그 뒤 자식이 살아서 안 끝나면 **약속은 영원히 확정되지 않는다** —
+위협 91 이 닫은 그 정지 상태가 다른 문으로 돌아온다.
+
+### 0-21-2. 결과 계약 — `started` 를 양의 증거로 싣는다
+
+⛔ **첫 판(2026-08-29 오전)의 계약에는 `started` 가 없었다.** 그런데 같은 절의 불변식은
+「자식이 실제로 시작됐고」를 요구하고 있었다 — **재지도 않는 것을 조건으로 적은 것**이다.
+`spawnFailed:false` 는 「spawn 실패 이벤트를 아직 못 봤다」일 뿐 **시작의 증거가 아니다.**
+
+`runWithTimeout()` 이 돌려주는 객체의 계약은 다음 일곱이다.
+
+| 필드 | 형 | 무엇 | 어디서 오나 |
+|---|---|---|---|
+| `started` | `boolean` | 자식이 실제로 시작됐나 | **`'spawn'` 이벤트가 발생한 경우에만 `true`.** ⛔ `pid` 존재·`spawnFailed:false` 로 추정하지 않는다 |
+| `status` | `number \| null` | 종료 코드 | `close` 의 **첫째** 인자 |
+| `signal` | `string \| null` | 종료시킨 signal | `close` 의 **둘째** 인자 — **버리지 않는다** |
+| `timedOut` | `boolean` | **우리 타이머가** 죽였나 | 타이머 콜백이 세운다 |
+| `spawnFailed` | `boolean` | **시작 전** `error` 인가 | `started === false` 인 상태에서 온 `error` |
+| `postSpawnError` | `boolean` | **시작 후** `error` 인가 | `started === true` 인 상태에서 온 `error` |
+| `out` | `string` | 자식 출력(최대 1MB) | 화면용 — ⛔ **JSON 에 싣지 않는다** |
+
+⚠️ **`error` 를 전부 spawn 실패로 단정하지 않는다.** `ChildProcess` 의 `'error'` 는 시작 실패만이
+아니라 **시작한 뒤의 실패**(`kill()` 실패 · 프로세스 간 통신 오류)에서도 나온다. 시작 뒤의
+`error` 를 `spawn-failed` 로 적으면 **「아무것도 실행되지 않았다」는 거짓 기록**이 남고, 그 기록은
+운영자를 실행 환경 쪽으로 잘못 보낸다. 그래서 둘을 **`started` 를 기준으로** 가른다 —
+판정은 둘 다 `INFRA-ERROR` 로 같지만 **정규화 상태와 원인 문장이 다르다.**
+
+**확정은 정확히 한 번 — 명시적 상태기로 강제한다.**
+
+⛔ **「Promise 는 두 번째 `resolve` 를 무시한다」에 기대지 않는다.** 그 성질이 지켜 주는 것은
+**반환값 하나**뿐이고, 이 함수에는 그것 말고도 **부수효과**가 있다 — `clearTimeout` · 프로세스
+그룹 `kill` · (앞으로 붙을) 정리 작업. 실측한 ENOENT 는 `error` → `close` 가 **둘 다** 오고,
+signal 종료와 타이머 만료는 **근접해서 겹칠 수 있다.** 그래서 `settled` 플래그 하나를 두고
+`finalize(reason)` **한 함수만** 결과를 만든다:
+
+- `finalize()` 는 **처음 불린 한 번만** 동작하고, 그 안에서 `clearTimeout` 을 하고 결과를 얼린다.
+- 그 뒤에 오는 `error`·`close`·타이머는 **증거만 기록**하고(진단용) 결과를 바꾸지 않는다.
+- ⛔ **먼저 온 증거가 이긴다.** ENOENT 의 `close(code=-2)` 가 앞선 `error(ENOENT)` 를 덮으면
+  「시작도 못 했는데 숫자 exit」가 되어 이번 결함이 그대로 되살아난다.
+
+### 0-21-2b. 실행 결과 상태 전수표
 
 ⚠️ **먼저 프로세스 실행 결과를 전수 분류하고, 판정은 그 위에서 파생시킨다.** 「어떤 경우에
 `KILLED` 인가」를 조건식으로 늘려 가는 순서로는 빠진 상태가 반드시 남는다 — 이번 것이 그 증거다.
+아래 표에서 **`started` 열이 비어 있는 줄은 하나도 `KILLED` 가 아니다.**
 
-| # | 실행 결과 | 증거 | 정규화 상태 | 판정 | 완료를 막나 |
+**Ⅰ. 실제 프로세스에서 오는 결과**
+
+| # | 실행 결과 | `started` | 증거 | 정규화 상태 | 판정 |
 |---|---|---|---|---|---|
-| 1 | 정상 시작 + `exit 0` | `spawnFailed:false` · `timedOut:false` · `signal:null` · `status:0` | `exited` | **`SURVIVED`** | ✅ 막는다 |
-| 2 | 정상 시작 + 숫자 non-zero exit | 위와 같고 `Number.isInteger(status) && status !== 0` | `exited` | **`KILLED`** | 아니다 |
-| 3 | 제한 시간 초과(우리 타이머가 죽였다) | `timedOut:true` | `timeout` | **`TIMEOUT`** | ✅ 막는다 |
-| 4 | spawn 실패(ENOENT·EACCES·EMFILE…) | `spawnFailed:true` | `spawn-failed` | **`INFRA-ERROR`** | ✅ 막는다 |
-| 5 | signal 종료(우리 타이머가 아니다) | `timedOut:false` · `signal !== null` | `signalled` | **`INFRA-ERROR`** | ✅ 막는다 |
-| 6 | `status === null` 인데 `timedOut:false` 이고 signal 도 없다 | 위 어디에도 안 맞는다 | `unobservable` | **`INFRA-ERROR`** | ✅ 막는다 |
-| 7 | `error` 와 `close` 가 **둘 다** 온다 | 먼저 온 것 하나만 확정 · `spawnFailed` 를 래치한다 | 4번으로 확정 | **`INFRA-ERROR`** | ✅ 막는다 |
-| 8 | 결과 객체의 필드 누락·타입 오류 | `Number.isInteger` · `typeof` 검사 실패 | `unobservable` | **`INFRA-ERROR`** | ✅ 막는다 |
-| 9 | **기준선** 실행이 1번(`exit 0`) 이외로 끝난다 | 위 분류 그대로 | 그대로 | 판정하지 않는다 | ⛔ **즉시 전체 중단** · 돌연변이 **0개** 실행 · 종료 코드 2 |
-| 10 | **돌연변이** 실행이 1~8 중 하나로 끝난다 | 위 분류 그대로 | 그대로 | 표의 판정 그대로 | 2번만 통과 |
+| 1 | spawn 성공 + `exit 0` | ✅ | `signal:null` · `status:0` · `timedOut:false` | `exited` | **`SURVIVED`** |
+| 2 | spawn 성공 + 숫자 non-zero exit | ✅ | 위와 같고 `Number.isInteger(status) && status !== 0` | `exited` | **`KILLED`** |
+| 3 | spawn 성공 + **외부 signal** | ✅ | `timedOut:false` · `signal !== null` | `signalled` | **`INFRA-ERROR`** |
+| 4 | spawn 성공 + **우리 타이머** 만료 | ✅ | `timedOut:true` | `timeout` | **`TIMEOUT`** |
+| 5 | **spawn 전** ENOENT·EACCES·EMFILE | ⛔ | `spawnFailed:true` · `'spawn'` 없음 · `close(code=-2/-13)` | `spawn-failed` | **`INFRA-ERROR`** |
+| 6 | **spawn 후** `error` | ✅ | `postSpawnError:true` | `post-spawn-error` | **`INFRA-ERROR`** |
+| 7 | **spawn 전** 타이머 만료 | ⛔ | `timedOut:true` · `started:false` | **`start-timeout`** | **`INFRA-ERROR`** |
+| 8 | `error` 뒤 `close` | 그때의 값 | `finalize()` 가 **먼저 온 것**으로 확정 | 5번 또는 6번 | **`INFRA-ERROR`** |
+| 9 | signal 과 타이머가 **근접 경합** | ✅ | `finalize()` 가 먼저 온 것으로 확정 · 둘째는 진단에만 | 3번 또는 4번 | **`INFRA-ERROR`** 또는 **`TIMEOUT`** |
 
-**핵심 불변식**
+⛔ **7번을 `timeout` 으로 접지 않는다.** 그 실행에는 **돌연변이가 돌았다는 증거가 없다** —
+「변이가 안 끝난다」와 「자식을 띄우지도 못했다」는 운영자가 할 일이 정반대다.
+⚠️ 9번은 **어느 쪽으로 확정되든 완료를 막는다** — 둘 다 `FATAL` 이라 경합의 승자가 판정을
+뒤집지 못한다. 이것은 우연이 아니라 **의도한 성질**이다.
 
-> **`KILLED` 는 「자식이 실제로 시작됐고 · 제한 시간에 안 걸렸고 · signal 로 죽지 않았고 ·
-> 숫자형 non-zero 로 끝났다」가 **전부** 참일 때만 허용한다.**
-> 그 밖의 모든 결과는 **측정 불능**이고, 측정 불능은 사망이 아니라 **실패**다.
+**Ⅱ. 합성 입력(`classify()` 를 직접 부른다 — 프로세스가 필요 없다)**
 
-파생 규칙 넷:
+| # | 입력 | 정규화 상태 | 판정 | 왜 |
+|---|---|---|---|---|
+| 10 | 필드 누락(`status` 없음 · `started` 없음 …) | `unobservable` | **`INFRA-ERROR`** | 없는 증거를 참으로 읽지 않는다 |
+| 11 | `status: "0"`(문자열) | `unobservable` | **`INFRA-ERROR`** | `Number.isInteger` 이 유일한 통과 조건이다 |
+| 12 | `started` 누락/`false` + `status: 7` | `unobservable` | **`INFRA-ERROR`** | ⛔ **이번 결함의 핵심** — 숫자 exit 가 시작을 증명하지 않는다(5번 실측) |
+| 13 | **모순** `started:false` + `spawnFailed:false` + `status:7` | `unobservable` | **`INFRA-ERROR`** | 시작도 안 했고 실패도 안 했는데 종료 코드가 있다 — 셋 중 하나는 거짓이다 |
+| 14 | **모순** `started:true` + `spawnFailed:true` | `unobservable` | **`INFRA-ERROR`** | `spawnFailed` 의 정의는 「시작 전 error」다. 둘이 같이 참일 수 없다 |
+| 15 | **모르는 추가 필드**가 있다 | 나머지 필드로 판정하되, 위 조건을 **하나라도** 못 채우면 `unobservable` | 그에 따름 | 새 필드가 조용히 `exited` 로 떨어지는 기본 분기를 두지 않는다 |
 
-1. **판정 순서는 `spawnFailed` → `timedOut` → `signal` → 숫자 검사**다. `spawnFailed` 가 맨 앞인
-   이유는 **아무것도 실행되지 않았다는 증거가 가장 강하기 때문**이다 — 그때 함께 오는
-   종료 코드(`-2`)는 실행의 증거가 아니라 실패의 부산물이다.
+⛔ **모순된 입력의 기본값은 `unobservable` / `INFRA-ERROR` 다.** 새 입력이 **자동으로 `exited`
+로 떨어지는 기본 분기를 만들지 않는다** — `exited` 는 여섯 조건을 **전부 입증했을 때만** 나온다.
+
+**Ⅲ. 어디서 온 결과인가**
+
+| # | 자리 | 규칙 |
+|---|---|---|
+| 16 | **기준선** 실행 | **1번(`started:true` · `exited` · `status:0`)만 허용.** 그 밖은 전부 ⛔ **즉시 전체 중단** — 돌연변이 **0개** 실행 · 종료 코드 **2** · 화면에 정규화 상태를 이름으로 말한다 |
+| 17 | **돌연변이** 실행 | 위 1~15 의 판정 그대로. 완료로 통과하는 것은 **2번뿐**이다 |
+
+### 0-21-2c. `KILLED` 의 필요충분조건
+
+> **아래 일곱이 **전부** 참일 때만 `KILLED` 다. 하나라도 입증되지 않으면 `KILLED` 가 아니다.**
+>
+> 1. `started === true` (**`'spawn'` 이벤트를 봤다**)
+> 2. `spawnFailed === false`
+> 3. `timedOut === false`
+> 4. `signal === null`
+> 5. `Number.isInteger(status)`
+> 6. `status !== 0`
+> 7. 정규화 상태가 `exited`
+
+⚠️ 7번은 앞 여섯의 요약이 아니라 **한 자리에서 계산한 결과**다. 판정은 `outcome` 만 보고,
+`outcome` 은 `classify()` 만 만든다 — 그래야 조건이 두 군데로 갈라지지 않는다.
+
+파생 규칙 다섯:
+
+1. **판정 순서는 `spawnFailed` → `started` → `timedOut` → `signal` → 숫자 검사**다.
+   `spawnFailed` 가 맨 앞인 이유는 **아무것도 실행되지 않았다는 증거가 가장 강하기 때문**이고,
+   `started` 가 그다음인 이유는 **`timedOut` 의 뜻이 `started` 에 따라 달라지기 때문**이다
+   (7번 `start-timeout` vs 4번 `timeout`).
 2. **기본값은 `unobservable`** 이다. `switch` 의 마지막 갈래가 `exited` 이면 새 필드 하나가
    조용히 만점을 만든다.
 3. **완료 조건**: `FATAL = [SURVIVED, ANCHOR-MISS, TIMEOUT, INFRA-ERROR]` — 넷 다 0 이어야
    종료 코드가 0 이다.
-4. **JSON 은 판정만 적지 않는다.** 행마다 `status` · `signal` · `timedOut` · `spawnFailed` ·
-   정규화 상태와 **비밀값 없는 한국어 원인 한 줄**을 함께 적는다. ⛔ 원인 문자열에 환경 변수·
-   경로 밖의 인자·자식의 출력 원문을 싣지 않는다(자식 출력은 이미 1MB 로 잘라 화면용으로만 쓴다).
+4. **JSON 은 판정만 적지 않는다.** 행마다 `started` · `status` · `signal` · `timedOut` ·
+   `spawnFailed` · `outcome` 과 **비밀값 없는 한국어 원인 한 줄**을 함께 적는다.
+   ⛔ **오류 원문 · 환경 변수 · 명령 인자 · 자식 출력 원문을 JSON 에 싣지 않는다** — 원인 문장은
+   정규화 상태에서 만든 **고정 문구**이고, 자식 출력(`out`)은 화면용으로만 쓴다.
+5. **`INFRA-ERROR` 는 사망 통계에 섞이지 않는다.** 표·요약·`--json` 의 `summary` 모두에서
+   별도 칸이다.
 
 ⛔ **`TIMEOUT` 과 `INFRA-ERROR` 를 한 이름으로 합치지 않는다.** 둘 다 측정 불능이지만
 **운영자가 할 일이 다르다** — `TIMEOUT` 은 「변이가 안 끝난다 / 제한 시간이 짧다」이고
@@ -971,13 +1090,19 @@ macOS Node 에서 ENOENT 는 `error` → `close(code=-2, signal=null)` **둘 다
 | 견주는 것 | A안 | B안 | 왜 |
 |---|---|---|---|
 | 누락 상태가 생길 가능성 | **높다.** 판정식이 호출 자리에 산다. 지금도 **자리가 둘**이다(기준선 · 돌연변이 루프) — 실제로 그 둘의 규칙이 이미 어긋나 있다(기준선은 `status !== 0`, 루프는 삼항식) | **낮다.** 증거를 만든 자리(`runWithTimeout`)와 분류하는 자리가 하나이고, 기본값이 `unobservable` 이다 | 이번 결함의 원인이 「조건을 하나 빠뜨렸다」가 아니라 **「조건을 여러 곳에서 다시 쓴다」**였다 |
-| 테스트하기 쉬운가 | 어렵다. 각 상태를 **진짜 프로세스로** 만들어야 한다 — 외부 SIGKILL·EMFILE 은 결정적으로 재현하기 어렵고, 8번(필드 오류)은 아예 못 만든다 | 쉽다. `classify()` 는 **순수 함수**라 합성 입력으로 10가지를 전부 잰다. 프로세스가 필요한 것은 1~4번뿐 | `test-docs` 가 자기 판정을 합성 입력으로 self-test 하는 것과 같은 규칙이다 |
+| 테스트하기 쉬운가 | 어렵다. 각 상태를 **진짜 프로세스로** 만들어야 한다 — 외부 SIGKILL·EMFILE 은 결정적으로 재현하기 어렵고, 모순된 결과 객체(10~15번)와 **spawn 전 타이머 만료**(7번)는 아예 못 만든다 | 쉽다. `classify()` 는 **순수 함수**라 합성 입력으로 10가지를 전부 잰다. 프로세스가 필요한 것은 1~4번뿐 | `test-docs` 가 자기 판정을 합성 입력으로 self-test 하는 것과 같은 규칙이다 |
 | JSON 호환성 | 같다(판정 이름 하나 추가) | 같다 + 필드 추가. `summary.KILLED` 등 기존 키는 그대로 | 어느 쪽도 기존 소비자를 깨지 않는다 |
 | 기존 문서·목록 영향 | 같다 — 위협 표 · T 명세 · `CLAUDE.md` §8 의 「판정은 넷이다」 | 같다 | 차이가 없다 |
 | 잘못된 삼항식을 다시 만들 가능성 | **남는다.** 다음 사람이 갈래를 하나 더 붙일 때 또 삼항식을 잇는다 | **구조적으로 어렵다.** `mutate.mjs` 에 `r.status` 가 아예 안 나온다 — 「판정을 여기서 다시 쓰지 않는다」가 **grep 으로 확인되는 규칙**이 된다 | 이 저장소가 열세 판째 만나는 무늬가 「규칙이 두 군데 있다」이다 |
 
+⚠️ **보완(2026-08-29 · 같은 회차): `started` 와 `finalize` 가 이 비교를 더 벌린다.** A안은 판정만
+늘리는 안이라 **결과 계약을 안 건드린다** — 그런데 `started` 는 계약에 필드가 하나 생겨야 하고,
+확정을 한 번으로 못박는 것은 **`runWithTimeout` 안의 상태기** 문제다. 즉 A안으로는 이번 결함의
+**절반(증거 수집)** 을 아예 못 고친다. 판정 자리만 늘리면 「`started` 를 안 실은 채 `started` 를
+요구하는 조건문」이 남는데, 그것이 정확히 첫 판(2026-08-29 오전)이 만든 상태다.
+
 **권고 — B안.** 코드가 늘어나는 것은 **함수 하나**이고, 그 대가로 ⓐ 판정 자리가 하나가 되고
-ⓑ 10가지 상태를 프로세스 없이 잴 수 있고 ⓒ 기본값이 실패인 성질을 `switch` 의 모양으로
+ⓑ 상태 17가지 중 프로세스가 필요 없는 것을 전부 합성 입력으로 잴 수 있고 ⓒ 기본값이 실패인 성질을 `switch` 의 모양으로
 강제한다. A안은 지금 이 결함을 고치지만 **같은 결함이 다시 생기는 것을 막지 못한다** —
 이번 것이 정확히 「전에도 지적했는데 조건식만 늘렸다」의 결과다.
 
@@ -991,67 +1116,119 @@ macOS Node 에서 ENOENT 는 `error` → `close(code=-2, signal=null)` **둘 다
   실행기 전체를 띄워야 재진다. 순수 함수를 **공유 라이브러리**에 두는 이유가 그것이다.
 - 측정 불능을 「경고만 하고 계속」으로 둔다 — ⛔ 그러면 **기본값이 다시 성공**이다.
 
-### 0-21-4. RED 테스트 명세 (`scripts/test-verifier.mjs` V8~V14)
+### 0-21-4. RED 테스트 명세 (`scripts/test-verifier.mjs` V8~V17)
 
 ⛔ **아직 하나도 쓰지 않았다.** 아래는 4단계에서 **먼저 빨갛게** 만들 명세다.
+「지금은」 칸은 **현재 코드의 동작**이고, 이번 회차에서 바뀌지 않았다.
+
+**Ⅰ. 실제 프로세스로 재는 것**
 
 | 검사 | 입력 | 기대 | 지금은 |
 |---|---|---|---|
-| V8-a | 없는 실행 파일로 `runWithTimeout` | `spawn-failed` · `INFRA-ERROR` · 종료 코드 0 아님 | ⛔ `KILLED` |
-| V8-b | `exit 0` / `exit 7` | `SURVIVED` / `KILLED` · `exit` 가 **숫자** | ✅ 통과 |
-| V8-c | 끝나지 않는 자식 | `TIMEOUT` · 완료 실패 | ✅ 통과(V1·V3) |
-| V9 | 자식이 스스로 SIGTERM·SIGKILL 로 죽는다(우리 타이머 아님) | `signalled` · `INFRA-ERROR` · `signal` 이 결과에 실린다 | ⛔ `KILLED` · `signal` 필드 자체가 없다 |
-| V10 | **합성 입력** `{status:null, timedOut:false, spawnFailed:false, signal:null}` | `unobservable` · `INFRA-ERROR` | ⛔ `KILLED` |
-| V10-b | **합성 입력** — 필드 누락 · `status:"0"` · `timedOut:"yes"` 등 타입 오류 | 전부 `unobservable` · `INFRA-ERROR` | ⛔ 일부가 `SURVIVED`/`KILLED` |
-| V11 | ENOENT 처럼 `error` 뒤 `close` 가 오는 경우 | **결과가 정확히 한 번 확정**되고 `spawnFailed:true` 가 유지된다 · 타이머는 한 번만 해제된다 | ⚠️ 지금도 참이지만 **아무도 재지 않는다** |
-| V12 | 기준선 실행이 spawn 실패 | 돌연변이 **0개** 실행 · 종료 코드 2 · 화면에 **원인이 「환경」**이라고 나온다 | ⚠️ 중단은 하지만 `exit null` 이라고만 말한다 |
-| V13 | `--json` 결과 전체 | `KILLED` 인 행은 **전부** `Number.isInteger(exit) && exit !== 0` · 모든 행에 `outcome`·`signal`·`timedOut`·`spawnFailed` 가 있다 | ⛔ `KILLED` 행에 `exit:null` 이 나올 수 있다 |
+| V8-a | 없는 실행 파일(ENOENT)·디렉터리 실행(EACCES) | `started:false` · `spawn-failed` · **`INFRA-ERROR`** · 종료 코드 0 아님 | ⛔ `KILLED` |
+| V8-b | `exit 0` / `exit 7` | `started:true` · `exited` · `SURVIVED` / `KILLED` · `exit` 가 **숫자** | ✅ 통과 |
+| V8-c | 끝나지 않는 자식 | `started:true` · `timeout` · `TIMEOUT` · 완료 실패 | ✅ 통과(V1·V3) |
+| V9-a | 자식이 스스로 SIGTERM·SIGKILL 로 죽는다(우리 타이머 아님) | `signalled` · **`INFRA-ERROR`** · **`signal` 이 결과에 실린다** | ⛔ `KILLED` · `signal` 필드 자체가 없다 |
+| V9-b | **`'spawn'` 이벤트가 없으면 `KILLED` 금지** — 시작 못 한 실행 전수(ENOENT·EACCES) | 어느 것도 `KILLED` 가 아니다. ⛔ **`close` 의 `-2`·`-13` 을 종료 코드로 받지 않는다** | ⛔ 둘 다 `KILLED` |
+| V15 | **spawn 전 timeout 과 spawn 후 timeout 을 구분한다** — `started:false`+`timedOut:true` 와 `started:true`+`timedOut:true` | 앞은 **`start-timeout` · `INFRA-ERROR`**, 뒤는 **`timeout` · `TIMEOUT`** | ⛔ 둘 다 `TIMEOUT`. ⚠️ 앞 갈래는 **합성 입력으로 잰다** — 실제 프로세스로는 재현되지 않았다(§0-21-1b) |
+| V16 | **spawn 후 `error` 를 `spawn-failed` 로 거짓 기록하지 않는다** | `started:true` 인 상태의 `error` → `post-spawn-error` · `INFRA-ERROR` · **`spawnFailed` 는 `false` 로 남는다** | ⛔ 무조건 `spawnFailed:true` |
+
+**Ⅱ. 합성 입력으로 재는 것 (`classify()` 직접 호출 · 프로세스 없음)**
+
+| 검사 | 입력 | 기대 | 지금은 |
+|---|---|---|---|
+| V10-a | `{started:true, status:null, timedOut:false, spawnFailed:false, signal:null}` | `unobservable` · `INFRA-ERROR` | ⛔ `KILLED` |
+| V10-b | 필드 누락 · `status:"0"`(문자열) · `timedOut:"yes"` 등 타입 오류 | 전부 `unobservable` · `INFRA-ERROR` | ⛔ 일부가 `SURVIVED`/`KILLED` |
+| V10-c | **`started` 누락 또는 `false` + `status:7`** | `unobservable` · **`INFRA-ERROR`** | ⛔ `KILLED` |
+| V10-d | **모순** `{started:false, spawnFailed:false, status:7}` | `unobservable` · `INFRA-ERROR` | ⛔ `KILLED` |
+| V10-e | **모순** `{started:true, spawnFailed:true}` | `unobservable` · `INFRA-ERROR` | ⛔ `KILLED` |
+| V10-f | 모르는 추가 필드가 붙은 정상 입력 · 붙은 비정상 입력 | 정상은 그대로, 비정상은 `unobservable` — ⛔ **새 입력이 `exited` 로 떨어지는 기본 분기가 없다** | — |
+| V11 | ENOENT 처럼 `error` 뒤 `close` 가 오는 경우 · signal 과 타이머가 근접 경합 | **`finalize()` 가 정확히 한 번** 동작하고 **먼저 온 증거가 이긴다** · `clearTimeout` 도 한 번 · 뒤에 온 이벤트는 결과를 안 바꾼다 | ⚠️ 결과값은 지금도 한 번이지만 **Promise 의 성질에 기대고 있고 아무도 재지 않는다** |
 | V14 | `FATAL` · `VERDICTS` | `INFRA-ERROR` 가 둘 다에 있다 | ⛔ 없다 |
+
+**Ⅲ. 실행기 전체로 재는 것**
+
+| 검사 | 입력 | 기대 | 지금은 |
+|---|---|---|---|
+| V12 | **기준선**이 1번(`started:true` · `exited` · `status:0`) 이외로 끝난다 — spawn 실패 · signal · 측정 불능 각각 | **돌연변이 0개 실행** · 종료 코드 **2** · 화면이 **정규화 상태를 이름으로** 말한다 | ⚠️ 중단은 하지만 `exit null` 이라고만 말해 **환경 문제가 코드 문제로 읽힌다** |
+| V13-a | `--json` 결과 전체 | **모든 행**에 `started`·`status`·`signal`·`timedOut`·`spawnFailed`·`outcome` 이 있다 | ⛔ 넷이 없다 |
+| V13-b | 같은 JSON 의 `KILLED` 행 | **전부** `started === true` · `Number.isInteger(exit)` · `exit !== 0` — 하나라도 아니면 **전체 실패** | ⛔ `exit:null` 인 `KILLED` 가 나올 수 있다 |
+| V17 | 같은 JSON 의 문자열 필드 전수 | ⛔ **오류 원문 · 환경 변수 이름과 값 · 명령 인자 · 자식 출력이 하나도 없다.** 원인 문장은 정규화 상태에서 만든 **고정 문구**뿐이다 | ⚠️ 지금 `detail` 은 자식 출력에서 잘라 온 문자열이다 |
 
 **돌연변이 명세** — 방어 갈래를 없애는 변이가 **실제로 죽는지**를 잰다. 목록의 원본은
 `scripts/mutations.mjs` 이고 아래는 이번에 더할 것들이다(번호는 M172 다음).
+⛔ **아직 `mutations.mjs` 에 넣지 않았다.**
 
-| 변이 | 무엇을 바꾸나 | 깨지는 불변식 |
-|---|---|---|
-| M173 | `classify` 에서 `spawnFailed` 갈래를 뺀다 | 실행되지 않은 것을 사망으로 세지 않는다 |
-| M174 | `classify` 에서 `signal` 갈래를 뺀다 | 바깥에서 죽은 실행을 사망으로 세지 않는다 |
-| M175 | `classify` 의 기본값을 `exited` 로 바꾼다 | 모르는 결과의 기본값은 **실패**다 |
-| M176 | `runWithTimeout` 이 `signal` 을 안 싣는다 | 판정의 증거가 결과 객체 안에 있어야 한다 |
-| M177 | `FATAL` 에서 `INFRA-ERROR` 를 뺀다 | 측정 불능은 완료를 막는다 |
-| M178 | 기준선의 측정 불능을 「경고 후 계속」으로 바꾼다 | 기준선이 안 재지면 그 뒤 표는 전부 무의미하다 |
-| M179 | 결과 확정을 여러 번 허용한다(`close` 가 `error` 를 덮는다) | 먼저 온 증거가 이긴다 — spawn 실패가 숫자 exit 로 둔갑하지 않는다 |
+| 변이 | 무엇을 바꾸나 | 깨지는 불변식 | 무엇이 잡나 |
+|---|---|---|---|
+| M173 | `classify` 에서 `spawnFailed` 갈래를 뺀다 | 실행되지 않은 것을 사망으로 세지 않는다 | V8-a · V9-b |
+| M174 | `classify` 에서 `signal` 갈래를 뺀다 | 바깥에서 죽은 실행을 사망으로 세지 않는다 | V9-a |
+| M175 | `classify` 의 기본값을 `exited` 로 바꾼다 | 모르는 결과의 기본값은 **실패**다 | V10-a~f |
+| M176 | `runWithTimeout` 이 `signal` 을 안 싣는다 | 판정의 증거가 결과 객체 안에 있어야 한다 | V9-a · V13-a |
+| M177 | `FATAL` 에서 `INFRA-ERROR` 를 뺀다 | 측정 불능은 완료를 막는다 | V14 |
+| M178 | 기준선의 측정 불능을 「경고 후 계속」으로 바꾼다 | 기준선이 안 재지면 그 뒤 표는 전부 무의미하다 | V12 |
+| M179 | `finalize()` 를 여러 번 허용한다(`close` 가 앞선 `error` 를 덮는다) | 먼저 온 증거가 이긴다 — spawn 실패가 숫자 exit 로 둔갑하지 않는다 | V11 |
+| **M180** | **`classify` 에서 `started` 검사를 뺀다**(나머지 여섯 조건은 그대로) | ⛔ **`KILLED` 는 시작의 양의 증거를 요구한다** | V9-b · V10-c · V13-b |
+| **M181** | `runWithTimeout` 이 `started` 를 **`'spawn'` 이벤트가 아니라 `spawnFailed === false` 로** 정한다 | 시작은 **추정하지 않고 관측한다** | V8-a(ENOENT 가 `started:true` 가 된다) |
+| **M182** | `started` 여부와 무관하게 `timedOut` 을 `timeout` 으로 접는다 | spawn 전 만료와 spawn 후 만료는 다른 사건이다 | V15 |
+| **M183** | 시작 뒤의 `error` 를 `spawnFailed:true` 로 적는다 | 「아무것도 실행되지 않았다」를 거짓으로 기록하지 않는다 | V16 |
 
-⛔ **이번 회차에 T 번호를 새로 주지 않았다.** §13-6 의 「N건 전부 실행 가능한 단언으로
+⚠️ **M180 이 이번 회차의 핵심 변이다.** 나머지 여섯 조건을 그대로 두고 `started` 하나만 빼도
+`{started:false, status:7}` 이 `KILLED` 가 된다 — 그것이 §0-21-1b 의 `-2`·`-13` 실측이 말하는
+바로 그 자리다. **M180 이 살아남으면 이 설계는 구현되지 않은 것이다.**
+
+⚠️ **M175·M179·M182 는 「동등 변이」로 보이기 쉽다** — 정상 환경에서는 결과가 같다. 그래서 그
+셋은 **합성 입력**으로 재야 죽는다(V10·V11·V15). 프로세스로만 재는 검사는 셋 다 못 잡는다.
+⚠️ **M181 은 반대다** — 합성 입력으로는 안 죽고 **실제 ENOENT 로만** 죽는다. 두 종류의 검사가
+**둘 다** 필요하다는 뜻이다.
+
+⛔ **이번 회차에도 T 번호를 새로 주지 않았다.** §13-6 의 「N건 전부 실행 가능한 단언으로
 연결됐다」를 `scripts/test-docs.mjs` 검사 28 이 **T 번호의 최대와 대조**한다 — 즉 이 저장소에서
 **T 번호는 「명세가 있다」가 아니라 「실제로 연결된 단언이 있다」는 뜻**이다. 구현 없이 번호만
 늘리면 그 문장이 그 자리에서 거짓이 된다. 그래서 위 명세는 `test-verifier` 의 검사 이름
-(V8~V14)으로만 부르고, **다음 T 번호는 4단계에서 그 단언이 실제로 생길 때 준다**(§0-21-6 의 7번).
-
-⚠️ **M175·M179 는 「동등 변이」로 보이기 쉽다** — 정상 환경에서는 결과가 같다. 그래서 그 둘은
-**합성 입력**으로 재야 죽는다(V10·V11). 프로세스로만 재는 검사는 그 둘을 못 잡는다.
+(V8~V17)으로만 부르고, **다음 T 번호는 4단계에서 그 단언이 실제로 생길 때 준다**(§0-21-6 의 9번).
 
 ### 0-21-5. 이 회차에서 **하지 않은** 것
 
 - 코드·테스트·`scripts/mutations.mjs` 를 **한 줄도 안 고쳤다.** 위 표의 「지금은」 칸이 현재 동작이다.
-- `node scripts/mutate.mjs` 를 **완주시키지 않았다.** 지금 돌리면 217종이 통과하는데, 그 표는
-  **위 결함을 못 보는 실행기가 만든 것**이라 이번 판정의 근거로 쓰지 않는다.
+- `node scripts/mutate.mjs` 를 **돌리지 않았다.** 지금 실행기는 **위협 93 을 못 보는 판**이라
+  그 출력은 완료의 증거가 될 수 없다.
+- ⚠️ **스위트 34개가 통과한다는 사실은 기존 회귀의 근거일 뿐 4단계 완료의 근거가 아니다.**
+  이 저장소는 같은 이유로 여섯 판 연속 잘못 선언했다.
 - 원격은 아무것도 만지지 않았다 — 배포·D1·R2·시크릿·도메인·WAF·Turnstile·OAuth·결제 전부.
 
 ### 0-21-6. 4단계로 넘기는 구현 목록
 
+**Ⅰ. 실행기와 검증**
+
 | # | 무엇 | 어디 |
 |---|---|---|
-| 1 | `runWithTimeout()` 이 `signal` 을 싣고, 결과를 **정확히 한 번** 확정한다(먼저 온 것이 이긴다) | `scripts/_mutate-lib.mjs` |
-| 2 | `classify(result)` 신설 — §0-21-2 의 10가지를 정규화 상태와 판정으로 옮긴다. **기본값은 `unobservable`** | `scripts/_mutate-lib.mjs` |
-| 3 | `VERDICTS`·`FATAL` 에 `INFRA-ERROR` 추가 | `scripts/_mutate-lib.mjs` |
-| 4 | `mutate.mjs` 에서 `r.status` 직접 참조 제거 — 기준선·돌연변이 루프가 **같은 `classify`** 를 쓴다 | `scripts/mutate.mjs` |
-| 5 | 기준선이 측정 불능이면 **원인을 이름으로 말하고** 즉시 중단(돌연변이 0개 · 종료 코드 2) | `scripts/mutate.mjs` |
-| 6 | 표·요약·JSON 에 `INFRA-ERROR` 행과 증거 필드를 싣는다 | `scripts/mutate.mjs` |
-| 7 | V8~V14 · **그때 §13-5 에 다음 T 번호를 신설**하고 §13-6 에 매핑을 잇는다 | `scripts/test-verifier.mjs` · 이 문서 §13-5·§13-6 |
-| 8 | M173~M179 | `scripts/mutations.mjs` |
-| 9 | 「판정은 넷이다」를 다섯으로 고친다 | `CLAUDE.md` §8 · 이 문서 §0-20-1 |
+| 1 | `runWithTimeout()` 결과 계약에 **`started`**(`'spawn'` 이벤트에서만) · **`signal`**(`close` 둘째 인자) · **`postSpawnError`** 를 싣는다 | `scripts/_mutate-lib.mjs` |
+| 2 | **`settled` 플래그 + `finalize(reason)` 상태기** — 확정과 `clearTimeout` 이 **정확히 한 번**. ⛔ Promise 의 재-`resolve` 무시에 기대지 않는다 | `scripts/_mutate-lib.mjs` |
+| 3 | 타이머 콜백이 **`started` 를 보고 갈라진다** — `started:false` 면 `start-timeout` 으로 확정하고(죽일 대상이 없다) 약속을 **그 자리에서 닫는다**. ⛔ 지금은 `kill(-undefined)` 가 던지고 약속이 영원히 안 닫힌다 | `scripts/_mutate-lib.mjs` |
+| 4 | `classify(result)` 신설 — §0-21-2b 의 **17가지**를 정규화 상태와 판정으로 옮긴다. **기본값은 `unobservable`** · **모순 입력도 `unobservable`** | `scripts/_mutate-lib.mjs` |
+| 5 | `VERDICTS`·`FATAL` 에 `INFRA-ERROR` 추가 | `scripts/_mutate-lib.mjs` |
+| 6 | `mutate.mjs` 에서 `r.status`·`r.timedOut` 직접 참조 제거 — 기준선·돌연변이 루프가 **같은 `classify`** 를 쓴다 | `scripts/mutate.mjs` |
+| 7 | 기준선은 **`started:true` · `exited` · `status:0` 만 허용**. 그 밖은 **정규화 상태를 이름으로 말하고** 돌연변이 0개 · 종료 코드 2 | `scripts/mutate.mjs` |
+| 8 | 표·요약·JSON 에 `INFRA-ERROR` 칸과 증거 필드 여섯을 싣는다. ⛔ **원인 문장은 고정 문구** — 오류 원문·환경 변수·인자·자식 출력 금지 | `scripts/mutate.mjs` |
+| 9 | V8~V17 · **그때 §13-5 에 다음 T 번호를 신설**하고 §13-6 에 매핑을 잇는다 | `scripts/test-verifier.mjs` · 이 문서 §13-5·§13-6 |
+| 10 | M173~M183 | `scripts/mutations.mjs` |
+| 11 | 「판정은 넷이다」를 다섯으로 고친다 | `CLAUDE.md` §8 · 이 문서 §0-20-1 |
 
-⛔ **9번을 먼저 하지 않는다.** 코드가 다섯 판정을 갖기 전에 문서만 고치면 그 문장이 거짓이 된다.
+⛔ **11번을 먼저 하지 않는다.** 코드가 다섯 판정을 갖기 전에 문서만 고치면 그 문장이 거짓이 된다.
+
+**Ⅱ. 문서 모순을 자동으로 깨뜨리는 검사** (`scripts/test-docs.mjs` · ⛔ **이번 회차에 안 고쳤다**)
+
+문서 넷이 서로 다른 말을 하는 것을 **사람이 읽어서** 찾아냈다. 그 방식은 반드시 낡는다 —
+아래를 검사로 옮겨야 같은 일이 다시 안 생긴다.
+
+| # | 무엇이 실패해야 하나 | 왜 |
+|---|---|---|
+| 12 | 설계서 **상단**과 **§21-0** 의 4단계 상태가 다르면 실패 | 같은 문서 안에서 갈렸던 자리다 |
+| 13 | `CLAUDE.md` · `docs/HANDOFF.md` · `docs/SECURITY_RELEASE_CHECKLIST.md` · 설계서의 **현재 4단계 상태**가 서로 다르면 실패 | 검사 11 은 지금 `CLAUDE.md`·`HANDOFF` **둘만** 본다 |
+| 14 | 실제 최대 T 번호와 **「합계 N건」** 문장이 다르면 실패 | §13-5 의 「합계 96건」이 T111 인 채로 남아 있었다 |
+| 15 | **위협 93 이 열린 상태**에서 「4단계 최종 완료」류 현재형 문장이 있으면 실패 | 열린 결함과 완료 선언이 같은 저장소에 공존하지 않게 한다 |
+| 16 | `started` 없는 결과가 `KILLED` 로 적힌 JSON 이 있으면 실패 | 문서가 아니라 **산출물**을 재는 검사다(V13-b 와 짝) |
 
 ---
 
@@ -3554,7 +3731,7 @@ D안(문장 안의 게이트)을 함께 제시했으나 **단독 채택하지 �
 | **90** | **백업 도구의 Node 런타임 계약이 없다** | **M** | ① 복원 가능성 증명이 `node:sqlite` 를 쓰고, 플래그 없이 열리는 최소 판이 **22.13.0** 이다 ② `engines.node`·`.nvmrc`·preflight 가 **하나도 없었다** ③ 정적 `import` 라 지원하지 않는 Node 에서는 **모듈을 읽는 순간** 이해할 수 없는 오류로 끝난다 ④ 운영자에게는 「백업 도구가 원래 안 되는 것」으로 보이고, 그 상태에서 백업 없이 migration 을 돌리게 된다 ⑤ 「지금 Node 24 에서 되니까」를 근거로 삼고 있었다 | ⓐ 값의 원본은 `MIN_NODE` **한 자리** — `package.json` 의 `engines.node` 와 `.nvmrc` 를 검사가 그 상수와 대조한다 ⓑ `node:sqlite` 는 `loadTemp()` 안에서 **지연 import** 하고 그 앞에 `assertNode()` 가 선다 ⓒ CLI 는 **어느 하위 명령보다 먼저** 보고 종료 코드 3 과 한국어 안내로 끝낸다 | **T109** · **M165·M166** | ⛔ **부분적으로 도는 것이 가장 나쁘다** — export 는 되고 검증만 안 되면 검증 안 된 사본을 백업이라 부르게 된다 |
 | **91** | **돌연변이 실행기가 측정 불능에 빠졌다 — 종료하지 않는 변이 하나가 검증 전체를 멈추고 손자가 남았다** | **H** | ① M164 가 `reconPage` 를 **같은 커서로 무한 재귀**시켰다 ② 실행기에 제한 시간이 없어 211종 검증이 4번째 변이에서 멈췄다 ③ 표에는 아무것도 안 나와서 **실패가 아니라 침묵**으로 보였다 ④ 바깥에서 실행기를 죽여도 `spawnSync` 는 직계만 죽여 **손자(`test-ops-race`)가 4분 34초째 CPU 를 먹으며 남았다**(실측) ⑤ 죽은 자식은 종료 코드가 `null` 이라 **조용히 `KILLED`** 로 접힌다 — 제한 시간만 붙이고 판정을 안 나눴다면 종료하지 않는 변이가 곧 만점이 된다 | ⓐ `runWithTimeout()` 이 `detached` + `process.kill(-pid)` 로 **프로세스 그룹째** 죽인다 ⓑ **`TIMEOUT`** 을 넷째 판정으로 `KILLED` 와 분리한다 ⓒ 완료 조건은 생존 0 · 앵커 실패 0 · **제한 시간 초과 0** ⓓ 제한 시간은 **측정한 기준선의 20배**(최소 15초) · 기준선 timeout 은 즉시 전체 실패 ⓔ M164 를 **유한한 변이**로 다시 쓰고 R5 에 **두 번째 바퀴**를 더한다 | **T110** · **M164 · M167~M171** | ⛔ **「사망 211 · 생존 0」이 아니라 아무것도 재지 못한 상태였다.** 그때 스위트 33개는 전부 통과했고 `npm audit` 도 0건이었다 |
 | **92** | **「전수」가 실행하지 않은 경계를 셌다** | **M** | ① `test-ops-race` R11 의 `assert.ok(fired || at === steps, …)` 가 예외 통과를 허용했다 ② `run` 은 정확히 `steps` 번 불리므로 `at === steps` 회차는 **reconciliation 을 아예 안 돌린** 평범한 백업 한 번이었다 — 22개 조합 중 **2개가 빈 칸** ③ 게다가 배리어가 `runBackup` 의 runner 에만 걸려 있어 inventory 의 `insertPending`·`setUploading`·`setUploaded`·`setReady` **앞에서는 아무도 끼어들지 않았다** — 정작 위협 88 이 다투는 자리가 그 전이들이다 | ⓐ inventory 도 **같은 runner** 를 지나게 해 상태 전이가 실제 배리어 자리가 된다 ⓑ 마지막 자리는 **반환 직후**에 완주시킨다 ⓒ 예외 통과 제거 — `assert.ok(fired, …)` 하나 ⓓ 실행한 명령 목록에 그 전이들이 실제로 있는지 스위트가 스스로 확인한다 | **T111** · **M172** | 실측: 배리어 자리 10 → **14** · 교차 조합 22 → **30** · 단언 121 → **152** |
-| **93** | **측정 불능이 「방어가 잡았다」로 접혔다 — spawn 실패·signal 종료가 `KILLED`** | **H** | ① `mutate.mjs` 의 판정이 `r.timedOut ? TIMEOUT : r.status === 0 ? SURVIVED : KILLED` 삼항식이다 ② `runWithTimeout()` 은 `status:null` 을 **세 가지 이유**로 돌려주는데 그중 하나(우리 타이머)만 갈라져 있다 ③ **실측**(2026-08-29 · 읽기 전용): 없는 실행 파일 → `spawnFailed:true` · `status:null` → **`KILLED`** · 자식이 SIGTERM 으로 죽음 → **`KILLED`** ④ 그래서 `node` 를 못 띄우는 환경에서는 **217종이 전부 사망 · 종료 코드 0** 이고, 그 표가 완료 판정의 근거다 ⑤ 위협 91 의 ⑤ 가 이미 `null` 을 지목했는데 **설계가 timedOut 갈래만 갈랐다** — 부분 마감이었다 ⑥ 부수 실측: ENOENT 는 `error` → `close(code=-2)` 둘 다 오므로 **「숫자 non-zero」는 실행됐다는 증거가 아니다** | ⓐ 판정 **앞에** 실행 결과를 정규화한다 — `classify()` 가 `exited`·`timeout`·`spawn-failed`·`signalled`·`unobservable` 로 나누고 **기본값은 `unobservable`** ⓑ `KILLED` 는 **시작됨 · timeout 아님 · signal 아님 · 숫자형 non-zero** 가 전부 참일 때만 ⓒ **`INFRA-ERROR`** 를 다섯째 판정으로 두고 `FATAL` 에 넣는다 — ⛔ `TIMEOUT` 과 합치지 않는다(운영자가 할 일이 다르다) ⓓ `runWithTimeout` 이 `signal` 을 싣고 결과를 **정확히 한 번** 확정한다(먼저 온 증거가 이긴다) ⓔ 기준선이 측정 불능이면 **원인을 이름으로 말하고** 돌연변이 0개로 중단 ⓕ JSON 은 판정과 함께 `status`·`signal`·`timedOut`·`spawnFailed`·비밀값 없는 원인을 적는다 | **§0-21-4 의 V8~V14**(RED 명세) · **M173~M179** — ⛔ **T 번호는 구현 시점에 준다** | ⛔ **설계만 확정했다(2026-08-29) — 코드·테스트는 아직 없다.** 그래서 지금의 돌연변이 표는 **이 결함을 못 보는 실행기가 만든 것**이고 4단계 로컬은 최종 완료가 아니다. ⚠️ 실행기 밖의 측정 불능(호스트가 통째로 죽는 경우)은 이 설계로 못 잡는다 — 그때는 표 자체가 안 나온다 |
+| **93** | **측정 불능이 「방어가 잡았다」로 접혔다 — spawn 실패·signal 종료가 `KILLED`** | **H** | ① `mutate.mjs` 의 판정이 `r.timedOut ? TIMEOUT : r.status === 0 ? SURVIVED : KILLED` 삼항식이다 ② `runWithTimeout()` 은 `status:null` 을 **세 가지 이유**로 돌려주는데 그중 하나(우리 타이머)만 갈라져 있다 ③ **실측**(2026-08-29 · 읽기 전용): 없는 실행 파일 → `spawnFailed:true` · `status:null` → **`KILLED`** · 자식이 SIGTERM 으로 죽음 → **`KILLED`** ④ 그래서 `node` 를 못 띄우는 환경에서는 **217종이 전부 사망 · 종료 코드 0** 이고, 그 표가 완료 판정의 근거다 ⑤ 위협 91 의 ⑤ 가 이미 `null` 을 지목했는데 **설계가 timedOut 갈래만 갈랐다** — 부분 마감이었다 ⑥ 부수 실측: ENOENT 는 `error` → `close(code=-2)` 둘 다 오므로 **「숫자 non-zero」는 실행됐다는 증거가 아니다** | ⓐ 판정 **앞에** 실행 결과를 정규화한다 — `classify()` 가 `exited`·`timeout`·**`start-timeout`**·`spawn-failed`·**`post-spawn-error`**·`signalled`·`unobservable` 로 나누고 **기본값은 `unobservable`**(모순된 결과 객체도 여기로) ⓑ **`started` 를 결과 계약에 싣는다 — `'spawn'` 이벤트에서만 `true`**(실측: ENOENT·EACCES 는 그 이벤트가 없고 `close(code=-2/-13)` 라는 **숫자 non-zero** 를 낸다). ⛔ `pid`·`spawnFailed:false` 로 추정하지 않는다 ⓑ′ `KILLED` 의 필요충분조건은 **일곱**이다 — `started` · `spawnFailed:false` · `timedOut:false` · `signal:null` · `Number.isInteger(status)` · `status !== 0` · `outcome === exited` ⓒ **`INFRA-ERROR`** 를 다섯째 판정으로 두고 `FATAL` 에 넣는다 — ⛔ `TIMEOUT` 과 합치지 않는다(운영자가 할 일이 다르다) ⓓ `runWithTimeout` 이 **`close` 의 둘째 인자 `signal`** 을 싣고, **`settled` 플래그 + `finalize()` 상태기**로 확정과 `clearTimeout` 이 **정확히 한 번** 일어난다(먼저 온 증거가 이긴다). ⛔ Promise 가 두 번째 `resolve` 를 무시한다는 성질에 기대지 않는다 — 그것은 반환값만 지키고 **부수효과는 안 지킨다** ⓓ′ 타이머가 **spawn 전** 만료되면 `start-timeout`(`INFRA-ERROR`)이고 **spawn 후**여야 `timeout`(`TIMEOUT`)이다. `error` 도 **`started` 기준으로** `spawn-failed`/`post-spawn-error` 로 가른다 ⓔ 기준선이 측정 불능이면 **원인을 이름으로 말하고** 돌연변이 0개로 중단 ⓕ JSON 은 판정과 함께 `status`·`signal`·`timedOut`·`spawnFailed`·비밀값 없는 원인을 적는다 | **§0-21-4 의 V8~V17**(RED 명세) · **M173~M183** — ⛔ **T 번호는 구현 시점에 준다** | ⛔ **설계만 확정했다(2026-08-29) — 코드·테스트는 아직 없다.** 그래서 지금의 돌연변이 표는 **이 결함을 못 보는 실행기가 만든 것**이고 4단계 로컬은 최종 완료가 아니다. ⚠️ 실행기 밖의 측정 불능(호스트가 통째로 죽는 경우)은 이 설계로 못 잡는다 — 그때는 표 자체가 안 나온다. ⚠️ **`start-timeout` 갈래는 재현하지 못했다** — 0ms 타이머 20회 모두 `'spawn'` 이 먼저였다(Node 는 그 이벤트를 nextTick 큐로 올린다). 재현한 결함이 아니라 **계약으로 닫아 두는 갈래**다 |
 
 > ⛔ **위협 50 의 「완료」 판정은 9판에서 철회됐다(2026-08-22).** 닫힌 것은 **「`EDGE_GUARD` 가 없을 때
 > 계정 경로가 DB 를 만지기 전에 닫힌다」 하나**다. 「방어가 있다」고 판정되는 조건, 열린 뒤의
@@ -4121,7 +4298,10 @@ ledger 쓰기가 둘(INSERT+DELETE) 는다는 뜻이기도 하다 — 그래서 
 | **T110** | `test-verifier.mjs` | 「★ 종료하지 않는 자식인데 timedOut 이 아니다」 · 「★ 손자 … 가 살아남았다 — 프로세스 그룹째 죽이지 않는다」 · 「★ TIMEOUT 이 사망에 섞였다」 · 「★ TIMEOUT 이 완료를 막지 않는다」 · 「★ mutate.mjs 가 spawnSync 를 쓴다」 · 「★ M164 단독 실행이 90초 안에 안 끝난다 — 무한 변이다」 | 검증 장치는 제한 시간 안에 끝나고, 재지 못한 것을 사망으로 접지 않는다 | 통과(**2026-08-28 신설**) |
 | **T111** | `test-verifier.mjs` · `test-ops-race.mjs` | 「★ 배리어가 안 걸린 회차를 예외로 통과시킨다」 · 「★ 마지막 경계에서 reconciliation 을 안 돌린다」 · 「★ 실행한 경계에 … 가 없다 — 그 전이는 교차를 안 쟀다」 | 「전수」는 실제로 실행한 경계에만 쓴다 | 통과(**2026-08-28 신설**) |
 
-**합계 96건.** T1~T48 이 5판 명세이고, **T49 는 2026-08-18 구현 중에, T50~T55 는 2026-08-19
+**합계는 이 표의 마지막 번호가 말한다 — 여기에 손으로 적지 않는다**(2026-08-29 · 옛 「96건」은
+T111 인 채로 낡아 있었다. `scripts/test-docs.mjs` 검사 28 이 §13-6 의 합계 문장을 T 최대값과
+대조하고, §0-21-6 의 14번이 그 검사를 이 표에도 넓히는 항목이다).
+T1~T48 이 5판 명세이고, **T49 는 2026-08-18 구현 중에, T50~T55 는 2026-08-19
 자체 재감사에서, T56~T60 은 같은 날 독립 재감사에서, T61~T64 는 2026-08-20 마감 감사에서 더해졌다** —
 설계가 요구한 「세어서 알린다」(C6)·「연속 실패 경보」(C11)가 코드에 반쪽만 있었기 때문이고,
 T50~T55 는 **구현이 설계보다 느슨했던 자리**(위협 39~42)를 고정하기 위해서다.
@@ -4686,7 +4866,7 @@ policy manifest·정책 버전 파일 생성 · migration 생성 · 테스트 �
 
 <!-- 현재상태:시작 -->
 
-### 21-0. 현재 상태 (사용자 결정 2026-08-22 · 운영 반영·재검증 기준일 2026-08-24)
+### 21-0. 현재 상태 (사용자 결정 2026-08-22 · 운영 반영 2026-08-24 · **설계 기준일 2026-08-29**)
 
 **이 표가 현재 상태의 원본이다.** 아래 21-1 부터는 **역사 기록**이고, 거기 적힌 판정은 그
 시점의 것이다 — 지금 상태로 읽지 않는다. 단계 정의의 원본은 `CLAUDE.md` §1-1.
@@ -4696,12 +4876,12 @@ policy manifest·정책 버전 파일 생성 · migration 생성 · 테스트 �
 
 | 무엇 | 지금 |
 |---|---|
-| 3단계 설계 | **9판 완료 2026-08-22.** 8판의 완료 판정은 재감사로 철회됐고(§0-9 · 위협 52~56), **사용자 결정 0~7 이 확정되면서 다시 닫혔다**(§12-3-4). 확정된 것: 엣지 방어 **A** · B 보류 · Turnstile 은 공개 가입에만 · 세션 envelope 도입 · D1 수치는 추정치 · 잔여 위험 6종 인정 · 출시 조건 9가지 |
-| 4단계 로컬 구현 | **완료 2026-08-22.** 위협 52~56 의 코드(`EDGE_GUARD` 계약 · 두 층 리미터 · 운영자 readiness)와 결정 3·4 의 코드(Turnstile · 세션 envelope · 호스트 잠금 미들웨어)가 T65~T72 와 함께 들어갔다. ⚠️ **테스트가 통과한다는 사실은 완료의 근거가 아니다** — 이 저장소는 같은 이유로 여섯 판 연속 잘못 선언했다(6판~11판) |
+| 3단계 설계 | **11판 완료.** 9판이 사용자 결정 0~7 로 닫혔고(§0-9 · 위협 52~56 — 8판 판정은 재감사로 철회됐다), 10판이 전체 재검증 4건, 11판이 독립 검토 3건을 닫았다. 그 뒤 판 번호를 올리지 않은 보완이 이어졌고 **마지막이 2026-08-29 의 §0-21**(위협 93 · 검증기 판정 fail-closed)이다. 확정된 것: 엣지 방어 **A** · B 보류 · Turnstile 은 공개 가입에만 · 세션 envelope 도입 · D1 수치는 추정치 · 잔여 위험 6종 인정 · 출시 조건 9가지 |
+| 4단계 로컬 구현 | ⛔ **미완료(2026-08-29).** 위협 93 의 구현·테스트·돌연변이가 저장소에 없다(§0-21-6) — 설계만 확정됐다. ⚠️ **스위트 34개 통과는 기존 회귀의 근거일 뿐 완료의 근거가 아니다.** **당시 사실 — 2026-08-22 에 한 번 닫혔다**: 위협 52~56 의 코드(`EDGE_GUARD` 계약 · 두 층 리미터 · 운영자 readiness)와 결정 3·4 의 코드(Turnstile · 세션 envelope · 호스트 잠금 미들웨어)가 T65~T72 와 함께 들어갔다. ⚠️ **테스트가 통과한다는 사실은 완료의 근거가 아니다** — 이 저장소는 같은 이유로 여섯 판 연속 잘못 선언했다(6판~11판) |
 | 4단계 원격 반영 | **갈라 읽는다.** ✅ 안전 동기화는 실행됐다 — production 배포 **`7362d2f0`**(source **`e02e810`** · 계정 라우트를 닫아 둔 세대 · 2026-08-24) · preview **`cae28bf6`**(같은 source) · `READY_KEY` 등록 · 옛 배포 15개 삭제(2026-08-22). **직전** production `19e69dee`(**당시** preview `8e16c92e`)는 검증된 **롤백** 후보로 남겼다. ⛔ 계정 인프라는 **아무것도 하지 않았다** — 원격 D1 쓰기 0건 · `0005` 미적용 · ledger D1 미생성 · 새 시크릿 미등록 · 도메인·WAF·Turnstile 위젯 미생성 |
 | 남용 방어 | **A 로 확정됐고 아직 구성 전이다.** `EDGE_GUARD` 가 없으므로 계정 라우트는 **DB 를 만지기 전에 503**. 절차는 `docs/OPS_RUNBOOK.md` §13-2 |
 | 전역 user-data drain | **결정 A′ 로 구현 완료 2026-08-18 · 8판에서 마지막 예외를 닫았다**(§10-9-6 · 위협 49 · T62) |
-| 법률 | **L1~L16 미검토.** 폐쇄 베타 조건에 포함된다(결정 7) |
+| 법률 | **외부 전문가 상담은 해당 없음 — 사용자 결정으로 필수 범위에서 제외**(2026-08-26 · 결정 E · `docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md` §22). L1~L16 은 지우지 않고 **세 상태로 재분류**됐다(프로젝트 결정 완료 / 보수적 처리 완료 / 향후 기능 변경 시 재검토). ⚠️ **법적 적합성 보증은 하지 않는다.** ⛔ **「상담을 안 받았으니 No-Go」로 되살리지 않는다.** **당시 사실 — 2026-08-22**: 이 칸은 「L1~L16 미검토 · 폐쇄 베타 조건(결정 7)」이었다 |
 | 주 D1 restore | **금지.** §10-8-0 의 ①~⑨ 중 ⑤·⑦·⑨ 미충족. ⚠️ 앱 코드는 복원을 막지 못한다 |
 | 운영 절차서 | `docs/OPS_RUNBOOK.md`. §13 에 A 안 활성화 절차와 외부 점검, §5-1 에 세션 키 교체의 대가, §15 에 배포 후 D1 실측 |
 | 공개 계정·공개 회원가입 | **No-Go.** 폐쇄 베타는 **아래 9가지를 모두 충족한 뒤에만** 연다 |
