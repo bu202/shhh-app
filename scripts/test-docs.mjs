@@ -356,60 +356,141 @@ ok(`낡은 운영 상태 ${STALE_OPS.length}종 — 역사 표식 밖 사용 0�
 
 // ── 11. 단계 상태 — 「현재 판정:」 명시 필드 하나만 읽는다 ────────────────
 //
-// ⚠️ **2026-08-29 에 뒤집힌 검사다.** 그전에는 4단계 행에 `/로컬 구현 완료/` 를 **요구**했고
-//    검사 설명도 「4단계는 로컬만 끝났다」를 전제로 적혀 있었다. 그래서 행 앞부분이
-//    「⛔ 현재 미완료」여도 같은 행 뒤쪽의 **역사 설명**에 「당시 로컬 구현 완료」가 있으면
-//    통과했다 — 실제로 `CLAUDE.md` 상단은 「2·3·4단계가 저장소 기준으로 닫혔다」, 같은 파일
-//    단계표는 「4단계 미완료」인 채로 **test-docs 가 초록이었다.** 검사가 「완료」라는 낱말을
-//    행 어딘가에서 찾고 있었기 때문이다.
-//    이제 계약은 **명시 필드 하나**다 — 각 단계 행은 `현재 판정: 완료` 또는 `현재 판정: 미완료`
-//    를 **정확히 한 번** 갖는다. 없음·중복·모르는 값은 전부 실패(fail-closed)이고, 역사 문구는
-//    현재 판정에 영향을 주지 않는다.
-//    ⛔ `/(?<!미)완료/` 같은 부분문자열 회피로 때우지 않는다 — 그것은 「어디선가 완료를 봤다」를
-//       다시 하는 것이다.
-const STAGE_ROW = /^[>\s]*\|\s*\*{0,2}([1-4])단계/;
+// ⚠️ **2026-08-29 에 두 번 뒤집힌 검사다.**
+//    ① 그전에는 4단계 행에 `/로컬 구현 완료/` 를 **요구**했고, 그래서 행 앞부분이 「⛔ 현재
+//       미완료」여도 같은 행 뒤쪽 **역사 설명**의 「당시 로컬 구현 완료」로 통과했다.
+//       이제 계약은 **명시 필드 하나**다 — 각 단계 행은 `현재 판정: 완료` 또는 `현재 판정: 미완료`
+//       를 **정확히 한 번** 갖는다. 없음·중복·모르는 값은 전부 실패이고, 역사 문구는 현재
+//       판정에 영향을 주지 않는다.
+//    ② 그런데 ① 의 검사는 **발견한 행만** 순회했다. 그래서 **부재와 중복이 무검사**였다 —
+//       재현(읽기 전용): 블록 없음 · 빈 블록 · 3단계 행만 · 4단계 행만 · 같은 4단계 행 두 번,
+//       **다섯 입력 전부 문제 0건**이었다. 게다가 `docs/OPS_RUNBOOK.md` 는 단계 행이 **0개**인데
+//       「문서 6개가 일치한다」에 조용히 들어가 있었다 — **검사한 척**이다.
+//       이제 ⓐ 블록 자체를 fail-closed 로 보고 ⓑ **문서별 필수 행 스키마**를 두고 ⓒ 스키마가
+//       비어 있으면 그 문서 자체를 실패로 본다. 「행을 못 찾음」은 해당 없음이 아니라 실패다.
+//    ⛔ `/(?<!미)완료/` 같은 부분문자열 회피로 때우지 않는다.
+const STAGE_ROW = /^[>\s]*\|\s*\*{0,2}\s*([1-4])단계([^|]*?)\s*\*{0,2}\s*\|/;
 function stageStatusOf(row) {
   const hits = [...String(row).matchAll(/현재 판정:\s*\*{0,2}\s*([가-힣]+)/g)].map((m) => m[1]);
   if (hits.length !== 1) return "invalid";                  // 없거나 둘 이상이면 **추정하지 않는다**
   return hits[0] === "완료" ? "complete"
        : hits[0] === "미완료" ? "incomplete" : "invalid";   // 「부분완료」 같은 값도 실패다
 }
+// ⛔ **블록을 못 읽으면 「빈 상태」로 보고 통과시키지 않는다.** 마커 개수와 순서를 직접 센다.
+function blockProblems(name, text) {
+  const out = [];
+  const a = text.split(NOW0).length - 1, b = text.split(NOW1).length - 1;
+  if (a !== 1) out.push(`${name} 현재상태 **시작** 마커가 ${a}개다 — 정확히 1개여야 한다`);
+  if (b !== 1) out.push(`${name} 현재상태 **끝** 마커가 ${b}개다 — 정확히 1개여야 한다`);
+  if (a === 1 && b === 1 && text.indexOf(NOW0) > text.indexOf(NOW1))
+    out.push(`${name} 현재상태 마커 순서가 뒤집혔다 — 시작이 끝보다 앞이어야 한다`);
+  return out;
+}
 // 현재상태 블록 **안**의 단계 행만 본다. 밖은 역사 기록이라 옛 판정이 그대로 있어도 된다.
-function stageTableOf(text) {
+// 행의 **이름**(첫 칸)까지 읽는다 — 설계서는 4단계 행이 둘이고(`로컬 구현`·`원격 반영`)
+// 그 둘은 서로 다른 축이라 번호만으로는 구분되지 않는다.
+function stageRowsOf(text) {
   const i = text.indexOf(NOW0), j = text.indexOf(NOW1);
-  const out = new Map();
-  if (i < 0 || j <= i) return out;
-  for (const ln of text.slice(i, j).split("\n")) {
+  if (i < 0 || j <= i) return [];
+  return text.slice(i, j).split("\n").flatMap((ln) => {
     const m = STAGE_ROW.exec(ln);
-    if (!m) continue;
-    const n = Number(m[1]);
-    if (!out.has(n)) out.set(n, []);
-    out.get(n).push(stageStatusOf(ln));
+    if (!m) return [];
+    return [{ n: +m[1], label: `${m[1]}단계${m[2].replace(/\*/g, "")}`.trim(),
+              status: stageStatusOf(ln), line: ln }];
+  });
+}
+// 문서별 **필수 행 스키마.** 누락·중복·스키마 밖 행은 전부 실패다.
+const STAGE_SCHEMA = {
+  "CLAUDE.md": ["1단계", "2단계", "3단계", "4단계"],
+  "docs/HANDOFF.md": ["1단계 보안 기준선", "2단계 정책 결정", "3단계 기술 상세 설계", "4단계 코드·DB 구현"],
+  "docs/SECURITY_RELEASE_CHECKLIST.md":
+    ["1단계 보안 기준선", "2단계 정책 결정", "3단계 기술 상세 설계", "4단계 코드·DB·테스트 구현"],
+  [STAGE3]: ["3단계 설계", "4단계 로컬 구현", "4단계 원격 반영"],
+  [STAGE2]: ["3단계 기술 상세 설계", "4단계 구현"],
+};
+function stageProblems(name, text, expect, schema) {
+  const out = blockProblems(name, text);
+  if (out.length) return out;                    // 블록을 못 읽으면 거기서 멈춘다(fail-closed)
+  if (!schema || !schema.length)
+    return [`${name} 이 단계표 검사 대상인데 필수 행 스키마가 비어 있다 — 검사한 척이 된다`];
+  const rows = stageRowsOf(text);
+  for (const want of schema) {
+    const got = rows.filter((r) => r.label === want);
+    if (got.length !== 1)
+      out.push(`${name} 필수 단계 행 「${want}」 가 ${got.length}개다 — 정확히 1개여야 한다`);
+  }
+  for (const r of rows) {
+    if (!schema.includes(r.label)) {
+      out.push(`${name} 현재상태 블록에 스키마에 없는 단계 행 「${r.label}」 가 있다`);
+      continue;
+    }
+    if (r.status === "invalid")
+      out.push(`${name} 「${r.label}」 행에 「현재 판정: 완료」 또는 「현재 판정: 미완료」가 정확히 하나 있어야 한다`);
+    else if (expect[r.n] && r.status !== expect[r.n])
+      out.push(`${name} 「${r.label}」 현재 판정이 ${r.status} 다 — 원본(CLAUDE.md §1-1)은 ${expect[r.n]}`);
   }
   return out;
 }
-function stageProblems(name, text, expect) {
+// ── 11-b. 현재상태 블록 **안에는 역사 예외가 없다** ────────────────────────
+// 「현재 미완료지만 당시 완료」를 같은 행에 섞으면, 읽는 사람도 검사도 어느 쪽이 지금인지
+// 가릴 수 없다. 경위는 블록 **밖** 역사 절이 소유한다.
+const HIST_IN_ROW = /당시|그날|철회|역사 기록|판 시점|판 당시/;
+function nowScopeProblems(name, text) {
+  const out = blockProblems(name, text);
+  if (out.length) return out;
+  for (const r of stageRowsOf(text))
+    if (HIST_IN_ROW.test(r.line))
+      out.push(`${name} 「${r.label}」 행이 현재상태 블록 안에서 역사 기록을 섞는다 — `
+        + `경위는 블록 밖 역사 절로 옮기고 행에는 현재 판정과 그 근거만 남긴다`);
+  out.push(...unscopedStage4(name, text));
+  return out;
+}
+// 블록 안에서 **범위를 안 적은** 4단계 완료 주장. 단계표 문서와 OPS_RUNBOOK 에 똑같이 건다 —
+// 「로컬 코드·migration·테스트는 구현 완료」 한 문장이 4단계 전체 완료로 읽혔다(2026-08-29 재현).
+function unscopedStage4(name, text) {
   const out = [];
-  for (const [n, list] of stageTableOf(text)) {
-    for (const st of list) {
-      if (st === "invalid")
-        out.push(`${name} ${n}단계 행에 「현재 판정: 완료」 또는 「현재 판정: 미완료」가 정확히 하나 있어야 한다`);
-      else if (expect[n] && st !== expect[n])
-        out.push(`${name} ${n}단계 현재 판정이 ${st} 다 — 원본(CLAUDE.md §1-1)은 ${expect[n]}`);
-    }
+  const i = text.indexOf(NOW0), j = text.indexOf(NOW1);
+  if (i < 0 || j <= i) return out;
+  for (const ln of text.slice(i, j).split("\n")) {
+    if (!/4단계/.test(ln)) continue;
+    if (!/(구현|코드|migration|테스트)[^\n]{0,24}완료/.test(ln)) continue;
+    if (/미완료|위협 \**9[34]|93·94/.test(ln)) continue;   // 범위를 **그 줄에서** 밝힌 문장
+    out.push(`${name} 현재상태 블록이 **범위 없이** 4단계 구현 완료를 주장한다 — `
+      + `위협 93·94 의 구현이 없어 4단계 전체는 미완료다\n      "${ln.trim().slice(0, 100)}"`);
   }
+  return out;
+}
+// ── 11-c. `docs/OPS_RUNBOOK.md` 는 **단계표 문서가 아니다** ─────────────────
+// 운영현황 문서라 단계 행이 0개다. 그런데 단계표 검사 목록에 들어 있어서 「문서 6개가
+// 일치한다」로 세어졌다 — **실제로 검증한 행은 0개**였다. 이제 목록에서 빼고, 대신 이 문서가
+// 반드시 말해야 할 **운영 상태 셋**을 따로 잰다.
+const OPS_FACTS = [
+  [/4단계[^\n]{0,60}미완료|로컬[^\n]{0,20}구현[^\n]{0,20}미완료/, "4단계 로컬이 미완료라는 사실"],
+  [/계정 인프라[^\n]{0,24}(미|안)|계정 인프라는? (하나도 )?(안|미)/, "원격 계정 인프라가 미완료라는 사실"],
+  [/No-Go/, "공개 계정 출시가 No-Go 라는 판정"],
+];
+function opsProblems(name, text) {
+  const out = blockProblems(name, text);
+  if (out.length) return out;
+  if (stageRowsOf(text).length)
+    out.push(`${name} 현재상태 블록에 단계 행이 있다 — 단계 판정의 원본은 CLAUDE.md §1-1 하나다`);
+  const i = text.indexOf(NOW0), j = text.indexOf(NOW1);
+  const now = text.slice(i, j);
+  for (const [re, what] of OPS_FACTS)
+    if (!re.test(now)) out.push(`${name} 현재상태 블록에 ${what} 가 없다`);
+  out.push(...unscopedStage4(name, text));
   return out;
 }
 
-// ── 11a. 합성 자기검사 S1~S9 ──────────────────────────────────────────────
-// ⚠️ **실제 문서를 읽는 검사와 같은 함수를 쓴다.** 자기검사용 정규식을 따로 두면 가짜 검사다.
+// ── 11a. 합성 자기검사 — **실제 문서를 읽는 함수와 같은 함수를 쓴다** ──────
+// ⚠️ 자기검사용 정규식을 따로 두면 가짜 검사다. 아래는 전부 위의 함수를 그대로 부른다.
 {
   const CASES = [
     ["S1", "| 3단계 | 설계 | 현재 판정: 완료 |", "complete"],
     ["S2", "| 4단계 | 구현 | 현재 판정: 미완료 |", "incomplete"],
     ["S3", "| 4단계 | 구현 | 미완료 |", "invalid"],
-    ["S4", "| 4단계 | 구현 | 현재 판정: 미완료. 당시에는 로컬 구현 완료로 판정했다 |", "incomplete"],
-    ["S5", "| 4단계 | 구현 | 당시 로컬 구현 완료. 현재 판정: 미완료 |", "incomplete"],
+    ["S4", "| 4단계 | 구현 | 현재 판정: 미완료. 남은 것은 위협 93·94 다 |", "incomplete"],
+    ["S5", "| 4단계 | 구현 | 현재 판정: 미완료 · 설계는 §0-21 에서 닫혔다 |", "incomplete"],
     ["S6", "| 4단계 | 구현 | 현재 판정: 미완료 · 현재 판정: 완료 |", "invalid"],
     ["S7", "| 4단계 | 구현 | 현재 판정: 부분완료 |", "invalid"],
   ];
@@ -417,30 +498,61 @@ function stageProblems(name, text, expect) {
     const got = stageStatusOf(row);
     if (got !== want) bad(`단계 판정 자기검사 ${id}: ${want} 여야 하는데 ${got} 다 — "${row}"`);
   }
-  const synth = (rows) => `${NOW0}\n${rows}\n${NOW1}`;
-  const want = { 3: "complete", 4: "incomplete" };
-  // S8 — 문서 간 불일치를 실제로 잡는가
-  if (stageProblems("S8-A", synth("| 3단계 | 설계 | 현재 판정: 완료 |\n| 4단계 | 구현 | 현재 판정: 미완료 |"), want).length)
-    bad("단계 판정 자기검사 S8: 일치하는 합성 문서를 불일치로 읽는다");
-  if (!stageProblems("S8-B", synth("| 3단계 | 설계 | 현재 판정: 완료 |\n| 4단계 | 구현 | 현재 판정: 완료 |"), want).length)
-    bad("단계 판정 자기검사 S8: ★ 4단계를 완료라고 적은 합성 문서를 통과시킨다");
-  // S3-B — 블록 안에 있는데 필드가 없으면 그 자체로 실패여야 한다(추정 금지)
-  if (!stageProblems("S3-B", synth("| 4단계 | 구현 | 미완료 |"), want).length)
-    bad("단계 판정 자기검사 S3: ★ 「현재 판정:」 이 없는 행을 통과시킨다");
-  // 역사 문구만 있는 블록도 통과하면 안 된다
-  if (!stageProblems("S5-B", synth("| 4단계 | 구현 | 당시 로컬 구현 완료 |"), want).length)
-    bad("단계 판정 자기검사 S5: ★ 역사 문구만 있는 행을 현재 판정으로 읽는다");
+  const wrap = (rows) => `머리말\n${NOW0}\n${rows}\n${NOW1}\n꼬리말`;
+  const SCHEMA = ["3단계 설계", "4단계 로컬 구현"];
+  const EXP = { 3: "complete", 4: "incomplete" };
+  const OK3 = "| 3단계 설계 | **현재 판정: 완료** |";
+  const OK4 = "| 4단계 로컬 구현 | **현재 판정: 미완료** — 위협 93·94 |";
+  const OPS_OK = `${NOW0}\n- 4단계 로컬은 미완료다.\n- 계정 인프라는 하나도 안 했다.\n- 공개 출시는 No-Go 다.\n${NOW1}`;
+
+  // ⛔ **음수 입력 18종.** 전부 최소 한 개의 **구체적인** 오류를 내야 한다.
+  const NEG = [
+    ["N1  블록 없음",            () => stageProblems("N1", "본문뿐", EXP, SCHEMA)],
+    ["N2  시작 마커만",          () => stageProblems("N2", `${NOW0}\n${OK3}\n${OK4}`, EXP, SCHEMA)],
+    ["N3  끝 마커만",            () => stageProblems("N3", `${OK3}\n${OK4}\n${NOW1}`, EXP, SCHEMA)],
+    ["N4  마커 순서 역전",       () => stageProblems("N4", `${NOW1}\n${OK3}\n${OK4}\n${NOW0}`, EXP, SCHEMA)],
+    ["N5  빈 블록",              () => stageProblems("N5", wrap("(행 없음)"), EXP, SCHEMA)],
+    ["N6  필수 행 전체 누락",    () => stageProblems("N6", wrap("| 표 | 아님 |"), EXP, SCHEMA)],
+    ["N7  3단계 행만",           () => stageProblems("N7", wrap(OK3), EXP, SCHEMA)],
+    ["N8  4단계 행만",           () => stageProblems("N8", wrap(OK4), EXP, SCHEMA)],
+    ["N9  같은 필수 행 두 번",   () => stageProblems("N9", wrap(`${OK3}\n${OK4}\n${OK4}`), EXP, SCHEMA)],
+    ["N10 다른 상태로 두 번",    () => stageProblems("N10", wrap(`${OK3}\n${OK4}\n| 4단계 로컬 구현 | **현재 판정: 완료** |`), EXP, SCHEMA)],
+    ["N11 현재 판정 없음",       () => stageProblems("N11", wrap(`${OK3}\n| 4단계 로컬 구현 | 미완료 |`), EXP, SCHEMA)],
+    ["N12 현재 판정 두 번",      () => stageProblems("N12", wrap(`${OK3}\n| 4단계 로컬 구현 | 현재 판정: 미완료 · 현재 판정: 완료 |`), EXP, SCHEMA)],
+    ["N13 현재 판정: 부분완료",  () => stageProblems("N13", wrap(`${OK3}\n| 4단계 로컬 구현 | 현재 판정: 부분완료 |`), EXP, SCHEMA)],
+    ["N14 원본과 불일치",        () => stageProblems("N14", wrap(`${OK3}\n| 4단계 로컬 구현 | **현재 판정: 완료** |`), EXP, SCHEMA)],
+    ["N15 범위 없는 구현 완료",  () => nowScopeProblems("N15", wrap(`${OK3}\n${OK4}\n| 5 | 4단계 원격 반영 | 로컬 코드·migration·테스트는 구현 완료 |`))],
+    ["N16 역사 표식으로 우회",   () => nowScopeProblems("N16", wrap(`${OK3}\n| 4단계 로컬 구현 | **현재 판정: 미완료** · 당시 사실: 로컬 구현 완료 |`))],
+    ["N17 OPS 운영 상태 누락",   () => opsProblems("N17", `${NOW0}\n- 4단계 로컬은 미완료다.\n- 계정 인프라는 하나도 안 했다.\n${NOW1}`)],
+    ["N18 스키마 0행",           () => stageProblems("N18", wrap(`${OK3}\n${OK4}`), EXP, [])],
+  ];
+  for (const [id, run] of NEG) {
+    const p = run();
+    if (!p.length) bad(`단계 판정 자기검사 ${id}: ★ 통과시킨다 — 누락·중복·모순을 못 본다`);
+  }
+  // ✅ **양수 입력.** 지금 사실을 그대로 적은 문서는 문제 0건이어야 한다.
+  for (const [id, p] of [
+    ["P1 스키마 만족", stageProblems("P1", wrap(`${OK3}\n${OK4}`), EXP, SCHEMA)],
+    ["P2 범위 명시",   nowScopeProblems("P2", wrap(`${OK3}\n${OK4}`))],
+    ["P3 4단계 두 축", stageProblems("P3",
+        wrap(`${OK3}\n${OK4}\n| 4단계 원격 반영 | **현재 판정: 미완료** |`), EXP,
+        ["3단계 설계", "4단계 로컬 구현", "4단계 원격 반영"])],
+    ["P4 OPS 운영 상태", opsProblems("P4", OPS_OK)],
+  ]) if (p.length) bad(`단계 판정 자기검사 ${id}: 정상 입력을 실패로 읽는다 — ${p[0]}`);
 }
 
 // 단계 정의의 **원본은 CLAUDE.md §1-1** 이다. 나머지 문서는 거기에 맞춘다.
 const STAGE_NOW = (() => {
   const m = {};
-  for (const [n, list] of stageTableOf(R("CLAUDE.md"))) {
-    if (list.length !== 1 || list[0] === "invalid") {
-      bad(`CLAUDE.md ${n}단계 현재 판정을 하나로 못 읽었다 (${list.join(",") || "행 없음"})`);
+  for (const p of blockProblems("CLAUDE.md", R("CLAUDE.md"))) bad(p);
+  const rows = stageRowsOf(R("CLAUDE.md"));
+  for (const n of [1, 2, 3, 4]) {
+    const got = rows.filter((r) => r.n === n);
+    if (got.length !== 1 || got[0].status === "invalid") {
+      bad(`CLAUDE.md ${n}단계 현재 판정을 하나로 못 읽었다 (행 ${got.length}개)`);
       continue;
     }
-    m[n] = list[0];
+    m[n] = got[0].status;
   }
   return m;
 })();
@@ -451,10 +563,23 @@ const STAGE_NOW = (() => {
     if (STAGE_NOW[n] !== REQUIRED[n])
       bad(`S9: CLAUDE.md ${n}단계 현재 판정이 ${STAGE_NOW[n]} 다 — 지금 사실은 ${REQUIRED[n]}`);
 }
-const STAGE_DOCS = ["CLAUDE.md", "docs/HANDOFF.md", "docs/SECURITY_RELEASE_CHECKLIST.md",
-                    STAGE3, STAGE2, "docs/OPS_RUNBOOK.md"];
-for (const f of STAGE_DOCS) for (const msg of stageProblems(f, R(f), STAGE_NOW)) bad(msg);
-ok(`단계 현재 판정 — 문서 ${STAGE_DOCS.length}개가 CLAUDE.md §1-1 과 일치 (자기검사 S1~S9)`);
+// ⛔ **`docs/OPS_RUNBOOK.md` 는 여기 없다** — 단계 행이 0개인 문서를 「일치한 문서」로 세지 않는다.
+const STAGE_DOCS = Object.keys(STAGE_SCHEMA);
+for (const f of STAGE_DOCS) {
+  for (const msg of stageProblems(f, R(f), STAGE_NOW, STAGE_SCHEMA[f])) bad(msg);
+  for (const msg of nowScopeProblems(f, R(f))) bad(msg);
+}
+for (const msg of opsProblems("docs/OPS_RUNBOOK.md", R("docs/OPS_RUNBOOK.md"))) bad(msg);
+// **원본이 하나임을 각 블록이 스스로 밝힌다.** 밝히지 않으면 다음 사람이 어느 표가 원본인지
+// 문서 여섯 개를 비교해서 추측하게 되고, 그 추측이 이 저장소가 세 번 겪은 불일치의 시작이었다.
+for (const f of [...STAGE_DOCS, "docs/OPS_RUNBOOK.md"]) {
+  const t = R(f), i = t.indexOf(NOW0), j = t.indexOf(NOW1);
+  if (i < 0 || j <= i) continue;                    // 블록 문제는 위에서 이미 말했다
+  if (!/`?CLAUDE\.md`?\s*§1-1/.test(t.slice(i, j)))
+    bad(`${f} 현재상태 블록이 단계 판정의 원본(CLAUDE.md §1-1)을 밝히지 않는다`);
+}
+ok(`단계 현재 판정 — 단계표 문서 ${STAGE_DOCS.length}개가 문서별 필수 행 스키마와 CLAUDE.md §1-1 에 일치 `
+  + `(자기검사 S1~S9 · 음수 N1~N18 · 양수 P1~P4) · OPS_RUNBOOK 은 운영 상태 ${OPS_FACTS.length}종으로 따로 검사`);
 
 // ── 11b. 단계 행이 **근거**를 함께 적는가 ─────────────────────────────────
 // 「완료」만 적고 무엇을 재서 그렇게 판정했는지 안 적는 것이 이 저장소가 세 번 반복한 실수다.
@@ -504,7 +629,9 @@ const STAGE4_DONE = [
 const HIST_NEAR = /당시 사실|당시 기록|역사 기록|철회|그날 이 자리|당시의 판정|판정은 이후/;
 {
   let hits = 0;
-  for (const f of [...STAGE_DOCS, PACKET]) {
+  // ⚠️ `docs/OPS_RUNBOOK.md` 를 여기 **명시**한다 — 2026-08-29 에 그 문서를 `STAGE_DOCS` 에서
+  //    빼면서 S10 의 대상에서도 조용히 빠졌다. 검사 대상은 목록이 줄어드는 쪽으로 새면 안 된다.
+  for (const f of [...STAGE_DOCS, "docs/OPS_RUNBOOK.md", PACKET]) {
     const t = R(f);
     for (const [re, why] of STAGE4_DONE) {
       const g = new RegExp(re.source, "g");
@@ -1974,5 +2101,5 @@ ok("「로컬 완료 · 미배포」 현재형 서술 0건");
 
 console.log(fails
   ? `test-docs: 실패 ${fails}건`
-  : "test-docs: 통과 — 낡은 문구 · 죽은 § 참조 · 번호 연속성 · 선언된 개수 · 판 번호 · 필수 절 · 완료 범위 · 보유기간 단정 · 스위트 수 · 낡은 운영 상태 · 단계 현재 판정(명시 필드 · 자기검사 S1~S9 · 4단계 완료의 현재형 주장 S10) · 주 D1 접근 분류 등재 · 법률 자료 현재 사실 · 인수인계 현재성 · 현재 상태 구간의 낡은 drain·구현·lease·T6 서술 · drain 미구현 0건 · 정리 대상 개수 = 코드 · 2단계 결정서 현재성 · 재검증 후 현재 사실 9종 · 모순 5종 · 운영현황 실측값 · 날짜별 운영 기록 · 움직이는 해시 · Access 이후 현재형 401 · 돌연변이 개수=MUTATIONS · 배포 경계(배포=git 파생 · 미배포=현재 · self-test) · §13-6 매핑 합계=maxT · 현재 상태 블록의 배포 ID · 「로컬 완료·미배포」 현재형 0건 · timing-safe 서술=구현 · 외부 전문가 상담 해당없음 · 법률·사례 자료 현재성 · 2026-08-26 결정 보존 · 운영 개인정보 비저장");
+  : "test-docs: 통과 — 낡은 문구 · 죽은 § 참조 · 번호 연속성 · 선언된 개수 · 판 번호 · 필수 절 · 완료 범위 · 보유기간 단정 · 스위트 수 · 낡은 운영 상태 · 단계 현재 판정(명시 필드 · 문서별 필수 행 스키마 · 블록 마커 fail-closed · 자기검사 S1~S9 · 음수 N1~N18 · 양수 P1~P4 · 4단계 완료의 현재형 주장 S10 · OPS_RUNBOOK 은 운영 상태로 따로) · 주 D1 접근 분류 등재 · 법률 자료 현재 사실 · 인수인계 현재성 · 현재 상태 구간의 낡은 drain·구현·lease·T6 서술 · drain 미구현 0건 · 정리 대상 개수 = 코드 · 2단계 결정서 현재성 · 재검증 후 현재 사실 9종 · 모순 5종 · 운영현황 실측값 · 날짜별 운영 기록 · 움직이는 해시 · Access 이후 현재형 401 · 돌연변이 개수=MUTATIONS · 배포 경계(배포=git 파생 · 미배포=현재 · self-test) · §13-6 매핑 합계=maxT · 현재 상태 블록의 배포 ID · 「로컬 완료·미배포」 현재형 0건 · timing-safe 서술=구현 · 외부 전문가 상담 해당없음 · 법률·사례 자료 현재성 · 2026-08-26 결정 보존 · 운영 개인정보 비저장");
 process.exit(fails ? 1 : 0);
