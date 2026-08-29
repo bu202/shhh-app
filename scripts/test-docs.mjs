@@ -431,33 +431,107 @@ function stageProblems(name, text, expect, schema) {
   }
   return out;
 }
-// ── 11-b. 현재상태 블록 **안에는 역사 예외가 없다** ────────────────────────
-// 「현재 미완료지만 당시 완료」를 같은 행에 섞으면, 읽는 사람도 검사도 어느 쪽이 지금인지
-// 가릴 수 없다. 경위는 블록 **밖** 역사 절이 소유한다.
-const HIST_IN_ROW = /당시|그날|철회|역사 기록|판 시점|판 당시/;
-function nowScopeProblems(name, text) {
-  const out = blockProblems(name, text);
-  if (out.length) return out;
-  for (const r of stageRowsOf(text))
-    if (HIST_IN_ROW.test(r.line))
-      out.push(`${name} 「${r.label}」 행이 현재상태 블록 안에서 역사 기록을 섞는다 — `
-        + `경위는 블록 밖 역사 절로 옮기고 행에는 현재 판정과 그 근거만 남긴다`);
-  out.push(...unscopedStage4(name, text));
-  return out;
+// ── 11-b. 현재상태 블록 **안에는 현재 사실만 둔다** ────────────────────────
+//
+// ⚠️ **2026-08-29 후속 마감에서 다시 뒤집힌 검사다.** 그전 판에는 구멍이 셋 있었다.
+//   ① **`미완료` 한 단어가 같은 줄의 긍정형 완료 주장을 통째로 면제했다.** 재현(읽기 전용):
+//      「4단계 로컬은 미완료다. 로컬 코드·migration·테스트는 구현 완료다」가 `candidate:true`
+//      `exempt:true` `wouldFlag:false` 로 **통과**했다. `미완료` 는 **현재 판정**일 뿐
+//      뒤따르는 완료 주장의 **범위를 증명하지 않는다** — 직전 결함과 같은 무늬다.
+//   ② **줄 단위라 줄바꿈으로 넘어갔다.** 4단계 행 **다음 줄**에 「로컬 코드·migration·테스트는
+//      구현 완료」를 적으면 그 줄에 「4단계」가 없어 후보에서 빠졌다.
+//   ③ **역사 검사가 단계 행만 봤다.** 블록의 나머지(설명 문단·닫힌 체크리스트 행)에는
+//      「당시 기록」·「그때」·「철회」가 **17줄** 남아 있었다.
+// 이제 ⓐ **주장 단위**로 보고(표 행 하나 + 그 뒤에 바로 붙은 산문 · 산문 문단 전체)
+//     ⓑ `현재 판정:` 필드와 부정형 `미완료` 를 **먼저 지운 뒤** 남는 긍정형 완료 표현을 잡고
+//     ⓒ 역사 표현은 **블록 전체**에서 0건을 요구한다. 안내문도 블록 밖에 둔다.
+const DONE_WORD = /완료|끝났(다|고)|끝냈다|닫혔다|마감됐다|구현됐다/;
+// 블록 안의 **4단계 주장 단위**를 만든다. ⛔ 줄 단위로 세지 않는다(구멍 ②).
+// 단위는 셋이다 — **표 행 하나**(+ 그 뒤에 바로 붙은 산문) · **글머리 항목 하나** · **산문 문단**.
+// ⚠️ 표 전체나 목록 전체를 한 단위로 묶지 않는다 — 그러면 4단계와 무관한 행까지 같이 걸린다.
+// ⚠️ **표 행은 앞 두 칸에 「4단계」가 있을 때만** 4단계 주장이다. 3단계 행이 본문에서 4단계를
+//    가리키는 것(「그 코드는 4단계 몫이다」)은 4단계에 대한 완료 주장이 아니다.
+function stage4Units(block) {
+  const isRow = (l) => /^[>\s]*\|/.test(l);
+  const isBullet = (l) => /^[>\s]*(?:[-*+]|\d+\.)\s/.test(l);
+  const isBlank = (l) => !l.replace(/^>\s*/, "").trim();
+  const units = [];                       // [텍스트, 4단계 주장인가]
+  let para = [], carry = -1;
+  const flush = () => { if (para.length) units.push([para.join(" "), true]); para = []; };
+  for (const l of block.split("\n")) {
+    if (isBlank(l)) { flush(); carry = -1; continue; }
+    if (isRow(l)) {
+      flush();
+      // 주어 칸을 고른다 — 첫 칸이 **번호·표식뿐**이면(체크리스트의 `| 5 |`) 그다음 칸이 주어다.
+      const cells = l.replace(/^[>\s]*\|/, "").split("|");
+      const idxOnly = /^[\s~*✅❌⛔⚠️()0-9부분]*$/.test(cells[0] || "");
+      const head = (idxOnly ? cells[1] : cells[0]) || "";
+      units.push([l, /4단계/.test(head)]);
+      carry = units.length - 1;
+      continue;
+    }
+    if (isBullet(l)) { flush(); units.push([l, true]); carry = units.length - 1; continue; }
+    if (carry >= 0) { units[carry][0] += " " + l; continue; }
+    para.push(l);
+  }
+  flush();
+  return units.filter(([u, subject]) => subject && /4단계/.test(u)).map(([u]) => u);
 }
-// 블록 안에서 **범위를 안 적은** 4단계 완료 주장. 단계표 문서와 OPS_RUNBOOK 에 똑같이 건다 —
-// 「로컬 코드·migration·테스트는 구현 완료」 한 문장이 4단계 전체 완료로 읽혔다(2026-08-29 재현).
 function unscopedStage4(name, text) {
   const out = [];
   const i = text.indexOf(NOW0), j = text.indexOf(NOW1);
   if (i < 0 || j <= i) return out;
-  for (const ln of text.slice(i, j).split("\n")) {
-    if (!/4단계/.test(ln)) continue;
-    if (!/(구현|코드|migration|테스트)[^\n]{0,24}완료/.test(ln)) continue;
-    if (/미완료|위협 \**9[34]|93·94/.test(ln)) continue;   // 범위를 **그 줄에서** 밝힌 문장
-    out.push(`${name} 현재상태 블록이 **범위 없이** 4단계 구현 완료를 주장한다 — `
-      + `위협 93·94 의 구현이 없어 4단계 전체는 미완료다\n      "${ln.trim().slice(0, 100)}"`);
+  for (const u of stage4Units(text.slice(i, j))) {
+    // ⛔ **면제하지 않는다 — 지운다.** 구조화된 판정 필드와 부정형 토큰만 걷어내고,
+    //    그 뒤에 남는 것은 전부 **긍정형 완료 주장**이다.
+    const said = u.replace(/현재 판정:\s*\*{0,2}\s*미?완료/g, " ").replace(/미완료/g, " ");
+    const m = DONE_WORD.exec(said);
+    if (!m) continue;
+    out.push(`${name} 현재상태 블록의 4단계 주장에 긍정형 완료 표현 「${m[0]}」 가 남아 있다 — `
+      + `현재 판정은 「현재 판정: 미완료」 필드 하나로만 적고, 있는 것은 「위협 92 까지의 코드는 `
+      + `저장소에 존재한다」처럼 **존재**로 적는다\n      "${u.trim().slice(0, 110)}"`);
   }
+  return out;
+}
+// 블록 **전체**에서 역사 표현 0건. ⛔ 단계 행만 보지 않는다(구멍 ③).
+const HIST_IN_BLOCK = /당시 사실|당시 기록|당시 실측|당시 배포|당시의 판정|당시|그때|그날|철회|역사 기록|이전 판정|옛 판정/;
+function historyInBlock(name, text) {
+  const out = [];
+  const i = text.indexOf(NOW0), j = text.indexOf(NOW1);
+  if (i < 0 || j <= i) return out;
+  const base = text.slice(0, i).split("\n").length;
+  text.slice(i, j).split("\n").forEach((ln, k) => {
+    const m = HIST_IN_BLOCK.exec(ln);
+    if (!m) return;
+    out.push(`${name}:${base + k} 현재상태 블록에 역사 표현 「${m[0]}」 가 있다 — 과거 배포·철회·`
+      + `옛 판정·당시 실측은 블록 **밖** 역사 절이 소유한다. 「아래는 역사다」 같은 안내문도 `
+      + `블록 밖에 둔다\n      "${ln.trim().slice(0, 100)}"`);
+  });
+  return out;
+}
+// 공식 단계 판정의 **원본은 `CLAUDE.md` §1-1 하나**다. 다른 문서가 자기를 원본이라 부르면
+// 원본이 둘이 되고, 그러면 어긋났을 때 어느 쪽을 고칠지가 사람 판단으로 넘어간다.
+const SELF_ORIGIN = /이\s*(절|표|문서|블록)\s*(이|가)\s*(현재 상태|단계 상태|단계 판정)?[^\n]{0,12}원본이다/;
+function selfOriginProblems(name, text) {
+  const out = [];
+  const i = text.indexOf(NOW0), j = text.indexOf(NOW1);
+  if (i < 0 || j <= i) return out;
+  const base = text.slice(0, i).split("\n").length;
+  text.slice(i, j).split("\n").forEach((ln, k) => {
+    const m = SELF_ORIGIN.exec(ln);
+    if (!m) return;
+    out.push(`${name}:${base + k} 비원본 문서가 자기를 원본이라 부른다 — 공식 단계 판정의 단일 `
+      + `원본은 \`CLAUDE.md\` §1-1 이고, 이 블록은 그것과 **동기화된 현재 상태 표시**다\n`
+      + `      "${m[0]}"`);
+  });
+  return out;
+}
+function nowScopeProblems(name, text) {
+  const out = blockProblems(name, text);
+  if (out.length) return out;
+  out.push(...historyInBlock(name, text));
+  out.push(...unscopedStage4(name, text));
+  if (name !== "CLAUDE.md") out.push(...selfOriginProblems(name, text));
   return out;
 }
 // ── 11-c. `docs/OPS_RUNBOOK.md` 는 **단계표 문서가 아니다** ─────────────────
@@ -478,7 +552,10 @@ function opsProblems(name, text) {
   const now = text.slice(i, j);
   for (const [re, what] of OPS_FACTS)
     if (!re.test(now)) out.push(`${name} 현재상태 블록에 ${what} 가 없다`);
+  // ⚠️ 블록 내용 규칙은 단계표 문서와 **같다** — 단계 행이 없다는 이유로 느슨해지지 않는다.
+  out.push(...historyInBlock(name, text));
   out.push(...unscopedStage4(name, text));
+  out.push(...selfOriginProblems(name, text));
   return out;
 }
 
@@ -525,6 +602,16 @@ function opsProblems(name, text) {
     ["N16 역사 표식으로 우회",   () => nowScopeProblems("N16", wrap(`${OK3}\n| 4단계 로컬 구현 | **현재 판정: 미완료** · 당시 사실: 로컬 구현 완료 |`))],
     ["N17 OPS 운영 상태 누락",   () => opsProblems("N17", `${NOW0}\n- 4단계 로컬은 미완료다.\n- 계정 인프라는 하나도 안 했다.\n${NOW1}`)],
     ["N18 스키마 0행",           () => stageProblems("N18", wrap(`${OK3}\n${OK4}`), EXP, [])],
+    // ⛔ **N19~N23 은 「미완료 한 단어가 면제한다」를 막는다**(2026-08-29 후속 · 재현으로 확인).
+    //    다섯 다 그전 판에서 `exempt:true` 로 통과했다.
+    ["N19 미완료 · 구현 완료",   () => unscopedStage4("N19", wrap("| 4단계 | 구현 | 4단계 현재 판정: 미완료 · 로컬 코드 구현 완료 |"))],
+    ["N20 미완료지만 끝났다",    () => unscopedStage4("N20", wrap("| 4단계 | 구현 | 4단계는 미완료지만 구현은 끝났다 |"))],
+    ["N21 미완료 — 완료됐다",    () => unscopedStage4("N21", wrap("| 4단계 | 구현 | 4단계 미완료 — 테스트와 migration은 완료됐다 |"))],
+    ["N22 미완료 · 93·94 완료",  () => unscopedStage4("N22", wrap("| 4단계 | 구현 | 4단계는 미완료다 · 위협 93·94 구현 완료 |"))],
+    ["N23 줄바꿈 우회",          () => unscopedStage4("N23", wrap("| 4단계 | 구현 | **현재 판정: 미완료** |\n로컬 코드·migration·테스트는 구현 완료"))],
+    ["N24 블록 안 역사 표현",    () => historyInBlock("N24", wrap("| 4단계 | 구현 | **현재 판정: 미완료** · 당시 배포는 달랐다 |"))],
+    ["N25 자기 원본 주장",       () => selfOriginProblems("N25", wrap("이 절이 현재 상태의 원본이다."))],
+    ["N26 자기 원본 주장(표)",   () => selfOriginProblems("N26", wrap("**이 표가 현재 상태의 원본이다.**"))],
   ];
   for (const [id, run] of NEG) {
     const p = run();
@@ -538,6 +625,14 @@ function opsProblems(name, text) {
         wrap(`${OK3}\n${OK4}\n| 4단계 원격 반영 | **현재 판정: 미완료** |`), EXP,
         ["3단계 설계", "4단계 로컬 구현", "4단계 원격 반영"])],
     ["P4 OPS 운영 상태", opsProblems("P4", OPS_OK)],
+    // ✅ **권고 서술** — 현재 판정은 필드 하나, 있는 것은 「존재」로 적는다.
+    ["P5 권고 서술", unscopedStage4("P5", wrap(
+      "| 4단계 | 구현 | **현재 판정: 미완료** — 위협 93·94의 구현·테스트·돌연변이가 없다 |\n"
+      + "위협 92까지의 코드는 저장소에 존재한다"))],
+    ["P6 3단계 행이 4단계를 가리킴", unscopedStage4("P6", wrap(
+      "| 3단계 | 설계 | **현재 판정: 완료** — 그 코드는 4단계 몫이다 |"))],
+    ["P7 원본을 밝히는 정상 문장", selfOriginProblems("P7", wrap(
+      "공식 단계 판정의 단일 원본은 `CLAUDE.md` §1-1 이다. 이 블록은 그것과 동기화된 표시다."))],
   ]) if (p.length) bad(`단계 판정 자기검사 ${id}: 정상 입력을 실패로 읽는다 — ${p[0]}`);
 }
 
@@ -578,8 +673,21 @@ for (const f of [...STAGE_DOCS, "docs/OPS_RUNBOOK.md"]) {
   if (!/`?CLAUDE\.md`?\s*§1-1/.test(t.slice(i, j)))
     bad(`${f} 현재상태 블록이 단계 판정의 원본(CLAUDE.md §1-1)을 밝히지 않는다`);
 }
-ok(`단계 현재 판정 — 단계표 문서 ${STAGE_DOCS.length}개가 문서별 필수 행 스키마와 CLAUDE.md §1-1 에 일치 `
-  + `(자기검사 S1~S9 · 음수 N1~N18 · 양수 P1~P4) · OPS_RUNBOOK 은 운영 상태 ${OPS_FACTS.length}종으로 따로 검사`);
+// ⛔ **검증 범위를 넓게 말하지 않는다**(2026-08-29 후속 · 결함 D). 단계 행 스키마를 재는 문서는
+//    ${STAGE_DOCS.length}개이고 `docs/OPS_RUNBOOK.md` 는 **단계표가 아니라 운영 상태 3종**을 따로 잰다.
+//    직전 회차의 보고서가 그것을 「6개 문서가 문서별 필수 행 스키마를 만족한다」고 적었다 —
+//    검증하지 않은 범위를 검증했다고 말한 것이다. 그 문장이 문서에 들어오면 여기서 막는다.
+for (const f of DOCS) {
+  for (const m of R(f).matchAll(/(\d+)\s*개[^\n]{0,24}(?:필수 행 )?스키마|스키마[^\n]{0,24}(\d+)\s*개/g)) {
+    const n = +(m[1] ?? m[2]);
+    if (n !== STAGE_DOCS.length)
+      bad(`${f} 가 단계 행 스키마 검사 문서를 ${n}개라고 말한다 — 실제는 ${STAGE_DOCS.length}개이고 `
+        + `docs/OPS_RUNBOOK.md 는 단계표가 아니라 운영 상태 ${OPS_FACTS.length}종을 따로 잰다`);
+  }
+}
+ok(`단계 현재 판정 — 단계표 문서 ${STAGE_DOCS.length}개가 문서별 필수 행 스키마와 CLAUDE.md §1-1 에 일치 · `
+  + `현재상태 문서는 ${STAGE_DOCS.length + 1}개이고 그중 docs/OPS_RUNBOOK.md 는 단계표가 아니라 `
+  + `운영 상태 ${OPS_FACTS.length}종을 따로 검사 (자기검사 S1~S9 · 음수 N1~N26 · 양수 P1~P7)`);
 
 // ── 11b. 단계 행이 **근거**를 함께 적는가 ─────────────────────────────────
 // 「완료」만 적고 무엇을 재서 그렇게 판정했는지 안 적는 것이 이 저장소가 세 번 반복한 실수다.
@@ -2101,5 +2209,5 @@ ok("「로컬 완료 · 미배포」 현재형 서술 0건");
 
 console.log(fails
   ? `test-docs: 실패 ${fails}건`
-  : "test-docs: 통과 — 낡은 문구 · 죽은 § 참조 · 번호 연속성 · 선언된 개수 · 판 번호 · 필수 절 · 완료 범위 · 보유기간 단정 · 스위트 수 · 낡은 운영 상태 · 단계 현재 판정(명시 필드 · 문서별 필수 행 스키마 · 블록 마커 fail-closed · 자기검사 S1~S9 · 음수 N1~N18 · 양수 P1~P4 · 4단계 완료의 현재형 주장 S10 · OPS_RUNBOOK 은 운영 상태로 따로) · 주 D1 접근 분류 등재 · 법률 자료 현재 사실 · 인수인계 현재성 · 현재 상태 구간의 낡은 drain·구현·lease·T6 서술 · drain 미구현 0건 · 정리 대상 개수 = 코드 · 2단계 결정서 현재성 · 재검증 후 현재 사실 9종 · 모순 5종 · 운영현황 실측값 · 날짜별 운영 기록 · 움직이는 해시 · Access 이후 현재형 401 · 돌연변이 개수=MUTATIONS · 배포 경계(배포=git 파생 · 미배포=현재 · self-test) · §13-6 매핑 합계=maxT · 현재 상태 블록의 배포 ID · 「로컬 완료·미배포」 현재형 0건 · timing-safe 서술=구현 · 외부 전문가 상담 해당없음 · 법률·사례 자료 현재성 · 2026-08-26 결정 보존 · 운영 개인정보 비저장");
+  : "test-docs: 통과 — 낡은 문구 · 죽은 § 참조 · 번호 연속성 · 선언된 개수 · 판 번호 · 필수 절 · 완료 범위 · 보유기간 단정 · 스위트 수 · 낡은 운영 상태 · 단계 현재 판정(명시 필드 · **단계표 문서 5개**의 필수 행 스키마 · 블록 마커 fail-closed · 블록 안 역사 표현 0건 · 4단계 긍정형 완료 주장 0건(면제 없음) · 비원본 문서의 자기 원본 주장 0건 · 자기검사 S1~S9 · 음수 N1~N26 · 양수 P1~P7 · S10 · **OPS_RUNBOOK 은 단계표가 아니라 운영 상태 3종 별도 검사**) · 주 D1 접근 분류 등재 · 법률 자료 현재 사실 · 인수인계 현재성 · 현재 상태 구간의 낡은 drain·구현·lease·T6 서술 · drain 미구현 0건 · 정리 대상 개수 = 코드 · 2단계 결정서 현재성 · 재검증 후 현재 사실 9종 · 모순 5종 · 운영현황 실측값 · 날짜별 운영 기록 · 움직이는 해시 · Access 이후 현재형 401 · 돌연변이 개수=MUTATIONS · 배포 경계(배포=git 파생 · 미배포=현재 · self-test) · §13-6 매핑 합계=maxT · 현재 상태 블록의 배포 ID · 「로컬 완료·미배포」 현재형 0건 · timing-safe 서술=구현 · 외부 전문가 상담 해당없음 · 법률·사례 자료 현재성 · 2026-08-26 결정 보존 · 운영 개인정보 비저장");
 process.exit(fails ? 1 : 0);
