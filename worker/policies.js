@@ -1,23 +1,23 @@
 // 자동 생성 — `node scripts/policies.mjs stamp` 가 쓴다. 손으로 고치지 않는다.
 // 원본은 policies/manifest.json 이고, scripts/test-policies.mjs 가 셋(파일·manifest·이 파일)을 대조한다.
 export const POLICY_BUNDLE = {
-  "pv": "a9525896f710",
+  "pv": "ead6c31dd496",
   "docs": {
     "age14": {
       "path": "policies/age14-2303810b39a1.txt",
       "hash": "2303810b39a19391051142bcb2ca2f7cec81ff5ea0a9f2a051596af2c8c108b1"
     },
     "privacy": {
-      "path": "policies/privacy-c3f9fc60cca6.html",
-      "hash": "c3f9fc60cca6e7c0eba5053fc1b5d6a747da9596f4412a14c056db017578fa20"
+      "path": "policies/privacy-90eba7cd01de.html",
+      "hash": "90eba7cd01de348c8a53e70fa6b39c7dfddf1a7c9cc26f14fbe2b9b2acec2fca"
     },
     "summary": {
-      "path": "policies/summary-ba7335967c27.txt",
-      "hash": "ba7335967c27ff725fe19c7dab01b60ae2da295d29098136c15d4d4f29fec7b7"
+      "path": "policies/summary-aa7b6675ccf4.txt",
+      "hash": "aa7b6675ccf4db5fa7934700154b7de65e87b4e362bf9ee362b9976eeb2668b3"
     },
     "terms": {
-      "path": "policies/terms-245e3ae48884.html",
-      "hash": "245e3ae4888474fb50822fc1278a7eed0696686a0a93e09b24d17682ec72d9c3"
+      "path": "policies/terms-a97884a81cd2.html",
+      "hash": "a97884a81cd21da57a51496fafec14f7330890267ce5630c97ccbee87bb21e75"
     }
   }
 };
