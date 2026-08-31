@@ -290,22 +290,22 @@ export const MUTATIONS = [
     id: "D06", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "현재 판정의 설계 판을 10판으로 되돌린다",
     invariant: "현재 판정이 말하는 설계 판은 설계서의 판(`EDITION`)에서 파생된다",
-    find: "3단계 설계 11판 완료(9판 사용자 결정 0~7 + 10판 전체 재검증 4건 + 11판 독립 검토 3건)",
-    replace: "3단계 설계 10판 완료(9판 사용자 결정 0~7 + 10판 재검증 4건)",
+    find: "기준 설계는 3단계 설계 11판",
+    replace: "기준 설계는 3단계 설계 10판",
   },
   {
     id: "D07", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "재감사 결함 합계와 위협 범위를 22건 · 39~60 으로 되돌린다",
     invariant: "결함 합계와 위협 범위는 설계서의 위협 표에서 파생된다 — 낡은 숫자는 「이미 다 봤다」는 착각을 만든다",
-    find: "차례로 재현했다(위협 **39~92** · **여섯 판 연속**",
-    replace: "차례로 재현했다(위협 39~60 · 다섯 판 연속",
+    find: "차례로 재현했다(위협 **39~94**)",
+    replace: "차례로 재현했다(위협 39~60)",
   },
   {
     id: "D08", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
-    what: "재감사 결함 합계만 22건으로 되돌린다(위협 범위는 그대로 둔다)",
-    invariant: "합계는 판별 문형(`4+5+…건` · `N건을 차례로 재현`) 어느 쪽으로 적어도 파생값과 같아야 한다",
-    find: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4+3+1+1+4+3+6+3+5+4+2건 = **54건** 수정",
-    replace: "4단계 로컬 구현 완료(재감사 결함 4+5+4+5+4건 = **22건** 수정",
+    what: "재현 범위 문장의 위협 최대를 낡은 60 으로 되돌린다(같은 줄의 다른 문형)",
+    invariant: "범위를 말하는 문형이 둘이면 **둘 다** 위협 표에서 파생돼야 한다 — 하나만 고치면 같은 줄이 서로 다른 말을 한다",
+    find: "**위협 39~94 전부**를",
+    replace: "**위협 39~60 전부**를",
   },
   {
     id: "D09", file: "docs/HANDOFF.md", suite: "test-docs", kind: "정적",
@@ -351,7 +351,7 @@ export const MUTATIONS = [
     // ⚠️ **이 앵커는 개수가 바뀔 때마다 함께 바꾼다**(D21 을 더하며 세 번째로 고쳤다).
     //    자기가 건드리는 숫자를 앵커에 담는 변이라 피할 수 없다 — 대신 낡으면 실행기가
     //    ANCHOR-MISS 로 종료 코드 1 을 내므로 **조용히 썩지는 않는다.**
-    find: "`scripts/mutations.mjs`(목록 217종",
+    find: "`scripts/mutations.mjs`(목록 253종",
     replace: "`scripts/mutations.mjs`(목록 22종",
   },
   {
@@ -573,7 +573,7 @@ export const MUTATIONS = [
     id: "D17", file: "docs/STAGE3_SIGNUP_SECURITY_DESIGN.md", suite: "test-docs", kind: "정적",
     what: "§13-6 매핑 합계를 낡은 79 로 되돌린다",
     invariant: "매핑 절의 「N건 전부 연결됐다」는 표의 최대 T 번호에서 파생한다 — 표만 늘리고 합계를 안 고치면 검사가 그것을 잡아야 한다",
-    find: "**111건 전부 실행 가능한 단언으로 연결됐다.**",
+    find: "**113건 전부 실행 가능한 단언으로 연결됐다.**",
     replace: "**79건 전부 실행 가능한 단언으로 연결됐다.**",
   },
   {
@@ -601,7 +601,7 @@ export const MUTATIONS = [
     id: "D21", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "「종」이 없는 괄호형 내역을 낡은 「정적 21」로 되돌린다",
     invariant: "총계뿐 아니라 **하위 내역**도 MUTATIONS 에서 파생한다 — 「N종」이라고 안 적은 괄호형 내역도 센다(총계만 보면 66 ≠ 40+21 이 남는다)",
-    find: "목록 217종 — **동작 165종 · 정적 52종**",
+    find: "목록 253종 — **동작 196종 · 정적 57종**",
     replace: "목록 188종 — **동작 40종 · 정적 21종**",
   },
   // ── 위협 70 · 불완전한 OAuth 주소가 세션 폐기 재시도를 막던 결함의 방어들 ──
@@ -1685,22 +1685,22 @@ export const MUTATIONS = [
     id: "M167", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
     what: "제한 시간에 걸린 자식을 **직계만** 죽인다 (프로세스 그룹이 아니라)",
     invariant: "스위트가 띄운 손자가 남으면 다음 회차의 판정이 부하 때문인지 변이 때문인지 갈리지 않는다",
-    find: "      try { process.kill(-ch.pid, \"SIGKILL\"); } catch { try { ch.kill(\"SIGKILL\"); } catch {} }",
-    replace: "      try { ch.kill(\"SIGKILL\"); } catch {}",
+    find: "      try { killFn(-ev.pgid, \"SIGKILL\"); }",
+    replace: "      try { killFn(ev.pgid, \"SIGKILL\"); }",
   },
   {
     id: "M168", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
     what: "제한 시간에 걸린 변이를 **사망**으로 접는다",
     invariant: "재지 못한 것은 잡은 것이 아니다 — 합치면 종료하지 않는 변이가 곧 만점이 된다",
-    find: "export const VERDICTS = [\"KILLED\", \"SURVIVED\", \"ANCHOR-MISS\", \"TIMEOUT\"];",
-    replace: "export const VERDICTS = [\"KILLED\", \"SURVIVED\", \"ANCHOR-MISS\"];",
+    find: "export const VERDICTS = [\"KILLED\", \"SURVIVED\", \"ANCHOR-MISS\", \"TIMEOUT\", INFRA_ERROR];",
+    replace: "export const VERDICTS = [\"KILLED\", \"SURVIVED\", \"ANCHOR-MISS\", INFRA_ERROR];",
   },
   {
     id: "M169", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
     what: "TIMEOUT 이 완료를 막지 않게 한다",
     invariant: "완료 조건은 생존 0 · 앵커 실패 0 · **제한 시간 초과 0** 셋 전부다",
-    find: "export const FATAL = [\"SURVIVED\", \"ANCHOR-MISS\", \"TIMEOUT\"];",
-    replace: "export const FATAL = [\"SURVIVED\", \"ANCHOR-MISS\"];",
+    find: "export const FATAL = [\"SURVIVED\", \"ANCHOR-MISS\", \"TIMEOUT\", INFRA_ERROR];",
+    replace: "export const FATAL = [\"SURVIVED\", \"ANCHOR-MISS\", INFRA_ERROR];",
   },
   {
     id: "M170", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
@@ -1708,8 +1708,8 @@ export const MUTATIONS = [
     invariant: "그러면 SIGKILL 당한 실행이 종료 코드만 보고 조용히 KILLED 로 접힌다 — 재지 못한 것이 만점이 된다",
     // ⚠️ 「아예 안 죽인다」로 만들면 그 변이 자체가 안 끝나서 TIMEOUT 이 된다.
     //    TIMEOUT 은 사망이 아니므로 그런 변이는 **아무것도 증명하지 못한다** — 유한하게 만든다.
-    find: "      timedOut = true;",
-    replace: "      timedOut = false;",
+    find: "      ev.timedOut = true;",
+    replace: "      ev.timedOut = false;",
   },
   {
     id: "M171", file: "scripts/mutate.mjs", suite: "test-verifier", kind: "정적",
@@ -1724,5 +1724,280 @@ export const MUTATIONS = [
     invariant: "실행하지 않은 경계를 「전수」에 세지 않는다",
     find: "      if (!fired) await cross();          // 마지막 자리: 명령이 없으므로 **반환 직후**에 완주시킨다",
     replace: "      // (마지막 자리는 건너뛴다)",
+  },
+
+
+  // ── 2026-08-31 · 검증기 판정의 fail-closed (위협 93) ────────────────────
+  // ⚠️ 여기 변이가 살아남으면 **다른 전부의 결과를 믿을 수 없다** — 실행기가 측정 불능에
+  //    빠져도 표에는 「전부 사망 · 종료 코드 0」이 찍힌다. 그것이 위협 93 의 모양이다.
+  {
+    id: "M173", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "classify 에서 spawn 실패 갈래를 없앤다",
+    invariant: "자식을 시작조차 못 한 실행을 「방어가 잡았다」로 세지 않는다",
+    find: "  if (r.spawnFailed) return r.started ? \"unobservable\" : \"spawn-failed\";",
+    replace: "  // (spawn 실패 갈래 제거)",
+  },
+  {
+    id: "M174", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "classify 에서 signal 갈래를 없앤다",
+    invariant: "바깥에서 온 신호로 죽은 실행은 방어와 무관하다 — 사망으로 세지 않는다",
+    find: "  if (r.signal !== null) return \"signalled\";",
+    replace: "  // (signal 갈래 제거)",
+  },
+  {
+    id: "M175", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "classify 의 기본값을 exited 로 바꾼다",
+    invariant: "모르는 결과의 기본값은 실패다 — 마지막 갈래가 exited 이면 새 필드 하나가 만점을 만든다",
+    find: "  if (Number.isInteger(r.status)) return \"exited\";\n  return \"unobservable\";",
+    replace: "  return \"exited\";",
+  },
+  {
+    id: "M176", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "close 의 둘째 인자(signal)를 버린다",
+    invariant: "판정의 증거는 결과 객체 안에 있어야 한다 — 버리면 우리 kill 과 바깥 kill 이 구분되지 않는다",
+    find: "      if (!exitLatched) { exitLatched = true; ev.status = code ?? null; ev.signal = signal ?? null; }",
+    replace: "      if (!exitLatched) { exitLatched = true; ev.status = code ?? null; }",
+  },
+  {
+    id: "M177", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "FATAL 에서 INFRA-ERROR 를 뺀다",
+    invariant: "측정 불능은 완료를 막는다 — 재지 못한 실행이 있는 회차를 0 으로 끝내지 않는다",
+    find: "export const FATAL = [\"SURVIVED\", \"ANCHOR-MISS\", \"TIMEOUT\", INFRA_ERROR];",
+    replace: "export const FATAL = [\"SURVIVED\", \"ANCHOR-MISS\", \"TIMEOUT\"];",
+  },
+  {
+    id: "M178", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "판정 목록에서 INFRA-ERROR 를 없앤다",
+    invariant: "측정 불능에는 자기 이름이 있어야 한다 — 이름이 없으면 다른 판정에 섞인다",
+    find: "export const VERDICTS = [\"KILLED\", \"SURVIVED\", \"ANCHOR-MISS\", \"TIMEOUT\", INFRA_ERROR];",
+    replace: "export const VERDICTS = [\"KILLED\", \"SURVIVED\", \"ANCHOR-MISS\", \"TIMEOUT\"];",
+  },
+  {
+    id: "M179", file: "scripts/mutate.mjs", suite: "test-verifier", kind: "정적",
+    what: "기준선의 측정 불능을 「경고 후 계속」으로 바꾼다",
+    invariant: "기준선을 못 재면 그 뒤 표는 전부 무의미하다 — 돌연변이를 하나도 실행하지 않는다",
+    find: "      baselineFail++;\n      console.error(c.outcome === \"exited\"",
+    replace: "      console.error(c.outcome === \"exited\"",
+  },
+  {
+    id: "M180", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "finalize() 를 여러 번 허용한다 (늦게 온 close 가 앞선 error 를 덮는다)",
+    invariant: "확정과 clearTimeout 은 정확히 한 번이다 — 먼저 온 증거가 남아야 spawn 실패가 숫자 exit 로 둔갑하지 않는다",
+    find: "    const finalize = () => {\n      if (settled) return;\n      settled = true;",
+    replace: "    const finalize = () => {\n      settled = true;",
+  },
+  {
+    id: "M181", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "classify 에서 started 검사를 뺀다 (나머지 조건은 그대로)",
+    invariant: "KILLED 는 시작의 **양의 증거**를 요구한다 — 실측에서 ENOENT 도 close(code=-2) 라는 숫자 non-zero 를 낸다",
+    find: "  if (!r.started) return r.timedOut ? \"start-timeout\" : \"unobservable\";",
+    replace: "  // (started 검사 제거)",
+  },
+  {
+    id: "M182", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "started 를 'spawn' 이벤트가 아니라 종료 코드에서 **추정**한다",
+    invariant: "시작은 추정하지 않고 관측한다 — 부산물로 추정하면 시작도 못 한 실행이 시작된 것이 된다",
+    transform: (s) => s
+      .replace("      if (!ev.started) { ev.started = true; ev.pgid = Number.isInteger(ch.pid) ? ch.pid : null; }",
+               "      if (!ev.started) { ev.pgid = Number.isInteger(ch.pid) ? ch.pid : null; }")
+      .replace("      ev.closeSeen = true;",
+               "      ev.closeSeen = true; if (Number.isInteger(code)) ev.started = true;"),
+  },
+  {
+    id: "M183", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "spawn 전 만료를 그냥 timeout 으로 접는다",
+    invariant: "「변이가 안 끝난다」와 「자식을 띄우지도 못했다」는 운영자가 할 일이 정반대다",
+    find: "  if (!r.started) return r.timedOut ? \"start-timeout\" : \"unobservable\";",
+    replace: "  if (r.timedOut) return \"timeout\";\n  if (!r.started) return \"unobservable\";",
+  },
+  {
+    id: "M184", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "시작 뒤의 error 를 「시작 실패」로 기록한다",
+    invariant: "「아무것도 실행되지 않았다」를 거짓으로 기록하지 않는다 — 운영자를 실행 환경 쪽으로 잘못 보낸다",
+    find: "      if (ev.started) { ev.postSpawnError = true; }\n      else if (!ev.spawnFailed) { ev.spawnFailed = true; }",
+    replace: "      if (!ev.spawnFailed) { ev.spawnFailed = true; }",
+  },
+  {
+    id: "M185", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "classify 에서 postSpawnError 갈래를 뺀다 (나머지 조건은 그대로)",
+    invariant: "시작 뒤에 오류가 난 실행은 끝까지 관측했다고 말할 수 없다 — 숫자 exit 가 있어도 사망이 아니다",
+    find: "  if (r.postSpawnError) return \"post-spawn-error\";",
+    replace: "  // (postSpawnError 갈래 제거)",
+  },
+  {
+    id: "M186", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "산출물 행에서 postSpawnError 를 뺀다",
+    invariant: "판정의 증거는 산출물 안에 있어야 한다 — 없으면 그 표를 나중에 검증할 수 없다",
+    find: "    spawnFailed: r.spawnFailed, postSpawnError: r.postSpawnError,",
+    replace: "    spawnFailed: r.spawnFailed,",
+  },
+  {
+    id: "M187", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "error 에서 즉시 반환한다 (close 를 안 기다린다)",
+    invariant: "error 는 종료의 증거가 아니다 — 죽지 않은 자식을 남긴 채 다음 변이를 시작하게 된다",
+    find: "      if (!ev.started && ev.pgid === null) finalize();\n      else armDeadline();",
+    replace: "      finalize();",
+  },
+  {
+    id: "M188", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "타이머가 kill 을 **요청한 직후** 반환한다",
+    invariant: "kill 요청과 종료 확인은 다른 사건이다 — 요청이 성공해도 대상이 즉시 사라지지는 않는다",
+    find: "      if (ev.started) requestCleanup();",
+    replace: "      if (ev.started) { requestCleanup(); finalize(); }",
+  },
+  {
+    id: "M189", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "start-timeout 뒤 늦게 온 'spawn' 을 죽이지 않는다",
+    invariant: "아무도 모르는 자식을 남기지 않는다 — 그 자식은 다음 변이의 측정을 오염시킨다",
+    find: "      if (ev.startTimedOut) { requestCleanup(); void confirmCleanup(); }",
+    replace: "      // (늦게 온 시작을 그냥 둔다)",
+  },
+  {
+    id: "M190", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "우선순위에서 timedOut 과 signal 을 뒤바꾼다",
+    invariant: "우리 타이머가 죽인 것은 언제나 timeout 이다 — 순서가 이름을 정하면 같은 실행이 부하에 따라 다른 이름을 받는다",
+    find: "  if (r.timedOut) return \"timeout\";\n  if (r.signal !== null) return \"signalled\";",
+    replace: "  if (r.signal !== null) return \"signalled\";\n  if (r.timedOut) return \"timeout\";",
+  },
+  {
+    id: "M191", file: "scripts/mutate.mjs", suite: "test-verifier", kind: "정적",
+    what: "정리를 증명하지 못해도 남은 변이를 계속 실행한다",
+    invariant: "증명 못 한 잔류 위에서 재지 않는다 — 그 뒤 판정이 부하 때문인지 변이 때문인지 갈리지 않는다",
+    find: "                                         : `close=${r.closeSeen} · 그룹=${r.groupState}` };\n      break;",
+    replace: "                                         : `close=${r.closeSeen} · 그룹=${r.groupState}` };",
+  },
+
+  // ── 2026-08-31 · 프로세스 그룹 종료 불변식 (위협 94) ────────────────────
+  // ⛔ 직접 자식의 `close` 는 **그 자식 하나와 그 stdio** 만 보장한다. 실측에서 `close` 뒤에도
+  //    같은 그룹의 손자가 살아 있었다 — 그 상태에서 다음 변이를 재면 표 전체가 무의미하다.
+  {
+    id: "M192", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "그룹 부재를 **양수 PID** 로 묻는다",
+    invariant: "그룹 부재는 그룹에게 묻는다 — 양수 PID probe 는 그 프로세스 하나만 말한다",
+    find: "    kill(-pgid, 0);",
+    replace: "    kill(pgid, 0);",
+  },
+  {
+    id: "M193", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "probe 를 항상 「없다」로 답하게 한다",
+    invariant: "그룹 상태의 기본값은 실패다 — 확인하지 않은 것을 부재로 인정하지 않는다",
+    find: "export function probeGroup(pgid, kill = process.kill) {",
+    replace: "export function probeGroup(pgid, kill = process.kill) {\n  return \"absent\";",
+  },
+  {
+    id: "M194", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "EPERM 을 「그룹이 없다」로 읽는다",
+    invariant: "EPERM 은 「있을 수도 있는데 확인할 권한이 없다」다 — 부재가 아니다",
+    find: "    if (e && e.code === \"EPERM\") return \"unverifiable\";",
+    replace: "    if (e && e.code === \"EPERM\") return \"absent\";",
+  },
+  {
+    id: "M195", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "pgid <= 1 가드를 없앤다",
+    invariant: "kill(-1, …) 은 보낼 수 있는 **모든 프로세스**를 뜻한다 — 우리가 만든 PGID 하나만 만진다",
+    find: "  if (!Number.isInteger(pgid) || pgid <= 1) return \"unverifiable\";",
+    replace: "  // (가드 없음)",
+  },
+  {
+    id: "M196", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "close 만 보고 정리 완료로 확정한다",
+    invariant: "직접 자식의 close 는 그룹 부재의 증거가 아니다 — 이번 결함 그 자체다",
+    find: "        if (state === \"absent\" && ev.closeSeen) return finalize();",
+    replace: "        if (ev.closeSeen) return finalize();",
+  },
+  {
+    id: "M197", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "잔류 그룹을 관찰하고도 기록하지 않는다",
+    invariant: "관찰한 잔류를 무시하지 않는다 — 정리에 성공했어도 그 실행은 오염된 실행이다",
+    find: "          ev.residualGroupDetected = true;                 // 직접 자식이 끝났는데 그룹이 안 빠진다",
+    replace: "          // (잔류를 기록하지 않는다)",
+  },
+  {
+    id: "M198", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "classify 에서 잔류 그룹 갈래를 뺀다",
+    invariant: "잔류 그룹이면 KILLED 도 SURVIVED 도 금지다 — 둘 중 어느 쪽으로 적어도 원인을 아무도 안 본다",
+    find: "  if (r.residualGroupDetected || r.groupState === \"present\") return \"residual-group\";",
+    replace: "  // (잔류 그룹 갈래 제거)",
+  },
+  {
+    id: "M199", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "classify 에서 close 확인을 뺀다",
+    invariant: "시작된 자식은 close 와 그룹 부재를 **둘 다** 본 뒤에만 확정한다",
+    find: "  if (!r.closeSeen) return \"unobservable\";",
+    replace: "  // (close 확인 제거)",
+  },
+  {
+    id: "M200", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "classify 에서 그룹 부재 요구를 뺀다",
+    invariant: "기본값 unknown 을 통과시키면 그룹을 한 번도 안 잰 실행이 정상 측정이 된다",
+    find: "  if (r.groupState !== \"absent\") return \"unobservable\";",
+    replace: "  // (그룹 부재 요구 제거)",
+  },
+  {
+    id: "M201", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "cleanup deadline 을 없앤다 (기한을 넘겨도 그 사실을 안 적는다)",
+    invariant: "정리 기한 안에 부재를 증명 못 하면 그 회차는 측정 불능이고 실행기는 중단한다",
+    find: "        if (settled) return;\n        ev.cleanupTimedOut = true;\n        finalize();",
+    replace: "        if (settled) return;\n        finalize();",
+  },
+  {
+    id: "M202", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "다음 변이 허용 조건을 close 하나로 줄인다",
+    invariant: "nextMutationAllowed = directClosed 는 이번 결함이다 — 실측에서 close 와 손자 생존이 공존했다",
+    find: "  return r.closeSeen === true && r.groupState === \"absent\";",
+    replace: "  return r.closeSeen === true;",
+  },
+  {
+    id: "M203", file: "scripts/mutate.mjs", suite: "test-verifier", kind: "정적",
+    what: "플랫폼 게이트를 없앤다",
+    invariant: "계약 없는 플랫폼에서 초록을 만들지 않는다 — 조용히 그룹 검사를 건너뛰고 도는 것이 가장 나쁘다",
+    find: "if (process.platform === \"win32\") {",
+    replace: "if (false) {",
+  },
+  {
+    id: "M204", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "그룹 이탈 검사에서 첫 패턴을 뺀다",
+    invariant: "「그룹을 벗어나는 후손이 없다」는 전제를 사람의 기억이 아니라 검사가 지킨다",
+    // ⚠️ 앵커를 문자열로 적으면 이 파일 자신이 그 검사에 걸린다 — 접두사만 잡고 잘라 붙인다.
+    transform: (s) => {                                    // group-escape-ok: 변이 정의
+      const head = "export const GROUP_ESCAPE_PATTERNS = [";
+      const i = s.indexOf(head), j = s.indexOf("]", i);
+      if (i < 0 || j < 0) return null;
+      const items = s.slice(i + head.length, j).split(",").map((x) => x.trim()).filter(Boolean);
+      if (items.length < 2) return null;
+      return s.slice(0, i + head.length) + items.slice(1).join(", ") + s.slice(j);
+    },
+  },
+  {
+    id: "M205", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "산출물 행에 실행 경로를 싣는다",
+    invariant: "산출물에 오류 원문·환경 변수·명령 인자·경로를 싣지 않는다 — 원인은 고정 문구여야 한다",
+    find: "    detail: c.why,\n  };",
+    replace: "    detail: c.why, cwd: process.cwd(),\n  };",
+  },
+  {
+    id: "M206", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "산출물 행에 PGID 를 싣는다",
+    invariant: "PGID 는 화면에만 적는다 — 산출물에 가변 세부정보를 넣지 않는다",
+    find: "    verdict: c.verdict, outcome: c.outcome,",
+    replace: "    verdict: c.verdict, outcome: c.outcome, pgid: r.pgid,",
+  },
+
+  // ── 2026-08-31 · 문서 검사 자체 (G13 · G14) ────────────────────────────
+  // ⚠️ 검사를 무력화하는 변이는 **그 검사의 자기검사**만 잡을 수 있다 — 없앤 방어가 곧 유일한
+  //    관측 수단이면 「아무것도 실패하지 않음」이 나온다. 그래서 둘 다 합성 입력 self-test 를 둔다.
+  {
+    id: "D46", file: "scripts/test-docs.mjs", suite: "test-docs", kind: "정적",
+    what: "KILLED 조건 개수 검사를 항상 통과시킨다",
+    invariant: "문서가 적은 조건 개수는 코드의 KILLED_REQUIREMENTS 길이에서 파생한다",
+    find: "  const killedCountProblems = (text, want) => {\n    const out = [];",
+    replace: "  const killedCountProblems = (text, want) => {\n    return [];\n    const out = [];",
+  },
+  {
+    id: "D47", file: "scripts/test-docs.mjs", suite: "test-docs", kind: "정적",
+    what: "「close 를 봤으므로 그룹이 종료됐다」 금지 패턴을 뺀다",
+    invariant: "위협 94 를 만든 문장이 문서에 다시 생기면 검사가 실패해야 한다",
+    find: "      [/`close`\\s*를?\\s*봤으므로[^\\n]{0,20}그룹/, \"close 를 그룹 종료의 증거로 읽는다\"],",
+    replace: "",
   },
 ];

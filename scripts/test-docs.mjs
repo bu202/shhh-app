@@ -370,11 +370,13 @@ const CONTRACT_KEYS = ["schema", "stage_1", "stage_2", "stage_3", "stage_4",
 const CONTRACT_VALUES = ["complete", "incomplete", "no-go"];
 // 지금 사실. ⛔ **사용자 기대에 맞추어 고치지 않는다** — 값을 바꾸려면 근거가 먼저다.
 //    `stage_3=complete` 는 **기술 상세 설계가 닫혔다**는 뜻이고,
-//    `stage_4=incomplete` 는 **위협 93·94 의 구현이 없다**는 뜻이다.
+//    `stage_4=complete` 는 **위협 93·94 의 구현·테스트·돌연변이가 저장소에 있다**는 뜻이다
+//    (2026-08-31 · `scripts/_mutate-lib.mjs`·`scripts/mutate.mjs` · `test-verifier` V8~V38·G12 ·
+//     `scripts/mutations.mjs` M173~M206 · 돌연변이 전수 실행 종료 코드 0).
 //    `remote_account_infra` 와 `public_release` 는 단계와 **별개 축**이라 따로 둔다.
 const CONTRACT_NOW = {
   schema: "1",
-  stage_1: "complete", stage_2: "complete", stage_3: "complete", stage_4: "incomplete",
+  stage_1: "complete", stage_2: "complete", stage_3: "complete", stage_4: "complete",
   remote_account_infra: "incomplete", public_release: "no-go",
 };
 // 계약 본문을 **한 줄씩** 읽는다. `key=value` 아닌 행은 주석이든 표든 설명 문장이든 전부 실패다.
@@ -471,11 +473,11 @@ function verdictStrings(name, text) {
     ["N4  마커 순서 역전",     () => contractProblems("N4", `${C1}\n${OKC}\n${C0}`, CONTRACT_NOW), "마커 순서가 뒤집혔다"],
     ["N5  계약 두 개",         () => contractProblems("N5", `${wrap(OKC)}\n${wrap(OKC)}`, CONTRACT_NOW), "시작** 마커가 2개다"],
     ["N6  키 누락",            () => contractProblems("N6", wrap(OKC.split("\n").slice(0, 6).join("\n")), CONTRACT_NOW), "의 키가 ["],
-    ["N7  키 중복",            () => contractProblems("N7", wrap(`${OKC}\nstage_4=incomplete`), CONTRACT_NOW), "의 키가 ["],
+    ["N7  키 중복",            () => contractProblems("N7", wrap(`${OKC}\nstage_4=complete`), CONTRACT_NOW), "의 키가 ["],
     ["N8  알 수 없는 키",      () => contractProblems("N8", wrap(`${OKC}\nstage_5=complete`), CONTRACT_NOW), "의 키가 ["],
     ["N9  키 순서 변경",       () => contractProblems("N9", wrap(OKC.split("\n").reverse().join("\n")), CONTRACT_NOW), "의 키가 ["],
     ["N10 stage_3=incomplete", () => contractProblems("N10", wrap(swap("stage_3", "incomplete")), CONTRACT_NOW), "지금 사실은"],
-    ["N11 stage_4=complete",   () => contractProblems("N11", wrap(swap("stage_4", "complete")), CONTRACT_NOW), "지금 사실은"],
+    ["N11 stage_4=incomplete", () => contractProblems("N11", wrap(swap("stage_4", "incomplete")), CONTRACT_NOW), "지금 사실은"],
     ["N12 원격 인프라 complete", () => contractProblems("N12", wrap(swap("remote_account_infra", "complete")), CONTRACT_NOW), "지금 사실은"],
     ["N13 출시 complete",      () => contractProblems("N13", wrap(swap("public_release", "complete")), CONTRACT_NOW), "지금 사실은"],
     ["N14 알 수 없는 값",      () => contractProblems("N14", wrap(swap("stage_4", "partial")), CONTRACT_NOW), "만 허용한다"],
@@ -2014,7 +2016,87 @@ ok("「로컬 완료 · 미배포」 현재형 서술 0건");
   ok(`운영 개인정보 경로 — 추적 파일 ${tracked.length}개 중 0건 · 규칙 보존`);
 }
 
+// ── 36. **`KILLED` 조건 개수 주장은 코드 목록에서 파생한다** (2026-08-31 · G13) ──
+//
+// ⛔ 재현: 「필요충분조건은 **여덟**이다」라고 적어 둔 문장이 위협 94 가 조건 셋을 더한 순간
+//    **한 번에 네 곳에서** 낡았다. 목록의 원본은 `_mutate-lib.mjs` 의 `KILLED_REQUIREMENTS`
+//    하나이고, 문서가 개수를 주장하면 그 길이와 대조한다.
+// ⚠️ **개수를 안 적는 것이 기본이다** — 이 검사는 「적었으면 맞아야 한다」만 강제한다.
+{
+  const { KILLED_REQUIREMENTS } = await import("./_mutate-lib.mjs");
+  const NUM = { 하나: 1, 둘: 2, 셋: 3, 넷: 4, 다섯: 5, 여섯: 6, 일곱: 7, 여덟: 8,
+                아홉: 9, 열: 10, 열하나: 11, 열둘: 12, 열셋: 13, 열넷: 14 };
+  const CLAIM = /필요충분조건(?:은|이)?\s*\**\s*(\d+|하나|둘|셋|넷|다섯|여섯|일곱|여덟|아홉|열하나|열둘|열셋|열넷|열)\s*\**\s*(?:개|가지)?\s*(?:이다|다|입니다)/g;
+  // 순수 함수로 빼서 **합성 입력으로 자기검사**한다 — 검사를 무력화하는 변이가 죽어야 한다.
+  const killedCountProblems = (text, want) => {
+    const out = [];
+    for (const m of String(text).matchAll(CLAIM)) {
+      const n = /^\d+$/.test(m[1]) ? +m[1] : NUM[m[1]];
+      if (n !== want) out.push(`「${m[0].trim()}」 — 실제 목록은 ${want}개다`);
+    }
+    return out;
+  };
+  const want = KILLED_REQUIREMENTS.length;
+  for (const f of DOCS)
+    for (const why of killedCountProblems(R(f), want))
+      bad(`${f} 가 KILLED 조건 개수를 잘못 적었다: ${why} (원본은 _mutate-lib.mjs 의 KILLED_REQUIREMENTS)`);
+
+  // 자기검사 — 판정이 살아 있는지 합성 입력으로 잰다.
+  const selfN = [
+    ["G13-N1 아라비아 숫자", `필요충분조건은 ${want + 1}개다`, 1],
+    ["G13-N2 한글 수사",     "필요충분조건은 **여덟**이다", want === 8 ? 0 : 1],
+    ["G13-N3 정확한 값",     `필요충분조건은 ${want}개다`, 0],
+    ["G13-N4 주장 없음",     "필요충분조건은 §0-21-2c 의 목록 전부다", 0],
+  ];
+  for (const [name, text, expect] of selfN) {
+    const got = killedCountProblems(text, want).length;
+    if (got !== expect) bad(`${name}: 자기검사가 ${got}건을 냈다 — ${expect}건이어야 한다`);
+  }
+  if (want < 8) bad(`KILLED_REQUIREMENTS 가 ${want}개다 — 설계서 §0-21-2c 보다 짧다`);
+  ok(`KILLED 조건 개수 주장 == KILLED_REQUIREMENTS(${want}개) · 자기검사 4건`);
+}
+
+// ── 37. **「`close` = 프로세스 그룹 종료」류 문장 금지** (2026-08-31 · G14) ──
+//
+// ⛔ 위협 94 가 정확히 이 문장에서 나왔다 — Node 의 `'close'` 는 **그 자식 하나와 그 stdio** 만
+//    보장하는데, 설계 한 줄이 그것을 「그룹이 사라졌다」로 읽었다. 그 표현이 다시 생기면 실패한다.
+// ⚠️ **금지 표현을 설명하는 문장은 통과해야 한다** — 그래서 같은 줄의 ⛔ 를 면제로 본다
+//    (기록을 지우게 만드는 검사는 나쁜 검사다).
+{
+  const groupCloseProblems = (text) => {
+    const PATS = [
+      [/`close`\s*를?\s*봤으므로[^\n]{0,20}그룹/, "close 를 그룹 종료의 증거로 읽는다"],
+      [/그룹이?\s*종료됐다는\s*`close`/, "「그룹의 close」라는 말"],
+      [/직전 그룹의\s*`close`\s*확인/, "같음"],
+      [/`process\.kill\(pid,\s*0\)`\s*으로[^\n]{0,20}그룹[^\n]{0,10}부재/, "양수 PID 로 그룹 부재를 묻는다"],
+      [/`close`\s*만으로[^\n]{0,16}(그룹|정리)[^\n]{0,10}(부재|완료|확정)했?다(?!고|는| 아니)/, "close 하나로 정리를 확정한다"],
+    ];
+    const out = [];
+    String(text).split("\n").forEach((ln, i) => {
+      for (const [re, why] of PATS) {
+        if (!re.test(ln)) continue;
+        if (/⛔|금지|아니다|틀렸|안 된다|읽지 않는다|쓰지 않는다/.test(ln)) continue;  // 금지를 설명하는 줄
+        out.push({ line: i + 1, why, text: ln.trim().slice(0, 100) });
+      }
+    });
+    return out;
+  };
+  for (const f of DOCS)
+    for (const b of groupCloseProblems(R(f)))
+      bad(`${f}:${b.line} ${b.why} — 위협 94 가 그 문장에서 나왔다\n      "${b.text}"`);
+
+  // 자기검사 — 금지 표현과 면제가 둘 다 살아 있는지 합성 입력으로 잰다.
+  const P1 = "다음 변이는 `close` 를 봤으므로 그룹이 종료된 뒤에 시작한다";
+  const P2 = "`process.kill(pid, 0)` 으로 프로세스 그룹 부재를 확인한다";
+  if (groupCloseProblems(P1).length !== 1) bad("G14-N1: 「close 를 봤으므로 그룹」을 못 잡는다");
+  if (groupCloseProblems(P2).length !== 1) bad("G14-N2: 「양수 PID 로 그룹 부재」를 못 잡는다");
+  if (groupCloseProblems("⛔ " + P1).length !== 0) bad("G14-P1: 금지를 설명하는 줄까지 실패시킨다");
+  if (groupCloseProblems("직접 자식의 close 와 그룹 부재를 둘 다 본다").length !== 0)
+    bad("G14-P2: 올바른 문장을 실패시킨다");
+  ok("「close = 그룹 종료」류 표현 0건 · 자기검사 4건");
+}
+
 console.log(fails
   ? `test-docs: 실패 ${fails}건`
-  : "test-docs: 통과 — 낡은 문구 · 죽은 § 참조 · 번호 연속성 · 선언된 개수 · 판 번호 · 필수 절 · 완료 범위 · 보유기간 단정 · 스위트 수 · 낡은 운영 상태 · 공식 단계 계약(**구조만** — CLAUDE.md §1-1 의 stage-contract 1개 · 키 7개·순서·값·현재 사실 · 비원본 문서 5개에 계약 0개 · 참조 문장 각 1개 · 「현재 판정:」 6개 문서에서 0건 · 자기 기준 선언 0건 · 자기검사 음수 N1~N21 · 정상 P1~P4. ⚠️ **문서의 한국어 의미는 재지 않는다** — 사람의 전수검토 몫이다) · 주 D1 접근 분류 등재 · 법률 자료 현재 사실 · 인수인계 현재성 · 현재 상태 구간의 낡은 drain·구현·lease·T6 서술 · drain 미구현 0건 · 정리 대상 개수 = 코드 · 2단계 결정서 현재성 · 재검증 후 현재 사실 9종 · 모순 5종 · 운영현황 실측값 · 날짜별 운영 기록 · 움직이는 해시 · Access 이후 현재형 401 · 돌연변이 개수=MUTATIONS · 배포 경계(배포=git 파생 · 미배포=현재 · self-test) · §13-6 매핑 합계=maxT · 현재 상태 블록의 배포 ID · 「로컬 완료·미배포」 현재형 0건 · timing-safe 서술=구현 · 외부 전문가 상담 해당없음 · 법률·사례 자료 현재성 · 2026-08-26 결정 보존 · 운영 개인정보 비저장");
+  : "test-docs: 통과 — 낡은 문구 · 죽은 § 참조 · 번호 연속성 · 선언된 개수 · 판 번호 · 필수 절 · 완료 범위 · 보유기간 단정 · 스위트 수 · 낡은 운영 상태 · 공식 단계 계약(**구조만** — CLAUDE.md §1-1 의 stage-contract 1개 · 키 7개·순서·값·현재 사실 · 비원본 문서 5개에 계약 0개 · 참조 문장 각 1개 · 「현재 판정:」 6개 문서에서 0건 · 자기 기준 선언 0건 · 자기검사 음수 N1~N21 · 정상 P1~P4. ⚠️ **문서의 한국어 의미는 재지 않는다** — 사람의 전수검토 몫이다) · 주 D1 접근 분류 등재 · 법률 자료 현재 사실 · 인수인계 현재성 · 현재 상태 구간의 낡은 drain·구현·lease·T6 서술 · drain 미구현 0건 · 정리 대상 개수 = 코드 · 2단계 결정서 현재성 · 재검증 후 현재 사실 9종 · 모순 5종 · 운영현황 실측값 · 날짜별 운영 기록 · 움직이는 해시 · Access 이후 현재형 401 · 돌연변이 개수=MUTATIONS · 배포 경계(배포=git 파생 · 미배포=현재 · self-test) · §13-6 매핑 합계=maxT · 현재 상태 블록의 배포 ID · 「로컬 완료·미배포」 현재형 0건 · timing-safe 서술=구현 · 외부 전문가 상담 해당없음 · 법률·사례 자료 현재성 · 2026-08-26 결정 보존 · 운영 개인정보 비저장 · KILLED 조건 개수=코드 · 「close=그룹 종료」 0건");
 process.exit(fails ? 1 : 0);
