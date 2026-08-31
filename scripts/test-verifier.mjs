@@ -15,17 +15,20 @@
 //
 // ⛔ **4단계 기능이 도는지는 재지 않는다** — 그 둘을 섞지 않는다.
 import assert from "node:assert";
-import { readFileSync, readdirSync, mkdtempSync, writeFileSync, chmodSync, symlinkSync } from "node:fs";
+import { readFileSync, readdirSync, mkdtempSync, writeFileSync, chmodSync, symlinkSync,
+         rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { EventEmitter } from "node:events";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { runWithTimeout, tally, classify, probeGroup, cleanupFailed, nextMutationAllowed,
          VERDICTS, FATAL, INFRA_ERROR, OUTCOMES, GROUP_STATES, KILLED_REQUIREMENTS,
          CLEANUP_DEADLINE_MS, GROUP_SETTLE_MS,
          GROUP_ESCAPE_MARK, GROUP_ESCAPE_PATTERNS, groupEscapeViolations,
-         resultRow, JSON_EVIDENCE } from "./_mutate-lib.mjs";
+         resultRow, JSON_EVIDENCE, baselineHalt, runBaselines,
+         RUN_ROOT_ENV, RUN_ROOT_PREFIX, RUN_ROOT_MARKER,
+         runRootUsable, childEnv, staleRunRoots } from "./_mutate-lib.mjs";
 import { MUTATIONS } from "./mutations.mjs";
 
 let n = 0;
@@ -34,14 +37,25 @@ const read = (f) => readFileSync(new URL("../" + f, import.meta.url), "utf8");
 const repo = process.env.SHHH_GIT_ROOT || fileURLToPath(new URL("..", import.meta.url));
 // 이 스위트가 만든 그룹만 기록해 두고 **끝에서 전수로 부재를 확인한다.**
 // ⛔ 광범위한 종료 명령(`pkill`·`killall`)은 쓰지 않는다 — 사용자의 다른 작업을 죽인다.
+// ⚠️ 오래 도는 fixture 에는 **자기 종료**를 함께 심는다(60초). 그룹 kill 을 없애는 변이가 걸리면
+//    아래 정리 핸들러가 잡을 pgid 자체가 안 남을 수 있고, 그때 fixture 가 몇 시간씩 CPU 를 먹는다
+//    (실측 2026-08-31: 4시간짜리 6개). ⛔ 단언의 창(≤1.5초)과는 두 자릿수 차이라 판정을 바꾸지 않는다.
 const madeGroups = [];
 const track = (r) => { if (Number.isInteger(r?.pgid) && r.pgid > 1) madeGroups.push(r.pgid); return r; };
 // ⛔ **단언이 중간에 터져도 정리한다.** 이 스위트를 대상으로 하는 돌연변이는 정리 코드를 없애는
 //    것들이라, 그 회차의 자식이 그대로 남으면 **다음 회차의 판정이 부하 때문인지 변이 때문인지
 //    갈리지 않는다**(위협 91 이 겪은 그 상태다). 지우는 대상은 **우리가 만든 PGID 뿐**이다.
+// ⛔ **임시 디렉터리도 같은 자리에서 치운다.** 이 스위트를 대상으로 하는 변이는 단언을 중간에
+//    터뜨리므로, 만든 자리에서 지우는 코드는 **실패 회차마다 건너뛴다** — 실측으로 그렇게 6개가 쌓였다.
+//    지우는 대상은 **우리가 만든 경로뿐**이다(접두사 훑기가 아니다).
+const madeDirs = [];
+const mkTmp = (prefix) => { const d = mkdtempSync(join(tmpdir(), prefix)); madeDirs.push(d); return d; };
 process.on("exit", () => {
   for (const g of new Set(madeGroups)) {
     try { process.kill(-g, "SIGKILL"); } catch { /* 이미 없다 */ }
+  }
+  for (const d of madeDirs) {
+    try { rmSync(d, { recursive: true, force: true }); } catch { /* 이미 없다 */ }
   }
 });
 
@@ -79,8 +93,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 //    죽었다」이지 **「그룹이 비었다」가 아니다**(위협 94). 이제 음수 PGID probe 로 잰다.
 {
   const child = "const c=require('node:child_process')"
-    + ".spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});"
-    + "console.log('GPID '+c.pid);setInterval(()=>{},1000);";
+    + ".spawn(process.execPath,['-e','setTimeout(()=>process.exit(0),60000);setInterval(()=>{},1000)'],{stdio:'ignore'});"
+    + "console.log('GPID '+c.pid);setTimeout(()=>process.exit(0),60000);setInterval(()=>{},1000);";
   const t0 = Date.now();
   const r = track(await runWithTimeout(process.execPath, ["-e", child], { timeoutMs: 1500 }));
   const took = Date.now() - t0;
@@ -164,7 +178,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ══ V7. 제한 시간의 원본이 **측정한 기준선**이다 ═══════════════════════════
 {
   const src = read("scripts/mutate.mjs");
-  assert.match(src, /Date\.now\(\) - t0\) \* 20/, t("V7: 제한 시간이 기준선에서 파생되지 않는다"));
+  // ⚠️ 기준선 **순서와 중단**이 `runBaselines()` 로 옮겨가면서 측정도 거기서 한다(2026-08-31).
+  //    재는 것은 그대로다 — 「제한 시간의 원본이 손으로 고른 상수가 아니라 실측값인가」.
+  assert.match(src, /ms \* 20/, t("V7: 제한 시간이 기준선 실측에서 파생되지 않는다"));
+  assert.match(read("scripts/_mutate-lib.mjs"), /const t0 = now\(\);[\s\S]{0,400}?elapsed\.set\(s, now\(\) - t0\)/,
+    t("V7: ★ 기준선 소요 시간을 실제로 재지 않는다"));
   assert.match(src, /TIMEOUT_FLOOR/, t("V7: 제한 시간에 하한이 없다"));
   // ⛔ **mutation timeout 과 cleanup deadline 은 다른 상수다** — 한 값을 돌려 쓰면 종료 확인이
   //    실행 시간에 끌려다닌다(설계서 §0-21-2a).
@@ -185,7 +203,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   assert.equal(ce.verdict, INFRA_ERROR, t(`V8-a: ★ ENOENT 가 ${ce.verdict} 로 접혔다`));
 
   // V8-a EACCES — 실행 권한이 없는 파일
-  const d = mkdtempSync(join(tmpdir(), "shhh-verifier-"));
+  const d = mkTmp("shhh-verifier-");
   const noexec = join(d, "noexec.sh");
   writeFileSync(noexec, "#!/bin/sh\nexit 0\n");
   chmodSync(noexec, 0o644);
@@ -300,7 +318,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ══ V12. 기준선이 측정 불능이면 돌연변이를 **하나도** 실행하지 않는다 ══════
 {
   // `git` 만 있고 `node` 는 없는 PATH 를 만든다 — 기준선 spawn 이 ENOENT 로 실패한다.
-  const d = mkdtempSync(join(tmpdir(), "shhh-nopath-"));
+  const d = mkTmp("shhh-nopath-");
   const gitBin = execFileSync("/usr/bin/which", ["git"]).toString().trim();
   symlinkSync(gitBin, join(d, "git"));
   const r = track(await runWithTimeout(process.execPath, ["scripts/mutate.mjs", "--only", "M01"],
@@ -343,7 +361,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // ── ⓑ 실행기를 끝까지 돌려 산출물 전체를 본다 ─────────────────────────
   const pick = MUTATIONS.find((m) => m.suite === "test-docs");
   assert.ok(pick, t("V13: test-docs 를 대상으로 하는 변이가 없다 — 검사가 헛돈다"));
-  const out = join(mkdtempSync(join(tmpdir(), "shhh-json-")), "r.json");
+  const out = join(mkTmp("shhh-json-"), "r.json");
   const r = track(await runWithTimeout(process.execPath,
     ["scripts/mutate.mjs", "--only", pick.id, "--json", out], { cwd: repo, timeoutMs: 120_000 }));
   assert.equal(r.status, 0, t(`V13: 대조용 변이 ${pick.id} 가 안 죽었다 (exit ${r.status})\n${r.out.slice(-600)}`));
@@ -529,7 +547,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // 손자를 띄우고 직접 자식만 종료한다 — `close` 와 손자 생존이 **공존**한다.
   const leak = (exitCode, mode) =>
     "const c=require('node:child_process').spawn(process.execPath,"
-    + "['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});"
+    + "['-e','setTimeout(()=>process.exit(0),60000);setInterval(()=>{},1000)'],{stdio:'ignore'});"
     + "console.log('GRAND '+c.pid);"
     + (mode === "signal" ? "setTimeout(()=>process.kill(process.pid,'SIGTERM'),120);"
                          : `setTimeout(()=>process.exit(${exitCode}),120);`);
@@ -581,7 +599,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   assert.deepEqual(k.calls[0], [-4242, 0], t(`V29: ★ 양수 PID 로 그룹을 물었다 (${JSON.stringify(k.calls[0])})`));
   // 실제 살아 있는 그룹 하나로도 확인한다
   const live = track(await runWithTimeout(process.execPath,
-    ["-e", "console.log('UP');setInterval(()=>{},1000)"], { timeoutMs: 800 }));
+    ["-e", "console.log('UP');setTimeout(()=>process.exit(0),60000);setInterval(()=>{},1000)"], { timeoutMs: 800 }));
   assert.equal(probeGroup(live.pgid), "absent", t("V33: 제한 시간 뒤 그룹이 안 비었다"));
 }
 
@@ -601,6 +619,301 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const src = read("scripts/mutate.mjs");
   assert.match(src, /if \(process\.platform === "win32"\) \{[\s\S]{0,300}?process\.exit\(2\);/,
     t("V38: ★ 플랫폼 게이트가 없다 — 계약 없는 곳에서 조용히 돈다"));
+}
+
+// ══ V39·V40. spawn 뒤 error 는 **정리로 들어간다** (2026-08-31) ════════════
+// ⛔ 옛 판은 `armDeadline()` 만 하고 기한이 흐르기를 기다렸다 — 종료를 **요청조차 하지 않아서**
+//    `close` 가 영영 안 오면 우리가 만든 그룹이 실행기보다 오래 살아남았다.
+{
+  // V39 — close 가 안 오고 그룹이 안 빠지는 경우: 정확한 음수 PGID 로 요청하고 기한까지 기다린다
+  const ch = fakeChild(555201);
+  const k = killer(() => undefined);            // 그룹이 계속 살아 있다
+  let returned = false;
+  const t0 = Date.now();
+  const p = runWithTimeout("x", [], { spawn: () => ch, kill: k, timeoutMs: 60_000,
+                                      cleanupMs: 400, settleMs: 30 }).then((v) => { returned = true; return v; });
+  ch.emit("spawn");
+  await sleep(5);
+  ch.emit("error", err("EPIPE"));
+  await sleep(60);
+  assert.equal(returned, false, t("V39: ★ spawn 뒤 error 에서 즉시 반환했다"));
+  const res = await p;
+  assert.equal(res.cleanupRequested, true,
+    t("V39: ★ spawn 뒤 error 인데 정리를 요청하지 않았다 — 그룹이 실행기보다 오래 산다"));
+  assert.ok(k.calls.some(([tg, sg]) => tg === -555201 && sg === "SIGKILL"),
+    t(`V39: ★ 정확한 음수 PGID 로 종료를 요청하지 않았다 (${JSON.stringify(k.calls)})`));
+  assert.equal(res.cleanupTimedOut, true, t("V39: ★ 정리 기한 초과를 안 적는다"));
+  assert.ok(Date.now() - t0 >= 380, t("V39: ★ 정리 기한을 안 기다리고 반환했다"));
+  assert.equal(classify(res).verdict, INFRA_ERROR, t("V39: ★ 정리 못 한 실행이 INFRA-ERROR 가 아니다"));
+  assert.equal(nextMutationAllowed(res), false, t("V39: ★ 그 뒤 다음 변이를 허용한다"));
+
+  // V40 — 정리가 확인되면 기한을 다 안 쓰고 반환하되 판정은 그대로 INFRA-ERROR 다
+  const ch2 = fakeChild(555202);
+  let live = true;
+  const k2 = killer((tg, sg) => { if (sg === "SIGKILL") { live = false; return; } if (live) return; throw err("ESRCH"); });
+  const t1 = Date.now();
+  const p2 = runWithTimeout("x", [], { spawn: () => ch2, kill: k2, timeoutMs: 60_000,
+                                       cleanupMs: 5000, settleMs: 20 });
+  ch2.emit("spawn");
+  ch2.emit("error", err("EPIPE"));
+  await sleep(60);
+  ch2.emit("close", 0, null);
+  const res2 = await p2;
+  assert.ok(Date.now() - t1 < 4000, t("V40: ★ 정리가 끝났는데 기한을 다 썼다"));
+  assert.equal(res2.closeSeen, true, t("V40: close 를 안 봤다"));
+  assert.equal(res2.groupState, "absent", t(`V40: ★ 반환 시점 그룹이 ${res2.groupState} 다`));
+  assert.equal(res2.cleanupTimedOut, false, t("V40: ★ 확인했는데 기한 초과로 적었다"));
+  assert.equal(classify(res2).outcome, "post-spawn-error",
+    t(`V40: ★ 정규화 상태가 ${classify(res2).outcome} 다`));
+  assert.equal(classify(res2).verdict, INFRA_ERROR, t("V40: ★ 시작 뒤 오류가 사망으로 접혔다"));
+  assert.equal(nextMutationAllowed(res2), true, t("V40: 정리를 증명했는데 다음 변이를 막는다"));
+}
+
+// ══ V41·V42. 확인할 수 없다 ≠ 확인을 포기한다 (2026-08-31) ═════════════════
+// ⛔ 옛 판은 `unverifiable` 을 보는 즉시 `finalize()` 했다. 「부재로 인정하지 않는다」는 지켰지만
+//    **우리가 만든 그룹은 그대로 남았다** — 다음 변이가 그 부하 위에서 측정된다.
+{
+  for (const [id, code] of [["V41", "EPERM"], ["V42", "EINVAL"]]) {
+    const ch = fakeChild(555210);
+    const k = killer(() => { throw err(code); });
+    const t0 = Date.now();
+    const p = runWithTimeout("x", [], { spawn: () => ch, kill: k, timeoutMs: 60_000,
+                                        cleanupMs: 400, settleMs: 30 });
+    ch.emit("spawn");
+    ch.emit("close", 0, null);
+    const res = await p;
+    assert.ok(Date.now() - t0 >= 380,
+      t(`${id}: ★ ${code} 를 보고 정리 기한 전에 반환했다 — 그룹을 남긴 채 다음 변이로 넘어간다`));
+    assert.equal(res.cleanupRequested, true, t(`${id}: ★ ${code} 인데 정리를 시도조차 안 했다`));
+    assert.ok(k.calls.some(([tg, sg]) => tg === -555210 && sg === "SIGKILL"),
+      t(`${id}: ★ 정확한 음수 PGID 로 종료를 요청하지 않았다`));
+    assert.equal(res.groupState, "unverifiable", t(`${id}: ★ ${code} 를 부재로 읽었다`));
+    assert.equal(res.cleanupTimedOut, true, t(`${id}: ★ 끝내 확인 못 했는데 기한 초과를 안 적는다`));
+    assert.equal(cleanupFailed(res), true, t(`${id}: cleanupFailed 가 거짓이다`));
+    assert.equal(classify(res).outcome, "unobservable",
+      t(`${id}: ★ 정규화 상태가 ${classify(res).outcome} 다`));
+    assert.equal(nextMutationAllowed(res), false, t(`${id}: ★ 확인 못 했는데 다음 변이를 허용한다`));
+  }
+}
+
+// ══ V43. 정리 못 한 기준선 뒤에는 다음 스위트도 안 띄운다 (2026-08-31) ══════
+{
+  const dirty = R({ closeSeen: false, groupState: "present", cleanupTimedOut: true, status: null });
+  const clean = R({ status: 0 });
+  const red = R({ status: 1 });
+
+  const calls = [];
+  const a = await runBaselines(["a", "b"], async (s) => { calls.push(s); return s === "a" ? dirty : clean; });
+  assert.deepEqual(calls, ["a"],
+    t(`V43: ★ 정리를 증명 못 한 기준선 뒤에 다음 스위트를 띄웠다 (${calls.join(",")})`));
+  assert.equal(a.halted?.suite, "a", t("V43: ★ 중단을 기록하지 않는다"));
+  assert.equal(a.elapsed.size, 0, t("V43: ★ 못 잰 기준선의 제한 시간을 만들었다"));
+
+  // ⚠️ 평범하게 빨간 기준선은 멈추지 않는다 — 정리는 확인됐고, 모아서 함께 보고하는 편이 낫다.
+  const calls2 = [];
+  const b = await runBaselines(["a", "b"], async (s) => { calls2.push(s); return s === "a" ? red : clean; });
+  assert.deepEqual(calls2, ["a", "b"], t("V43: 평범한 빨간 기준선에서 나머지를 안 잰다"));
+  assert.equal(b.halted, null, t("V43: 평범한 실패를 중단으로 읽었다"));
+  assert.equal(b.failed.length, 1, t("V43: 실패한 기준선을 안 센다"));
+
+  assert.equal(baselineHalt(clean), false, t("V43: ★ 정상 기준선을 중단으로 읽는다"));
+  assert.equal(baselineHalt(red), false, t("V43: ★ 평범한 실패를 중단으로 읽는다"));
+  for (const [why, r] of [["정리 기한 초과", R({ cleanupTimedOut: true })],
+                          ["확인 불가", R({ groupState: "unverifiable" })],
+                          ["close 없음", R({ closeSeen: false })],
+                          ["잔류 그룹", R({ groupState: "present" })]])
+    assert.equal(baselineHalt(r), true, t(`V43: ★ ${why} 인데 다음 기준선을 띄운다`));
+
+  // 중첩 실행은 변이를 못 본다 — 실행기의 배선은 **소스**로 못박는다.
+  const src = read("scripts/mutate.mjs");
+  assert.match(src, /if \(halted\) \{[\s\S]{0,500}?process\.exit\(2\);/,
+    t("V43: ★ 기준선 중단 뒤 종료 코드 2 로 멈추지 않는다"));
+  assert.match(src, /남은 기준선도 돌연변이도 하나 실행하지 않고 중단한다/,
+    t("V43: ★ 중단 사유 문구가 없다"));
+}
+
+// ══ V44·V45. 최초 원인을 나중에 발견한 잔류가 덮지 않는다 (2026-08-31) ══════
+{
+  // V44 — spawn 전 만료 → 늦은 spawn → 정리가 settle 창보다 오래 걸린다
+  const ch = fakeChild(555220);
+  let live = true;
+  const k = killer((tg, sg) => { if (sg === "SIGKILL") return; if (live) return; throw err("ESRCH"); });
+  const p = runWithTimeout("x", [], { spawn: () => ch, kill: k, timeoutMs: 50,
+                                      cleanupMs: 5000, settleMs: 20 });
+  await sleep(110);                              // spawn 전에 만료됐다
+  ch.emit("spawn");                              // 늦게 도착한 시작
+  await sleep(150);                              // 정리가 settle 창보다 오래 걸린다
+  live = false; ch.emit("close", null, "SIGKILL");
+  const res = await p;
+  assert.equal(res.startTimedOut, true, t("V44: startTimedOut 을 안 적는다"));
+  assert.equal(res.groupState, "absent", t(`V44: ★ 반환 시점 그룹이 ${res.groupState} 다`));
+  assert.equal(classify(res).outcome, "start-timeout",
+    t(`V44: ★ 최초 원인이 ${classify(res).outcome} 로 덮였다 — 운영자가 엉뚱한 곳을 고치러 간다`));
+  assert.equal(classify(res).verdict, INFRA_ERROR, t("V44: ★ start-timeout 이 INFRA-ERROR 가 아니다"));
+
+  // V45 — `close` 전에는 잔류로 적지 않는다. 아직 정상 종료 중일 수 있다.
+  // ⚠️ **정리 반복문이 실제로 도는 경로**여야 한다 — spawn 뒤 오류가 그 자리다(제한 시간 갈래는
+  //    `close` 가 와야 반복문에 들어가서, 거기서 재면 이 갈래가 한 번도 실행되지 않는다).
+  const ch2 = fakeChild(555221);
+  const k2 = killer(() => undefined);            // 그룹이 계속 present
+  const p2 = runWithTimeout("x", [], { spawn: () => ch2, kill: k2, timeoutMs: 60_000,
+                                       cleanupMs: 400, settleMs: 20 });
+  ch2.emit("spawn");
+  ch2.emit("error", err("EPIPE"));               // 정리 반복문에 들어간다
+  await sleep(200);                              // settle 창을 한참 넘겼는데 close 가 아직이다
+  const res2 = await p2;
+  assert.equal(res2.closeSeen, false, t("V45: 검사가 헛돈다 — close 가 왔다"));
+  assert.equal(res2.groupState, "present", t(`V45: 검사가 헛돈다 — 그룹이 ${res2.groupState} 다`));
+  assert.equal(res2.residualGroupDetected, false,
+    t("V45: ★ 직접 자식이 닫히기도 전에 잔류로 적었다 — 최초 원인을 덮는 오기록이다"));
+
+  // 잔류는 **close 뒤**에 관찰됐을 때만 적는다(V24 가 그 갈래를 잰다).
+  assert.equal(classify(R({ startTimedOut: true, residualGroupDetected: true })).outcome, "start-timeout",
+    t("V44: ★ 합성 입력에서도 잔류가 start-timeout 을 덮는다"));
+  assert.equal(classify(R({ residualGroupDetected: true })).outcome, "residual-group",
+    t("V45: ★ 최초 원인이 없을 때는 잔류가 그대로 상태여야 한다"));
+}
+
+// ══ V46~V50. 임시 사본의 소유권은 **최상위 실행 하나** (2026-08-31) ═════════
+// ⛔ 이 실행기는 자식을 프로세스 그룹째 SIGKILL 한다 — 죽는 쪽은 `finally` 를 못 돌린다.
+//    그래서 「죽는 쪽이 치운다」가 아니라 **「만든 쪽이 치운다」**로 소유권을 올렸다.
+{
+  const tmp = tmpdir();
+  const others = () => readdirSync(tmp).filter((x) => x.startsWith("shhh-mutate-"));
+  const cheap = MUTATIONS.find((m) => m.suite === "test-docs").id;
+
+  // V46 — 정상 종료: 이 실행이 만든 것이 하나도 안 남는다
+  {
+    const before = new Set(others());
+    const r = track(await runWithTimeout(process.execPath, ["scripts/mutate.mjs", "--only", cheap],
+      { cwd: repo, env: { ...process.env, SHHH_GIT_ROOT: repo }, timeoutMs: 180_000 }));
+    assert.equal(r.status, 0, t(`V46: 검사가 헛돈다 — 실행기가 종료 코드 ${r.status} 로 끝났다`));
+    assert.deepEqual(others().filter((x) => !before.has(x)), [],
+      t("V46: ★ 정상 종료했는데 이 실행이 만든 임시 자원이 남았다"));
+    // 위 실행은 **원본 저장소**의 실행기라 변이를 못 본다 — 배선은 소스에서도 못박는다.
+    assert.match(read("scripts/mutate.mjs"),
+      /if \(ownsRunRoot\) \{[^\n]*rmSync\(runRoot/,
+      t("V46: ★ 만든 실행이 자기 run-root 를 안 지운다"));
+  }
+
+  // V47 — 실패 종료(`process.exit()` 는 `finally` 를 안 돌린다): 그래도 안 남는다
+  {
+    const before = new Set(others());
+    const d = mkTmp("shhh-nopath-");
+    symlinkSync(execFileSync("/usr/bin/which", ["git"]).toString().trim(), join(d, "git"));
+    const r = track(await runWithTimeout(process.execPath, ["scripts/mutate.mjs", "--only", cheap],
+      { cwd: repo, env: { ...process.env, PATH: d, SHHH_GIT_ROOT: repo }, timeoutMs: 180_000 }));
+    assert.equal(r.status, 2, t(`V47: 검사가 헛돈다 — 기준선이 실패하지 않았다 (${r.status})`));
+    assert.deepEqual(others().filter((x) => !before.has(x)), [],
+      t("V47: ★ 기준선 실패로 나가는 길이 임시 자원을 남긴다 — process.exit() 는 finally 를 안 돌린다"));
+    rmSync(d, { recursive: true, force: true });
+    assert.match(read("scripts/mutate.mjs"), /process\.on\("exit", cleanupOwned\);/,
+      t("V47: ★ 종료 경로에 정리가 안 걸려 있다 — process.exit() 는 finally 를 안 돌린다"));
+  }
+
+  // V48 — 중첩 실행이 SIGKILL 돼도 사본은 최상위의 run-root **안**에 갇힌다
+  {
+    const before = new Set(others());
+    const root = mkTmp(RUN_ROOT_PREFIX);
+    writeFileSync(join(root, RUN_ROOT_MARKER),
+                  JSON.stringify({ pid: process.pid, repo, at: Date.now() }));
+    // group-escape-ok: 중첩 실행을 **그룹째** 죽여야 SIGKILL 잔류를 재현할 수 있다
+    const ch = spawn(process.execPath, ["scripts/mutate.mjs", "--only", cheap],
+      { cwd: repo, stdio: "ignore", detached: true,                     // group-escape-ok: 위 주석
+        env: childEnv({ ...process.env, SHHH_GIT_ROOT: repo }, root) });
+    madeGroups.push(ch.pid);
+    let copies = [];
+    for (let i = 0; i < 400 && !copies.length; i++) {
+      copies = readdirSync(root).filter((x) => x.startsWith("copy-"));
+      if (!copies.length) await sleep(25);
+    }
+    assert.ok(copies.length, t("V48: 검사가 헛돈다 — 중첩 실행이 run-root 안에 사본을 안 만들었다"));
+    try { process.kill(-ch.pid, "SIGKILL"); } catch { /* 이미 끝났다 */ }
+    await sleep(300);
+    assert.deepEqual(others().filter((x) => !before.has(x) && x !== basename(root)), [],
+      t("V48: ★ 중첩 실행이 TMPDIR 바로 아래에 사본을 만들었다 — 최상위가 못 치운다"));
+    rmSync(root, { recursive: true, force: true });   // 최상위(=이 스위트)가 소유자다
+    assert.deepEqual(others().filter((x) => !before.has(x)), [],
+      t("V48: ★ 최상위가 지웠는데 중첩 실행의 사본이 남았다"));
+  }
+
+  // V49 — 동시 최상위 실행은 서로의 run-root 를 건드리지 않는다
+  {
+    const before = new Set(others());
+    const run = () => runWithTimeout(process.execPath, ["scripts/mutate.mjs", "--only", cheap],
+      { cwd: repo, env: { ...process.env, SHHH_GIT_ROOT: repo }, timeoutMs: 180_000 });
+    const [x, y] = (await Promise.all([run(), run()])).map(track);
+    assert.equal(x.status, 0, t(`V49: ★ 동시 실행 A 가 종료 코드 ${x.status} 로 끝났다 — 서로를 지웠다`));
+    assert.equal(y.status, 0, t(`V49: ★ 동시 실행 B 가 종료 코드 ${y.status} 로 끝났다 — 서로를 지웠다`));
+    assert.deepEqual(others().filter((z) => !before.has(z)), [],
+      t("V49: ★ 동시 실행 뒤 임시 자원이 남았다"));
+  }
+
+  // V50 — 바깥에서 온 경로를 삭제 대상으로 쓰지 않는다 (fail-closed)
+  {
+    const victim = mkTmp("shhh-victim-");
+    writeFileSync(join(victim, "keep.txt"), "x");
+    for (const [why, value] of [["TMPDIR 밖", "/"], ["접두사 불일치", victim],
+                                ["없는 경로", join(tmp, RUN_ROOT_PREFIX + "nope")]]) {
+      const r = track(await runWithTimeout(process.execPath, ["scripts/mutate.mjs", "--only", cheap],
+        { cwd: repo, env: childEnv({ ...process.env, SHHH_GIT_ROOT: repo }, value), timeoutMs: 120_000 }));
+      assert.equal(r.status, 2, t(`V50: ★ ${why} 인 경로를 받고도 종료 코드가 ${r.status} 다`));
+      assert.match(r.out, /쓸 수 없는 경로다/, t(`V50: ★ ${why} — 거부 문구가 없다`));
+    }
+    assert.ok(readdirSync(victim).includes("keep.txt"), t("V50: ★ 주입된 경로의 내용을 지웠다"));
+    rmSync(victim, { recursive: true, force: true });
+
+    // 합성 입력 — 판정은 순수 함수가 소유한다(중첩 실행은 변이를 못 본다)
+    const ok = mkTmp(RUN_ROOT_PREFIX);
+    writeFileSync(join(ok, RUN_ROOT_MARKER), "{}");
+    assert.equal(runRootUsable(ok, tmp), true, t("V50: ★ 정상 run-root 를 거부한다"));
+    assert.equal(runRootUsable(join(tmp, "shhh-other-x"), tmp), false, t("V50: ★ 접두사가 달라도 받는다"));
+    assert.equal(runRootUsable(join(ok, "sub"), tmp), false, t("V50: ★ TMPDIR 한 단계 아래가 아닌데 받는다"));
+    assert.equal(runRootUsable("", tmp), false, t("V50: ★ 빈 문자열을 받는다"));
+    assert.equal(runRootUsable(undefined, tmp), false, t("V50: ★ undefined 를 받는다"));
+    rmSync(join(ok, RUN_ROOT_MARKER));
+    assert.equal(runRootUsable(ok, tmp), false, t("V50: ★ marker 가 없는 디렉터리를 run-root 로 받는다"));
+    // ⛔ **심볼릭 링크를 따라가지 않는다** — 링크 하나로 삭제 대상이 바깥 디렉터리가 된다.
+    writeFileSync(join(ok, RUN_ROOT_MARKER), "{}");
+    const link = join(tmp, RUN_ROOT_PREFIX + "link" + process.pid);
+    rmSync(link, { recursive: true, force: true });
+    symlinkSync(ok, link); madeDirs.push(link);
+    assert.equal(runRootUsable(link, tmp), false,
+      t("V50: ★ run-root 자리의 심볼릭 링크를 따라간다 — 링크 하나로 바깥을 지운다"));
+    rmSync(link, { force: true });
+    rmSync(ok, { recursive: true, force: true });
+    assert.equal(childEnv({ a: 1 }, "/r")[RUN_ROOT_ENV], "/r", t("V50: ★ 중첩 실행에 소유자를 안 물려준다"));
+    assert.equal(childEnv({ a: 1 }, "/r").a, 1, t("V50: 나머지 환경을 잃어버린다"));
+  }
+}
+
+// ══ V51. 남은 run-root 는 **조건을 전부 만족할 때만** 치운다 ════════════════
+// ⛔ 하나라도 확인할 수 없으면 안 지운다 — 지금 도는 형제 실행을 지우면 그 실행이 통째로 깨진다.
+{
+  const tmp = tmpdir();
+  const old = Date.now() - 3 * 3600e3;
+  const st = { isDirectory: () => true, isSymbolicLink: () => false, isFile: () => true };
+  const fsx = (mark) => ({ lstatSync: () => st, readFileSync: () => JSON.stringify(mark) });
+  const dead = () => { throw err("ESRCH"); };
+  const name = RUN_ROOT_PREFIX + "aaa";
+  const full = { pid: 4242, repo: "/r/", at: old };
+  const call = (mark, kill = dead, names = [name], repo2 = "/r/") =>
+    staleRunRoots(names, tmp, repo2, Date.now(), fsx(mark), kill);
+
+  assert.deepEqual(call(full), [join(tmp, name)], t("V51: ★ 조건을 다 만족하는데 안 치운다"));
+  assert.deepEqual(call({ ...full, at: Date.now() }), [],
+    t("V51: ★ 방금 만든 run-root 를 치운다 — 지금 도는 형제를 지운다"));
+  assert.deepEqual(call(full, alive), [],
+    t("V51: ★ 소유자가 살아 있는데 치운다"));
+  assert.deepEqual(call(full, () => { throw err("EPERM"); }), [],
+    t("V51: ★ 소유자를 **확인할 수 없는데** 치운다 — 확인 불가는 삭제 허가가 아니다"));
+  assert.deepEqual(call({ ...full, repo: "/other/" }), [],
+    t("V51: ★ 다른 저장소의 run-root 를 치운다"));
+  assert.deepEqual(call(full, dead, ["shhh-mutate-legacy"]), [],
+    t("V51: ★ 접두사가 다른 디렉터리를 치운다"));
+  assert.deepEqual(call(full, dead, [42, null]), [], t("V51: 문자열이 아닌 항목에서 던진다"));
+  assert.deepEqual(call({ ...full, pid: 0 }), [], t("V51: ★ 쓸 수 없는 owner PID 인데 치운다"));
+  assert.deepEqual(call({ ...full, at: "언제" }), [], t("V51: ★ 시각을 못 읽는데 치운다"));
 }
 
 // ══ G12. 스위트가 프로세스 그룹을 **벗어나지** 않는다 (설계서 §0-22-9) ═════
@@ -646,4 +959,5 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 }
 
 console.log(`test-verifier: ${n}개 통과 — 실행기 수명주기(프로세스 그룹 부재 · 두 제한 시간 · `
-  + `판정 다섯) · 시작·종료 증거 · 정리 fail-closed · 플랫폼 게이트 · M164 유한성 · R11 실행 경계 전수`);
+  + `판정 다섯) · 시작·종료 증거 · 정리 fail-closed · 플랫폼 게이트 · M164 유한성 · R11 실행 경계 전수 · `
+  + `spawn 뒤 오류의 정리 · 확인 불가의 정리 기한 · 기준선 즉시 중단 · 최초 원인 보존 · 임시 자원 소유권`);

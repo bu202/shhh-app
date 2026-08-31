@@ -19,6 +19,8 @@
 //    **`closeSeen && groupState === "absent"`** 이고, 부재는 **음수 PGID probe 가 `ESRCH`**
 //    일 때만 인정한다.
 import { spawn as nodeSpawn } from "node:child_process";
+import { lstatSync, readFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 
 // ── 상수 ────────────────────────────────────────────────────────────────
 // ⛔ **mutation timeout 과 같은 값을 쓰지 않는다.** 재는 대상이 다르다 —
@@ -108,7 +110,9 @@ export function runWithTimeout(cmd, args, opts = {}) {
       if (ev.pgid === null || ev.cleanupRequested) return;
       ev.cleanupRequested = true;
       try { killFn(-ev.pgid, "SIGKILL"); }
-      catch (e) { if (!e || e.code !== "ESRCH") ev.postSpawnError = true; }
+      // ⛔ 종료 **요청**이 실패한 것을 자식의 오류로 적지 않는다 — 그러면 원인이 실행 환경에서
+      //    코드 쪽으로 잘못 옮겨간다. 남는 사실은 「그룹 상태를 확인할 수 없다」 하나다.
+      catch (e) { if (!e || e.code !== "ESRCH") ev.groupState = "unverifiable"; }
     };
 
     // 정리 확인 — `close` 와 **그룹 부재**를 둘 다 본 뒤에만 확정한다(§0-22-8).
@@ -116,19 +120,27 @@ export function runWithTimeout(cmd, args, opts = {}) {
       if (settling) return;
       settling = true;
       armDeadline();
+      if (ev.pgid === null) return finalize();             // ⓐ 확인할 그룹이 없다
       const t0 = Date.now();
       for (;;) {
         if (settled) return;
         const state = probeGroup(ev.pgid, killFn);
+        // ⛔ 확인할 수 없다는 사실을 「present」로 덮지 않는다 — 다만 앞서 kill 요청이
+        //    실패해 적어 둔 `unverifiable` 은 그 뒤 성공한 probe 가 갱신한다.
         ev.groupState = state;
         // ⛔ **둘 다** 봐야 한다 — 그룹 부재만으로도, `close` 만으로도 확정하지 않는다.
         //    늦게 온 `'spawn'` 을 죽인 직후에는 그룹이 비었어도 `close` 가 아직 안 왔다.
         if (state === "absent" && ev.closeSeen) return finalize();
-        if (state === "unverifiable") return finalize();   // ⛔ EPERM 은 부재가 아니다
+        // ⛔ **`unverifiable` 에서 즉시 반환하지 않는다**(2026-08-31). 「부재로 인정하지
+        //    않는다」와 「확인을 포기한다」는 다른 말이다 — 포기하면 우리가 만든 그룹이 그대로
+        //    남은 채 다음 변이가 그 부하 위에서 측정된다. 정리를 요청하고 기한까지 계속 묻는다.
         const waited = Date.now() - t0;   // 정리 기한은 `armDeadline()` **한 자리**가 소유한다
-        if (waited >= settleMs && !ev.residualGroupDetected) {
-          ev.residualGroupDetected = true;                 // 직접 자식이 끝났는데 그룹이 안 빠진다
+        if (state !== "absent" && waited >= settleMs) {
           requestCleanup();
+          // 직접 자식이 닫힌 뒤에도 남아 있으면 그때가 **잔류**다.
+          // ⛔ `close` 전에는 적지 않는다 — 아직 정상 종료 중일 수 있고, 그 오기록이
+          //    `start-timeout` 같은 **최초 원인**을 덮는다(2026-08-31).
+          if (ev.closeSeen && state === "present") ev.residualGroupDetected = true;
         }
         await sleep(PROBE_MS);
       }
@@ -163,6 +175,10 @@ export function runWithTimeout(cmd, args, opts = {}) {
       else if (!ev.spawnFailed) { ev.spawnFailed = true; }
       // ⛔ `error` 는 종료의 증거가 아니다. 자식이 아예 없는 경우에만 그 자리에서 확정한다.
       if (!ev.started && ev.pgid === null) finalize();
+      // ⛔ **기다리기만 하지 않는다**(2026-08-31). 시작한 자식이 오류를 낸 뒤 `close` 가 영영
+      //    안 오면, 옛 판은 정리를 **요청조차 하지 않고** 기한만 흘려 보냈다 — 그 그룹은
+      //    실행기가 끝난 뒤에도 남는다. 오류는 종료의 증거가 아니므로 **정리로 들어간다.**
+      else if (ev.started) { requestCleanup(); void confirmCleanup(); }
       else armDeadline();
     });
 
@@ -250,12 +266,15 @@ function outcomeOf(r) {
       || !GROUP_STATES.includes(r.groupState)) return "unobservable";
   if (r.cleanupTimedOut) return "unobservable";
   if (r.groupState === "unverifiable") return "unobservable";
+  // 5. **spawn 전에 만료된 실행은 늦게 시작됐어도 `timeout` 이 아니다** — 그 실행에는
+  //    돌연변이가 제대로 돌았다는 증거가 없다(설계서 §0-22-6 14번).
+  // ⛔ **잔류 관찰보다 앞이다**(2026-08-31). 늦게 시작한 자식을 정리하는 데 시간이 걸렸다는
+  //    사실이 **최초 원인**을 덮으면, 운영자는 「그룹이 안 빠졌다」를 고치러 가고 정작
+  //    「돌연변이가 실행된 증거가 없다」는 사라진다. 잔류는 계약의 칸으로 남는다.
+  if (r.startTimedOut === true) return "start-timeout";
   if (r.residualGroupDetected || r.groupState === "present") return "residual-group";
   if (!r.closeSeen) return "unobservable";
   if (r.groupState !== "absent") return "unobservable";
-  // 5. **spawn 전에 만료된 실행은 늦게 시작됐어도 `timeout` 이 아니다** — 그 실행에는
-  //    돌연변이가 제대로 돌았다는 증거가 없다(설계서 §0-22-6 14번).
-  if (r.startTimedOut === true) return "start-timeout";
   // 6. 우리 타이머 → 7. 바깥 신호 → 8. 숫자 종료 코드
   if (r.timedOut) return "timeout";
   if (r.signal !== null) return "signalled";
@@ -286,6 +305,30 @@ export function nextMutationAllowed(r) {
   if (!r || typeof r !== "object") return false;
   if (r.spawnFailed === true && r.started === false) return true;   // ⓐ 확인할 그룹이 없다
   return r.closeSeen === true && r.groupState === "absent";
+}
+
+// **기준선은 하나라도 정리를 증명 못 하면 그 자리에서 멈춘다** (2026-08-31).
+// ⛔ 옛 판은 실패한 기준선을 세고 `continue` 했다 — 잔류 그룹이 있는 채로 **다음 스위트를
+//    띄웠다.** 그 순간 뒤따르는 측정은 전부 「부하 때문인지 변이 때문인지」 갈리지 않는다.
+// ⚠️ 평범하게 빨간 기준선(정리는 확인됨)은 여기 해당하지 않는다 — 그건 모아서 함께 보고한다.
+export function baselineHalt(r) {
+  return !nextMutationAllowed(r) || cleanupFailed(r);
+}
+
+// 기준선을 **순서대로** 돌린다. 순서와 중단을 순수하게 재기 위해 실행 자체는 주입받는다 —
+// 「두 번째 기준선이 실행되지 않았다」는 실제 호출 횟수로만 증명된다.
+export async function runBaselines(suites, run, now = Date.now) {
+  const elapsed = new Map(), failed = [];
+  let halted = null;
+  for (const s of suites) {
+    const t0 = now();
+    const r = await run(s);
+    const c = classify(r);
+    if (baselineHalt(r)) { halted = { suite: s, r, c }; break; }
+    if (c.outcome !== "exited" || c.verdict !== "SURVIVED") { failed.push({ suite: s, r, c }); continue; }
+    elapsed.set(s, now() - t0);
+  }
+  return { elapsed, failed, halted };
 }
 
 export function tally(rows) {
@@ -332,4 +375,60 @@ export function resultRow(m, r, c) {
     spawnFailed: r.spawnFailed, postSpawnError: r.postSpawnError,
     detail: c.why,
   };
+}
+
+
+// ── 실행 단위 임시 자원의 소유권 (2026-08-31) ───────────────────────────
+// 이 실행기는 자식을 **프로세스 그룹째 SIGKILL** 한다(위협 91). 그래서 중첩 실행은 자기
+// `finally` 를 돌리지 못한 채 죽을 수 있고, 그 실행이 만든 사본이 그대로 남는다 —
+// 실측으로 한 번에 125개(약 1.6GB)가 쌓였다. **SIGKILL 은 잡을 수 없으므로 죽는 쪽에게
+// 정리를 맡길 수 없다.** 그래서 소유권을 위로 올린다: 최상위 실행이 run-root 하나를 만들고,
+// 중첩 실행은 그 **안에만** 사본을 만들며, run-root 를 지우는 것은 만든 실행 하나뿐이다.
+export const RUN_ROOT_ENV = "SHHH_MUTATE_RUN_ROOT";
+export const RUN_ROOT_PREFIX = "shhh-mutate-run-";
+export const RUN_ROOT_MARKER = ".shhh-mutate-run";
+
+// 상속받은 경로를 **쓸 수 있나**. ⛔ 바깥에서 온 값을 그대로 믿지 않는다 — 실패하면
+// 아무것도 지우지 않고 거짓을 돌려준다(fail-closed). ⚠️ 순수 판정이라 합성 입력으로 잰다.
+export function runRootUsable(p, tmp, fsx = { lstatSync }) {
+  if (typeof p !== "string" || p === "") return false;
+  const q = resolve(p);
+  if (dirname(q) !== resolve(tmp)) return false;              // 시스템 TMPDIR **바로 아래**만
+  if (!basename(q).startsWith(RUN_ROOT_PREFIX)) return false; // 정확한 접두사
+  let st;
+  try { st = fsx.lstatSync(q); } catch { return false; }
+  if (st.isSymbolicLink() || !st.isDirectory()) return false; // 심볼릭 링크를 따라가지 않는다
+  try { if (!fsx.lstatSync(join(q, RUN_ROOT_MARKER)).isFile()) return false; } catch { return false; }
+  return true;
+}
+
+// 중첩 실행에 소유자를 물려준다. ⛔ 이 한 자리가 빠지면 중첩 실행이 **자기 run-root** 를
+// 새로 만들어 최상위의 정리 밖으로 나간다.
+export function childEnv(base, runRoot) {
+  return { ...base, [RUN_ROOT_ENV]: runRoot };
+}
+
+// 최상위 실행 **자신**이 SIGKILL 되면 run-root 가 남는다. 그때만 다음 실행이 치우되,
+// ⛔ 아래 조건이 **전부** 참일 때만이다. 하나라도 확인할 수 없으면 지우지 않는다.
+export function staleRunRoots(names, tmp, repo, nowMs,
+                              fsx = { lstatSync, readFileSync }, kill = process.kill,
+                              staleMs = 2 * 3600e3) {
+  const out = [];
+  for (const name of names) {
+    if (typeof name !== "string") continue;
+    // ⛔ 접두사·심볼릭 링크·marker 규칙을 여기 한 번 더 적지 않는다 — 규칙이 두 자리에 있으면
+    //    한쪽만 고쳐지고, 게다가 **가려진 쪽은 어느 변이로도 관측되지 않는다.**
+    const p = join(resolve(tmp), name);
+    if (!runRootUsable(p, tmp, fsx)) continue;
+    let mark;
+    try { mark = JSON.parse(fsx.readFileSync(join(p, RUN_ROOT_MARKER), "utf8")); } catch { continue; }
+    if (!mark || mark.repo !== repo) continue;                       // 다른 저장소의 것
+    if (!Number.isFinite(mark.at) || nowMs - mark.at < staleMs) continue;
+    if (!Number.isInteger(mark.pid) || mark.pid <= 1) continue;
+    let ownerGone = false;
+    try { kill(mark.pid, 0); } catch (e) { ownerGone = !!e && e.code === "ESRCH"; }
+    if (!ownerGone) continue;   // 살아 있거나 **확인 불가능**하다 — 둘 다 안 지운다
+    out.push(p);
+  }
+  return out;
 }

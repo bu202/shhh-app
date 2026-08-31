@@ -83,6 +83,11 @@ function fakeInv(opts = {}) {
 
 // 가짜 실행기. **실제로 파일을 만든다** — 「export 는 성공했는데 파일이 없다」를 재려면
 // 파일 유무가 진짜여야 한다.
+// R2 를 건드렸는지는 **명령의 모양**으로 본다. ⛔ `c.includes("r2")` 는 경로까지 잡는다 —
+// `mkdtemp` 의 임의 접미사에 "r2" 가 섞이면 거짓 실패가 나고, 실제로 전수 실행 한 회차가 그렇게 죽었다
+// (2026-08-31). 판정 기준은 fakeRun 의 dispatch(`args[1] === "r2"`)와 **같은 자리**여야 한다.
+const isR2 = (c) => String(c).split(" ")[2] === "r2";
+
 function fakeRun({ fail = {}, emptyMain = false, missingTable = null, noFile = false,
                    quiet = {}, objects = null, r2Down = false, tamperOnGet = false,
                    breakEncrypt = false, putMap = null } = {}) {
@@ -190,7 +195,7 @@ for (const which of ["main", "ledger"]) {
   const r = await runBackup({ env: ENV, run: f.run, inventory: inv });
   assert.equal(r.ok, false, t(`B2: ${which} export 가 실패했는데 성공이라 한다`));
   assert.equal(r.step, `${which}_export`, t(`B2: ${which} 실패 단계가 안 맞다`));
-  assert.ok(!f.calls.some((c) => c.includes("r2")), t(`B2: ${which} export 실패 뒤 업로드했다`));
+  assert.ok(!f.calls.some((c) => isR2(c)), t(`B2: ${which} export 실패 뒤 업로드했다`));
   // ⚠️ **`aborted` 다**(2026-08-27 · K2). 업로드 명령을 한 번도 안 냈으므로 객체가 없다는
   //    것을 우리가 안다 — `failed`(모른다)로 적으면 이 행이 영영 표식 정리를 막는다.
   assert.equal(inv.rows.get(r.backupId).status, "aborted", t(`B2: ${which} 실패가 기록되지 않았다`));
@@ -280,7 +285,7 @@ for (const failOn of ["insert", "uploading", "uploaded", "ready"]) {
   const r = await runBackup({ env: ENV, run: f.run, inventory: inv, dryRun: true });
   assert.equal(r.ok, true, t("B7: dry-run 이 실패했다"));
   assert.equal(inv.calls.length, 0, t(`B7: dry-run 이 inventory 를 ${inv.calls.length}번 건드렸다`));
-  assert.ok(!f.calls.some((c) => c.includes("r2")), t("B7: dry-run 이 R2 를 건드렸다"));
+  assert.ok(!f.calls.some((c) => isR2(c)), t("B7: dry-run 이 R2 를 건드렸다"));
   // ⚠️ 정지 확인은 dry-run 에서도 돈다 — **읽기**이기 때문이다. 쓰기가 0건인지를 잰다.
   const sql = f.calls.filter((c) => c.includes("--command"));
   assert.ok(sql.length > 0, t("B7: dry-run 이 정지 확인조차 안 했다"));
@@ -575,7 +580,7 @@ for (const failOn of ["insert", "uploading", "uploaded", "ready"]) {
     assert.equal(r.code, "quiescence", t(`B13: ${label} 의 사유가 quiescence 가 아니다 (${r.code})`));
     assert.ok(!f.calls.some((c) => c.includes("d1 export")),
       t(`B13: ${label} 인데 export 를 시작했다 — 정지 확인이 export 뒤에 있다`));
-    assert.ok(!f.calls.some((c) => c.includes("r2")), t(`B13: ${label} 인데 R2 를 건드렸다`));
+    assert.ok(!f.calls.some((c) => isR2(c)), t(`B13: ${label} 인데 R2 를 건드렸다`));
     assert.equal(inv.calls.length, 0, t(`B13: ${label} 인데 inventory 에 행을 만들었다`));
   }
   // 양성 대조 — 다섯이 전부 맞으면 진행한다.

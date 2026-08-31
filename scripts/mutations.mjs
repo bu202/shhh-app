@@ -351,7 +351,7 @@ export const MUTATIONS = [
     // ⚠️ **이 앵커는 개수가 바뀔 때마다 함께 바꾼다**(D21 을 더하며 세 번째로 고쳤다).
     //    자기가 건드리는 숫자를 앵커에 담는 변이라 피할 수 없다 — 대신 낡으면 실행기가
     //    ANCHOR-MISS 로 종료 코드 1 을 내므로 **조용히 썩지는 않는다.**
-    find: "`scripts/mutations.mjs`(목록 253종",
+    find: "`scripts/mutations.mjs`(목록 269종",
     replace: "`scripts/mutations.mjs`(목록 22종",
   },
   {
@@ -573,7 +573,7 @@ export const MUTATIONS = [
     id: "D17", file: "docs/STAGE3_SIGNUP_SECURITY_DESIGN.md", suite: "test-docs", kind: "정적",
     what: "§13-6 매핑 합계를 낡은 79 로 되돌린다",
     invariant: "매핑 절의 「N건 전부 연결됐다」는 표의 최대 T 번호에서 파생한다 — 표만 늘리고 합계를 안 고치면 검사가 그것을 잡아야 한다",
-    find: "**113건 전부 실행 가능한 단언으로 연결됐다.**",
+    find: "**114건 전부 실행 가능한 단언으로 연결됐다.**",
     replace: "**79건 전부 실행 가능한 단언으로 연결됐다.**",
   },
   {
@@ -601,7 +601,7 @@ export const MUTATIONS = [
     id: "D21", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "「종」이 없는 괄호형 내역을 낡은 「정적 21」로 되돌린다",
     invariant: "총계뿐 아니라 **하위 내역**도 MUTATIONS 에서 파생한다 — 「N종」이라고 안 적은 괄호형 내역도 센다(총계만 보면 66 ≠ 40+21 이 남는다)",
-    find: "목록 253종 — **동작 196종 · 정적 57종**",
+    find: "목록 269종 — **동작 209종 · 정적 60종**",
     replace: "목록 188종 — **동작 40종 · 정적 21종**",
   },
   // ── 위협 70 · 불완전한 OAuth 주소가 세션 폐기 재시도를 막던 결함의 방어들 ──
@@ -1776,7 +1776,7 @@ export const MUTATIONS = [
     id: "M179", file: "scripts/mutate.mjs", suite: "test-verifier", kind: "정적",
     what: "기준선의 측정 불능을 「경고 후 계속」으로 바꾼다",
     invariant: "기준선을 못 재면 그 뒤 표는 전부 무의미하다 — 돌연변이를 하나도 실행하지 않는다",
-    find: "      baselineFail++;\n      console.error(c.outcome === \"exited\"",
+    find: "    baselineFail++;\n    console.error(c.outcome === \"exited\"",
     replace: "      console.error(c.outcome === \"exited\"",
   },
   {
@@ -1835,7 +1835,7 @@ export const MUTATIONS = [
     id: "M187", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
     what: "error 에서 즉시 반환한다 (close 를 안 기다린다)",
     invariant: "error 는 종료의 증거가 아니다 — 죽지 않은 자식을 남긴 채 다음 변이를 시작하게 된다",
-    find: "      if (!ev.started && ev.pgid === null) finalize();\n      else armDeadline();",
+    find: "      if (!ev.started && ev.pgid === null) finalize();",
     replace: "      finalize();",
   },
   {
@@ -1909,7 +1909,7 @@ export const MUTATIONS = [
     id: "M197", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
     what: "잔류 그룹을 관찰하고도 기록하지 않는다",
     invariant: "관찰한 잔류를 무시하지 않는다 — 정리에 성공했어도 그 실행은 오염된 실행이다",
-    find: "          ev.residualGroupDetected = true;                 // 직접 자식이 끝났는데 그룹이 안 빠진다",
+    find: "          if (ev.closeSeen && state === \"present\") ev.residualGroupDetected = true;",
     replace: "          // (잔류를 기록하지 않는다)",
   },
   {
@@ -1998,6 +1998,125 @@ export const MUTATIONS = [
     what: "「close 를 봤으므로 그룹이 종료됐다」 금지 패턴을 뺀다",
     invariant: "위협 94 를 만든 문장이 문서에 다시 생기면 검사가 실패해야 한다",
     find: "      [/`close`\\s*를?\\s*봤으므로[^\\n]{0,20}그룹/, \"close 를 그룹 종료의 증거로 읽는다\"],",
+    replace: "",
+  },
+
+  // ── 2026-08-31 · 검증기 정리 경로 4건 (실행기 수명주기 보완) ─────────────
+  // ⚠️ 넷 다 「테스트가 전부 통과하는 상태」에서 성립했다 — 방어를 지우면 어느 검사가 실제로
+  //    빨개지는지가 유일한 증거다.
+  {
+    id: "M207", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "spawn 뒤 error 에서 정리를 요청하지 않고 기한만 흘려 보낸다",
+    invariant: "error 는 종료의 증거가 아니다 — 시작한 자식은 정리로 들어가야 한다",
+    find: "      else if (ev.started) { requestCleanup(); void confirmCleanup(); }",
+    replace: "      else if (ev.started) { armDeadline(); }",
+  },
+  {
+    id: "M208", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "그룹 상태를 확인할 수 없으면 그 자리에서 확정한다",
+    invariant: "확인할 수 없다와 확인을 포기한다는 다른 말이다 — 기한까지 계속 묻는다",
+    find: "        if (state === \"absent\" && ev.closeSeen) return finalize();",
+    replace: "        if (state === \"absent\" && ev.closeSeen) return finalize();\n"
+           + "        if (state === \"unverifiable\") return finalize();",
+  },
+  {
+    id: "M209", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "확인할 수 없는 그룹에는 종료를 요청하지 않는다",
+    invariant: "부재를 증명 못 한 그룹은 정확한 음수 PGID 로 종료를 요청한다",
+    find: "        if (state !== \"absent\" && waited >= settleMs) {",
+    replace: "        if (state === \"present\" && waited >= settleMs) {",
+  },
+  {
+    id: "M210", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "기준선의 정리 실패를 중단 사유로 보지 않는다",
+    invariant: "정리를 증명 못 한 기준선 뒤에는 다음 프로세스를 띄우지 않는다",
+    find: "  return !nextMutationAllowed(r) || cleanupFailed(r);",
+    replace: "  return false;",
+  },
+  {
+    id: "M211", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "잔류 그룹 관찰이 start-timeout 보다 먼저 판정된다",
+    invariant: "나중에 발견한 정리 증거가 최초 실패 원인을 덮지 않는다",
+    find: "  if (r.startTimedOut === true) return \"start-timeout\";\n"
+        + "  if (r.residualGroupDetected || r.groupState === \"present\") return \"residual-group\";",
+    replace: "  if (r.residualGroupDetected || r.groupState === \"present\") return \"residual-group\";\n"
+           + "  if (r.startTimedOut === true) return \"start-timeout\";",
+  },
+  {
+    id: "M212", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "직접 자식이 닫히기 전에도 잔류 그룹으로 적는다",
+    invariant: "close 전의 그룹 생존은 잔류가 아니다 — 정상 종료 중일 수 있다",
+    find: "          if (ev.closeSeen && state === \"present\") ev.residualGroupDetected = true;",
+    replace: "          if (state === \"present\") ev.residualGroupDetected = true;",
+  },
+  {
+    id: "M213", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "중첩 실행에 run-root 소유자를 물려주지 않는다",
+    invariant: "중첩 실행의 사본은 최상위 run-root 안에만 생긴다",
+    find: "  return { ...base, [RUN_ROOT_ENV]: runRoot };",
+    replace: "  return { ...base };",
+  },
+  {
+    id: "M214", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "상속받은 run-root 경로를 검증 없이 받는다",
+    invariant: "바깥에서 온 경로를 삭제·사용 대상으로 그대로 믿지 않는다",
+    find: "  if (typeof p !== \"string\" || p === \"\") return false;",
+    replace: "  return true;\n  if (typeof p !== \"string\" || p === \"\") return false;",
+  },
+  {
+    id: "M215", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "run-root 소유자 PID 가 살아 있어도 지운다",
+    invariant: "소유자가 확실히 사라진 run-root 만 치운다 — 확인 불가는 삭제 허가가 아니다",
+    find: "    if (!ownerGone) continue;   // 살아 있거나 **확인 불가능**하다 — 둘 다 안 지운다",
+    replace: "",
+  },
+  {
+    id: "M216", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "stale 시간을 안 보고 지운다",
+    invariant: "지금 도는 형제 실행의 run-root 를 지우지 않는다",
+    find: "    if (!Number.isFinite(mark.at) || nowMs - mark.at < staleMs) continue;",
+    replace: "",
+  },
+  {
+    id: "M217", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "다른 저장소의 run-root 도 치운다",
+    invariant: "우리 저장소가 만든 run-root 만 치운다",
+    find: "    if (!mark || mark.repo !== repo) continue;                       // 다른 저장소의 것",
+    replace: "",
+  },
+  {
+    id: "M218", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "run-root 자리에 놓인 심볼릭 링크를 그대로 따라간다",
+    invariant: "run-root 는 TMPDIR 바로 아래의 **진짜 디렉터리**여야 한다 — 링크를 따라가지 않는다",
+    find: "  if (st.isSymbolicLink() || !st.isDirectory()) return false; // 심볼릭 링크를 따라가지 않는다",
+    replace: "",
+  },
+  {
+    id: "M219", file: "scripts/_mutate-lib.mjs", suite: "test-verifier",
+    what: "정리 실패한 기준선 뒤에도 다음 기준선을 계속 실행한다",
+    invariant: "중단은 다음 프로세스를 띄우기 **전에** 일어난다",
+    find: "    if (baselineHalt(r)) { halted = { suite: s, r, c }; break; }",
+    replace: "    if (baselineHalt(r)) { halted = { suite: s, r, c }; continue; }",
+  },
+  {
+    id: "M220", file: "scripts/mutate.mjs", suite: "test-verifier", kind: "정적",
+    what: "기준선 중단을 보고만 하고 계속 진행한다",
+    invariant: "정리를 증명 못 한 기준선은 종료 코드 2 로 그 자리에서 멈춘다",
+    find: "    console.error(\"   남은 기준선도 돌연변이도 하나 실행하지 않고 중단한다.\");\n    process.exit(2);",
+    replace: "    console.error(\"   남은 기준선도 돌연변이도 하나 실행하지 않고 중단한다.\");",
+  },
+  {
+    id: "M221", file: "scripts/mutate.mjs", suite: "test-verifier", kind: "정적",
+    what: "최상위 실행이 자기 run-root 를 끝에 안 치운다",
+    invariant: "run-root 를 지우는 것은 그것을 만든 실행 하나뿐이고, 반드시 지운다",
+    find: "  if (ownsRunRoot) { try { rmSync(runRoot, { recursive: true, force: true }); } catch { /* 이미 없다 */ } }",
+    replace: "",
+  },
+  {
+    id: "M222", file: "scripts/mutate.mjs", suite: "test-verifier", kind: "정적",
+    what: "종료 경로에 정리를 걸지 않고 finally 에만 맡긴다",
+    invariant: "process.exit() 는 finally 를 돌리지 않는다 — 종료 경로 전부에 정리가 걸려 있다",
+    find: "process.on(\"exit\", cleanupOwned);",
     replace: "",
   },
 ];

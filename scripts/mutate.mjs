@@ -11,10 +11,12 @@
 // ⚠️ `node_modules` 는 복사하지 않고 **심볼릭 링크**를 건다(수백 MB 를 매번 복사할 이유가 없다).
 import { MUTATIONS } from "./mutations.mjs";
 import { runWithTimeout, tally, classify, cleanupFailed, nextMutationAllowed, resultRow, VERDICTS, FATAL,
-         INFRA_ERROR, CLEANUP_DEADLINE_MS } from "./_mutate-lib.mjs";
+         INFRA_ERROR, CLEANUP_DEADLINE_MS, runBaselines,
+         RUN_ROOT_ENV, RUN_ROOT_PREFIX, RUN_ROOT_MARKER,
+         runRootUsable, childEnv, staleRunRoots } from "./_mutate-lib.mjs";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, readFileSync,
-         rmSync, symlinkSync, existsSync, readdirSync, statSync } from "node:fs";
+         rmSync, symlinkSync, existsSync, readdirSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,21 +50,39 @@ if (only.length && list.length !== only.length) {
 // ── 임시 사본 ──
 const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: ROOT, maxBuffer: 64 << 20 })
   .toString("utf8").split("\0").filter(Boolean);
-// ⚠️ **지난 실행이 남긴 사본을 먼저 치운다.** 이 실행기는 자식을 **프로세스 그룹째 SIGKILL**
-//    하는데(위협 91), `test-verifier` 안에서 도는 중첩 실행이 그렇게 죽으면 `finally` 가 돌지
-//    못해 사본이 남는다 — 실측으로 한 번에 125개(약 1.6GB)가 쌓였다. SIGKILL 은 잡을 수 없으므로
-//    핸들러로는 못 막고, 다음 실행이 치우는 것이 유일한 자리다.
-//    ⛔ **우리 접두사 · 2시간보다 오래된 것만** 지운다 — 지금 도는 형제 실행을 건드리지 않는다.
-const PREFIX = "shhh-mutate-";
-for (const name of readdirSync(tmpdir())) {
-  if (!name.startsWith(PREFIX)) continue;
-  const old = join(tmpdir(), name);
-  try {
-    if (Date.now() - statSync(old).mtimeMs < 2 * 3600e3) continue;
-    rmSync(old, { recursive: true, force: true });
-  } catch { /* 남의 것이거나 이미 없다 — 조용히 넘어간다 */ }
+// ── 임시 자원의 소유권 (2026-08-31) ──
+// ⚠️ 이 실행기는 자식을 **프로세스 그룹째 SIGKILL** 한다(위협 91). `test-verifier` 안에서 도는
+//    중첩 실행이 그렇게 죽으면 `finally` 가 돌지 못해 사본이 남는다 — 실측으로 한 번에 125개
+//    (약 1.6GB)가 쌓였다. SIGKILL 은 잡을 수 없으니 **죽는 쪽에게 정리를 맡길 수 없다.**
+//    그래서 소유권을 위로 올린다: 최상위 실행이 run-root 하나를 만들고, 중첩 실행은 그 **안에만**
+//    사본을 만들며, run-root 를 지우는 것은 그것을 만든 실행 하나뿐이다.
+const fsx = { lstatSync, readFileSync };
+const inherited = process.env[RUN_ROOT_ENV];
+let runRoot, ownsRunRoot;
+if (inherited) {
+  // ⛔ 바깥에서 온 경로를 그대로 믿지 않는다. 검증에 실패하면 **아무것도 지우지 않고 멈춘다.**
+  if (!runRootUsable(inherited, tmpdir(), fsx)) {
+    console.error(`⛔ ${RUN_ROOT_ENV} 가 쓸 수 없는 경로다 — 아무것도 지우지 않고 멈춘다.`);
+    process.exit(2);
+  }
+  runRoot = inherited; ownsRunRoot = false;   // 중첩 실행은 run-root 를 지울 권한이 없다
+} else {
+  // 최상위 실행 **자신**이 SIGKILL 된 지난 회차만 치운다(조건은 `staleRunRoots` 가 소유한다).
+  for (const stale of staleRunRoots(readdirSync(tmpdir()), tmpdir(), ROOT, Date.now(), fsx))
+    try { rmSync(stale, { recursive: true, force: true }); } catch { /* 이미 없다 */ }
+  runRoot = mkdtempSync(join(tmpdir(), RUN_ROOT_PREFIX));
+  writeFileSync(join(runRoot, RUN_ROOT_MARKER),
+                JSON.stringify({ pid: process.pid, repo: ROOT, at: Date.now() }));
+  ownsRunRoot = true;
 }
-const dir = mkdtempSync(join(tmpdir(), PREFIX));
+const dir = mkdtempSync(join(runRoot, "copy-"));
+// ⛔ `process.exit()` 는 `finally` 를 돌리지 않는다 — 기준선 실패로 나가는 길이 바로 그것이었고,
+//    그래서 사본이 남았다. 정리는 **종료 경로 전부**에 걸어 둔다(멱등이다).
+const cleanupOwned = () => {
+  try { rmSync(dir, { recursive: true, force: true }); } catch { /* 이미 없다 */ }
+  if (ownsRunRoot) { try { rmSync(runRoot, { recursive: true, force: true }); } catch { /* 이미 없다 */ } }
+};
+process.on("exit", cleanupOwned);
 for (const rel of tracked) {
   const dst = join(dir, rel);
   mkdirSync(dirname(dst), { recursive: true });
@@ -79,7 +99,7 @@ symlinkSync(join(ROOT, "node_modules"), join(dir, "node_modules"));
   if (missing.length) {
     console.error("사본에 없는 파일이 있다 — `git add` 로 먼저 인덱스에 넣을 것:");
     for (const f of missing) console.error("  " + f);
-    rmSync(dir, { recursive: true, force: true });
+    cleanupOwned();
     process.exit(2);
   }
 }
@@ -92,29 +112,33 @@ try {
   // ── 0. 기준선. 변이 없이 대상 스위트가 **통과**해야 한다.
   //    안 그러면 아래의 「죽었다」는 변이 때문인지 원래 빨간지 구분이 안 된다.
   const suites = [...new Set(list.map((m) => m.suite))];
-  const budget = new Map();
-  for (const s of suites) {
-    const t0 = Date.now();
-    const r = await runWithTimeout("node", [`scripts/${s}.mjs`],
-      { cwd: dir, env: { ...process.env, SHHH_GIT_ROOT: ROOT }, timeoutMs: 120_000 });
-    // ⛔ **기준선은 1번 갈래(`started:true` · `exited` · `status:0`)만 허용한다.**
-    //    측정 불능·timeout·spawn 실패·signal·잔류 그룹은 전부 **즉시 전체 중단**이다 —
-    //    기준선을 못 재면 그 뒤 표는 하나도 읽을 수 없다(설계서 §0-21-2b Ⅲ 21번).
-    //    ⚠️ 옛 판은 `exit null` 이라고만 말해서 **환경 문제가 코드 문제로 읽혔다.**
-    const c = classify(r);
-    if (c.outcome !== "exited" || c.verdict !== "SURVIVED") {
-      baselineFail++;
-      console.error(c.outcome === "exited"
-        ? `⛔ 기준선 실패: ${s} 가 변이 없이도 실패한다 (정규화 상태 exited · 판정 ${c.verdict})`
-        : `⛔ 기준선 ${c.outcome}: ${s} — ${c.why}`);
-      if (c.outcome === "exited")
-        console.error("   " + (r.out.split("\n").filter((l) => /Assertion|✗/.test(l))[0] || "").trim());
-      if (cleanupFailed(r)) console.error(`   ⛔ 잔류 프로세스 그룹이 없음을 증명하지 못했다 — PGID ${r.pgid}`);
-      continue;
-    }
-    budget.set(s, timeoutArg || Math.max(TIMEOUT_FLOOR, (Date.now() - t0) * 20));
+  // ⛔ **기준선은 1번 갈래(`started:true` · `exited` · `status:0`)만 허용한다.**
+  //    측정 불능·timeout·spawn 실패·signal·잔류 그룹은 전부 **전체 중단**이다 —
+  //    기준선을 못 재면 그 뒤 표는 하나도 읽을 수 없다(설계서 §0-21-2b Ⅲ 21번).
+  //    ⚠️ 옛 판은 `exit null` 이라고만 말해서 **환경 문제가 코드 문제로 읽혔다.**
+  //    ⛔ **정리를 증명 못 한 기준선 뒤에는 다음 스위트조차 띄우지 않는다**(2026-08-31) —
+  //       순서와 중단은 `runBaselines()` 한 자리가 소유한다.
+  const { elapsed, failed, halted } = await runBaselines(suites, (s) =>
+    runWithTimeout("node", [`scripts/${s}.mjs`],
+      { cwd: dir, env: childEnv({ ...process.env, SHHH_GIT_ROOT: ROOT }, runRoot), timeoutMs: 120_000 }));
+  if (halted) {
+    console.error(`⛔ 기준선 ${halted.c.outcome}: ${halted.suite} — ${halted.c.why}`);
+    if (cleanupFailed(halted.r))
+      console.error(`   ⛔ 잔류 프로세스 그룹이 없음을 증명하지 못했다 — PGID ${halted.r.pgid}`);
+    console.error("   남은 기준선도 돌연변이도 하나 실행하지 않고 중단한다.");
+    process.exit(2);
+  }
+  for (const { suite, r, c } of failed) {
+    baselineFail++;
+    console.error(c.outcome === "exited"
+      ? `⛔ 기준선 실패: ${suite} 가 변이 없이도 실패한다 (정규화 상태 exited · 판정 ${c.verdict})`
+      : `⛔ 기준선 ${c.outcome}: ${suite} — ${c.why}`);
+    if (c.outcome === "exited")
+      console.error("   " + (r.out.split("\n").filter((l) => /Assertion|✗/.test(l))[0] || "").trim());
   }
   if (baselineFail) { console.error("기준선이 빨간 상태에서는 돌연변이 결과를 믿을 수 없다."); process.exit(2); }
+  // 제한 시간의 원본은 **측정한 기준선**이다 — 손으로 고른 상수가 아니다.
+  const budget = new Map([...elapsed].map(([s, ms]) => [s, timeoutArg || Math.max(TIMEOUT_FLOOR, ms * 20)]));
 
   // ── 1. 하나씩 적용 → 실행 → 되돌리기
   for (const m of list) {
@@ -140,7 +164,7 @@ try {
     writeFileSync(p, mutated);
     const timeoutMs = budget.get(m.suite) ?? TIMEOUT_FLOOR;
     const r = await runWithTimeout("node", [`scripts/${m.suite}.mjs`],
-      { cwd: dir, env: { ...process.env, SHHH_GIT_ROOT: ROOT }, timeoutMs });
+      { cwd: dir, env: childEnv({ ...process.env, SHHH_GIT_ROOT: ROOT }, runRoot), timeoutMs });
     writeFileSync(p, src);
     // ⛔ **판정을 여기서 다시 쓰지 않는다.** 종료 코드와 제한 시간 플래그를 직접 보는
     //    삼항식이 바로 위협 93 의 자리였고, 그 규칙이 기준선과 이 루프 **두 곳**에 갈라져
@@ -161,7 +185,7 @@ try {
     }
   }
 } finally {
-  rmSync(dir, { recursive: true, force: true });
+  cleanupOwned();
 }
 
 // ── 보고 ──
