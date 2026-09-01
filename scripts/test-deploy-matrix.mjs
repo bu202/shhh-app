@@ -305,5 +305,87 @@ const get = (env, url, headers = {}) =>
   }
 }
 
+// ══ D9. **JSON 응답은 문자 인코딩을 스스로 선언한다** ══════════════════════
+// 재현(2026-09-01 · iOS Safari 실기 화면): 라이브의 `GET /api/login/naver` 를 주소창에서 열면
+// 본문이 raw JSON 으로 그려지는데, `Content-Type` 이 `application/json` 뿐이라
+// **한국어가 깨져서(`怨꾩젙 湲곕뒫…`) 나왔다.** 브라우저가 UTF-8 을 추정하지 못하고
+// 지역 기본 인코딩으로 디코딩한 것이다. 그 자리는 위협 87 이 HTML 안내로 바꿨지만,
+// **JSON 을 사람이 보게 되는 자리는 그것 하나가 아니다**(개발자 도구·프록시·로그·`/exchange`).
+// 값의 원본은 `json()` 한 자리이므로 여기서 전수로 잰다 — 한 라우트만 고치면 다시 갈라진다.
+{
+  const CT_RE = /^application\/json; ?charset=utf-8$/i;
+  for (const [name, mk] of Object.entries(CONFIGS)) {
+    const env = mk();
+    const cases = [
+      ["/health", {}],
+      ["/policies", {}],
+      ["/book", { [BUILD_HEADER]: BUILD_ID }],
+    ];
+    for (const [url, headers] of cases) {
+      const res = await get(env, url, headers);
+      const ct = res.headers.get("Content-Type") || "";
+      if (!/json/i.test(ct)) continue;   // HTML 안내 화면은 D1·D5 가 잰다
+      assert.match(ct, CT_RE,
+        t(`D9(${name}${url}): ★ JSON 응답이 인코딩을 선언하지 않는다 (${ct}) — `
+          + "브라우저가 지역 기본 인코딩으로 읽으면 한국어가 깨진다"));
+    }
+  }
+  // 리미터가 스스로 만드는 429 도 같은 자리를 지나야 한다. **직접 만든 응답이 하나라도 남으면
+  // 인코딩 선언이 다시 갈라진다** — 실제로 갈려 있었다(2026-09-01).
+  {
+    // ⚠️ **시계를 세운다.** 리미터의 창은 `Math.floor(now / 60초)` 라 반복문이 경계를 넘으면
+    //    카운터가 새로 서서 13회 안에 429 가 안 나온다 — 검사가 무작위로 실패한다.
+    //    창의 **한가운데**로 고정한다(경계에 붙이면 고정이 무의미하다).
+    // ⛔ **값을 한 번만 계산한다** — 화살표 안에서 `real()` 을 다시 읽으면 분 경계에서
+    //    60초 점프해 창 번호가 바뀐다. 그러면 고정한 척만 하고 아무것도 안 고친 것이다.
+    const real = Date.now;
+    const frozen = Math.floor(real() / 60_000) * 60_000 + 30_000;
+    Date.now = () => frozen;
+    try {
+    // `login` 버킷(10/분)의 `auth:false` 라우트를 쓴다 — 인증이 필요한 라우트는 세션 envelope
+    // 검사가 리미터 **앞**에서 401 을 내서 429 자리에 닿지 못한다.
+    const env = CONFIGS.full();
+    let over = null;
+    for (let i = 0; i < 13 && !over; i++) {
+      const res = await worker.fetch(new Request("https://api.test/api/me/resume",
+        { method: "POST", headers: { Origin: ORIGIN, [BUILD_HEADER]: BUILD_ID } }), env);
+      if (res.status === 429) over = res;
+    }
+    assert.ok(over, t("D9: login 버킷이 13회 안에 429 를 내지 않는다 — 리미터 자리를 못 쟀다"));
+    assert.match(over.headers.get("Content-Type") || "", CT_RE,
+      t(`D9: ★ 429 응답이 인코딩을 선언하지 않는다 (${over.headers.get("Content-Type")})`));
+    assert.equal(over.headers.get("Retry-After"), "60",
+      t("D9: 429 에서 Retry-After 가 사라졌다"));
+    assert.match(await over.text(), /[가-힣]/, t("D9: 429 본문에 한국어가 없다"));
+    } finally { Date.now = real; }   // ⛔ 실패해도 되돌린다 — 뒤의 검사가 같은 프로세스다
+  }
+
+  // 그 응답이 실제로 한국어를 싣는지도 함께 잰다 — 안 실으면 이 검사가 무의미해진다.
+  const closed = await get(CONFIGS.none(), "/book", { [BUILD_HEADER]: BUILD_ID });
+  assert.match(await closed.text(), /[가-힣]/,
+    t("D9: 폐쇄 배포의 계정 API 응답에 한국어가 없다 — 인코딩 검사가 헛돈다"));
+
+  // ── D9-b. **최상위 이동의 거절도 화면이다** (2026-09-01) ──────────────────
+  // 열린 구성의 `GET /login/:p` 에서 복귀 주소가 허용 밖이면 400 인데, 그 한 줄만
+  // `new Response("허용되지 않은 주소예요", …)` 로 남아 있었다 — `Content-Type` 조차 없어서
+  // 브라우저가 지역 기본 인코딩으로 읽고 **한국어가 깨진 평문**을 그렸다. 같은 검사의
+  // 다른 두 자리(`POST /signup/start` · 콜백)는 이미 JSON·화면으로 갈라져 있었다.
+  for (const name of ["full", "dev"]) {
+    const res = await get(CONFIGS[name](),
+      `/login/kakao?b=${BUILD_ID}&return=${encodeURIComponent("https://evil.test/x")}`);
+    assert.equal(res.status, 400,
+      t(`D9-b(${name}): 허용 밖 복귀 주소가 ${res.status} 다 — 세션이 새는 자리다`));
+    assert.match(res.headers.get("Content-Type") || "", /^text\/html; ?charset=utf-8$/i,
+      t(`D9-b(${name}): ★ 최상위 이동의 거절이 인코딩 없는 평문이다 `
+        + `(${res.headers.get("Content-Type")})`));
+    const html = await res.text();
+    assert.match(html, /[가-힣]/, t(`D9-b(${name}): 거절 화면에 한국어가 없다`));
+    assert.match(html, new RegExp(`<a[^>]+href="${ORIGIN}/?"`),
+      t(`D9-b(${name}): 거절 화면에 앱으로 돌아갈 링크가 없다`));
+    assert.ok(!/evil\.test/.test(html),
+      t(`D9-b(${name}): ★ 거절 화면이 사용자가 준 주소를 그대로 그린다`));
+  }
+}
+
 console.log(`test-deploy-matrix: ${n}개 통과 — 배포 구성 8종 × 로그인 시작·콜백·교환·계정 API·`
   + `가입 시작 · 폐쇄 배포에서도 옛 PWA 가 읽을 화면 · 현재 빌드는 fail-closed 유지`);

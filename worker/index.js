@@ -141,9 +141,13 @@ const cors = (env, req) => {
     : { ...SEC };
 };
 
+// ⚠️ **인코딩을 반드시 선언한다**(2026-09-01). `application/json` 만 적으면 본문을 화면에
+//    그리는 브라우저가 지역 기본 인코딩으로 디코딩해 **한국어가 깨진다** — iOS Safari 에서
+//    라이브의 `/api/login/naver` 응답이 실제로 그렇게 나왔다. 값의 원본은 이 한 자리다.
 const json = (env, req, body, status = 200, extra) =>
   new Response(JSON.stringify(body), {
-    status, headers: { "Content-Type": "application/json", ...cors(env, req), ...extra } });
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8", ...cors(env, req), ...extra } });
 
 // 리다이렉트도 우리가 만든다. `Response.redirect` 는 헤더를 못 얹는데, 이 응답의 Location 에는
 // **세션 토큰이 실려 있어서** no-store 가 가장 필요한 자리다.
@@ -1030,9 +1034,10 @@ async function countVerdict(env, req, bucket) {
   }
 }
 
+// ⛔ **응답을 직접 만들지 않는다** — 헤더를 손으로 적으면 `json()` 과 갈라진다(인코딩 선언이
+//    실제로 그렇게 갈려 있었다 · 2026-09-01).
 const tooMany = (env, req) =>
-  new Response(JSON.stringify({ error: "잠시 뒤에 다시 시도해 주세요" }),
-    { status: 429, headers: { "Content-Type": "application/json", "Retry-After": "60", ...cors(env, req) } });
+  json(env, req, { error: "잠시 뒤에 다시 시도해 주세요" }, 429, { "Retry-After": "60" });
 // 방어가 고장 났다. **429 로 말하지 않는다** — 「좀 있다 다시」가 아니라 「지금 우리가 셀 수
 // 없다」이고, 그 상태로 계정 경로를 여는 것은 방어가 없는 것과 같다. 이유는 밖으로 안 나간다.
 // ⚠️ **최상위 이동에는 사람이 읽을 화면을 준다**(2026-08-28 · 위협 87). 재현: 지금 라이브와
@@ -2111,7 +2116,12 @@ async function route(req, env, rc) {
       // 파싱이 안 되는 것도 "허용되지 않은 주소"다 — allowed(null) 은 어차피 거짓이다.
       let backOrigin = null;
       try { backOrigin = new URL(back).origin; } catch { /* 주소가 아니면 아래에서 400 */ }
-      if (!allowed(env, backOrigin)) return new Response("허용되지 않은 주소예요", { status: 400 });
+      // ⚠️ **여기도 최상위 이동이다**(2026-09-01 · PWA-1). 이 한 줄만 `new Response` 로 남아
+      //    있었다 — `Content-Type` 도 charset 도 없어서 브라우저가 지역 기본 인코딩으로
+      //    디코딩했고, iOS Safari 에서 **한국어가 깨진 평문 한 줄**이 그려졌다. 사용자에게는
+      //    앱으로 돌아갈 길도 없다. 같은 검사의 다른 두 자리는 이미 갈라져 있다 —
+      //    `POST /signup/start` 는 JSON, 콜백은 `fail()`. 이 자리의 답은 화면이다(위협 83).
+      if (!allowed(env, backOrigin)) return loginFailPage(env, "돌아갈 주소가 허용되지 않았어요.", 400);
       // 어느 제공자로 시작한 state 인지 같이 서명한다 — 남의 제공자 자리에서 재사용하지 못하게.
       // n 은 브라우저가 만든 값이다. 그대로 돌려주기만 하고 서버는 뜻을 모른다 — 판정은 앱이 한다.
       // txn 은 **서버가 만들어 이 브라우저에만 심는 표**다. state 에는 해시만 실린다(위 「로그인 왕복 표」).

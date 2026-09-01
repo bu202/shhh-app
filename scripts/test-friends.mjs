@@ -1576,7 +1576,17 @@ function befriend(env, a, b, status = "accepted") {
 // 전에는 `/login`(시작)·`/cb`·`/exchange` 셋이 같은 `login` 버킷을 썼다. 한 번의 로그인이
 // 두 자리를 지나므로 **한도 10 이 실제로는 완전한 로그인 5회**였다(실측). 문서는 10 이라 적혀 있었다.
 // 막으려는 것은 "세션을 무한히 찍어내는 것"인데 `/login` 은 세션을 안 만든다 — 302 하나와 서명 하나다.
+// ⚠️ **시계를 세운다**(2026-09-01). 창은 `Math.floor(now / 60초)` 라, 반복문이 경계를 넘으면
+//    카운터가 새로 서서 121 은 통과하고 **122 가 `done === 12`** 로 무작위로 실패한다.
+//    창의 한가운데로 고정한다 — 경계에 붙이면 고정이 무의미하다.
 {
+  const realNow = Date.now;
+  // ⛔ **값을 한 번만 계산한다.** `() => Math.floor(realNow()/60_000)*60_000 + 30_000` 로 쓰면
+  //    매 호출마다 실제 시각을 다시 읽어 **분 경계에서 60초 점프**한다 — 고정이 아니라
+  //    창 번호가 그대로 바뀌어 고치려던 무작위 실패가 그대로 남는다(2026-09-01 재현).
+  const frozen = Math.floor(realNow() / 60_000) * 60_000 + 30_000;
+  Date.now = () => frozen;
+  try {
   const env = makeEnv({ KAKAO_ID: "id" });
   const ip = { "CF-Connecting-IP": "198.51.100.77" };
   const counters = () => env.LEDGER._db.prepare("SELECT COUNT(*) n FROM rate_limits").get().n;
@@ -1606,6 +1616,7 @@ function befriend(env, a, b, status = "accepted") {
   // 123. 그래도 **막히기는 한다.** 세션을 만드는 자리의 상한이 사라지면 그건 방어가 아니다.
   const cb = await worker.fetch(new Request("https://api.test/cb/kakao?code=x&state=y", { headers: ip }), env2);
   assert.equal(cb.status, 429, "세션을 만드는 자리가 안 막힌다");
+  } finally { Date.now = realNow; }   // ⛔ 실패해도 되돌린다 — 뒤의 검사가 같은 프로세스다
 }
 
 // ══ 27. 유지보수 · 복원 게이트 (T4 · T6 · T8 · T40~T43) ═══════════════════

@@ -160,6 +160,16 @@ const noLeak = (body, where) => {
   assert.ok(routeCount() >= buckets.length, t("T66-a: 라우트 표가 비었다 — 검사기가 낡았다"));
 
   // ── b. ★ **엣지가 전부 허용해도 우리 카운터가 막는다.** 가짜 mock 으로는 통과 못 한다.
+  // ⚠️ **시계를 세운다**(2026-09-01). 한도 120 짜리 버킷은 121회를 도는데, 그 사이 창
+  //    (`Math.floor(now / 60초)`)이 넘어가면 카운터가 새로 서서 마지막이 429 가 아니다 —
+  //    검사가 무작위로 실패한다. 창의 한가운데로 고정한다.
+  const realNow = Date.now;
+  // ⛔ **값을 한 번만 계산한다.** `() => Math.floor(realNow()/60_000)*60_000 + 30_000` 로 쓰면
+  //    매 호출마다 실제 시각을 다시 읽어 **분 경계에서 60초 점프**한다 — 고정이 아니라
+  //    창 번호가 그대로 바뀌어 고치려던 무작위 실패가 그대로 남는다(2026-09-01 재현).
+  const frozen = Math.floor(realNow() / 60_000) * 60_000 + 30_000;
+  Date.now = () => frozen;
+  try {
   for (const b of buckets) {
     const [path, method] = BUCKET_ROUTE[b];
     const max = rlMax(b);
@@ -175,6 +185,7 @@ const noLeak = (body, where) => {
     assert.equal(last, 429, t(`T66-b[${b}]: 한도+1(${max + 1})인데 ${last} — 엣지 mock 이 전부 허용했고 우리 카운터는 안 셌다`));
     assert.ok(rl.calls > 0, t(`T66-b[${b}]: 엣지 바인딩을 한 번도 안 불렀다`));
   }
+  } finally { Date.now = realNow; }   // ⛔ 실패해도 되돌린다 — 뒤의 검사가 같은 프로세스다
 
   // ── c. **한 요청이 두 버킷에 세어지지 않는다.** 카운터 행 수로 잰다.
   {

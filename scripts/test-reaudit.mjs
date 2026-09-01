@@ -298,7 +298,23 @@ async function rememberKey(env) {
 //
 // 지금 재는 것은 **총량 불변식**이다: 인증 없는 요청을 아무리 반복해도 두 저장소의
 // rows-written 합계가 IP·분당 상한을 넘지 않는다.
+//
+// ⚠️ **이 블록 전체에서 시계를 세운다**(2026-09-01). 리미터의 창은 `Math.floor(now / RL_WINDOW)`
+//    라 60초마다 키가 갈리고 카운터가 새로 선다 — 즉 아래가 재는 명제(「요청 2배 → 쓰기 같음」·
+//    「200회 뒤에는 429」·「429 이후 쓰기 0」)는 전부 **한 창 안에서만** 참이다. 세우지 않으면
+//    반복문이 경계를 넘는 회차에서만 ledger 쓰기가 31 → 62 가 되어 스위트가 무작위로 실패한다
+//    (전체 실행에서 실제로 그렇게 났고, 경계 300ms 앞에서 시작하는 재현으로 원인을 확정했다).
+// ⛔ **더 나쁜 방향이 있다** — 두 측정이 나란히 경계를 넘으면 둘 다 62 라 **같은 값으로 통과**
+//    하고 `CAP` 도 안 넘어 아무도 모른다. 흔들리는 시계는 이 검사를 실패시키기만 하는 것이
+//    아니라 **조용히 무력화**한다. 그래서 자리마다 고치지 않고 블록 하나로 세운다.
+// ⚠️ 창이 넘어가면 쓰기가 다시 는다는 사실 자체는 결함이 아니라 설계다(분당 한도).
+//    창 하나 안의 상한은 아래 `CAP` 이 잰다.
 {
+  const real = Date.now;
+  // 창의 **한가운데**로 고정한다 — 경계에 붙여 두면 고정이 무의미해진다.
+  const frozen = Math.floor(real() / 60_000) * 60_000 + 30_000;
+  Date.now = () => frozen;
+  try {
   const env = makeEnv({ KAKAO_ID: "id", KAKAO_SECRET: "s" });
   // 두 저장소 모두 **행 수가 아니라 총 변경 수**로 센다 — 지웠다 다시 쓴 것도 쓰기다.
   const dbW = () => env.DB._db.prepare("SELECT total_changes() AS n").get().n;
@@ -422,6 +438,7 @@ async function rememberKey(env) {
     t("R5-f: restore_closed 인데 리미터가 주 D1 에 썼다"));
   assert.equal(env3.LEDGER._db.prepare("SELECT total_changes() AS n").get().n, l0,
     t("R5-f: restore_closed 인데 임차증을 땄다"));
+  } finally { Date.now = real; }   // ⛔ 실패해도 반드시 되돌린다 — 다음 스위트가 같은 프로세스다
 }
 
 console.log(`test-reaudit: ${n}개 통과 — R1 모드 전환 우회(3×3 전수 · CAS) · R2 삭제 증거의 키 소유권 · `

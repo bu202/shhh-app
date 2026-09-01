@@ -134,8 +134,8 @@ export const MUTATIONS = [
     id: "M14", file: "worker/index.js", suite: "test-abuse-guard",
     what: "countVerdict 의 예외를 통과(OK)로 읽는다",
     invariant: "리미터 저장소가 답을 안 하면 계정 경로를 닫는다(503) — 429 도 통과도 아니다",
-    find: "    return BROKEN;\n  }\n}\n\nconst tooMany",
-    replace: "    return OK;\n  }\n}\n\nconst tooMany",
+    find: "    return BROKEN;\n  }\n}\n\n// ⛔ **응답을 직접 만들지 않는다**",
+    replace: "    return OK;\n  }\n}\n\n// ⛔ **응답을 직접 만들지 않는다**",
   },
   {
     id: "M15", file: "worker/index.js", suite: "test-docs",
@@ -348,11 +348,11 @@ export const MUTATIONS = [
     id: "D15", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "돌연변이 목록 개수를 낡은 22 로 되돌린다",
     invariant: "문서가 주장하는 돌연변이 개수는 `MUTATIONS` 목록에서 파생한다 — 손으로 적은 총수는 반드시 낡는다",
-    // ⚠️ **이 앵커는 개수가 바뀔 때마다 함께 바꾼다**(D21 을 더하며 세 번째로 고쳤다).
-    //    자기가 건드리는 숫자를 앵커에 담는 변이라 피할 수 없다 — 대신 낡으면 실행기가
-    //    ANCHOR-MISS 로 종료 코드 1 을 내므로 **조용히 썩지는 않는다.**
-    find: "`scripts/mutations.mjs`(목록 269종",
-    replace: "`scripts/mutations.mjs`(목록 22종",
+    // ⚠️ **앵커에 개수를 담지 않는다**(2026-09-01). 전에는 `(목록 269종` 이 앵커라
+    //    돌연변이를 하나 더할 때마다 이 줄이 낡아 ANCHOR-MISS 가 났다 — 두 회차 연속으로.
+    //    앵커는 **개수 앞의 고정 문구**만 잡고, 낡은 주장은 `replace` 가 끼워 넣는다.
+    find: "`scripts/mutations.mjs`(목록 ",
+    replace: "`scripts/mutations.mjs`(목록 22종 · 실제로는 ",
   },
   {
     id: "D13", file: "docs/HANDOFF.md", suite: "test-docs", kind: "정적",
@@ -601,8 +601,9 @@ export const MUTATIONS = [
     id: "D21", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "「종」이 없는 괄호형 내역을 낡은 「정적 21」로 되돌린다",
     invariant: "총계뿐 아니라 **하위 내역**도 MUTATIONS 에서 파생한다 — 「N종」이라고 안 적은 괄호형 내역도 센다(총계만 보면 66 ≠ 40+21 이 남는다)",
-    find: "목록 269종 — **동작 209종 · 정적 60종**",
-    replace: "목록 188종 — **동작 40종 · 정적 21종**",
+    // ⚠️ D15 와 같은 이유로 앵커에 개수를 담지 않는다(2026-09-01).
+    find: "종 — **동작 ",
+    replace: "종 — **동작 40종 · 정적 21종** 이 아니라 동작 ",
   },
   // ── 위협 70 · 불완전한 OAuth 주소가 세션 폐기 재시도를 막던 결함의 방어들 ──
   {
@@ -2118,5 +2119,31 @@ export const MUTATIONS = [
     invariant: "process.exit() 는 finally 를 돌리지 않는다 — 종료 경로 전부에 정리가 걸려 있다",
     find: "process.on(\"exit\", cleanupOwned);",
     replace: "",
+  },
+
+  // ── 2026-09-01 · JSON 응답의 문자 인코딩 선언 (PWA-1) ────────────────────
+  // 재현은 iOS Safari 실기 화면이었다 — 라이브의 `/api/login/naver` 가 raw JSON 으로 그려지며
+  // 한국어가 깨졌다. 값의 원본이 `json()` 한 자리라는 것 자체가 방어이므로 둘 다 잰다.
+  {
+    id: "M223", file: "worker/index.js", suite: "test-deploy-matrix",
+    what: "JSON 응답에서 charset 선언을 뺀다",
+    invariant: "본문을 화면에 그리는 브라우저가 UTF-8 로 읽도록 응답이 스스로 선언한다",
+    find: "\"Content-Type\": \"application/json; charset=utf-8\"",
+    replace: "\"Content-Type\": \"application/json\"",
+  },
+  {
+    id: "M224", file: "worker/index.js", suite: "test-deploy-matrix",
+    what: "429 응답을 json() 을 거치지 않고 직접 만든다",
+    invariant: "JSON 헤더의 원본은 한 자리다 — 직접 만들면 인코딩 선언이 다시 갈라진다",
+    find: "  json(env, req, { error: \"잠시 뒤에 다시 시도해 주세요\" }, 429, { \"Retry-After\": \"60\" });",
+    replace: "  new Response(JSON.stringify({ error: \"잠시 뒤에 다시 시도해 주세요\" }),\n"
+      + "    { status: 429, headers: { \"Content-Type\": \"application/json\", \"Retry-After\": \"60\", ...cors(env, req) } });",
+  },
+  {
+    id: "M225", file: "worker/index.js", suite: "test-deploy-matrix",
+    what: "최상위 이동의 복귀 주소 거절을 인코딩 없는 평문 한 줄로 되돌린다",
+    invariant: "`/login/:p` 의 거절은 사람이 읽을 화면이다 — 브라우저가 본문을 직접 그리는 자리다",
+    find: "return loginFailPage(env, \"돌아갈 주소가 허용되지 않았어요.\", 400);",
+    replace: "return new Response(\"허용되지 않은 주소예요\", { status: 400 });",
   },
 ];
