@@ -1772,6 +1772,11 @@ id 는 실측으로 **`M172`**(2026-08-29 · `grep -c 'id: "M' scripts/mutations
 G10·G12 는 `scripts/test-verifier.mjs`(V29~V38 · V1 을 음수 PGID probe 로 정정 · **T113**),
 G11 은 `scripts/mutations.mjs` **M192~M222**, G13·G14 는 `scripts/test-docs.mjs` 다.
 
+⚠️ **G15 는 이 표의 항목이 아니다 — 번호만 이어 쓴다.** 2026-09-02 에 `scripts/test-verifier.mjs` 가
+「리미터를 재는 스위트는 시계를 세운다」를 **G15** 로 강제한다(`PINNED_CLOCK` · `CLAUDE.md` §8).
+위협 93·94 와 무관한 4단계 검사라 여기 표에 넣지 않는다. ⛔ **다음 게이트는 G16 부터다** —
+이번에 G13 을 두 번 쓸 뻔했고 독립 검토가 잡았다. **G 번호는 스위트별이 아니라 저장소 전체에서 하나다.**
+
 ⚠️ **설계에 없던 상수를 하나 더 뒀다 — `GROUP_SETTLE_MS`.** 직접 자식이 닫힌 뒤 그룹이 **스스로**
 빠지기를 기다리는 창이다. 이것이 없으면 정상적으로 종료 중인 손자(예: `test-workerd` 가 SIGKILL 한
 workerd)가 **잔류로 오독**된다. ⛔ **불변식의 유예가 아니다** — 어느 경우에도 그룹 부재를 확인하기

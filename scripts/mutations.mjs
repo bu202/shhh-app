@@ -2146,4 +2146,52 @@ export const MUTATIONS = [
     find: "return loginFailPage(env, \"돌아갈 주소가 허용되지 않았어요.\", 400);",
     replace: "return new Response(\"허용되지 않은 주소예요\", { status: 400 });",
   },
+
+  // ── 2026-09-01 · 리미터 창 고정 (B안 · G15) ──────────────────────────────
+  // 재는 것은 **검사가 잴 수 있는 상태인가**다. 시계를 안 세운 스위트는 창이 갈리는 회차에
+  // 한도 회귀를 조용히 통과시킨다(실측: T63 이 `62/분 → IP 2개` 를 `93/분 → IP 1개` 로
+  // 바꾸고도 종료 코드 0). 셋 다 G15 가 **소스에서** 잡는다.
+  {
+    id: "M226", file: "scripts/test-friends.mjs", suite: "test-verifier", kind: "정적",
+    what: "한 스위트에서 시계를 세우는 대입만 지운다(마커 주석은 남긴다)",
+    invariant: "마커가 있는 스위트는 실제로 `Date.now` 를 세운다 — 주석은 시계를 안 멈춘다",
+    find: "Date.now = () => FROZEN_NOW;",
+    replace: "",
+  },
+  {
+    id: "M227", file: "scripts/test-abuse-guard.mjs", suite: "test-verifier", kind: "정적",
+    what: "고정을 화살표 안에서 다시 계산하는 형태로 되돌린다",
+    invariant: "고정 값은 한 번만 계산한다 — 화살표 안에서 읽으면 분 경계에서 60초 점프한다",
+    find: "Date.now = () => FROZEN_NOW;",
+    replace: "const REAL_NOW = Date.now;\n"
+      + "Date.now = () => Math.floor(REAL_NOW() / 60_000) * 60_000 + 30_000;",
+  },
+  {
+    id: "M228", file: "scripts/_mutate-lib.mjs", suite: "test-verifier", kind: "정적",
+    what: "「429 를 재면 시계를 세운다」 규칙이 아무것도 안 잡게 만든다",
+    invariant: "면제 목록에 없는 스위트가 리미터를 재면서 시계를 안 세우면 G15 가 실패한다",
+    find: "  if (!pinned && (required || (/\\b429\\b/.test(src) && !PINNED_CLOCK_EXEMPT[base])))",
+    replace: "  if (!pinned && (required || (false && /\\b429\\b/.test(src) && !PINNED_CLOCK_EXEMPT[base])))",
+  },
+
+  // ── 2026-09-02 · 독립 검토가 연 두 구멍 (Codex) ──────────────────────────
+  // ① 마커도 대입도 있는데 **바로 뒤에 되돌리면** 시계는 그대로 돈다.
+  // ② 대상 판정이 리터럴 `429` 발견법에만 기대면 별칭 하나로 빠져나간다 —
+  //    그래서 아는 다섯은 목록이 **조건 없이** 요구한다.
+  {
+    id: "M229", file: "scripts/test-reaudit.mjs", suite: "test-verifier", kind: "정적",
+    what: "시계를 세운 바로 뒤에 원래 Date.now 로 되돌린다",
+    invariant: "세운 스위트의 `Date.now` 대입은 정확히 하나다 — 되돌리면 고정이 아니다",
+    find: "Date.now = () => FROZEN_NOW;",
+    replace: "const REAL_NOW = Date.now;\n"
+      + "Date.now = () => FROZEN_NOW;\n"
+      + "Date.now = REAL_NOW;",
+  },
+  {
+    id: "M230", file: "scripts/_mutate-lib.mjs", suite: "test-verifier", kind: "정적",
+    what: "시계를 세워야 하는 스위트 목록에서 하나를 뺀다",
+    invariant: "목록에 적힌 스위트는 `429` 발견법과 무관하게 조건 없이 시계를 세운다",
+    find: "  \"test-friends.mjs\", \"test-abuse-guard.mjs\", \"test-stage34-closeout.mjs\",",
+    replace: "  \"test-abuse-guard.mjs\", \"test-stage34-closeout.mjs\",",
+  },
 ];

@@ -21,6 +21,13 @@ import worker, {
 } from "../worker/index.js";
 import { BUILD_ID } from "../worker/build-id.js";
 import { makeD1, makeLedger } from "./_d1.mjs";
+// ⏱ PINNED_CLOCK — 리미터 창(60초) 경계를 넘지 않게 **이 파일 전체**의 시계를 세운다.
+//    한 곳에 두는 이유: 블록마다 세우면 같은 파일의 다른 반복문을 빠뜨린다 — 실제로 여덟 자리를
+//    빠뜨렸다(2026-09-01). 파일당 하나면 빠뜨릴 자리가 없다.
+//    ⛔ 값을 화살표 안에서 계산하지 않는다 — 매 호출마다 실제 시각을 다시 읽어 **경계에서 60초
+//    점프**한다(고정한 척만 한다 · 2026-09-01 재현). 강제 검사는 scripts/test-verifier.mjs G15.
+const FROZEN_NOW = Math.floor(Date.now() / 60_000) * 60_000 + 30_000;
+Date.now = () => FROZEN_NOW;
 
 const ORIGIN = "https://app.test";
 const KEY32 = Buffer.from(Uint8Array.from({ length: 32 }, (_, i) => i + 11)).toString("base64url");
@@ -333,15 +340,7 @@ const get = (env, url, headers = {}) =>
   // 리미터가 스스로 만드는 429 도 같은 자리를 지나야 한다. **직접 만든 응답이 하나라도 남으면
   // 인코딩 선언이 다시 갈라진다** — 실제로 갈려 있었다(2026-09-01).
   {
-    // ⚠️ **시계를 세운다.** 리미터의 창은 `Math.floor(now / 60초)` 라 반복문이 경계를 넘으면
-    //    카운터가 새로 서서 13회 안에 429 가 안 나온다 — 검사가 무작위로 실패한다.
-    //    창의 **한가운데**로 고정한다(경계에 붙이면 고정이 무의미하다).
-    // ⛔ **값을 한 번만 계산한다** — 화살표 안에서 `real()` 을 다시 읽으면 분 경계에서
-    //    60초 점프해 창 번호가 바뀐다. 그러면 고정한 척만 하고 아무것도 안 고친 것이다.
-    const real = Date.now;
-    const frozen = Math.floor(real() / 60_000) * 60_000 + 30_000;
-    Date.now = () => frozen;
-    try {
+    // ⚠️ 13회가 **한 리미터 창 안**이어야 429 자리를 잰다 — 시계는 파일 최상단 `PINNED_CLOCK` 이 세운다.
     // `login` 버킷(10/분)의 `auth:false` 라우트를 쓴다 — 인증이 필요한 라우트는 세션 envelope
     // 검사가 리미터 **앞**에서 401 을 내서 429 자리에 닿지 못한다.
     const env = CONFIGS.full();
@@ -357,7 +356,6 @@ const get = (env, url, headers = {}) =>
     assert.equal(over.headers.get("Retry-After"), "60",
       t("D9: 429 에서 Retry-After 가 사라졌다"));
     assert.match(await over.text(), /[가-힣]/, t("D9: 429 본문에 한국어가 없다"));
-    } finally { Date.now = real; }   // ⛔ 실패해도 되돌린다 — 뒤의 검사가 같은 프로세스다
   }
 
   // 그 응답이 실제로 한국어를 싣는지도 함께 잰다 — 안 실으면 이 검사가 무의미해진다.

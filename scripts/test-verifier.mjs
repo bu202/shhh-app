@@ -13,6 +13,10 @@
 //      `kill(-pgid, 0)` 이 `alive` 였고 손자가 살아 있었다.
 //    넷 다 **테스트가 통과하는 상태에서** 성립했다.
 //
+//    · 2026-09-01: **시계를 안 세운 스위트도 고장 난 검증 장치다.** 리미터의 창이 갈리는
+//      회차에서 「N회가 전부 통과」류가 한도 회귀를 조용히 통과시켰다 — T63 이 `62/분 → IP 2개`
+//      를 `93/분 → IP 1개` 로 바꾸고도 종료 코드 0 이었다(G15).
+//
 // ⛔ **4단계 기능이 도는지는 재지 않는다** — 그 둘을 섞지 않는다.
 import assert from "node:assert";
 import { readFileSync, readdirSync, mkdtempSync, writeFileSync, chmodSync, symlinkSync,
@@ -28,7 +32,9 @@ import { runWithTimeout, tally, classify, probeGroup, cleanupFailed, nextMutatio
          GROUP_ESCAPE_MARK, GROUP_ESCAPE_PATTERNS, groupEscapeViolations,
          resultRow, JSON_EVIDENCE, baselineHalt, runBaselines,
          RUN_ROOT_ENV, RUN_ROOT_PREFIX, RUN_ROOT_MARKER,
-         runRootUsable, childEnv, staleRunRoots } from "./_mutate-lib.mjs";
+         runRootUsable, childEnv, staleRunRoots,
+         PINNED_CLOCK_MARK, PINNED_CLOCK_EXEMPT, PINNED_CLOCK_SUITES,
+         pinnedClockViolations } from "./_mutate-lib.mjs";
 import { MUTATIONS } from "./mutations.mjs";
 
 let n = 0;
@@ -950,6 +956,57 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     t(`G12 자기검사: ★ 패턴이 ${GROUP_ESCAPE_PATTERNS.length}개로 줄었다`));
 }
 
+// ══ G15. 리미터를 재는 스위트는 시계를 세운다 (2026-09-01) ═════════════════
+// ⚠️ 왜 여기인가: **시계를 안 세운 스위트는 고장 난 검증 장치**다. 창이 갈리면
+//    「N회가 전부 통과」류가 한도 회귀를 조용히 통과시킨다 — 실측으로 T63 이 그랬다
+//    (`합계 62/분 → IP 2개` 가 `93/분 → IP 1개` 로 바뀌는데 종료 코드 0).
+// ⛔ 4단계 기능이 도는지는 여전히 재지 않는다 — 재는 것은 **검사가 잴 수 있는 상태인가**다.
+{
+  const dir = fileURLToPath(new URL(".", import.meta.url));
+  for (const f of readdirSync(dir).filter((x) => x.endsWith(".mjs"))) {
+    const bad = pinnedClockViolations(`scripts/${f}`, readFileSync(join(dir, f), "utf8"));
+    assert.deepEqual(bad, [],
+      t(`G15: ★ ${f} — ` + bad.map((b) => `${b.why}${b.line ? `(${b.line}줄)` : ""}`).join(" / ")));
+  }
+  // ⚠️ **개수를 세지 않는다** — 「마커를 가진 `.mjs` 가 5개 이상」은 이 라이브러리와 목록 파일까지
+  //    세어서, 정작 스위트가 하나도 안 세워져 있어도 통과했다(독립 검토 2026-09-02).
+  //    목록에 적힌 파일 **하나하나가 실재하고 세워져 있는지**를 잰다.
+  for (const f of PINNED_CLOCK_SUITES)
+    assert.ok(readFileSync(join(dir, f), "utf8").includes(PINNED_CLOCK_MARK),
+      t(`G15: ★ 목록의 ${f} 가 시계를 안 세운다`));
+  // 면제는 이유가 있어야 하고, **면제 근거가 사실이어야** 한다 — worker 를 직접 부르면
+  // 「진짜 리미터를 안 지난다」가 거짓이 된다.
+  for (const [f, why] of Object.entries(PINNED_CLOCK_EXEMPT)) {
+    assert.ok(why.length >= 10, t(`G15: ★ 면제 ${f} 에 이유가 없다`));
+    assert.ok(!/from\s+"\.\.\/worker\//.test(readFileSync(join(dir, f), "utf8")),
+      t(`G15: ★ 면제된 ${f} 가 worker 를 직접 부른다 — 면제 근거가 사라졌다`));
+  }
+
+  // ── 자기검사: 합성 입력으로 판정이 살아 있는지 잰다 ──────────────────
+  const PIN = `const FROZEN_NOW = 1;\nDate.now = () => FROZEN_NOW;   // ${PINNED_CLOCK_MARK}`;
+  assert.equal(pinnedClockViolations("scripts/test-x.mjs", "assert.equal(r.status, 429);").length, 1,
+    t("G15 자기검사: ★ 시계를 안 세운 스위트를 통과시킨다"));
+  assert.deepEqual(pinnedClockViolations("scripts/test-x.mjs", `429\n${PIN}`), [],
+    t("G15 자기검사: ★ 제대로 세운 스위트를 위반으로 센다"));
+  assert.deepEqual(pinnedClockViolations("scripts/test-client.mjs", "429"), [],
+    t("G15 자기검사: ★ 이유가 적힌 면제를 안 받아 준다"));
+  assert.deepEqual(pinnedClockViolations("scripts/_helper.mjs", "429"), [],
+    t("G15 자기검사: ★ 스위트가 아닌 파일까지 요구한다"));
+  assert.equal(pinnedClockViolations("scripts/test-x.mjs", `429\n// ${PINNED_CLOCK_MARK}`).length, 1,
+    t("G15 자기검사: ★ 마커만 남기고 대입을 지운 파일을 통과시킨다"));
+  const FAKE = "Date.no" + "w = () => Math.floor(real() / 60_000) * 60_000 + 30_000;";
+  assert.equal(pinnedClockViolations("scripts/test-x.mjs",
+    `429\n// ${PINNED_CLOCK_MARK}\n${FAKE}`).length, 1,
+    t("G15 자기검사: ★ 화살표 안에서 값을 다시 읽는 「고친 척하는 고정」을 통과시킨다"));
+  const RESTORE = "Date.no" + "w = real;";
+  assert.equal(pinnedClockViolations("scripts/test-x.mjs", `429\n${PIN}\n${RESTORE}`).length, 1,
+    t("G15 자기검사: ★ 세운 **바로 뒤에 되돌리는** 우회를 통과시킨다"));
+  assert.equal(pinnedClockViolations("scripts/test-friends.mjs", "리미터를 안 적은 스위트").length, 1,
+    t("G15 자기검사: ★ 목록에 있는 스위트를 429 가 없다고 봐준다"));
+  assert.equal(pinnedClockViolations("scripts/test-client.mjs", `429\n${PIN}\n${RESTORE}`).length, 1,
+    t("G15 자기검사: ★ 면제 파일이면 세운 뒤의 우회까지 봐준다"));
+}
+
 // ══ 잔류 확인 — 이 스위트가 만든 그룹이 하나도 안 남았다 ═══════════════════
 {
   await sleep(120);
@@ -960,4 +1017,5 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 console.log(`test-verifier: ${n}개 통과 — 실행기 수명주기(프로세스 그룹 부재 · 두 제한 시간 · `
   + `판정 다섯) · 시작·종료 증거 · 정리 fail-closed · 플랫폼 게이트 · M164 유한성 · R11 실행 경계 전수 · `
-  + `spawn 뒤 오류의 정리 · 확인 불가의 정리 기한 · 기준선 즉시 중단 · 최초 원인 보존 · 임시 자원 소유권`);
+  + `spawn 뒤 오류의 정리 · 확인 불가의 정리 기한 · 기준선 즉시 중단 · 최초 원인 보존 · 임시 자원 소유권 · `
+  + `리미터 창 고정(G15)`);

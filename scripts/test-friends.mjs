@@ -24,6 +24,13 @@ import legacy from "./fixtures/legacy-worker.mjs";
 const RL_MAX_LOGIN = 10;
 import { beginRestore, drainReport, restoreGate } from "../worker/ops.js";
 import fs from "node:fs";
+// ⏱ PINNED_CLOCK — 리미터 창(60초) 경계를 넘지 않게 **이 파일 전체**의 시계를 세운다.
+//    한 곳에 두는 이유: 블록마다 세우면 같은 파일의 다른 반복문을 빠뜨린다 — 실제로 여덟 자리를
+//    빠뜨렸다(2026-09-01). 파일당 하나면 빠뜨릴 자리가 없다.
+//    ⛔ 값을 화살표 안에서 계산하지 않는다 — 매 호출마다 실제 시각을 다시 읽어 **경계에서 60초
+//    점프**한다(고정한 척만 한다 · 2026-09-01 재현). 강제 검사는 scripts/test-verifier.mjs G15.
+const FROZEN_NOW = Math.floor(Date.now() / 60_000) * 60_000 + 30_000;
+Date.now = () => FROZEN_NOW;
 
 // 사용자 도메인 표 목록. **스키마에서 파생한다** — 손으로 적으면 표가 늘 때마다 낡는다.
 // `write_fence` 는 사용자 데이터가 아니라 fence 자신이라 뺀다.
@@ -1576,17 +1583,8 @@ function befriend(env, a, b, status = "accepted") {
 // 전에는 `/login`(시작)·`/cb`·`/exchange` 셋이 같은 `login` 버킷을 썼다. 한 번의 로그인이
 // 두 자리를 지나므로 **한도 10 이 실제로는 완전한 로그인 5회**였다(실측). 문서는 10 이라 적혀 있었다.
 // 막으려는 것은 "세션을 무한히 찍어내는 것"인데 `/login` 은 세션을 안 만든다 — 302 하나와 서명 하나다.
-// ⚠️ **시계를 세운다**(2026-09-01). 창은 `Math.floor(now / 60초)` 라, 반복문이 경계를 넘으면
-//    카운터가 새로 서서 121 은 통과하고 **122 가 `done === 12`** 로 무작위로 실패한다.
-//    창의 한가운데로 고정한다 — 경계에 붙이면 고정이 무의미하다.
+// ⚠️ 아래 세 검사는 **한 리미터 창 안에서만** 참이다 — 시계는 파일 최상단 `PINNED_CLOCK` 이 세운다.
 {
-  const realNow = Date.now;
-  // ⛔ **값을 한 번만 계산한다.** `() => Math.floor(realNow()/60_000)*60_000 + 30_000` 로 쓰면
-  //    매 호출마다 실제 시각을 다시 읽어 **분 경계에서 60초 점프**한다 — 고정이 아니라
-  //    창 번호가 그대로 바뀌어 고치려던 무작위 실패가 그대로 남는다(2026-09-01 재현).
-  const frozen = Math.floor(realNow() / 60_000) * 60_000 + 30_000;
-  Date.now = () => frozen;
-  try {
   const env = makeEnv({ KAKAO_ID: "id" });
   const ip = { "CF-Connecting-IP": "198.51.100.77" };
   const counters = () => env.LEDGER._db.prepare("SELECT COUNT(*) n FROM rate_limits").get().n;
@@ -1616,7 +1614,6 @@ function befriend(env, a, b, status = "accepted") {
   // 123. 그래도 **막히기는 한다.** 세션을 만드는 자리의 상한이 사라지면 그건 방어가 아니다.
   const cb = await worker.fetch(new Request("https://api.test/cb/kakao?code=x&state=y", { headers: ip }), env2);
   assert.equal(cb.status, 429, "세션을 만드는 자리가 안 막힌다");
-  } finally { Date.now = realNow; }   // ⛔ 실패해도 되돌린다 — 뒤의 검사가 같은 프로세스다
 }
 
 // ══ 27. 유지보수 · 복원 게이트 (T4 · T6 · T8 · T40~T43) ═══════════════════

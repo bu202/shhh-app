@@ -360,6 +360,67 @@ export function groupEscapeViolations(name, text) {
   return bad;
 }
 
+// ── 리미터 창 고정 (2026-09-01) ─────────────────────────────────────────
+// 리미터의 창은 `Math.floor(now / 60초)` 다. 반복문이 실제 분 경계를 넘으면 카운터가 새로 서서
+// ⓐ 「한도+1 에서 429」류는 **무작위로 실패**하고 ⓑ 「N회가 전부 통과」류는 **한도가 잘못
+// 낮아진 회귀를 조용히 숨긴다.** ⓑ 가 더 나쁘다 — 화면에 아무것도 안 뜬다.
+// 그래서 리미터를 재는 스위트는 **파일 최상단에서 한 번** 시계를 세운다(블록마다 세우면
+// 같은 파일의 다른 반복문을 빠뜨린다 — 실제로 여덟 자리를 빠뜨렸다).
+// ⚠️ **한계**: 정규식 기반이라 교묘하게 쓰면 빠져나간다. 이것은 「다음 사람이 무심코
+//    빠뜨리는 것」을 막는 장치이지 완전한 방어가 아니다. 그 이상으로 주장하지 않는다.
+export const PINNED_CLOCK_MARK = "PINNED_CLOCK";
+// **시계를 세워야 하는 스위트의 원본 목록.** 아래 `429` 발견법은 「새로 생긴 스위트」를 잡는
+// 보조 장치일 뿐이라, 리터럴을 안 쓰면 빠져나간다(독립 검토 2026-09-02). 그래서 지금 아는
+// 다섯은 **조건 없이** 요구한다 — 이 목록은 면제되지 않는다.
+export const PINNED_CLOCK_SUITES = [
+  "test-friends.mjs", "test-abuse-guard.mjs", "test-stage34-closeout.mjs",
+  "test-deploy-matrix.mjs", "test-reaudit.mjs",
+];
+// 면제는 **이유와 함께** 적는다(`test-fence` 2-1 과 같은 무늬) — 이유 없는 면제는 조용한 구멍이다.
+// ⛔ 위 목록에는 면제가 적용되지 않는다.
+export const PINNED_CLOCK_EXEMPT = {
+  "test-client.mjs": "화면 코드를 돌리며 fetch 를 mock 한다 — 진짜 리미터를 한 번도 지나지 않는다",
+};
+
+// ⚠️ **순수 함수다** — 검사 자신을 합성 입력으로 self-test 할 수 있어야 「검사를 무력화하는
+//    변이」가 죽는다(G12 와 같은 이유).
+export function pinnedClockViolations(name, text) {
+  const bad = [];
+  const base = String(name).split("/").pop();
+  const src = String(text);
+  if (!/^test-[\w-]+\.mjs$/.test(base)) return bad;   // 스위트만 본다
+  const required = PINNED_CLOCK_SUITES.includes(base);
+  const pinned = src.includes(PINNED_CLOCK_MARK);
+  // ① 목록에 있거나 리미터를 재는 스위트는 시계를 세워야 한다.
+  //    ⛔ 면제는 **발견법으로 걸린 파일에만** 적용된다 — 목록은 면제로 지워지지 않는다.
+  if (!pinned && (required || (/\b429\b/.test(src) && !PINNED_CLOCK_EXEMPT[base])))
+    bad.push({ file: name, line: 0, text: "",
+               why: required ? "목록에 있는 스위트인데 시계를 안 세웠다"
+                             : "429 를 재면서 시계를 안 세웠다(면제 목록에도 없다)" });
+  if (!pinned) return bad;
+  // ② 세운다고 적었으면 `Date.now` 대입이 **정확히 하나**여야 하고, 그 하나는 **미리 계산한
+  //    상수 하나**를 돌려줘야 한다. 셋 다 실제로 뚫렸던 자리다 —
+  //    · 대입 0개: 마커 주석만 남기면 시계는 그대로 돈다.
+  //    · 대입 2개 이상: 세운 **바로 뒤에 되돌리면** 마커도 대입도 있는데 시계는 움직인다
+  //      (독립 검토 2026-09-02). 그래서 「되돌리기」 예외를 없앴다 — 세운 파일은 안 되돌린다.
+  //    · 화살표 안 계산: 매 호출마다 실제 시각을 다시 읽어 분 경계에서 60초 점프한다.
+  const sets = [];
+  src.split("\n").forEach((line, i) => {
+    const m = /Date\.now\s*=\s*(.+?)\s*$/.exec(line.split("//")[0]);   // 주석은 떼고 본다
+    if (m) sets.push({ line: i + 1, rhs: m[1], text: line.trim().slice(0, 120) });
+  });
+  if (sets.length !== 1) {   // 개수가 틀리면 거기서 멈춘다 — 한 결함을 두 줄로 보고하지 않는다
+    bad.push({ file: name, line: sets[1]?.line ?? 0, text: sets[1]?.text ?? "",
+               why: sets.length ? `Date.now 대입이 ${sets.length}개다 — 세운 뒤 되돌리면 고정이 아니다`
+                                : "마커만 있고 시계를 세우는 대입이 없다" });
+    return bad;
+  }
+  for (const a of sets)
+    if (!/^\(\)\s*=>\s*[A-Za-z_$][\w$]*\s*;?$/.test(a.rhs))
+      bad.push({ file: name, line: a.line, why: "고정 값을 화살표 안에서 계산한다", text: a.text });
+  return bad;
+}
+
 // ── 산출물 행 (설계서 §0-21-2c 파생 규칙 4) ─────────────────────────────
 // JSON 은 판정만 적지 않는다 — 행마다 **증거 일곱**과 정규화 상태에서 만든 **고정 문구**를 싣는다.
 // ⛔ 오류 원문 · 환경 변수 · 명령 인자 · 자식 출력 원문 · 경로 · PGID 를 싣지 않는다.

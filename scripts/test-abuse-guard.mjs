@@ -18,6 +18,13 @@ import assert from "node:assert";
 import worker, { rlMax, routeBuckets, routeCount, guardMode, routeFor,
                  createAccountWithPolicy, newSession } from "../worker/index.js";
 import { makeD1, makeLedger, asRequest } from "./_d1.mjs";
+// ⏱ PINNED_CLOCK — 리미터 창(60초) 경계를 넘지 않게 **이 파일 전체**의 시계를 세운다.
+//    한 곳에 두는 이유: 블록마다 세우면 같은 파일의 다른 반복문을 빠뜨린다 — 실제로 여덟 자리를
+//    빠뜨렸다(2026-09-01). 파일당 하나면 빠뜨릴 자리가 없다.
+//    ⛔ 값을 화살표 안에서 계산하지 않는다 — 매 호출마다 실제 시각을 다시 읽어 **경계에서 60초
+//    점프**한다(고정한 척만 한다 · 2026-09-01 재현). 강제 검사는 scripts/test-verifier.mjs G15.
+const FROZEN_NOW = Math.floor(Date.now() / 60_000) * 60_000 + 30_000;
+Date.now = () => FROZEN_NOW;
 
 const ORIGIN = "https://app.test";
 const KEY32 = Buffer.from(Uint8Array.from({ length: 32 }, (_, i) => i + 7)).toString("base64url");
@@ -160,16 +167,7 @@ const noLeak = (body, where) => {
   assert.ok(routeCount() >= buckets.length, t("T66-a: 라우트 표가 비었다 — 검사기가 낡았다"));
 
   // ── b. ★ **엣지가 전부 허용해도 우리 카운터가 막는다.** 가짜 mock 으로는 통과 못 한다.
-  // ⚠️ **시계를 세운다**(2026-09-01). 한도 120 짜리 버킷은 121회를 도는데, 그 사이 창
-  //    (`Math.floor(now / 60초)`)이 넘어가면 카운터가 새로 서서 마지막이 429 가 아니다 —
-  //    검사가 무작위로 실패한다. 창의 한가운데로 고정한다.
-  const realNow = Date.now;
-  // ⛔ **값을 한 번만 계산한다.** `() => Math.floor(realNow()/60_000)*60_000 + 30_000` 로 쓰면
-  //    매 호출마다 실제 시각을 다시 읽어 **분 경계에서 60초 점프**한다 — 고정이 아니라
-  //    창 번호가 그대로 바뀌어 고치려던 무작위 실패가 그대로 남는다(2026-09-01 재현).
-  const frozen = Math.floor(realNow() / 60_000) * 60_000 + 30_000;
-  Date.now = () => frozen;
-  try {
+  // ⚠️ 한도+1 을 재려면 121회가 **한 창 안**이어야 한다 — 시계는 파일 최상단 `PINNED_CLOCK` 이 세운다.
   for (const b of buckets) {
     const [path, method] = BUCKET_ROUTE[b];
     const max = rlMax(b);
@@ -185,7 +183,6 @@ const noLeak = (body, where) => {
     assert.equal(last, 429, t(`T66-b[${b}]: 한도+1(${max + 1})인데 ${last} — 엣지 mock 이 전부 허용했고 우리 카운터는 안 셌다`));
     assert.ok(rl.calls > 0, t(`T66-b[${b}]: 엣지 바인딩을 한 번도 안 불렀다`));
   }
-  } finally { Date.now = realNow; }   // ⛔ 실패해도 되돌린다 — 뒤의 검사가 같은 프로세스다
 
   // ── c. **한 요청이 두 버킷에 세어지지 않는다.** 카운터 행 수로 잰다.
   {

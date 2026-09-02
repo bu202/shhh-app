@@ -21,6 +21,13 @@ import {
 } from "../worker/ledger.js";
 import { setMode, removeStalePending } from "../worker/ops.js";
 import { makeD1, makeLedger, asRequest } from "./_d1.mjs";
+// ⏱ PINNED_CLOCK — 리미터 창(60초) 경계를 넘지 않게 **이 파일 전체**의 시계를 세운다.
+//    한 곳에 두는 이유: 블록마다 세우면 같은 파일의 다른 반복문을 빠뜨린다 — 실제로 여덟 자리를
+//    빠뜨렸다(2026-09-01). 파일당 하나면 빠뜨릴 자리가 없다.
+//    ⛔ 값을 화살표 안에서 계산하지 않는다 — 매 호출마다 실제 시각을 다시 읽어 **경계에서 60초
+//    점프**한다(고정한 척만 한다 · 2026-09-01 재현). 강제 검사는 scripts/test-verifier.mjs G15.
+const FROZEN_NOW = Math.floor(Date.now() / 60_000) * 60_000 + 30_000;
+Date.now = () => FROZEN_NOW;
 
 const ORIGIN = "https://app.test";
 let n = 0;
@@ -325,13 +332,22 @@ function spy(db) {
   const D1_FREE_WRITES_PER_DAY = 100_000;   // Cloudflare 공식 문서(D1 Free plan, rows written/day)
   {
     const env = makeEnv({ KAKAO_ID: "id", KAKAO_SECRET: "s" });
+    const rlRows = (e) => e.LEDGER._db.prepare("SELECT COUNT(*) n FROM rate_limits").get().n;
     let per = 0;
     const detail = [];
     for (const [bucket, make] of SAMPLES) {
       const h = { "CF-Connecting-IP": "198.51.100." + (100 + detail.length) };
-      const d0 = changes(env.DB), l0 = changes(env.LEDGER);
+      const d0 = changes(env.DB), l0 = changes(env.LEDGER), r0 = rlRows(env);
       for (let i = 0; i < 400; i++) await worker.fetch(make(h), env);   // 한도를 확실히 넘긴다
       const w = (changes(env.DB) - d0) + (changes(env.LEDGER) - l0);
+      // ★ **400회가 한 창 안에서 세어졌는지**를 카운터 행 수로 잰다. 키는
+      //   `HMAC(용도|주체|창번호)` 라 창이 넘어가면 같은 버킷·같은 IP 인데 **행이 하나 더** 생긴다.
+      //   그때 위 `w` 는 두 배가 되고, `per > 0` 만 보던 옛 단언은 그것을 그대로 통과시켰다.
+      //   ⛔ 숫자를 손으로 적지 않는다 — 「센 버킷은 행 1개, 안 센 버킷은 0개」가 전부다.
+      const rows = rlRows(env) - r0;
+      assert.equal(rows, w > 0 ? 1 : 0,
+        t(`T63-b[${bucket}]: 카운터 행이 ${rows}개다 — 400회가 한 창 안에서 세어지지 않았다`
+          + " (파일 최상단 `PINNED_CLOCK` 이 풀렸다)"));
       detail.push([bucket, w]); per += w;
     }
     const ips = Math.ceil(D1_FREE_WRITES_PER_DAY / (per * 60 * 24));
