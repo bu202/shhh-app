@@ -15,10 +15,10 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-// 2026-08-24 production 배포 `7362d2f0` 의 source.
-export const DEPLOYED_SOURCE = "e02e810";
-export const DEPLOYED_DEPLOYMENT_ID = "7362d2f0";
-export const DEPLOYED_AT = "2026-08-24";
+// 2026-09-02 production 배포 `ad8509cd` 의 source (PWA-1 원격 반영).
+export const DEPLOYED_SOURCE = "a8090f7";
+export const DEPLOYED_DEPLOYMENT_ID = "ad8509cd";
+export const DEPLOYED_AT = "2026-09-02";
 
 // ⚠️ **저장소 위치를 인자로 받을 수 있다.** 돌연변이 실행기는 추적 파일만 임시 폴더로 복사하고
 //    `.git` 은 가져가지 않는다 — 그 사본에서 이 파생을 돌리면 「기준선이 빨갛다」로만 보이고
