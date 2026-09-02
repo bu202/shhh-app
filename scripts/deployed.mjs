@@ -13,6 +13,7 @@
 // ⚠️ **배포할 때 이 파일을 갱신한다.** 그것이 배포 절차의 일부다(docs/OPS_RUNBOOK.md).
 //    갱신을 잊으면 검사가 「배포 주장」과 옛 커밋을 대조하므로 **틀린 쪽으로 시끄럽게** 실패한다.
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 // 2026-09-02 production 배포 `ad8509cd` 의 source (PWA-1 원격 반영).
@@ -53,4 +54,33 @@ export function deployedIsAncestorOfHead() {
 // 배포 지점 이후의 로컬 커밋. 「배포되지 않았다」는 주장의 근거다.
 export function commitsSinceDeploy() {
   return git("log", "--oneline", `${DEPLOYED_SOURCE}..HEAD`).trim().split("\n").filter(Boolean);
+}
+
+// 배포 지점 이후로 **위협 표가 실제로 바뀌었나.**
+//
+// ⚠️ **왜 필요한가**(2026-09-02): 경계 정합성 검사가 「배포 시점 최대 == 지금 최대인데 로컬
+//    커밋이 있다」를 모순으로 봤는데, 그 판정에는 **적히지 않은 전제**가 있었다 —
+//    「배포 뒤 로컬 커밋은 언제나 위협을 더한다」. 역사적으로는 참이었다(배포 뒤 커밋은 전부
+//    새 감사 회차였다). 그런데 **배포 기록 커밋**은 위협을 하나도 안 더한다. 그래서 그 전제가
+//    깨지는 순간, 문서화된 배포 절차(배포 → 경계 갱신 커밋)를 **끝낼 수 없게** 됐다.
+// ⛔ **검사를 무르게 하지 않는다.** 잡으려던 것(위협을 더했는데 번호가 안 늘었다)은 그대로
+//    잡힌다 — 표가 바뀌었는데 최대 번호가 안 늘어난 경우가 정확히 그것이다.
+// 위협 표의 행만 뽑는다. **순수 함수** — 합성 입력으로 직접 잴 수 있게 뺐다.
+// ⛔ 여기가 비면 어떤 두 문서든 「같다」가 되어 위 판정이 통째로 무력해진다.
+export function threatRows(text) {
+  return [...String(text).matchAll(/^\|\s*\*\*(\d+)\*\*\s*\|[^\n]*/gm)].map((m) => m[0]).join("\n");
+}
+
+export function threatTableChangedSinceDeploy() {
+  // ⚠️ **비교 대상은 작업 트리다**(HEAD 가 아니다). test-docs 의 다른 검사가 전부 작업 트리를
+  //    읽으므로 기준을 맞춘다 — 커밋하지 않은 위협 추가도 같이 잡힌다.
+  const now = readFileSync(new URL("../docs/STAGE3_SIGNUP_SECURITY_DESIGN.md", import.meta.url), "utf8");
+  return threatRows(atDeploy()) !== threatRows(now);
+}
+
+// **순수 판정.** 위 셋을 받아 「경계 주장이 낡았나」를 답한다.
+// ⚠️ 순수 함수로 빼 두는 이유는 합성 입력으로 직접 잴 수 있게 하기 위해서다 — git 에 기대는
+//    검사는 변이를 먹여도 「아무것도 실패하지 않음」으로 조용히 통과할 수 있다.
+export function boundaryStale(depTh, maxTh, hasCommits, threatsChanged) {
+  return hasCommits && threatsChanged && depTh >= maxTh;
 }

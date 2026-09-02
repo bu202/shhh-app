@@ -255,7 +255,7 @@ export const MUTATIONS = [
     id: "D01", file: "docs/HANDOFF.md", suite: "test-docs", kind: "정적",
     what: "운영현황의 현재 라이브를 지운 배포 `f72f5225` 로 되돌린다",
     invariant: "현재 production 배포를 정확히 말한다 — 지운 세대를 라이브라고 적으면 롤백 대상과 검증 대상이 통째로 틀어진다",
-    find: "| **라이브 (production)** | **배포 `7362d2f0`**",
+    find: "| **라이브 (production)** | **배포 `ad8509cd`**",
     replace: "| **라이브 (production)** | **배포 `f72f5225`**",
   },
   {
@@ -358,8 +358,8 @@ export const MUTATIONS = [
     id: "D13", file: "docs/HANDOFF.md", suite: "test-docs", kind: "정적",
     what: "운영현황의 배포 지점 행에 「최신 커밋」 해시를 고정한다",
     invariant: "움직이는 HEAD 해시를 문서에 손으로 적지 않는다 — 커밋할 때마다 낡고, 실제로 한 번 낡았다",
-    find: "**production source 는 `e02e810` 이다**(2026-08-24)",
-    replace: "**최신 세 커밋(`156fd8a`·`41455b6`·`8628e14`)은 production 에 안 올라갔다**(2026-08-24)",
+    find: "**production source 는 `a8090f7` 이다**(2026-09-02",
+    replace: "**최신 세 커밋(`156fd8a`·`41455b6`·`8628e14`)은 production 에 안 올라갔다**(2026-09-02",
   },
   {
     id: "D16", file: "docs/OPS_RUNBOOK.md", suite: "test-docs", kind: "정적",
@@ -580,8 +580,8 @@ export const MUTATIONS = [
     id: "D18", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "현재 상태 블록의 안전 동기화 배포를 직전 `19e69dee` 로 되돌린다",
     invariant: "현재 상태 블록이 말하는 배포 ID·source 는 「현재 라이브」 원본과 같아야 한다 — 옛 배포는 당시·직전·롤백 맥락에서만 적는다",
-    find: "✅ 안전 동기화 배포는 실행됐다 — production **`7362d2f0`**(source **`e02e810`**)",
-    replace: "✅ 안전 동기화 배포 `19e69dee` 는 실행됐고, production",
+    find: "✅ 코드 배포는 실행됐다 — production **`ad8509cd`**(source **`a8090f7`**)",
+    replace: "✅ 코드 배포는 실행됐다 — production **`7362d2f0`**(source **`e02e810`**)",
   },
   {
     id: "D19", file: "CLAUDE.md", suite: "test-docs", kind: "정적",
@@ -2193,5 +2193,27 @@ export const MUTATIONS = [
     invariant: "목록에 적힌 스위트는 `429` 발견법과 무관하게 조건 없이 시계를 세운다",
     find: "  \"test-friends.mjs\", \"test-abuse-guard.mjs\", \"test-stage34-closeout.mjs\",",
     replace: "  \"test-abuse-guard.mjs\", \"test-stage34-closeout.mjs\",",
+  },
+  // ── 2026-09-02 · 배포 경계 정합성 판정 (boundaryStale) ──────────────────
+  {
+    id: "M231", file: "scripts/deployed.mjs", suite: "test-docs", kind: "정적",
+    what: "경계 정합성 판정을 언제나 거짓으로 만든다",
+    invariant: "표가 바뀌었는데 최대 번호가 안 늘면 경계 주장이 낡은 것이다",
+    find: "  return hasCommits && threatsChanged && depTh >= maxTh;",
+    replace: "  return false;",
+  },
+  {
+    id: "M232", file: "scripts/deployed.mjs", suite: "test-docs", kind: "정적",
+    what: "위협 표 변경 여부를 안 보고 커밋 존재만으로 판정한다",
+    invariant: "위협을 하나도 안 더한 배포 기록 커밋은 모순이 아니다",
+    find: "  return hasCommits && threatsChanged && depTh >= maxTh;",
+    replace: "  return hasCommits && depTh >= maxTh;",
+  },
+  {
+    id: "M233", file: "scripts/deployed.mjs", suite: "test-docs", kind: "정적",
+    what: "위협 표에서 행을 하나도 뽑지 않는다",
+    invariant: "행 추출이 비면 어떤 두 문서든 「같다」가 되어 경계 판정이 무력해진다",
+    find: "  return [...String(text).matchAll(/^\\|\\s*\\*\\*(\\d+)\\*\\*\\s*\\|[^\\n]*/gm)].map((m) => m[0]).join(\"\\n\");",
+    replace: "  return \"\";",
   },
 ];

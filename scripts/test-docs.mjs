@@ -149,8 +149,8 @@ const claim = (t, re, actual, what, file) => {
     if (+m[1] !== actual) bad(`${file} "${m[0]}" 라고 적혀 있는데 실제는 ${actual}${what}`);
   }
 };
-const { deployedRanges, deployedIsAncestorOfHead, commitsSinceDeploy, DEPLOYED_SOURCE } =
-  await import("./deployed.mjs");
+const { deployedRanges, deployedIsAncestorOfHead, commitsSinceDeploy, DEPLOYED_SOURCE,
+  threatTableChangedSinceDeploy, boundaryStale, threatRows } = await import("./deployed.mjs");
 
 const maxT = tests[tests.length - 1], maxL = ls[ls.length - 1], maxTh = threats[threats.length - 1];
 for (const f of DOCS) {
@@ -1136,8 +1136,17 @@ ok("모순 5종 — 「확정 vs 대기」 · 「0건 vs 배포」 · 「폐쇄 
   const CLOSED_ROW = /^\s*\|(\s*[^|]{0,16}\|)?\s*~~/;
   for (const [f, lab, text] of scopes) {
     const marked = (ln) => HIST_ONLY.test(ln) || CLOSED_ROW.test(ln);
-    text.split("\n").forEach((raw) => {
-      if (marked(raw)) return;
+    text.split("\n").forEach((raw0) => {
+      // 취소선은 **줄 전체**의 표식이다 — 닫힌 행은 통째로 지난 항목이다.
+      if (CLOSED_ROW.test(raw0)) return;
+      // ⚠️ **「당시 사실」은 그 뒤쪽만 면제한다**(2026-09-02 · 돌연변이 D01 이 살아남아 드러났다).
+      //    전에는 줄 단위라, 한 줄이 「현재 라이브는 X 다 … ⚠️ 당시 사실 — 그때는 Y 였다」로
+      //    이어지면 그 한 마디가 **같은 줄 앞쪽의 현재 주장까지** 면제시켰다. 배포 기록을
+      //    적으면서 실제로 그 모양이 됐고, 지운 배포를 라이브라고 적어도 안 걸렸다.
+      //    ⛔ **D03 때와 같은 무늬다** — 그때는 문서를 고쳤고 이번에는 검사를 고친다.
+      const cut = raw0.search(HIST_ONLY);
+      const raw = cut < 0 ? raw0 : raw0.slice(0, cut);
+      if (!raw.trim()) return;
       const ln = raw.replace(/「[^」]*」/g, "");
       const say = (why) => bad(`${f} ${lab} 이 낡은 운영 사실을 말한다 — ${why}\n      "${raw.trim().slice(0, 100)}"`);
 
@@ -1524,8 +1533,33 @@ ok("돌연변이 개수 — 문서의 주장이 MUTATIONS 목록과 일치");
 
   if (!deployedIsAncestorOfHead())
     bad(`배포 지점 ${DEPLOYED_SOURCE} 이 HEAD 의 조상이 아니다 — 배포 경계 주장 전체가 뜻을 잃는다`);
-  if (depTh >= maxTh && commitsSinceDeploy().length)
-    bad(`배포 시점 위협 최대(${depTh})가 지금(${maxTh}) 이상인데 로컬 커밋이 있다 — 둘 중 하나가 낡았다`);
+  // ⚠️ **「로컬 커밋이 있다」만으로는 모순이 아니다**(2026-09-02 정정). 옛 판정에는 적히지 않은
+  //    전제가 있었다 — 「배포 뒤 로컬 커밋은 언제나 위협을 더한다」. **배포 기록 커밋**은
+  //    위협을 하나도 안 더하므로, 그 전제가 깨지는 순간 문서화된 배포 절차(배포 → 경계 갱신
+  //    커밋)를 **끝낼 수 없었다.** ⛔ 잡으려던 것은 그대로 잡힌다 — 「표가 바뀌었는데 최대
+  //    번호가 안 늘었다」가 정확히 그 결함이고, 판정은 `boundaryStale()` 한 자리가 소유한다.
+  const threatsChanged = threatTableChangedSinceDeploy();
+  if (boundaryStale(depTh, maxTh, commitsSinceDeploy().length > 0, threatsChanged))
+    bad(`배포 시점 위협 최대(${depTh})가 지금(${maxTh}) 이상인데 위협 표가 배포 뒤에 바뀌었다 — `
+      + "번호를 안 올렸거나 경계가 낡았다");
+  // 자기검사 — git 에 기대는 검사는 변이를 먹여도 「아무것도 실패하지 않음」으로 통과할 수 있다.
+  for (const [args, want, why] of [
+    [[94, 94, true, true], true, "표가 바뀌고 번호가 그대로인데 안 걸렸다"],
+    [[94, 94, true, false], false, "위협을 안 더한 커밋(배포 기록)이 걸렸다"],
+    [[94, 94, false, true], false, "로컬 커밋이 없는데 걸렸다"],
+    [[94, 95, true, true], false, "번호가 늘었는데 걸렸다"],
+  ]) if (boundaryStale(...args) !== want) bad(`배포 경계 정합성 self-test: ${why} (${args})`);
+  // 표 비교의 순수 부분도 합성 입력으로 잰다. ⛔ 이것이 없으면 「행을 하나도 안 뽑는다」는
+  // 변이가 **지금처럼 표가 같은 시점에** 동등 변이가 되어 조용히 살아남는다.
+  {
+    const A = "| **93** | 가 |\n| **94** | 나 |", B = "| **93** | 가 |\n| **94** | 다 |";
+    const C = A + "\n| **95** | 라 |";
+    if (!threatRows(A)) bad("배포 경계 self-test: 위협 표에서 행을 하나도 못 뽑는다");
+    if (threatRows(A) === threatRows(B)) bad("배포 경계 self-test: 같은 번호에 다른 내용을 같다고 읽는다");
+    if (threatRows(A) === threatRows(C)) bad("배포 경계 self-test: 행이 하나 늘었는데 같다고 읽는다");
+    if (threatRows(A) !== threatRows(A + "\n본문 문장은 행이 아니다"))
+      bad("배포 경계 self-test: 표 행이 아닌 문장을 행으로 읽는다");
+  }
 
   // 한 줄이 어느 축의 주장인지. **미배포 표현이 있으면 미배포 쪽으로 읽는다** — 「배포됐다.
   // 그 뒤는 미배포다」처럼 한 줄이 둘 다 담으면 더 좁은(닫는) 쪽으로 판정한다.

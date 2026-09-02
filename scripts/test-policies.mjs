@@ -651,6 +651,28 @@ for (const f of readdirSync(DIR))
     assert.equal(createHash("sha256").update(body).digest("hex"), v.hash,
       t(`16-e: ★ 불변 사본 ${v.file} 의 내용이 바뀌었다`));
   }
+  // ── f. **분류 자체를 합성 입력으로 잰다.** ⚠️ a~e 는 전부 **지금 저장소의 상태**를 잰다 —
+  //    모든 판이 이미 나간 지금은 `past = rest` 로 되돌리는 변이가 **동등 변이**가 되어
+  //    조용히 살아남는다(2026-09-02 실측 · D45 생존). 나간 판과 안 나간 판이 **둘 다 있는**
+  //    입력을 직접 만들어, 저장소 상태와 무관하게 분류를 잰다.
+  {
+    const fake = {
+      bundle: { pv: "0", docs: { terms: { path: "policies/cur.html", hash: "0" } } },
+      versions: [{ file: "cur.html", kind: "terms" }, { file: "old.html", kind: "terms" },
+                 { file: "new.html", kind: "terms" }],
+    };
+    const html = indexHtml(fake, new Set(["cur.html", "old.html"]));
+    const sec = (h) => {
+      const at = html.indexOf(`<h2>${h}`);
+      assert.ok(at > 0, t(`16-f: 합성 보관함에 「${h}」 절이 없다`));
+      const end = html.indexOf("<h2>", at + 4);
+      return html.slice(at, end < 0 ? html.length : end);
+    };
+    assert.deepEqual(files(sec("지난 판")), ["old.html"],
+      t("16-f: ★ 실제로 나갔던 사본만 「지난 판」이어야 한다"));
+    assert.deepEqual(files(sec("아직 나간 적 없는 판")), ["new.html"],
+      t("16-f: ★ 나간 적 없는 사본만 「아직 안 나간 판」이어야 한다"));
+  }
 }
 
 // ── 17. **처리정지 약속을 코드가 문장 안에서 지키는가** (2026-08-27 · 위협 82) ──
