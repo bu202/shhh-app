@@ -16,9 +16,9 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-// 2026-09-02 production 배포 `ad8509cd` 의 source (PWA-1 원격 반영).
-export const DEPLOYED_SOURCE = "a8090f7";
-export const DEPLOYED_DEPLOYMENT_ID = "ad8509cd";
+// 2026-09-02 production 배포 `09437fbd` 의 source (검사 정정 + 보관함 분류 반영).
+export const DEPLOYED_SOURCE = "573a602";
+export const DEPLOYED_DEPLOYMENT_ID = "09437fbd";
 export const DEPLOYED_AT = "2026-09-02";
 
 // ⚠️ **저장소 위치를 인자로 받을 수 있다.** 돌연변이 실행기는 추적 파일만 임시 폴더로 복사하고

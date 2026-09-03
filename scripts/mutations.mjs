@@ -18,6 +18,12 @@
 // ⚠️ **목표 숫자를 정해 두고 맞추지 않는다.** 살아남은 변이는 숨기지 않고 분류한다 —
 //    ① 실제 테스트 공백 ② 동치 변이 ③ 도달 불가능 코드.
 
+// ⚠️ **배포 식별자를 손으로 적지 않는다**(2026-09-03). D01·D13·D18 의 앵커가 배포 기록을
+//    적을 때마다 낡아 **세 번 연속 `ANCHOR-MISS`** 를 냈다 — 앵커가 「지금 라이브가 무엇인가」를
+//    문자열로 박고 있었기 때문이다. 낡은 앵커는 시끄럽게 실패하니 사고는 아니지만, 회차마다
+//    사람이 같은 손질을 반복하게 만든다. 원본에서 파생하면 그 손질이 사라진다.
+import { DEPLOYED_DEPLOYMENT_ID as DEP, DEPLOYED_SOURCE as SRC } from "./deployed.mjs";
+
 export const MUTATIONS = [
   // ── 비밀값 비교 ────────────────────────────────────────────────────────
   {
@@ -255,7 +261,7 @@ export const MUTATIONS = [
     id: "D01", file: "docs/HANDOFF.md", suite: "test-docs", kind: "정적",
     what: "운영현황의 현재 라이브를 지운 배포 `f72f5225` 로 되돌린다",
     invariant: "현재 production 배포를 정확히 말한다 — 지운 세대를 라이브라고 적으면 롤백 대상과 검증 대상이 통째로 틀어진다",
-    find: "| **라이브 (production)** | **배포 `ad8509cd`**",
+    find: `| **라이브 (production)** | **배포 \`${DEP}\`**`,
     replace: "| **라이브 (production)** | **배포 `f72f5225`**",
   },
   {
@@ -358,8 +364,8 @@ export const MUTATIONS = [
     id: "D13", file: "docs/HANDOFF.md", suite: "test-docs", kind: "정적",
     what: "운영현황의 배포 지점 행에 「최신 커밋」 해시를 고정한다",
     invariant: "움직이는 HEAD 해시를 문서에 손으로 적지 않는다 — 커밋할 때마다 낡고, 실제로 한 번 낡았다",
-    find: "**production source 는 `a8090f7` 이다**(2026-09-02",
-    replace: "**최신 세 커밋(`156fd8a`·`41455b6`·`8628e14`)은 production 에 안 올라갔다**(2026-09-02",
+    find: `**production source 는 \`${SRC}\` 이다**(`,
+    replace: "**최신 세 커밋(`156fd8a`·`41455b6`·`8628e14`)은 production 에 안 올라갔다**(",
   },
   {
     id: "D16", file: "docs/OPS_RUNBOOK.md", suite: "test-docs", kind: "정적",
@@ -580,7 +586,7 @@ export const MUTATIONS = [
     id: "D18", file: "docs/SECURITY_RELEASE_CHECKLIST.md", suite: "test-docs", kind: "정적",
     what: "현재 상태 블록의 안전 동기화 배포를 직전 `19e69dee` 로 되돌린다",
     invariant: "현재 상태 블록이 말하는 배포 ID·source 는 「현재 라이브」 원본과 같아야 한다 — 옛 배포는 당시·직전·롤백 맥락에서만 적는다",
-    find: "✅ 코드 배포는 실행됐다 — production **`ad8509cd`**(source **`a8090f7`**)",
+    find: `✅ 코드 배포는 실행됐다 — production **\`${DEP}\`**(source **\`${SRC}\`**)`,
     replace: "✅ 코드 배포는 실행됐다 — production **`7362d2f0`**(source **`e02e810`**)",
   },
   {
@@ -2215,5 +2221,12 @@ export const MUTATIONS = [
     invariant: "행 추출이 비면 어떤 두 문서든 「같다」가 되어 경계 판정이 무력해진다",
     find: "  return [...String(text).matchAll(/^\\|\\s*\\*\\*(\\d+)\\*\\*\\s*\\|[^\\n]*/gm)].map((m) => m[0]).join(\"\\n\");",
     replace: "  return \"\";",
+  },
+  {
+    id: "D48", file: "scripts/policies.mjs", suite: "test-policies", kind: "정적",
+    what: "보관함 본문에 배포 경계 해시를 다시 찍는다",
+    invariant: "자기 경계를 적은 페이지는 배포마다 바뀌어 BUILD_ID 고리가 끝나지 않는다",
+    find: "    <p>이 페이지를 내보낸 배포 시점까지 저장소에 있던 사본만 여기에 둡니다.</p>",
+    replace: "    <p>배포 경계는 <code>${DEPLOYED_SOURCE}</code> 입니다. 그 시점에 저장소에 있던 사본만 여기에 둡니다.</p>",
   },
 ];

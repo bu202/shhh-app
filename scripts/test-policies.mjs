@@ -607,6 +607,7 @@ for (const f of readdirSync(DIR))
 {
   const idx = String(await R("policies/index.html"));
   const { shippedPolicyFiles, indexHtml } = await import("./policies.mjs");
+  const { DEPLOYED_SOURCE } = await import("./deployed.mjs");
   const shipped = shippedPolicyFiles();
   // ⚠️ **생성기가 원본이다.** 보관함 페이지는 만들어지는 파일이므로, 여기서 다시 만들어
   //    디스크의 것과 바이트로 대조한다 — 그래야 「생성기를 고쳤는데 페이지는 옛 분류
@@ -673,6 +674,12 @@ for (const f of readdirSync(DIR))
     assert.deepEqual(files(sec("아직 나간 적 없는 판")), ["new.html"],
       t("16-f: ★ 나간 적 없는 사본만 「아직 안 나간 판」이어야 한다"));
   }
+  // ── g. **보관함은 배포 경계 해시를 본문에 담지 않는다**(2026-09-02).
+  //    담았더니 배포 → 경계 갱신 → 이 페이지 변경 → 선캐시 BUILD_ID 변경 → 또 배포 로
+  //    **끝나지 않는 고리**가 됐다. 경계는 배포한 뒤에야 정해지므로 자기 경계를 적은
+  //    페이지는 언제나 한 세대 뒤처진 값을 말한다. ⛔ 분류는 그대로 경계에서 파생한다.
+  assert.ok(!idx.includes(DEPLOYED_SOURCE),
+    t(`16-g: ★ 보관함이 배포 경계 해시(${DEPLOYED_SOURCE})를 본문에 적었다 — 배포마다 BUILD_ID 가 바뀐다`));
 }
 
 // ── 17. **처리정지 약속을 코드가 문장 안에서 지키는가** (2026-08-27 · 위협 82) ──

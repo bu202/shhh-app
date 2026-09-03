@@ -15,7 +15,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 // 배포 경계의 원본은 해시 하나다 — 보관함의 「나갔던 판 / 아직 안 나간 판」이 여기서 갈린다.
-import { DEPLOYED_SOURCE, DEPLOYED_AT } from "./deployed.mjs";
+import { DEPLOYED_SOURCE } from "./deployed.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const DIR = path.join(ROOT, "policies");
@@ -57,6 +57,11 @@ export const indexHtml = (m, shipped) => {
   // ⚠️ **「지난 판」과 「아직 나간 적 없는 판」도 다르다.** 로컬에서 stamp 만 하고 배포되지
   //    않은 사본은 **아무도 본 적이 없다** — 그걸 「지난 판」이라 부르면 거짓이다.
   //    경계의 원본은 `scripts/deployed.mjs` 의 source 해시 하나다.
+  // ⛔ **경계 해시를 이 페이지에 찍지 않는다**(2026-09-02). 찍었더니 배포할 때마다 경계가
+  //    바뀌고 → 이 페이지가 바뀌고 → 선캐시 해시에서 파생되는 BUILD_ID 가 바뀌어서,
+  //    「경계를 갱신하면 또 배포해야 하는」 고리가 됐다. **끝나지 않는다** — 경계는 배포한
+  //    뒤에야 정해지므로 자기 경계를 적은 페이지는 언제나 한 세대 뒤처진 값을 말한다.
+  //    분류(어느 사본이 나갔나)는 그대로 경계에서 파생한다 — 지운 것은 **표시**뿐이다.
   const current = new Set(Object.values(m.bundle.docs).map((d) => d.path.replace(/^policies\//, "")));
   const rest = m.versions.filter((v) => !current.has(v.file));
   const past = shipped ? rest.filter((v) => shipped.has(v.file)) : rest;
@@ -88,8 +93,7 @@ ${Object.keys(m.bundle.docs).sort().map((k) =>
   `      <li><b>${k}</b> — <a href="${m.bundle.docs[k].path.replace(/^policies\//, "")}">${m.bundle.docs[k].path.replace(/^policies\//, "")}</a><br><code>${m.bundle.docs[k].hash}</code></li>`).join("\n")}
     </ul>
     <h2>지난 판 — 실제로 나갔던 문서</h2>
-    <p>배포 경계는 <code>${DEPLOYED_SOURCE}</code>(${DEPLOYED_AT} 배포)입니다.
-       그 시점에 저장소에 있던 사본만 여기에 둡니다.</p>
+    <p>이 페이지를 내보낸 배포 시점까지 저장소에 있던 사본만 여기에 둡니다.</p>
     <ul>
 ${past.length ? past.map((v) => `      <li>${v.kind} — <a href="${v.file}">${v.file}</a></li>`).join("\n")
               : "      <li>아직 없습니다.</li>"}
