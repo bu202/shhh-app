@@ -38,7 +38,9 @@ const LIVE = (() => {
   const m = R("CLAUDE.md").match(/-\s*\*\*배포 `([0-9a-f]{8})`\*\*\s*—\s*Production[^\n]*source\s*\*\*`([0-9a-f]{7,40})`\*\*/);
   if (!m) { bad("CLAUDE.md 「현재 라이브」에서 production 배포 ID·source 를 못 읽었다 — 그 줄의 모양이 바뀌었다"); return null; }
   // preview 도 같은 블록이 원본이다 — 현재 상태 블록이 옛 preview 를 적으면 검사 29 가 잡는다.
-  const pv = R("CLAUDE.md").match(/preview 는 \*\*`([0-9a-f]{8})`\*\*/);
+// ⚠️ 줄바꿈을 허용한다 — 문단이 줄 끝에서 접히면 못 읽었고, 그러면 검사 29 가 preview 를
+//    「낡은 배포」라 부르는 **엉뚱한 곳을 가리키는 오류**를 냈다(2026-09-03).
+  const pv = R("CLAUDE.md").match(/preview 는\s+\*\*`([0-9a-f]{8})`\*\*/);
   // **배포 날짜**도 원본에서 읽는다. 검사 30 이 「그 수정이 배포보다 앞인가」를 가리는 데 쓴다 —
   // 배포 뒤에 새로 고친 것은 「로컬 완료 · 배포 안 함」이 **참**이다.
   const dt = R("CLAUDE.md").match(/\*\*현재 라이브 \((\d{4}-\d{2}-\d{2}) 배포/);
