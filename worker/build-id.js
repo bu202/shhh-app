@@ -10,4 +10,4 @@
 //
 // ⚠️ 저장소에 커밋한다(`worker/policies.js` 와 같은 규칙). Pages 는 `functions/` 를 번들할 때
 //    이 파일을 그대로 읽으므로, 없으면 배포가 아니라 **import 에서** 죽는다.
-export const BUILD_ID = "v11-05dd4eb05be8";   // 빌드가 박는다: scripts/build.mjs stampBuildId()
+export const BUILD_ID = "v11-eca86f2bc62c";   // 빌드가 박는다: scripts/build.mjs stampBuildId()

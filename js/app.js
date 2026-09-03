@@ -374,13 +374,34 @@ function card(word, desc, frames, cls, mean) {
 }
 
 function startPlayer(img, frames) {
+  // ⚠️ **그림이 안 뜨는 것을 화면이 말하게 한다**(2026-09-03 · 실기기 비행기 모드에서 확인).
+  //    수형 그림은 바깥 origin 핫링크라 오프라인에서 안 뜬다 — `service-worker.js` 의
+  //    `cacheable()` 이 **opaque 응답을 일부러 안 넣기** 때문이고, 그건 고칠 결함이 아니라
+  //    지켜야 할 규칙이다(오류 페이지가 성공처럼 캐시되는 옛 버그가 재발한다).
+  //    그런데 그때 화면에는 브라우저 기본 깨진-이미지 아이콘만 남아서 **아무 말도 안 했다.**
+  // ⛔ 그림을 우리 origin 으로 옮기는 것이 진짜 해법이지만 그건 저작권 확인(ROADMAP R1)
+  //    뒤의 일이다. **왜 안 보이는지 말하는 것**은 그것과 무관하게 지금 할 수 있다.
+  // ⚠️ 갈래를 두지 않는다 — `navigator.onLine` 은 「랜선이 꽂혀 있다」지 「우리 그림이 온다」가
+  //    아니라서, 그걸로 문구를 가르면 틀린 이유를 자신 있게 말하게 된다. 한 문장이 두 경우에
+  //    다 참이고, **지금 볼 수 있는 것**(손모양 설명)을 가리킨다.
+  let timer = null, dead = false;
+  img.addEventListener("error", () => {
+    if (dead) return;                      // 프레임이 여럿이면 error 가 여러 번 온다
+    dead = true;
+    if (timer) clearInterval(timer);       // 떨어져 나간 노드에 계속 요청하지 않는다
+    const p = document.createElement("p");
+    p.className = "frame frame-off";
+    p.textContent = "손모양 그림을 불러오지 못했어요. 아래 손모양 설명을 봐 주세요.";
+    img.replaceWith(p);
+  });
   img.src = frames[0];
   if (frames.length > 1) {
     let i = 0;
-    playTimers.push(setInterval(() => {
+    timer = setInterval(() => {
       i = (i + 1) % frames.length;
       img.src = frames[i];
-    }, 800));
+    }, 800);
+    playTimers.push(timer);
   }
 }
 
