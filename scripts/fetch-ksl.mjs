@@ -4,7 +4,7 @@
 //
 // 키(문화공공데이터광장/kcisa 이메일로 받은 서비스키)는 로컬에서만 쓰이고
 // 결과 JSON에는 안 들어감 → 정적 배포에 키 노출 없음.
-import { writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 // 공식 샘플: ...API_CNV_054/request?serviceKey={키}&numOfRows=10&pageNo=1&keyword=&collectionDb=
 // ⛔ keyword·collectionDb 는 **빈 값이라도 반드시 포함**해야 한다(kcisa 공식 주의사항).
@@ -146,6 +146,12 @@ function runMock() {
   a(pageDone(100, 3622, 3622) === true, "totalCount 를 채우면 끝이다");
   a(pageDone(100, 3700, 3622) === true, "totalCount 를 넘겨도 끝이다");
 
+  // 덮어쓰기 방어: 같은 사고가 다시 나면 파일이 아니라 여기서 죽는다.
+  a(shrankTooMuch(98, 3622) === true, "사전이 통째로 줄면 안 쓴다");
+  a(shrankTooMuch(3700, 3622) === false, "늘어나는 것은 통과");
+  a(shrankTooMuch(3600, 3622) === false, "소폭 감소는 통과(상류에서 몇 개 빠질 수 있다)");
+  a(shrankTooMuch(98, 0) === false, "기준선이 없으면(첫 수집) 통과");
+
   console.log("mock OK — json:", dj.length, "xml:", dx.length);
 }
 
@@ -185,6 +191,12 @@ async function fetchPage(serviceKey, numOfRows, pageNo) {
 const pageDone = (received, collected, totalCount) =>
   received === 0 || (totalCount > 0 && collected >= totalCount);
 
+// ⛔ 2026-09-04 사고 방어: 페이징이 조용히 일찍 끝나면 사전 전체가 작아진 채로 덮인다
+//    (3,622개 → 98개). 종료 조건 하나에 기대지 않고 **쓰기 직전에 개수를 대조**한다.
+//    정말 줄어야 하는 날에는 기존 파일을 지우고(또는 옮기고) 다시 돌린다 — 기준선이 없으면 통과한다.
+const MIN_KEEP_RATIO = 0.9; // ponytail: 상한 없는 증가는 허용. 감소만 막는다.
+const shrankTooMuch = (next, prev) => prev > 0 && next < prev * MIN_KEEP_RATIO;
+
 async function fetchAll(serviceKey, perPage) {
   const all = [];
   let total = 0;
@@ -223,7 +235,15 @@ async function main() {
   }
 
   const dict = toDict(items); // word 기준 dedupe
-  writeFileSync("data/ksl-dict.json", JSON.stringify(dict, null, 2) + "\n");
+  const out = "data/ksl-dict.json";
+  const prev = existsSync(out) ? JSON.parse(readFileSync(out, "utf8")).length : 0;
+  if (shrankTooMuch(dict.length, prev)) {
+    console.error(`중단: 기존 ${prev}개 → 수집 ${dict.length}개로 줄었다. 덮어쓰지 않았다.\n` +
+      "페이징이 일찍 끝났을 가능성이 높다 → scripts/last-response.txt 와 수신 건수를 먼저 본다.\n" +
+      `정말 줄어야 하면 ${out} 을 옮기고 다시 돌린다.`);
+    process.exit(1);
+  }
+  writeFileSync(out, JSON.stringify(dict, null, 2) + "\n");
   console.log(`data/ksl-dict.json 생성: ${dict.length}개 표제어 (수신 ${items.length}건, 중복 제거)`);
 }
 
