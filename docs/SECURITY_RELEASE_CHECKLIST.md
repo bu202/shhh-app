@@ -1,6 +1,6 @@
 # 출시 전 보안 체크리스트 — shhh!
 
-마지막 갱신: 2026-08-11 (2차) · 대상: `https://shhh-app.pages.dev` (Cloudflare Pages + Pages Functions + **D1**)
+마지막 갱신: 2026-08-11 (2차) · 대상: `https://withshhh.com` (Cloudflare Pages + Pages Functions + **D1**)
 
 > **이 문서를 먼저 읽는 법.** 「미해결」이 곧 출시 판정이다. 해결된 항목은 어떻게 확인했는지가
 > 같이 적혀 있어야 한다 — "고쳤다"만 적힌 줄은 다음 사람에게 아무것도 안 알려준다.
@@ -56,9 +56,9 @@
 |---|---|---|
 | 5 | **원격 계정 인프라** | ⛔ **미실행이다.** 위협 **94 까지의** 로컬 코드·migration·테스트·돌연변이가 저장소에 있다(설계서 §0-21-6·§0-22-13·§13-6 매핑표 — 위협 93·94 는 2026-08-31 에 들어왔다). ⛔ **그 존재는 원격 반영의 근거가 아니다.** **갈라 읽는다** — ✅ 코드 배포는 실행됐다 — production **`715c897c`**(source **`e0c5921`**) · preview **`8d8a00bf`**(같은 source) · 2026-09-02. **직전** production `7362d2f0`(source `e02e810`)는 지우지 않고 검증된 **롤백** 후보로 남겼다. ⛔ ⛔ **계정 인프라는 미실행**이다: 원격 D1 `0005` 미적용 · ledger D1 미생성 · 미등록 시크릿 5개(`SIGNUP_STATE_KEY`·`TOMBSTONE_KEY`·`DELETION_KEY`·`SESSION_ENVELOPE_KEY`·`TURNSTILE_SECRET`) · 정리 Worker 미배포. 실측값의 원본은 `docs/HANDOFF.md` §2 운영현황 |
 | 11 | **엣지 남용 방어** | ❌ **없다. 그래서 계정 라우트가 fail-closed 다**(위협 50 · 52~56). Pages Functions 에는 레이트리밋 바인딩이 없고 `*.pages.dev` 에는 WAF 규칙을 못 건다. ⛔ **2026-08-22 정정**: 8판까지는 **`RL` 이라는 이름의 아무 값**이나 방어로 인정됐고(문자열·빈 객체·던지는 `limit()`), 그 상태에서 `/ready` 가 200 이었다. 지금은 `EDGE_GUARD` 선언과 실재 검증이 필요하다. 붙을 때까지 계정 기능은 열리지 않는다 — 선택지·비용은 `docs/OPS_RUNBOOK.md` §13(**사용자 결정**) |
-| 15 | **커스텀 도메인 + WAF(A안)** | ❌ **미구성(결정 1).** 도메인 연결 → `EDGE_GUARD="waf"` → WAF 규칙 → **Security Events 와 실제 제한 테스트로 확인**. 절차는 `docs/OPS_RUNBOOK.md` §13-2 |
+| 15 | **커스텀 도메인 + WAF(A안)** | ◐ **절반(2026-09-04).** ~~도메인 연결~~ ✅ `withshhh.com` · ~~`APP_ORIGIN` 교체~~ ✅ → **`EDGE_GUARD="waf"` 등록** → **WAF 규칙 생성** → **Security Events 와 실제 제한 테스트로 확인** 이 남았다. ⚠️ **당시 사실(2026-09-03)**: 도메인이 없어 전부 미구성이었다. 절차는 `docs/OPS_RUNBOOK.md` §13-2 |
 | 16 | **Turnstile 위젯 생성·등록** | ❌ **미구성(결정 3).** 공개 회원가입에만 적용. `TURNSTILE_SECRET`(시크릿) · `TURNSTILE_SITE_KEY`(vars). ⛔ **①(로컬 준비)만 됐다** — widget 생성 · 시크릿 등록 · 운영 호스트·action 검증 · 실브라우저 확인이 남는다. **지금 상태를 「활성화 완료」로 쓰지 않는다**(2단계 §24-9) |
-| 23 | **개인정보 문의 전용 도메인 이메일** | ❌ **없다(2026-08-26).** 소유 도메인이 없어 방침은 **지금 도착하는 주소**를 적는다 — 없는 주소를 미리 적지 않았다. **계정 개방 전 필수**: 생성 → **실제 수신 테스트** → 방침·약관 개정 → `policies.mjs stamp` → 배포. 절차는 `docs/OPS_RUNBOOK.md` §18 G1 |
+| 23 | **개인정보 문의 전용 도메인 이메일** | ◐ **절반(2026-09-04).** `privacy@withshhh.com` 생성 → **실제 수신 테스트 통과** → 방침·약관·가입 요약 개정(11차)까지 끝났다. ✅ **stamp 도 끝났다**(`pv=df65c0718914`). ⛔ **배포가 남아 라이브 정책 사본은 아직 10차(옛 Gmail)다.** ⚠️ **당시 사실(2026-08-26)**: 소유 도메인이 없어 개인 Gmail 을 적었다. 절차는 `docs/OPS_RUNBOOK.md` §18 G1 |
 | 24 | **백업 절차 구현**(B1~B9) | ⚠️ **스크립트는 있다**(`scripts/backup.mjs` · 2026-08-26) · **R2 버킷·키 파일 없음** → 지금은 `config` 로 fail-closed. 옛 상태는 다음과 같았다: **로컬 구현 0줄 · R2 버킷 없음.** 매일 백업은 하지 않고 **migration 직전에만** 만든다. 자동 백업 허용 · **자동 복원 금지**. 인수조건은 2단계 §24-5, 실행 순서는 `docs/OPS_RUNBOOK.md` §18-2 |
 | 25 | **요금제 전환 게이트** | ⚠️ **지금은 Free(사용자 선언).** ⛔ Paid 로 옮기기 **전에** `CONFIRMED_RETENTION`(15→38일)과 방침 문장을 먼저 다시 계산하고 새 불변 판을 만든다 — `docs/OPS_RUNBOOK.md` §18-1 |
 | 26 | **초기 OAuth 제공자 목록** | ✅ **로컬 확정 2026-08-26.** 네이버·카카오만 열고 **구글은 목록 밖**이다(구현은 남긴다). 잠금은 `isProvider()` 한 자리 — 화면·`/login`·`/cb`·`/exchange`·`/signup/start` 가 전부 그 함수를 지난다. `test-friends` **T90** 이 시크릿을 다 넣은 채로 잰다. ⛔ **원격 OAuth 시크릿은 여전히 미등록** |
@@ -97,7 +97,8 @@ WAF 부재(볼류메트릭 방어 없음)도 그대로다 — **2026-08-20 부�
 ⛔ **위협 65 는 위협 64 를 고친 코드 안에서 나왔다.** 「모르면 닫는다」를 값 하나에만 적용하고
 응답 전체에는 적용하지 않으면, 닫는 곳과 여는 곳이 갈린다 — **수정 자체가 다음 감사의 대상이다.**
 ⛔ **legacy KV 삭제는 이번에도 제외한다.**
-**도메인·WAF 는 2026년 9월 예정**이고 그 전에는 계정 라우트를 열 수 없다.
+**커스텀 도메인은 2026-09-04 에 붙었고 `APP_ORIGIN` 도 그리로 옮겼다. WAF 규칙은 아직 0개**라
+그 전에는 계정 라우트를 열 수 없다.
 
 원격 작업의 순서·중단 기준·`/api/ready` 기대값은 **`docs/OPS_RUNBOOK.md`** 가 원본이다.
 
@@ -124,7 +125,7 @@ WAF 부재(볼류메트릭 방어 없음)도 그대로다 — **2026-08-20 부�
 | ~~20~~ ✅ | **부분 시크릿 가입 완주 · Turnstile 필드 · 비밀값 비교 · 실패 갈래** | **로컬 수정 완료 2026-08-22**(설계서 §0-10 · **당시** 위협 57~60 · T73~T76). ⚠️ **당시 사실 — 2026-08-22**: 이 수정은 그때 프로덕션에 배포되지 않았고 라이브는 `19e69dee` 였다. ✅ **2026-08-24 에 배포됐다**(production `7362d2f0` · source `e02e810`). ⚠️ 당시 적은 판정 근거(「돌연변이 34종 중 33종 사망」)는 **저장소에서 재현할 수 없었다** — 11판이 그것을 위협 63 으로 다시 열었다 |
 | ~~21~~ ✅ | **비밀값 비교가 런타임 timing-safe API 를 쓴다** | **로컬 수정 완료 2026-08-22**(위협 62 · T75·T79). `digest → crypto.subtle.timingSafeEqual()` 이고 **JS fallback 이 없다.** Node 스위트는 `scripts/_workers-shim.mjs` 가 채우고, 어댑터가 `dist/`·`functions/`·`worker/` 에 없다는 것을 `test-dist` 가 전수로 잰다. **진짜 workerd 프로세스**를 띄우는 `scripts/test-workerd.mjs` 가 운영 경로를 실제로 밟는다 |
 | ~~22~~ ✅ | **제공자별 부분 시크릿 fail-closed** | **로컬 수정 완료 2026-08-22**(위협 61 · T77). 재현: `NAVER_ID` 만 있고 secret 이 없어도 `/signup/start` **200** · Turnstile 검증 **1회 호출** · OAuth 주소 발급 · `/login/naver` **302**. 이제 `providerPossible()` 하나가 규칙을 소유하고 다섯 자리가 같은 함수를 본다. **카카오 secret 선택 정책은 유지** |
-| ~~23~~ ✅ | **돌연변이 검증이 재현 가능하다** | **완료 2026-08-22**(위협 63) · **2026-08-23 확장.** `scripts/mutations.mjs`(목록 281종 — **동작 212종 · 정적 69종**) + `node scripts/mutate.mjs`(실행기 · 임시 복제본). ⚠️ **총수를 손으로 유지하지 않는다** — `scripts/test-docs.mjs` 검사 26 이 이 숫자를 `MUTATIONS` 목록에서 파생해 대조하고, 어긋나면 `npm test` 가 실패한다. **실행 결과의 원본은 `node scripts/mutate.mjs` 의 출력이다**(**당시 사실 — 2026-09-01 실측: 272종 · 사망 272 · 생존 0 · 앵커 실패 0 · 제한 시간 초과 0 · 측정 불능 0** — 당시 목록: 동작 212 · 정적 60 · 종료 코드 0). **당시 사실 — 2026-09-02 실측: 277종 · 사망 277** — 당시 목록: 동작 212 · 정적 65 · 종료 코드 0. **당시 사실 — 2026-09-02 배포 뒤 실측: 280종 · 사망 280 · 생존 0 · 앵커 실패 0 · 제한 시간 초과 0 · 측정 불능 0** — 당시 목록: 동작 212 · 정적 68 · 종료 코드 0. **2026-09-03 실측: 281종 · 사망 281 · 생존 0 · 앵커 실패 0 · 제한 시간 초과 0 · 측정 불능 0** — 동작 212 · 정적 69 · 종료 코드 0. ⚠️ **그 앞 실측(2026-08-28: 217종 · 사망 217)은 위협 93 을 못 보는 실행기가 만든 것이라 판정의 근거로 쓰지 않는다** — 지금 실행기는 관측되지 않은 실행을 `INFRA-ERROR` 로 가른다. ⛔ **동작과 정적을 한 숫자로 합쳐 읽지 않는다** — 정적 검사가 아무리 촘촘해도 런타임 방어를 증명하지 못한다. ⚠️ 2026-08-22 첫 실행에서는 셋이 살아남았고 셋 다 실제 테스트 공백이었다 — 숨기지 않고 §0-11-2 에 적었다. 2026-08-23 에도 M24 가 한 번 살아남았고 그것도 실제 공백이었다(새 테스트가 빈 store 를 써서 우연히 통과했다). **2026-08-24 에 D18~D20 을 더했다** — 배포 뒤에 드러난 문서 현재성 결함 셋을 각각 되살린다: 현재 상태 블록의 옛 배포 ID · 배포 범위 서술 · timing-safe 서술(차례로 검사 29·30·31) |
+| ~~23~~ ✅ | **돌연변이 검증이 재현 가능하다** | **완료 2026-08-22**(위협 63) · **2026-08-23 확장.** `scripts/mutations.mjs`(목록 282종 — **동작 213종 · 정적 69종**) + `node scripts/mutate.mjs`(실행기 · 임시 복제본). ⚠️ **총수를 손으로 유지하지 않는다** — `scripts/test-docs.mjs` 검사 26 이 이 숫자를 `MUTATIONS` 목록에서 파생해 대조하고, 어긋나면 `npm test` 가 실패한다. **실행 결과의 원본은 `node scripts/mutate.mjs` 의 출력이다**(**당시 사실 — 2026-09-01 실측: 272종 · 사망 272 · 생존 0 · 앵커 실패 0 · 제한 시간 초과 0 · 측정 불능 0** — 당시 목록: 동작 212 · 정적 60 · 종료 코드 0). **당시 사실 — 2026-09-02 실측: 277종 · 사망 277** — 당시 목록: 동작 212 · 정적 65 · 종료 코드 0. **당시 사실 — 2026-09-02 배포 뒤 실측: 280종 · 사망 280 · 생존 0 · 앵커 실패 0 · 제한 시간 초과 0 · 측정 불능 0** — 당시 목록: 동작 212 · 정적 68 · 종료 코드 0. **당시 사실 — 2026-09-03 실측: 281종 · 사망 281 · 생존 0 · 앵커 실패 0 · 제한 시간 초과 0 · 측정 불능 0** — 당시 목록: 동작 212 · 정적 69 · 종료 코드 0. ⚠️ **그 앞 실측(2026-08-28: 217종 · 사망 217)은 위협 93 을 못 보는 실행기가 만든 것이라 판정의 근거로 쓰지 않는다** — 지금 실행기는 관측되지 않은 실행을 `INFRA-ERROR` 로 가른다. ⛔ **동작과 정적을 한 숫자로 합쳐 읽지 않는다** — 정적 검사가 아무리 촘촘해도 런타임 방어를 증명하지 못한다. ⚠️ 2026-08-22 첫 실행에서는 셋이 살아남았고 셋 다 실제 테스트 공백이었다 — 숨기지 않고 §0-11-2 에 적었다. 2026-08-23 에도 M24 가 한 번 살아남았고 그것도 실제 공백이었다(새 테스트가 빈 store 를 써서 우연히 통과했다). **2026-08-24 에 D18~D20 을 더했다** — 배포 뒤에 드러난 문서 현재성 결함 셋을 각각 되살린다: 현재 상태 블록의 옛 배포 ID · 배포 범위 서술 · timing-safe 서술(차례로 검사 29·30·31) |
 
 - **당시 실측(2026-08-22 · 제어면 삭제 전)**: 옛 배포 15개 전부 `GET /api/book` 이 401 이었다 —
   즉 계정 라우트가 열린 세대였다. 그것이 제어면 삭제(18번)의 이유다.
@@ -413,18 +414,18 @@ npx wrangler pages deploy dist --project-name shhh-app --branch main
 #    ② `-L`   — Pages 는 `/privacy.html` 을 `/privacy` 로 **308** 보낸다. 안 따라가면 본문이 빈다.
 #    ③ 상태코드가 아니라 **Content-Type** 을 본다 — 없는 경로에 index.html 을 200 으로 준다.
 for u in /CLAUDE.md /worker/index.js /wrangler.jsonc /package.json /scripts/test-friends.mjs; do
-  curl -sL -o /dev/null -w "$u %{content_type}\n" "https://shhh-app.pages.dev$u?cb=$RANDOM$RANDOM"
+  curl -sL -o /dev/null -w "$u %{content_type}\n" "https://withshhh.com$u?cb=$RANDOM$RANDOM"
 done
 #   → 전부 text/html 이어야 한다 (= 파일이 없어서 index.html 로 떨어진 것)
 
 # 방침이 실제로 갱신됐는지 (-L 없으면 308 만 받는다)
-curl -sL "https://shhh-app.pages.dev/privacy.html?cb=$RANDOM$RANDOM" | grep -oE "마지막 수정: [0-9-]+"
+curl -sL "https://withshhh.com/privacy.html?cb=$RANDOM$RANDOM" | grep -oE "마지막 수정: [0-9-]+"
 
-curl -s  https://shhh-app.pages.dev/api/health     # {"ok":true,"ready":?,"providers":[...]}
-curl -sI https://shhh-app.pages.dev/api/ready | head -1   # 200 이어야 정상
-curl -sI https://shhh-app.pages.dev/ | grep -i content-security-policy
+curl -s  https://withshhh.com/api/health     # {"ok":true,"ready":?,"providers":[...]}
+curl -sI https://withshhh.com/api/ready | head -1   # 200 이어야 정상
+curl -sI https://withshhh.com/ | grep -i content-security-policy
 for p in kakao naver google; do
-  curl -s -o /dev/null -w "$p %{http_code}\n" "https://shhh-app.pages.dev/api/login/$p"   # 302 = 정상, 503 = 키 없음
+  curl -s -o /dev/null -w "$p %{http_code}\n" "https://withshhh.com/api/login/$p"   # 302 = 정상, 503 = 키 없음
 done
 ```
 

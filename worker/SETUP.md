@@ -1,6 +1,6 @@
 # 로그인 설정 — 개발자 콘솔에 등록할 값
 
-앱 주소: `https://shhh-app.pages.dev/` · API: **같은 주소의 `/api/`** (Cloudflare Pages Functions)
+앱 주소: `https://withshhh.com/` · API: **같은 주소의 `/api/`** (Cloudflare Pages Functions)
 
 > ⚠️ **2026-08-11 에 주소가 바뀌었다.** 예전엔 앱이 `bu202.github.io`, API 가
 > `shhh-api.bu202.workers.dev` 로 **origin 이 둘**이었다. 지금은 하나다.
@@ -86,7 +86,7 @@ Google Cloud Console → 인증 플랫폼. 앱 이름 `shhh!`, 대상 **외부**
 OAuth 클라이언트(웹 애플리케이션), 승인된 리디렉션 URI:
 
 ```
-https://shhh-app.pages.dev/api/cb/google
+https://withshhh.com/api/cb/google
 ```
 
 `openid` 범위만 쓰므로 앱 인증(verification) 없이 누구나 로그인된다.
@@ -97,7 +97,7 @@ JavaScript 원본은 비워 둔다 — 브라우저가 구글 API 를 직접 부
 ## ✅ 카카오 (앱 ID 1536945)
 
 <https://developers.kakao.com/console/app>. 이름·회사명 `shhh!`, 카테고리 교육,
-대표 도메인 `https://shhh-app.pages.dev`.
+대표 도메인 `https://withshhh.com`.
 
 ⚠️ **저장이 계속 실패하면 모달을 끝까지 스크롤할 것.** 맨 아래 「운영정책을 위반하지 않는 앱입니다」
 체크박스가 필수인데, 오류 메시지는 "필수 항목을 입력하지 않았거나 값이 올바르지 않습니다"뿐이라
@@ -109,7 +109,7 @@ JavaScript 원본은 비워 둔다 — 브라우저가 구글 API 를 직접 부
 2. **Redirect URI 는 「카카오 로그인」 메뉴에 없다.**
    앱 설정 > **플랫폼 키 > REST API 키 카드의 ⋮ > 수정** > 「카카오 로그인 리다이렉트 URI」:
    ```
-   https://shhh-app.pages.dev/api/cb/kakao
+   https://withshhh.com/api/cb/kakao
    ```
    입력 후 **＋** 로 목록에 넣고, 페이지 오른쪽 끝의 **저장**을 누른다(창이 좁으면 버튼이 화면 밖이다).
    **옛 `shhh-api.bu202.workers.dev/cb/kakao` 는 같은 화면에서 지운다.**
@@ -128,8 +128,8 @@ JavaScript 원본은 비워 둔다 — 브라우저가 구글 API 를 직접 부
 | 사용 API | **네이버 로그인** |
 | 제공 정보 선택 | **전부 체크 해제** (필수가 강제되면 그것만) |
 | 환경 추가 | **PC웹** |
-| 서비스 URL | `https://shhh-app.pages.dev` |
-| **Callback URL** | `https://shhh-app.pages.dev/` |
+| 서비스 URL | `https://withshhh.com` |
+| **Callback URL** | `https://withshhh.com/` |
 
 ⚠️ **왜 네이버만 다른가.** 네이버는 서비스 URL 을 **하나만** 받으면서 콜백이 그 도메인 안에 있기를
 요구한다. 아니면 이 화면이 뜬다:
@@ -143,13 +143,13 @@ JavaScript 원본은 비워 둔다 — 브라우저가 구글 API 를 직접 부
 
 ⚠️ **네이버는 검수를 통과하기 전까지 등록한 테스트 계정(본인)만 로그인된다.**
 전체 공개하려면 애플리케이션 > **검수 요청**. 서비스 URL 과 개인정보처리방침
-(`https://shhh-app.pages.dev/privacy.html`)이 살아 있어야 통과한다.
+(`https://withshhh.com/privacy.html`)이 살아 있어야 통과한다.
 **주소가 바뀌었으므로 검수에 낸 값도 같이 고쳐야 한다.**
 
 ## 확인
 
 ```bash
-curl -sI "https://shhh-app.pages.dev/api/login/kakao?return=https://shhh-app.pages.dev/" | head -1
+curl -sI "https://withshhh.com/api/login/kakao?return=https://withshhh.com/" | head -1
 #   302 → 설정됨 · 503 → 키가 아직 없음
 ```
 

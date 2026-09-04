@@ -800,7 +800,7 @@ export const MUTATIONS = [
     id: "D29", file: "privacy.html", suite: "test-policies", kind: "정적",
     what: "문의 주소를 실재하지 않는 예시 주소로 바꾼다",
     invariant: "공개 정책에 가짜·플레이스홀더 주소를 넣지 않는다 — 도착하지 않는 주소는 「연락할 수 있다」를 거짓으로 만든다",
-    transform: (src) => src.replaceAll("qotjddnr9788@gmail.com", "privacy@example.com"),
+    transform: (src) => src.replaceAll("privacy@withshhh.com", "privacy@example.com"),
   },
   {
     id: "D30", file: "privacy.html", suite: "test-policies", kind: "정적",
@@ -2221,6 +2221,13 @@ export const MUTATIONS = [
     invariant: "행 추출이 비면 어떤 두 문서든 「같다」가 되어 경계 판정이 무력해진다",
     find: "  return [...String(text).matchAll(/^\\|\\s*\\*\\*(\\d+)\\*\\*\\s*\\|[^\\n]*/gm)].map((m) => m[0]).join(\"\\n\");",
     replace: "  return \"\";",
+  },
+  {
+    id: "M234", file: "worker/index.js", suite: "test-rights", kind: "동작",
+    what: "재개 티켓 AAD 에서 APP_ORIGIN 을 뺀다",
+    invariant: "재개 티켓은 그것을 발급한 배포 주소에 묶인다 (주소가 바뀌면 앞의 왕복을 이어받지 않는다)",
+    find: "  ENC.encode(`${RESUME_V}|resume|${provider}|${env.APP_ORIGIN}|${exp}`);",
+    replace: "  ENC.encode(`${RESUME_V}|resume|${provider}|${exp}`);",
   },
   {
     id: "D48", file: "scripts/policies.mjs", suite: "test-policies", kind: "정적",

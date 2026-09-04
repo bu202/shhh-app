@@ -39,11 +39,14 @@
   //    바인딩과 네임스페이스를 함께 지운다(docs/D1_MIGRATION.md 5번).
   "kv_namespaces": [{ "binding": "KV", "id": "f55a12622af84380a0865dd8ff4824ac" }],
   "vars": {
-    // 검증 단계에선 pages.dev. 도메인이 붙으면 **여기와 OAuth 콘솔 3사를 같이** 바꾼다.
+    // 2026-09-04 에 `withshhh.com` 으로 옮겼다. ⛔ **되돌리면 엣지 방어가 조용히 꺼진다** —
+    //    `*.pages.dev` 는 Cloudflare 소유 존이라 WAF 규칙을 못 걸고, `wafHost()` 가 그 호스트를
+    //    `null` 로 만들어 `guardMode()` 가 `EDGE_GUARD="waf"` 를 `none` 으로 떨어뜨린다.
+    // ⛔ 여기를 바꾸면 **OAuth 콘솔 3사의 복귀 주소도 같이** 바꾼다.
     // ⚠️ **origin 만 적는다** — https 이고 path·query·fragment·끝 슬래시가 없어야 한다.
     //    `worker/index.js` 의 `appOrigin()` 이 검증하고, 아니면 계정 라우트가 전부 503 이다.
     //    네이버 복귀 주소(앱 루트)도 여기서 파생한다 — 별도 `APP_URL` 은 폐지했다(위협 67).
-    "APP_ORIGIN": "https://shhh-app.pages.dev",
+    "APP_ORIGIN": "https://withshhh.com",
     // 지금 쓰는 D1 요금제. **삭제 표식을 언제 지워도 되는지**가 여기서 나온다 —
     // 그 표식은 「복원으로 되살아난 계정을 다시 지우기 위한 값」이라 **되돌릴 수 있는
     // 창보다 오래** 살아 있어야 한다(Free 7일 · Paid 30일 · 공식 문서).

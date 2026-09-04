@@ -17,11 +17,11 @@
 
 | 자리 | 값 | 코드 근거 |
 |---|---|---|
-| Redirect URI | `https://shhh-app.pages.dev/api/cb/kakao` | `redirectUri()` — 카카오는 `viaApp` 이 아니다 |
+| Redirect URI | `https://withshhh.com/api/cb/kakao` | `redirectUri()` — 카카오는 `viaApp` 이 아니다 |
 | 동의항목 | **0개.** 회원번호(`id`)만 쓴다 | `P.kakao.scope = ""` · `uid: (j) => j.id` |
 | 부르는 API | `POST /oauth/token` · `GET /v2/user/me` | `P.kakao.token` · `P.kakao.me` |
-| 개인정보처리방침 | `https://shhh-app.pages.dev/privacy.html` | — |
-| 이용약관 | `https://shhh-app.pages.dev/policies/` | — |
+| 개인정보처리방침 | `https://withshhh.com/privacy.html` | — |
+| 이용약관 | `https://withshhh.com/policies/` | — |
 | 로고 | `brand/logo-200.png` · `brand/logo-512.png` | — |
 
 공식 문서가 말하는 콘솔 자리(2026-08-18 확인):

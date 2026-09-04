@@ -21,10 +21,10 @@
 
 | 자리 | 값 | 코드 근거 |
 |---|---|---|
-| 서비스 URL | `https://shhh-app.pages.dev` | 배포 대상 |
-| Callback URL | `https://shhh-app.pages.dev/` ← **앱 주소 그대로** | `worker/index.js` `redirectUri()` · `P.naver.viaApp = true` |
-| 개인정보처리방침 | `https://shhh-app.pages.dev/privacy.html` | 저장소의 `privacy.html` |
-| 이용약관 | `https://shhh-app.pages.dev/policies/` | `policies/index.html` |
+| 서비스 URL | `https://withshhh.com` | 배포 대상 |
+| Callback URL | `https://withshhh.com/` ← **앱 주소 그대로** | `worker/index.js` `redirectUri()` · `P.naver.viaApp = true` |
+| 개인정보처리방침 | `https://withshhh.com/privacy.html` | 저장소의 `privacy.html` |
+| 이용약관 | `https://withshhh.com/policies/` | `policies/index.html` |
 | 로고 | `brand/logo-200.png` (200×200) · 큰 규격은 `brand/logo-512.png` | — |
 | 제공 정보(동의항목) | **0개** — 회원 고유번호(`id`)만 사용 | `P.naver.scope = ""` · `uid: (j) => j.response.id` |
 
@@ -108,7 +108,7 @@
 | 지점 | 왜 걸리나 | 확인 |
 |---|---|---|
 | 서비스 URL 이 404 | 옛 GitHub Pages 주소가 남아 있으면 | 콘솔 값을 열어 그대로 브라우저에 붙여 본다 |
-| Callback 도메인 불일치 | 네이버는 서비스 URL 도메인 안의 콜백만 받는다 | 둘 다 `shhh-app.pages.dev` 인지 |
+| Callback 도메인 불일치 | 네이버는 서비스 URL 도메인 안의 콜백만 받는다 | 둘 다 `withshhh.com` 인지 |
 | 안 쓰는 동의항목이 켜져 있음 | 코드가 `scope` 를 비워 두는데 콘솔이 이름·이메일을 켜 두면 설명과 다르다 | 콘솔의 「제공 정보 활용 동의」 목록이 **0개**인지 |
 | 스크린샷 누락 | 가장 흔한 거절 사유 | 위 표의 3·7·9 |
 | 방침 URL 이 안 열림 | `privacy.html` 이 배포에 포함돼야 한다 | 배포 후 `curl -I .../privacy.html` |

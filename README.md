@@ -2,7 +2,7 @@
 
 연인·친구가 **실제 한국수어를 배워서** 소리 없이 대화하게 만드는 앱. 목적은 수어를 알리는 것이다.
 
-라이브: <https://shhh-app.pages.dev> · 개발 규칙과 함정 기록은 [`CLAUDE.md`](CLAUDE.md)
+라이브: <https://withshhh.com> · 개발 규칙과 함정 기록은 [`CLAUDE.md`](CLAUDE.md)
 
 ## 스택 (실제)
 
@@ -118,7 +118,7 @@ npx wrangler pages deploy --project-name shhh-app --branch main
 - 이 표는 손으로 세지 않는다. `scripts/test-config.mjs` 가 **코드에서 `env.*` 를 읽어**
   이 표·`worker/SETUP.md`·`wrangler.jsonc`·runbook 과 대조한다.
 
-설정이 됐는지는 `curl -s https://shhh-app.pages.dev/api/health` 로 본다 — **값은 안 보이고 있나 없나만** 나온다.
+설정이 됐는지는 `curl -s https://withshhh.com/api/health` 로 본다 — **값은 안 보이고 있나 없나만** 나온다.
 등록 절차는 [`worker/SETUP.md`](worker/SETUP.md), 원격 작업 순서는 [`docs/OPS_RUNBOOK.md`](docs/OPS_RUNBOOK.md).
 
 ## 데이터

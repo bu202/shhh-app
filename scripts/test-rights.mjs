@@ -345,6 +345,20 @@ const cookieOf = (res, name) => (res.headers.getSetCookie()
   assert.equal(await takeResumeTicket(env, st, Date.now()), null,
     t("E4-f: ⛔ 가입 state 가 재개 티켓으로 통했다"));
 
+  // -- h. ⛔ **다른 오리진에서는 안 열린다.** AAD 에 `APP_ORIGIN` 이 들어 있다.
+  //    2026-09-04 에 `APP_ORIGIN` 을 `shhh-app.pages.dev` → `withshhh.com` 으로 옮겼고, 그 순간
+  //    떠 있던 재개 티켓은 전부 무효가 된다 — 그것이 **의도한 동작**이다(주소가 바뀌면 그 앞의
+  //    왕복을 이어받지 않는다). ⚠️ 가입 state 에는 같은 검사가 있었는데(`test-signup` A6)
+  //    여기에는 없었다 — 2026-09-04 Codex 독립 검토가 잡았다.
+  {
+    const fresh = await makeResumeTicket(env, A.uid, "kakao", A.sub, now);
+    assert.equal(await takeResumeTicket({ ...env, APP_ORIGIN: "https://evil.test" }, fresh, now), null,
+      t("E4-h: ⛔ 다른 오리진에서 재개 티켓이 열렸다 — AAD 에 APP_ORIGIN 이 안 들어갔다"));
+    // 막는 쪽만 재면 「영영 안 열리는」 회귀를 못 잡는다.
+    assert.ok(await takeResumeTicket(env, fresh, now),
+      t("E4-h: 같은 오리진에서도 안 열린다 — 이 검사가 아무것도 안 재고 있다"));
+  }
+
   // -- g. 위조·잘린 티켓.
   for (const junk of ["", "x", "v1.abc.def.ghi", ticket.slice(0, -4), "v2." + ticket.slice(3)])
     assert.equal(await takeResumeTicket(env, junk, Date.now()), null,

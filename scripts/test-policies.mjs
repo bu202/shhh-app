@@ -345,6 +345,21 @@ for (const f of readdirSync(DIR))
       t(`문의 주소가 플레이스홀더다: ${a}`));
   }
 
+  // ── d-2. **세 문서가 같은 주소를 적는가.** (2026-09-04 · Codex 독립 검토가 잡았다)
+  //   ⛔ d 는 **모양과 플레이스홀더만** 본다 — 방침·약관·가입 요약이 **서로 다른 유효한 주소**를
+  //      적어도 통과했다. 그러면 이용자가 보는 자리마다 연락처가 갈리고, 그중 하나는 아무도
+  //      안 보는 메일함이 된다. ⚠️ **주소가 실재하는지·도착하는지는 여기서 못 잰다** —
+  //      그건 네트워크 밖의 사실이라 사람이 수신 테스트로 확인한다(`docs/OPS_RUNBOOK.md` §18 G1).
+  {
+    const trm = String(await R(POLICY_BUNDLE.docs.terms.path)).replace(/\s+/g, " ");
+    const grab = (txt) => [...new Set([...txt.matchAll(/[\w.+-]+@[\w-]+\.[\w.-]+/g)].map((m) => m[0]))];
+    const inPrivacy = new Set(mails);
+    for (const [name, txt] of [["약관", trm], ["가입 화면 요약", sum]])
+      for (const a of grab(txt))
+        assert.ok(inPrivacy.has(a),
+          t(`${name} 이 방침에 없는 주소를 적는다: ${a} — 연락처가 문서마다 갈린다`));
+  }
+
   // ── e. **전화번호를 공개하지 않는다.** 기관 대표번호(분쟁조정·신고센터)는 예외다 —
   //    그건 우리 번호가 아니라 회원님이 도움을 요청할 곳이다.
   const INSTITUTION = ["1833-6972", "118", "1301", "182"];
