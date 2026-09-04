@@ -13,7 +13,10 @@ import { writeFileSync } from "node:fs";
 // signDescription·signImages 가 추가됐고, **문화정보수어는 국립국어원 미제공이라 값이 공백**이다.
 // ⚠️ 옛 엔드포인트는 일상생활 수어만이었다: /openapi/service/rest/meta13/getCTE01701
 const ENDPOINT = "https://api.kcisa.kr/API_CNV_054/request";
-const PER_PAGE = 1000;
+// ⚠️ 실측(2026-09-04): numOfRows 를 1000 으로 줘도 **서버가 100건만 준다.**
+//    그래서 "요청량보다 적게 오면 끝"이라는 판정은 **첫 페이지에서 즉시 끝난다** —
+//    실제로 3,622개짜리 사전을 98개로 덮어썼다. 종료는 **빈 페이지**로만 판정한다.
+const PER_PAGE = 100;
 
 const splitList = (s) => (s || "").split(",").map((x) => x.trim()).filter(Boolean);
 const httpsify = (u) => u.replace(/^http:\/\//i, "https://"); // 혼합콘텐츠 방지
@@ -135,9 +138,13 @@ function runMock() {
   a(dx[0].media.src.length === 2, "xml signImages split");
 
   // 페이징 종료 조건: 마지막 페이지는 요청량보다 적게 온다.
-  a(pageDone(1000, 1000) === false, "가득 찬 페이지면 계속 읽는다");
-  a(pageDone(999, 1000) === true, "요청량보다 적게 오면 마지막 페이지다");
-  a(pageDone(0, 1000) === true, "빈 페이지면 끝이다");
+  // ⛔ 2026-09-04 회귀: 서버가 numOfRows 를 100 으로 깎으면 "요청량보다 적다"가 매 페이지 참이라
+  //    첫 페이지에서 끝났고, 3,622개 사전을 98개로 덮어썼다. 그 조건이 되살아나면 여기서 죽는다.
+  a(pageDone(100, 100, 0) === false, "서버가 요청량을 깎아도 계속 읽는다(회귀 방지)");
+  a(pageDone(100, 100, 3622) === false, "totalCount 에 못 미치면 계속 읽는다");
+  a(pageDone(0, 3622, 0) === true, "빈 페이지면 끝이다");
+  a(pageDone(100, 3622, 3622) === true, "totalCount 를 채우면 끝이다");
+  a(pageDone(100, 3700, 3622) === true, "totalCount 를 넘겨도 끝이다");
 
   console.log("mock OK — json:", dj.length, "xml:", dx.length);
 }
@@ -164,23 +171,31 @@ async function fetchPage(serviceKey, numOfRows, pageNo) {
     writeFileSync("scripts/last-response.txt", text);
     if (code || msg) console.error(`API 응답 [${code || "?"}] ${msg || "(메시지 없음)"} → scripts/last-response.txt`);
   }
-  return items;
+  const tc = Number((text.match(/<totalCount>(\d+)<\/totalCount>/) || text.match(/"totalCount"\s*:\s*"?(\d+)/) || [])[1] || 0);
+  return { items, totalCount: tc };
 }
 
 // 전체 수집. ⛔ 한 번에 다 달라고 하지 않는다 — 개발 계정은 **일 1,000건 제한**이고
 // 통합본은 일상생활+전문용어+문화정보를 합쳐 주므로 옛 방식(numOfRows=100000)으로는
 // 한도에 걸리거나 잘린 응답을 조용히 받는다. 마지막 페이지는 요청량보다 적게 온다.
 // ⚠️ 순수 함수로 뺀다 — 페이징 종료 판정은 네트워크 없이 재야 회귀를 잡는다.
-const pageDone = (received, perPage) => received < perPage;
+// ⛔ **요청량과 비교하지 않는다.** 서버가 numOfRows 를 자기 상한으로 깎으면 매 페이지가
+//    "요청량보다 적게" 오므로 첫 페이지에서 끝나 버린다(2026-09-04 실측 사고).
+//    빈 페이지만이 끝의 증거다. totalCount 를 주면 그것도 함께 본다.
+const pageDone = (received, collected, totalCount) =>
+  received === 0 || (totalCount > 0 && collected >= totalCount);
 
 async function fetchAll(serviceKey, perPage) {
   const all = [];
+  let total = 0;
   for (let pageNo = 1; ; pageNo++) {
-    const items = await fetchPage(serviceKey, perPage, pageNo);
+    const { items, totalCount } = await fetchPage(serviceKey, perPage, pageNo);
+    if (totalCount > 0) total = totalCount;
     all.push(...items);
-    process.stdout.write(`\r수신 ${all.length}건 (page ${pageNo})`);
-    if (pageDone(items.length, perPage)) break;
-    if (pageNo > 200) { console.error("\n페이지 상한 초과 — 응답이 끝나지 않는다"); process.exit(1); }
+    process.stdout.write(`\r수신 ${all.length}${total ? "/" + total : ""}건 (page ${pageNo})`);
+    if (pageDone(items.length, all.length, total)) break;
+    // 개발 계정은 일 1,000건 제한이라 상한도 그 근처에 둔다.
+    if (pageNo >= 1000) { console.error("\n페이지 상한 초과 — 응답이 끝나지 않는다"); process.exit(1); }
   }
   process.stdout.write("\n");
   return all;
