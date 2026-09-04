@@ -330,10 +330,10 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 >
 > | 항목 | 현재 사실 |
 > |---|---|
-> | 배포 | ✅ **코드 반영만 실행됐다** — production 배포 **`715c897c`**(source **`e0c5921`** · 2026-09-02 · PWA-1) · preview **`c835c9b0`**(같은 source) · `READY_KEY` 등록. ⚠️ **계정 기능을 여는 배포가 아니다.** 세대별 기록과 롤백 후보는 §0-1 |
-> | 계정 인프라 | ⛔ **하나도 안 했다** — 원격 `0005` 미적용 · ledger D1 미생성 · `LEDGER` 미바인딩 · 가입·삭제·세션·Turnstile 시크릿 미등록 · OAuth 시크릿 미등록 · 정리 Worker 미배포 · **커스텀 도메인은 2026-09-04 에 붙었지만 WAF 규칙은 0개**. 그래서 라이브의 계정 라우트는 **두 DB 를 만지기 전에 503** 이다 |
+> | 배포 | ✅ **코드와 엣지 방어가 반영됐다** — production 배포 **`a9ca2ca4`**(source **`cf0ea50`** · 2026-09-04 · 오리진 전환 · 정책 11차 · `EDGE_GUARD="waf"`) · preview **`730686cc`**(같은 source) · `READY_KEY` 등록. ⚠️ **계정 기능을 여는 배포가 아니다** — `LEDGER` 미바인딩과 시크릿 부재로 계정 라우트는 그대로 503 이다(실측). ⚠️ **당시 사실**: 직전 라이브는 `715c897c`(source `e0c5921`)였고 **롤백 후보**로 살아 있다. 세대별 기록은 §0-1 |
+> | 계정 인프라 | ⛔ **하나도 안 했다** — 원격 `0005` 미적용 · ledger D1 미생성 · `LEDGER` 미바인딩 · 가입·삭제·세션·Turnstile 시크릿 미등록 · OAuth 시크릿 미등록 · 정리 Worker 미배포. 그래서 라이브의 계정 라우트는 **두 DB 를 만지기 전에 503** 이다. ✅ **도메인과 엣지 방어는 예외로 2026-09-04 에 됐다** — 그 둘은 계정 인프라가 아니다 |
 > | 로컬 코드 | 위협 **94 까지의** 코드·테스트·돌연변이가 저장소에 있다(위협 93·94 는 2026-08-31 · 설계서 §0-21-6·§0-22-13 의 상태 열 · T112·T113·**T114** · M173~M222). ⚠️ **스위트 34개 통과만으로 그 둘을 증명하지 않는다** — 근거는 고친 실행기로 돌린 **돌연변이 전수 실행**이다 |
-> | 남용 방어 | **미구성이고, 그래서 계정 라우트가 fail-closed 다**(2026-08-22 · 위협 52~56). Pages Functions 에는 엣지 레이트리밋 바인딩이 없고 `*.pages.dev` 에는 WAF 규칙을 못 건다. `EDGE_GUARD` 선언이 없거나 그 모드의 실재가 검증되지 않으면 `/api/health`·`/api/ready`·`/api/policies` 만 답한다. `/api/ready` 의 진단은 **`READY_KEY` 헤더**를 요구한다(위협 56). **A안(커스텀 도메인 + WAF)으로 확정됐다**(사용자 결정 1 · 2026-08-22). **2026년 9월 진행 예정**이고 **지금은 미구성**이라, 구성 전까지 계정 경로는 fail-closed 다. B안(Workers 전환)은 **보류**, Turnstile 은 **공개 회원가입 보조**, 세션 envelope 은 **사용**한다. ⚠️ **「무엇을 붙일지 선택 대기」가 아니다** — 남은 것은 구성이지 결정이 아니다(`docs/OPS_RUNBOOK.md` §13-2) |
+> | 남용 방어 | ✅ **A안(커스텀 도메인 + WAF)이 2026-09-04 에 붙었다.** `withshhh.com` 존에 속도 제한 규칙 `api-rate-limit` 1개(식 `starts_with(http.request.uri.path, "/api/")` · IP · 10초 · 50회 초과 시 차단 10초 · 활성)이고, **규칙을 먼저 만들어 429 를 실측한 뒤에** `EDGE_GUARD="waf"` 를 선언했다. 라이브가 `abuseReady:true` 로 답한다. ⚠️ **여러 IP 의 저속 분산은 여전히 통과한다**(무료 등급은 규칙 1개·10초 창). ⚠️ **그래도 계정 라우트는 fail-closed 다** — 막는 것은 `LEDGER` 미바인딩과 시크릿 부재이지 엣지 방어가 아니다. `/api/ready` 의 진단은 **`READY_KEY` 헤더**를 요구한다(위협 56). B안(Workers 전환)은 **보류**, 사람 확인은 **공개 회원가입 보조로 ①(로컬 준비)만 됐다**, 세션 envelope 은 **사용**한다. ⚠️ **당시 사실(2026-08-22~2026-09-03)**: 미구성이었고 그것이 계정 라우트를 닫아 두는 유일한 장치였다(위협 52~56 · `docs/OPS_RUNBOOK.md` §13-2) |
 >
 > **2026-08-26 2단계 보완(위협 73~78 · 로컬만)** — 방침 문장을 코드와 한 줄씩 대조해 여섯을 닫았다:
 > ① 없는 백업을 「설정해 두었다」고 말함 ② 삭제 표식을 시간만 보고 지움 ③ 이메일로 계정을
@@ -403,7 +403,7 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 > ⚠️ **여기 적힌 값은 전부 「측정한 값」이다.** 측정하지 않은 것은 **`확인 필요`** 라고 적고
 > 추정으로 채우지 않는다. `scripts/test-docs.mjs` 검사 19 가 이 블록을 잰다.
 >
-> **마지막 원격 조회: 2026-08-24 12:35 KST**(읽기 전용 — `pages deployment list` ·
+> **마지막 원격 조회: 2026-09-04 22:29 KST**(배포·스모크) · **시크릿 목록은 2026-08-24 12:35 KST**(읽기 전용 — `pages deployment list` ·
 > `pages secret list`(production·preview) · `pages project list` · `d1 list` ·
 > `d1 migrations list --remote` · `d1 execute --remote` 의 `SELECT COUNT(*)`).
 
@@ -413,7 +413,7 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 | 테스트 | **34개 스위트** 통과(2026-08-28 실측, exit 0). `test-workerd` 가 진짜 workerd 를 띄워 운영 경로를 밟는다. 4단계에서 `test-policies` · `test-signup` · `test-deletion-ledger` · `test-cleanup` 이 늘었고, **2026-08-28 에 `test-deploy-matrix`(배포 구성 8종) · `test-ops-race`(운영 교차) · `test-verifier`(검증 장치 자체)가 늘었다** — 앞의 것은 다른 fixture 가 전부 `DEV_RATE_LIMIT` 으로 문을 열어 둔 채 재고 있었기 때문이고, 뒤의 것은 백업·reconcile·크론을 각각 혼자만 재고 있었기 때문이며, 마지막 것은 **완료 판정을 만드는 돌연변이 실행기가 종료하지 않는 변이 앞에서 멈추고 손자를 남긴 채 아무 실패도 표시하지 않았기 때문이다**(위협 91·92). 개수의 원본은 `package.json` 의 `test` 스크립트이고 `scripts/test-docs.mjs` 가 거기서 읽어 문서와 대조한다 |
 | 돌연변이 | `node scripts/mutate.mjs` 로 **다시 돌릴 수 있다**. 목록의 원본은 `scripts/mutations.mjs`. 개수를 여기 적지 않는다 — 실행기 출력이 원본이다 |
 | 배포본 | 파일 수·선캐시 수·캐시 이름은 **빌드가 정한다** — `npm run build` 의 마지막 줄과 `scripts/test-dist.mjs` 의 출력이 원본이다. 손으로 적으면 다음 빌드에 낡는다(2026-08-20 정정: 여기 적혀 있던 「57개」는 그때 이미 58개였다). 내부 파일 0개는 `test-dist` 가 매번 검사한다 |
-| **라이브 (production)** | **배포 `715c897c`**(Production / branch `main` / source **`e0c5921`**) — 2026-09-02 PWA-1 원격 반영. **위협 57~94** 의 수정이 여기 들어 있다(`git log --oneline e0c5921..HEAD` 가 미배포분의 원본이다). ⚠️ **당시 사실 — 2026-08-24 배포 `7362d2f0`(source `e02e810`) 실측:** 계정 API 전부 **503**(두 DB 를 만지기 전 · `GET`·`PUT /book` · `/login/{kakao,naver}` · `POST /signup/start`) · 키 없는·틀린 키 `/api/ready` **503 `{"ok":true,"ready":false,"diagnostics":false}`** · `/api/health` `ready:false`·`providers:[]`·`ledgerBound:false`·`abuseReady:false`·`signupReady:false` · `/api/policies` **200** · `/` **200** · 없는 주소 **404** · 내부 파일 7종 **SPA 폴백**(sha256 `7d809fa2268d…`) · SW·핵심 JS 4개가 빌드와 **바이트 동일** · 브라우저 리소스 19개 중 실패 0 · 콘솔 오류 0. ⚠️ **계정 기능을 여는 배포가 아니다** — `EDGE_GUARD` 부재가 그대로다. 실측 원본은 `docs/OPS_RUNBOOK.md` §16-5 |
+| **라이브 (production)** | **배포 `a9ca2ca4`**(Production / branch `main` / source **`cf0ea50`**) — 2026-09-04 오리진 전환·정책 11차·엣지 방어. **위협 57~94** 의 수정이 여기 들어 있다(`git log --oneline cf0ea50..HEAD` 가 미배포분의 원본이다). **2026-09-04 실측(canonical `withshhh.com`)**: `/api/health` **`abuseReady:true`** · `ready:false` · `providers:[]` · `ledgerBound:false` · `signupReady:false` · `build:"v11-102692236214"` · `/api/ready` **503**(진단 비공개) · 계정 API 셋이 계약 헤더를 실어도 **503** · 헤더 없이는 **426** · `/api/policies` **200 `pv=df65c0718914`** · `/api/nope` **404** · 내부 파일이 `/` 와 **바이트 동일**(SPA 폴백). `shhh-app.pages.dev` 의 GET 은 전부 **302 → `withshhh.com`**(경로·쿼리 보존 · 1회 · POST 는 이동 안 함). 엣지 방어는 한 IP **80회** 뒤 **429**, 12초 뒤 **200** 으로 실측했다. ⚠️ **직전 라이브 `715c897c`(source `e0c5921`)는 롤백 후보로 살아 있다.** ⚠️ **당시 사실 — 2026-08-24 배포 `7362d2f0`(source `e02e810`) 실측:** 계정 API 전부 **503**(두 DB 를 만지기 전 · `GET`·`PUT /book` · `/login/{kakao,naver}` · `POST /signup/start`) · 키 없는·틀린 키 `/api/ready` **503 `{"ok":true,"ready":false,"diagnostics":false}`** · `/api/health` `ready:false`·`providers:[]`·`ledgerBound:false`·`abuseReady:false`·`signupReady:false` · `/api/policies` **200** · `/` **200** · 없는 주소 **404** · 내부 파일 7종 **SPA 폴백**(sha256 `7d809fa2268d…`) · SW·핵심 JS 4개가 빌드와 **바이트 동일** · 브라우저 리소스 19개 중 실패 0 · 콘솔 오류 0. ⚠️ **계정 기능을 여는 배포가 아니다** — `EDGE_GUARD` 부재가 그대로다. 실측 원본은 `docs/OPS_RUNBOOK.md` §16-5 |
 | **남은 배포** | **넷이다**(2026-08-24 실측) — `7362d2f0`(Production · source `e02e810`) · `cae28bf6`(Preview / `cf-pages` · source `e02e810`) · `19e69dee`(옛 Production · source `7477867`) · `8e16c92e`(옛 Preview · source `7f9078a`). ⚠️ **옛 둘을 지우지 않았다** — `19e69dee` 는 검증된 안전 롤백 후보다. 넷 다 계정 라우트가 닫힌 세대이고, `<해시>` 주소는 전부 Access 뒤에 있다 |
 | **옛 배포 — 제어면** | ✅ **15개 삭제 완료 2026-08-22.** `deployment list` 에 없고 개별 조회는 `8000009 does not exist` 다 |
 | **옛 배포 — 공개 접근** | ✅ **Access 로 차단 2026-08-23 10:23 KST.** 프리뷰 액세스(`*.shhh-app.pages.dev`)를 켜서 옛 해시 **15개 전부가 302 → `cloudflareaccess.com`** 이 됐다(적용 전에는 전부 401). 정책은 **Allow · 운영자 이메일 1개**이고 Everyone·Bypass 가 아니다. 브라우저로도 「Sign in ・ Cloudflare Access」 화면을 확인했다(`auth_status: NONE`). ⚠️ **404 가 아니다** — 배포는 여전히 존재하고 Access 뒤에서 실행될 수 있다. ⚠️ **가역적이다** — 끄면 다시 401 이다. ⛔ **제어면 삭제 · 공개 접근 차단 · 404 는 서로 다른 세 사건이다.** 복원 금지 해제 조건 ⑦(D1~D12) 충족 여부는 **별도 검토 대상**이고 이 실험이 답하지 않는다 |
@@ -427,7 +427,7 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 | **ledger D1** | **아직 없다**(`d1 list` 에 `shhh-ledger` 가 없다). 스키마·migration 은 `worker/ledger-schema.sql` · `migrations-ledger/0001`~**`0005`** 에 있고(2026-08-27 에 옛 `0006` 을 `0005` 안으로 합쳤다 — **적용된 적이 없는 migration** 이라 `ALTER` 로 따로 들 이유가 없다), 생성·바인딩은 **별도 승인** 사항이다. 바인딩이 없으면 `readMode()` 가 `unbound` 라 사용자 데이터 API 가 전부 503 이다 |
 | 정리 크론 | **로컬 구현만 · 미배포.** `worker/cleanup/` 에 있고, 설정은 **템플릿(`wrangler.example.jsonc`)과 실제 설정(`wrangler.jsonc`)으로 갈라져 있다**(2026-08-19). 실제 설정은 저장소에 없고(`.gitignore`) `docs/OPS_RUNBOOK.md` §3 이 만든다 — **배포 가능한 설정 파일에 placeholder 가 들어갈 수 없는 구조다**(`scripts/test-config.mjs` 가 잰다). 실패·경보는 2026-08-18 에 마감했다: 실패한 회차는 `ctx.waitUntil()` Promise 를 **거부해** Cron Trigger 에 실패로 남고, 확정 안 된 삭제 표식·연속 실패 3회는 `/api/ready` 의 **`cleanupAlert`** boolean 으로 나온다. **외부 알림(Slack·이메일 등)은 붙이지 않았다.** ⚠️ **배포 전까지 운영에서는 아무도 만료 데이터를 안 치운다** |
 | legacy KV | **아직 살아 있다.** 5개(`b:1 c:1 s:2 u:1`, 접두사 개수만 확인 — **이번에 재조회하지 않았다**). 새 코드는 쓰지 않는다. 폐기 방향은 승인, **실행은 별도 승인**이고 **이번 범위에서 제외**다 |
-| **배포된 source 와 로컬** | **production source 는 `e0c5921` 이다**(2026-09-03 · 배포 `715c897c`). **위협 57~94** 의 수정이 배포됐다. ⛔ **계정 인프라는 그대로 미구성이다** — 배포는 코드만 옮겼고 `EDGE_GUARD`·`LEDGER`·원격 migration·시크릿은 하나도 안 건드렸다. ⚠️ **여기에 「최신 커밋」 해시를 적지 않는다** — HEAD 는 커밋할 때마다 움직여서 손으로 유지하면 반드시 낡는다(실제로 한 번 낡았다). 확인은 `git rev-parse HEAD` · `git log -1 --oneline` 이 원본이고, 배포 지점과의 차이는 `git log --oneline e0c5921..HEAD` 로 본다. **push 0건**은 그대로다 |
+| **배포된 source 와 로컬** | **production source 는 `cf0ea50` 이다**(2026-09-04 · 배포 `a9ca2ca4`). **위협 57~94** 의 수정이 배포됐다. ⛔ **계정 인프라는 그대로 미구성이다** — `LEDGER`·원격 migration·시크릿은 하나도 안 건드렸다. ✅ **`EDGE_GUARD` 와 도메인·WAF 는 예외로 그날 구성됐다.** ⚠️ **여기에 「최신 커밋」 해시를 적지 않는다** — HEAD 는 커밋할 때마다 움직여서 손으로 유지하면 반드시 낡는다(실제로 한 번 낡았다). 확인은 `git rev-parse HEAD` · `git log -1 --oneline` 이 원본이고, 배포 지점과의 차이는 `git log --oneline cf0ea50..HEAD` 로 본다. **push 0건**은 그대로다 |
 | 회원가입·개인정보 정책 결정 | **마감 2026-08-26** → `docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md` §21·§22. 정책 결정 2026-08-17 · 처리 근거·국외 처리·연령·CASCADE 확정 2026-08-18 · **2026-08-26 공식 법령·실제 서비스 사례 대조로 마감**. **외부 전문가 상담: 해당 없음 — 필수 범위에서 제외.** ⚠️ 사용자가 공식 자료를 보고 내린 **운영 결정**이지 변호사 검토 결과가 아니고, **법적 적합성 보증도 아니다** |
 | 2026-08-27 재마감(행동) | **로컬 완료 · 배포 2026-09-02 `ad8509cd`**(위협 79~81). 처리정지 경합(사용자 단위 fencing) · 서버 강제 클라이언트 호환성(426) · 백업 inventory 종결(`reconcile`). 스위트 둘 신설(`test-actor-fence`·`test-compat`) · 정책 번들 **pv `a9525896f710`**. ⛔ **원격 반영 0건** |
 | 2026-08-27 재마감(불변식) | **로컬 완료 · 배포 2026-09-02 `ad8509cd`**(위협 82~85). 세션 **발급** 경합 · 옛 PWA 가 읽을 수 있는 안내 화면 · 백업의 **복원 가능성 증명**(지정 id · 복호화 · 임시 SQLite 적재) · **자동** inventory reconciliation(정리 크론 · R2 바인딩). ⛔ **원격 의존이 둘 늘었다** — R2 버킷 `shhh-backups` 와 정리 Worker 의 `BACKUPS` 바인딩(`docs/OPS_RUNBOOK.md` §6-6). ⛔ **원격 반영 0건** |
@@ -463,6 +463,32 @@ Production/main)를 수행했다. 현재 라이브는 아래 2026-08-18 기준 �
 | 제공자 응답 크기 | `text()` 에 64KB 상한. 전에는 1MB 응답으로도 **로그인이 성공했다** | `test-friends` 101~106 |
 
 ## 4. 남은 일 — 다음 사람이 할 것
+
+### 4-0. 단계별 인계표 — **완료 / 미완을 갈라 적는다** (2026-09-04 갱신)
+
+⚠️ **이 표는 「다음 세션이 무엇부터 잡으면 되는가」 하나만 답한다.** 왜 그렇게 됐는지는
+각 절이 소유하고, 단계 상태의 원본은 `CLAUDE.md` §1-1 의 `stage-contract` 다.
+⛔ **여기 「완료」라고 적힌 것을 근거로 다음 축을 완료라고 말하지 않는다** — 네 축(①공식 단계
+②로컬 코드 ③원격 배포 ④계정 개방)은 서로 독립이다.
+
+| 단계·게이트 | ✅ 완료한 것 | ❌ 남은 것 | 다음 사람이 할 일 |
+|---|---|---|---|
+| **보안 1~4단계**(저장소) | 위협 **39~94** 전부 · 스위트 **34개** · 돌연변이 **282종 전부 사망**(2026-09-04 실측 · 종료 코드 0) | 없음 | 코드를 고치면 `npm test` **와** `node scripts/mutate.mjs` 를 **둘 다** 돌린다. ⛔ 스위트 통과만으로 완료를 선언하지 않는다 |
+| **R4 문의 주소** | 도메인 `withshhh.com` · Email Routing · **실제 수신 확인** · 방침 11차 · stamp `pv=df65c0718914` · **배포 `a9ca2ca4`** | **보내는 설정(SMTP)** — 답장이 운영자 개인 주소에서 나간다 | 계정 개방 전에 발신 주소를 정한다. 지금은 **차단 사유가 아니다** |
+| **R5 엣지 방어** | `APP_ORIGIN` 전환 · WAF 규칙 `api-rate-limit` 1개 · **429 실측** · `EDGE_GUARD="waf"` · 배포 · 라이브 `abuseReady:true` · pages.dev→canonical **302** | **여러 IP 의 저속 분산**(무료 등급은 규칙 1개·10초 창) | 유료 전환 전에는 못 막는다. **Turnstile(C안)이 그 위에 얹는 보조**이고 아래 칸이다 |
+| **사람 확인(Turnstile)** | ①로컬 준비만 — 위젯 코드 · 서버 검증 · `action`·`hostname` 대조 · 실패 UI | **widget 생성 · `TURNSTILE_SITE_KEY`(vars) · `TURNSTILE_SECRET`(시크릿) · 운영 호스트 검증 · 실브라우저** | ⛔ **시크릿 등록은 사용자 승인이 필요하다**(절대규칙 1). 없으면 `signupReady:false` 라 가입 화면이 스스로 닫힌다 |
+| **③ OAuth 콘솔 — 카카오** | Redirect URI `https://withshhh.com/api/cb/kakao` **추가**(옛 주소 유지) · 카카오 로그인 **ON** · **동의항목 0개** 실측 · 앱 이름 `쉿` · 앱 대표 도메인 교체 | **`KAKAO_ID`·`KAKAO_SECRET` 등록** · 팀원 외 로그인 가능 여부(비즈 앱 필요한지) **미확정** | ⛔ **방침·약관 URL 을 넣을 칸이 카카오 콘솔에 없다**(2026-09-04 화면 확인). `brand/KAKAO-REVIEW.md` §1-1 이 원본 |
+| **③ OAuth 콘솔 — 네이버** | 서비스 URL·Callback URL **사용자가 직접 저장 완료**(2026-09-04) | **방침·약관 URL 위치 확인**(검수 요청 단계로 추정 · 미검증) · **사용 API 는 「네이버 로그인」만** · **제공 정보 0개** 확인 · `NAVER_ID`·`NAVER_SECRET` 등록 | ⛔ **Claude 는 `developers.naver.com` 에 접근할 수 없다**(브라우저 도구가 도메인을 거부한다). **네이버 쪽은 전부 사람이 한다** |
+| **계정 인프라(원격)** | 아무것도 안 함 | **ledger D1 생성 · `LEDGER` 바인딩 · 주 D1 `0005`·`0006`·`0007` 적용 · 시크릿 5개 등록 · 정리 Worker 배포 · R2 버킷과 `BACKUPS` 바인딩** | 절차는 `docs/OPS_RUNBOOK.md` §6. ⛔ **전부 사용자 승인 대상**이고 **migration 직전 백업**이 선행한다 |
+| **실기기·설치형 PWA** | 브라우저 프로필에서 세대 전환 관측(2026-09-02) | **설치형 PWA 의 실제 업그레이드** · **iPhone 15 Pro** · **Z Fold 7** | 사용자 결정으로 뒤로 미뤄져 있다. 계정 개방 전에는 해야 한다 |
+| **R1 수형 그림 권리** | 조건 확인(CC BY-NC-ND 2.0 KR) · 공공데이터포털 오픈API 경로 발견 | 비영리 조건과 광고의 충돌 해소 | `docs/ROADMAP.md` §5·R1-a |
+| **R7 legacy KV 폐기** | 방향만 승인 | 6단계 절차 전부 | 2단계 결정서 §11. ⛔ **1번(롤백 금지 명시)을 먼저 하지 않고 바인딩부터 떼지 않는다** |
+| **R8 옛 배포 차단 증명** | 제어면 삭제 15개 · Access 로 공개 접근 차단 | **D1~D12 증명** | 복원 금지 해제 9조건 중 ⑦. 설계서 §10-8-1 |
+| **PWA-2 본인확인** | 결정만 — `docs/STAGE2_ACCOUNT_PRIVACY_DECISIONS.md` **§29·§29-1a**(저장값은 **DI 의 HMAC + 생년월일 원문 둘** · ⛔ 실명·전화번호는 안 받는다) | **코드 0줄 · 방침 문장 미개정** | ⚠️ **이름·성별·생일·연령대·전화번호는 본인확인기관이 돌려주는 값이지 OAuth 동의항목이 아니다**(§29-0). 둘을 섞으면 방침이 거짓이 되고 `test-signup` T91 이 실패한다 |
+
+**지금 당장 막고 있는 것 하나**: 계정 개방(④축)은 **원격 계정 인프라**가 유일한 차단 요인이다.
+엣지 방어·도메인·정책은 2026-09-04 에 닫혔다.
+
 
 ### 4-1. 결정 대기 중 (사용자 승인 필요, 코드 아님)
 
