@@ -6,7 +6,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "policies": "node scripts/policies.mjs stamp",
-    "test": "for t in auth client book fingers compounds match assemble knn screen home meaning policies signup rights actor-fence compat deploy-matrix friends deletion-ledger backup cleanup ops-race migrations hash sw dist config docs fence reaudit stage34-closeout abuse-guard verifier workerd; do node scripts/test-$t.mjs || exit 1; done"
+    "test": "for t in auth client book fingers compounds match assemble knn screen home meaning policies signup rights actor-fence compat deploy-matrix friends deletion-ledger backup cleanup ops-race migrations hash sw dist config docs claims fence reaudit stage34-closeout abuse-guard verifier workerd; do node scripts/test-$t.mjs || exit 1; done"
   },
   "engines": {
     "node": ">=22.13.0"

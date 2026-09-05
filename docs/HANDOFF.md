@@ -819,7 +819,7 @@ AI 는 후보를 좁힐 뿐 **최종 수어 판정을 하지 않는다**. 문장
 ```bash
 python3 scripts/serve.py 8000        # 정적 화면만
 npm run build && npx wrangler pages dev dist   # Functions + 로컬 D1
-npm test                              # 34개 스위트 (빌드·dist·workerd 검사 포함)
+npm test                              # 35개 스위트 (빌드·dist·workerd 검사 포함)
 node scripts/mutate.mjs               # 돌연변이 검증 (목록: scripts/mutations.mjs)
 npm audit
 ```
