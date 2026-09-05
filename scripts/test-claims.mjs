@@ -22,12 +22,26 @@ import { readFileSync, readdirSync } from "node:fs";
 
 const KINDS = new Set(["실측", "원문", "추론"]);
 const C0 = "<!-- claims:start -->", C1 = "<!-- claims:end -->";
+const O0 = "<!-- options:start -->", O1 = "<!-- options:end -->";
+// 선택지 표에서 **기술 어휘로 읽히는 것**. ⛔ 뜻을 판정하지 않는다 — 생김새만 본다.
+const JARGON = [
+  [/`/, "역따옴표(코드 표기)"],
+  [/\/[A-Za-z]/, "경로(`/이름`)"],
+  [/\b(GET|POST|PUT|DELETE|PATCH|HTTP|JSON|API|URL|URI|DTO|HMAC|CSRF|OAuth|SDK)\b/i, "기술 약어"],
+  [/\b[A-Z][A-Z0-9]{2,}(_[A-Z0-9]+)*\b/, "대문자 식별자"],
+  [/[A-Za-z]+_[A-Za-z]+/, "밑줄 식별자"],
+  [/위협\s*\d+/, "위협 번호"],
+  [/§\s*[\d.]/, "절 번호"],
+];
 const DATE = /\b20\d{2}-\d{2}-\d{2}\b/;
 
 export function checkClaims(name, text) {
   const out = [];
+  // ⛔ **선택지 검사는 근거표가 없는 문서에서도 돈다** — 조기 반환보다 앞이다.
+  //    (자기검사가 이 순서 실수를 잡았다: 근거표 없는 선택지 표가 조용히 통과했다.)
+  out.push(...checkOptions(name, text));
   const a = text.split(C0).length - 1, b = text.split(C1).length - 1;
-  if (a === 0 && b === 0) return out;                      // 표시를 안 쓰는 문서다
+  if (a === 0 && b === 0) return out;                      // 근거표를 안 쓰는 문서다
   if (a !== 1 || b !== 1) {
     out.push(`${name} claims 마커가 각 1개가 아니다 (start ${a} · end ${b})`);
     return out;
@@ -67,6 +81,51 @@ export function checkClaims(name, text) {
   return out;
 }
 
+// 선택지 표 검사 — **사용자가 고르는 자리는 쉬운 말이어야 한다.**
+//
+// 왜 있나: 2026-09-05. 사용자가 「비유와 함께 쉽게 설명하라」고 지시했는데, 도입부만 비유로 쓰고
+// **정작 고르는 표는 기술 용어로** 냈다. 통역사가 인사말만 통역하고 계약 조항은 원어로 읽어 준 꼴이다.
+// ⛔ **기억해서 지키는 것으로는 안 됐다** — 같은 회차에 「약속은 실패한다」를 배우고도 이 규칙만
+//    기억 파일의 약속으로 뒀다. 그래서 표시가 아니라 **거부**로 만든다.
+//
+//   <!-- options:start -->
+//   | 안 | 쉬운 말 | 무엇을 하나 | 대가 |
+//   |---|---|---|---|
+//   | 1-A | 앱은 방 하나만 자기 것으로 등록하고 현관은 그대로 둔다 | ... | ... |
+//   <!-- options:end -->
+// ⛔ 「쉬운 말」 칸에 코드·경로·약어·대문자 식별자가 있으면 실패다.
+export function checkOptions(name, body) {
+  const out = [];
+  const a = body.split(O0).length - 1, b = body.split(O1).length - 1;
+  if (a === 0 && b === 0) return out;
+  if (a !== b) { out.push(`${name} options 마커 짝이 안 맞는다 (start ${a} · end ${b})`); return out; }
+  let from = 0;
+  for (let k = 0; k < a; k++) {
+    const i = body.indexOf(O0, from), j = body.indexOf(O1, i);
+    if (j < 0) { out.push(`${name} options 마커 순서가 뒤집혔다`); break; }
+    from = j + O1.length;
+    const block = body.slice(i + O0.length, j);
+    const lines = block.split("\n").filter((l) => l.trim().startsWith("|"));
+    const head = lines[0] || "";
+    const cols = head.split("|").map((c) => c.trim());
+    const at = cols.indexOf("쉬운 말");
+    if (at < 0) { out.push(`${name} 선택지 표에 「쉬운 말」 열이 없다`); continue; }
+    let rows = 0;
+    for (const line of lines.slice(1)) {
+      if (/^\s*\|[\s|:-]+\|\s*$/.test(line)) continue;          // 구분선
+      const cells = line.split("|").map((c) => c.trim());
+      const plain = cells[at] || "", id = cells[1] || `행 ${rows + 1}`;
+      rows++;
+      if (plain.replace(/\*/g, "").length < 10)
+        out.push(`${name} 선택지 ${id} 의 「쉬운 말」이 비었거나 너무 짧다`);
+      for (const [re, why] of JARGON)
+        if (re.test(plain)) { out.push(`${name} 선택지 ${id} 의 「쉬운 말」에 ${why} 가 있다 — 「${plain.slice(0, 40)}」`); break; }
+    }
+    if (rows === 0) out.push(`${name} 선택지 표에 행이 없다`);
+  }
+  return out;
+}
+
 // ⚠️ **검사기 자신을 잰다.** 이 저장소는 「검사가 초록이다」와 「검사가 돌기는 했다」를 가르는 것을
 //    이미 한 번 비싸게 배웠다(위협 91). 합성 입력이라 저장소 상태에 기대지 않는다.
 const T = (name, text, expect) => {
@@ -90,9 +149,19 @@ T("원문에 날짜가 없으면 실패", `본문 [S1]\n` + tbl("| S1 | 원문 |
 T("본문이 없는 id 를 가리키면 실패", `본문 [M9]\n` + tbl("| M1 | 추론 | x | y |"), 1);
 T("안 쓰는 행이 남으면 실패", `본문에 표시가 없다\n` + tbl("| M1 | 추론 | x | y |"), 1);
 T("마커가 하나뿐이면 실패", `${C0}\n| M1 | 추론 | x | y |`, 1);
+const opt = (rows) => `${O0}\n| 안 | 쉬운 말 | 무엇을 |\n|---|---|---|\n${rows}\n${O1}`;
+T("선택지 표가 없으면 통과", "그냥 글", 0);
+T("쉬운 말이 있으면 통과", opt("| 1-A | 방 하나만 자기 것으로 등록한다 | x |"), 0);
+T("쉬운 말 열이 없으면 실패", `${O0}\n| 안 | 무엇을 |\n|---|---|\n| 1-A | x |\n${O1}`, 1);
+T("쉬운 말이 비면 실패", opt("| 1-A |  | x |"), 1);
+T("쉬운 말에 경로가 있으면 실패", opt("| 1-A | 앱이 /app/return 을 등록한다 | x |"), 1);
+T("쉬운 말에 대문자 식별자가 있으면 실패", opt("| 1-A | 앱이 BUILD_ID 를 보낸다 | x |"), 1);
+T("쉬운 말에 기술 약어가 있으면 실패", opt("| 1-A | 앱이 새 API 를 부른다 | x |"), 1);
+T("쉬운 말에 위협 번호가 있으면 실패", opt("| 1-A | 위협 80 이 다시 열린다 | x |"), 1);
+T("쉬운 말에 코드 표기가 있으면 실패", opt("| 1-A | `POST` 를 쓴다 | x |"), 1);
 
 const problems = [];
 for (const f of readdirSync("docs").filter((f) => f.endsWith(".md")))
   problems.push(...checkClaims(`docs/${f}`, readFileSync(`docs/${f}`, "utf8")));
 if (problems.length) { console.error(problems.map((p) => "  " + p).join("\n")); process.exit(1); }
-console.log(`test-claims: self-test 12개 + docs/*.md 통과 — 주장 표시의 구조만 본다(뜻은 사람이 본다)`);
+console.log(`test-claims: self-test 21개 + docs/*.md 통과 — 주장 표시의 구조만 본다(뜻은 사람이 본다)`);
