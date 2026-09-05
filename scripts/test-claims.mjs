@@ -110,6 +110,13 @@ export function checkOptions(name, body) {
     const cols = head.split("|").map((c) => c.trim());
     const at = cols.indexOf("쉬운 말");
     if (at < 0) { out.push(`${name} 선택지 표에 「쉬운 말」 열이 없다`); continue; }
+    // 절대규칙 2 — 선택지마다 **대가·위험**을 적고 **권고까지** 낸 뒤에 묻는다.
+    // ⛔ 뜻은 판정하지 않는다 — 열이 있는지, 권고 표시가 뒤따르는지만 본다.
+    if (!cols.some((c) => c === "대가" || c === "위험"))
+      out.push(`${name} 선택지 표에 「대가」(또는 「위험」) 열이 없다 — 절대규칙 2`);
+    const after = body.slice(j + O1.length, j + O1.length + 600);
+    if (!/권고|⭐/.test(after))
+      out.push(`${name} 선택지 표 뒤에 권고가 없다 — 절대규칙 2 는 「권고안까지 제시한 뒤 질문한다」다`);
     let rows = 0;
     for (const line of lines.slice(1)) {
       if (/^\s*\|[\s|:-]+\|\s*$/.test(line)) continue;          // 구분선
@@ -149,10 +156,12 @@ T("원문에 날짜가 없으면 실패", `본문 [S1]\n` + tbl("| S1 | 원문 |
 T("본문이 없는 id 를 가리키면 실패", `본문 [M9]\n` + tbl("| M1 | 추론 | x | y |"), 1);
 T("안 쓰는 행이 남으면 실패", `본문에 표시가 없다\n` + tbl("| M1 | 추론 | x | y |"), 1);
 T("마커가 하나뿐이면 실패", `${C0}\n| M1 | 추론 | x | y |`, 1);
-const opt = (rows) => `${O0}\n| 안 | 쉬운 말 | 무엇을 |\n|---|---|---|\n${rows}\n${O1}`;
+const opt = (rows, tail = "\n권고: 1-A") => `${O0}\n| 안 | 쉬운 말 | 대가 |\n|---|---|---|\n${rows}\n${O1}${tail}`;
 T("선택지 표가 없으면 통과", "그냥 글", 0);
 T("쉬운 말이 있으면 통과", opt("| 1-A | 방 하나만 자기 것으로 등록한다 | x |"), 0);
-T("쉬운 말 열이 없으면 실패", `${O0}\n| 안 | 무엇을 |\n|---|---|\n| 1-A | x |\n${O1}`, 1);
+T("쉬운 말 열이 없으면 실패", `${O0}\n| 안 | 대가 |\n|---|---|\n| 1-A | x |\n${O1}\n권고: 1-A`, 1);
+T("대가 열이 없으면 실패(절대규칙 2)", `${O0}\n| 안 | 쉬운 말 |\n|---|---|\n| 1-A | 방 하나만 등록한다 |\n${O1}\n권고: 1-A`, 1);
+T("권고가 없으면 실패(절대규칙 2)", opt("| 1-A | 방 하나만 자기 것으로 등록한다 | x |", ""), 1);
 T("쉬운 말이 비면 실패", opt("| 1-A |  | x |"), 1);
 T("쉬운 말에 경로가 있으면 실패", opt("| 1-A | 앱이 /app/return 을 등록한다 | x |"), 1);
 T("쉬운 말에 대문자 식별자가 있으면 실패", opt("| 1-A | 앱이 BUILD_ID 를 보낸다 | x |"), 1);
@@ -164,4 +173,4 @@ const problems = [];
 for (const f of readdirSync("docs").filter((f) => f.endsWith(".md")))
   problems.push(...checkClaims(`docs/${f}`, readFileSync(`docs/${f}`, "utf8")));
 if (problems.length) { console.error(problems.map((p) => "  " + p).join("\n")); process.exit(1); }
-console.log(`test-claims: self-test 21개 + docs/*.md 통과 — 주장 표시의 구조만 본다(뜻은 사람이 본다)`);
+console.log(`test-claims: self-test 24개 + docs/*.md 통과 — 주장 표시의 구조만 본다(뜻은 사람이 본다)`);
