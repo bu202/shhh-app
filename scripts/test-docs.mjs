@@ -2167,7 +2167,437 @@ ok("「로컬 완료 · 미배포」 현재형 서술 0건");
   ok("「close = 그룹 종료」류 표현 0건 · 자기검사 4건");
 }
 
+// ── 38. **정해진 결정을 다른 자리가 아직 「미정」이라고 말하지 않는다** (2026-09-08 · G16) ──
+//
+// ⛔ **같은 지적을 세 번 받았다**(Codex 독립 검토 25·26·27). 무늬가 매번 같았다 — 사용자 결정을
+//    「정한 값」 표에 적고, **같은 것을 말하는 다른 자리(흐름표·단계표·인계서)를 안 고쳤다.**
+//    그래서 다음 사람이 **이미 끝난 결정 앞에 다시 선다.**
+// ⛔ **사람이 눈으로 옆자리를 훑는 방식은 세 번 실패했다** — 그래서 기계가 훑는다.
+//    저장소 규칙 그대로다: 「같은 지적을 두 번 받으면 코드가 아니라 확인 방법이 틀린 것이다.」
+//
+// 재는 것: 「정한 값」 표에 오른 기호(`PWA3-*`·`ADM-*`)를 모으고, 그 기호가 **아직 열려 있다는
+// 표현과 같은 줄(또는 바로 다음 줄)**에 있으면 실패시킨다.
+// ⚠️ **역사 기록은 지우게 만들지 않는다** — 「당시 사실」류 표식이 **주장 앞에** 있으면 면제다.
+// ⚠️ **보는 범위는 기호가 있는 줄과 그 뒤 `CTX_AFTER` 줄이다**(지금 2 · 검토 41 에서 1 → 2).
+//    ⛔ **「같은 줄과 바로 다음 줄만」이라고 적지 않는다** — 그 서술은 낡았다(검토 43 · 사소).
+// ⛔ **제목 줄은 면제가 아니다**(검토 28) — 낡은 「열려 있다」가 정확히 제목에 산다.
+// ⚠️ **한계: 기호 없이 제목으로만 가리키는 줄은 이 검사(`staleOpenClaims`)가 못 잡는다.** 그래서
+//    흐름표는 제목 대신 **기호**를 적는다 — 그래야 이 검사가 그 줄까지 덮는다.
+//    ⚠️ **다만 「정해졌다」 구역 안의 기호 없는 줄은 아래 `openInDecidedBlocks()` 가 잡는다**
+//    (검토 30 에서 더했다). ⛔ **「기호가 없으면 아무도 안 본다」로 읽지 않는다**(검토 43 · 사소).
+// ⚠️ **이 검사는 사각지대가 생길 때마다 고쳐 왔고, 고칠 때마다 그것을 지키는 변이를 함께 뒀다** —
+//    `D49`(수집 자체) · `D50`(「미정」 패턴) · `D51`·`D52`(제목 면제) · `D53`(문서 목록) ·
+//    `D54`(결정 구역) · **`D55`(제목과 첫 표 사이의 거리)** · **`D56`(기호 줄 뒤 몇 줄까지 보나)**.
+// ⛔ **네 회차 연속으로 이 검사를 고칠 때마다 그 변이들의 앵커가 낡았다** — 앵커를 코드 한 줄의
+//    글자에 매다는 방식의 성질이다. 고친 뒤에는 **그 변이들을 반드시 다시 돌린다.**
+{
+  // ⚠️ 굵게 표시가 없어도 줍는다 — 서식 하나로 감시에서 빠지면 안 된다(검토 28 · 중요).
+  const DECIDED_ROW = /^\|\s*\*{0,2}((?:PWA3|ADM)-\d+[a-z]?)\*{0,2}\s*\|/;
+  // 순수 함수 둘로 빼서 **합성 입력으로 자기검사**한다.
+  const decidedIds = (text) => {
+    const out = new Set();
+    let armed = -99, inTable = false;
+    String(text).split("\n").forEach((ln, i) => {
+      const isArm = /정한\s*값|확정한\s*(?:값|선택)/.test(ln);
+      if (isArm) { armed = 0; inTable = false; }
+      const row = /^\s*\|/.test(ln);
+      // ⛔ **줄 수로 끊지 않는다**(검토 29·40) — 12줄 창이 두 번 구멍을 냈다:
+      //    ① 표의 13번째 행부터 놓쳤고 ② **제목과 첫 표 사이가 13줄 넘으면 그 표를 통째로** 놓쳤다.
+      //    이제 창이 아니라 **구역**으로 끊는다 — 무장한 뒤 처음 만난 표부터 그 표가 끝날 때까지.
+      // ⛔ **표가 한 번 끝나면 무장을 푼다** — 안 그러면 뒤쪽 딴 표를 다시 줍는다.
+      // ⛔ **다른 제목이 오면 그 자리에서 무장을 푼다** — 「정한 값」 제목이 소유하는 것은
+      //    **다음 제목 전까지**이고, 그래야 줄 수를 안 세고도 뒤쪽 딴 표를 안 줍는다.
+      if (!row) {
+        if (inTable) armed = -99;
+        else if (!isArm && /^#{1,6}\s/.test(ln)) armed = -99;
+        inTable = false;
+        return;
+      }
+      if (armed === -99) return;
+      inTable = true;
+      const m = ln.match(DECIDED_ROW);
+      if (m) out.add(m[1]);
+    });
+    return out;
+  };
+  // ⚠️ **목록은 검토 28 이 뚫은 뒤 넓혔다** — 「미정」만 막으면 같은 뜻의 다른 말로 그냥 빠져나간다.
+  const OPEN = [
+    [/미정|미확정/, "「미정」"],
+    [/결정\s*필요|정해야\s*한다|보류(?:다|한다|중)/, "「아직 정해야 한다」"],
+    [/아직\s*안\s*정했다|아직\s*정하지\s*않았다|아직\s*안\s*정해졌다/, "「아직 안 정했다」"],
+    [/아직\s*확인\s*안\s*했다|아직\s*확인하지\s*않았다/, "「아직 확인 안 했다」"],
+    [/열려\s*있다|열려\s*있는/, "「열려 있다」"],
+    [/선행조건[^\n]{0,20}(?:그대로\s*)?남아/, "「선행조건이 남아 있다」"],
+    [/아직\s*(?:안\s*)?끝나지\s*않았다|아직\s*안\s*끝났다/, "「아직 안 끝났다」"],
+    [/추후\s*정한다|나중에\s*정한다/, "「나중에 정한다」"],
+    // ⛔ **검토 30 이 뚫은 여섯** — 전부 이 저장소에 실제로 남아 있던 문장이다.
+    [/새로\s*열렸다|새로\s*열린/, "「새로 열렸다」"],
+    [/정해진\s*것이\s*없다|정해진\s*바가\s*없다/, "「정해진 것이 없다」"],
+    [/못\s*고른다|못\s*골랐다|고르지\s*못했다/, "「아직 못 고른다」"],
+    [/다음\s*회차의\s*결정|다음\s*회차에\s*정한다/, "「다음 회차의 결정」"],
+    [/정해지지\s*않았다|정해지지\s*않은/, "「아직 정해지지 않았다」"],
+    [/정해져야\s*한다|확정되어야\s*한다/, "「정해져야 한다」"],
+  ];
+  const HIST = /당시\s*사실|당시\s*물음|첫\s*판|근거로\s*남긴다|되돌렸다|처음엔|옛\s*판|그때\s*무엇을|그때의\s*선택지/;
+  // ⚠️ **기호가 있는 줄에서 몇 줄 뒤까지 같은 자리로 볼 것인가.** 2 는 「설명 한 줄을 끼워 넣는」
+  //    회피를 막는 최소값이다(검토 41). ⛔ **더 늘리면 옆 항목의 문장까지 씌운다.**
+  const CTX_AFTER = 2;
+  const staleOpenClaims = (text, ids) => {
+    const lines = String(text).split("\n");
+    const out = [];
+    lines.forEach((ln, i) => {
+      // ⛔ **제목 줄을 통째로 면제하지 않는다**(검토 28 · 차단) — 낡은 「열려 있다」가 정확히
+      //    제목에 산다. 제목도 「당시 사실」류 표식이 있어야 면제다.
+      // ⚠️ 줄바꿈이 아니라 **공백**으로 잇는다 — 줄 단위 정규식(`[^\n]`)이 두 줄에 걸친 표현을
+      //    그대로 보게 하려는 것이다(줄바꿈으로 이으면 G16-N2 가 안 잡힌다).
+      // ⛔ **한 줄이 아니라 몇 줄 뒤까지 본다**(검토 41 · 중요) — 설명 한 줄만 끼워 넣으면
+      //    같은 낡은 주장이 그냥 빠져나갔다. 창의 크기는 상수 하나가 소유한다.
+      const tail = lines.slice(i + 1, i + 1 + CTX_AFTER);
+      const ctx = [ln, ...tail].join(" ");
+      for (const id of ids) {
+        // ⚠️ 짧은 기호가 긴 기호 안에서 걸리지 않게 한다 — `PWA3-15` 와 `PWA3-15a` 는 다른 항목이다.
+        if (!new RegExp(id + "(?![0-9a-z])").test(ln)) continue;
+        for (const [re, why] of OPEN) {
+          const m = ctx.match(re);
+          if (!m) continue;
+          // ⛔ **면제는 주장보다 앞에 있어야 한다**(검토 28 · 중요) — 꼬리의 「당시 사실」 한 마디가
+          //    앞쪽 현재 주장까지 덮던 것이 이 검사의 구멍이었다.
+          if (HIST.test(ctx.slice(0, m.index))) continue;
+          // ⛔ **다음 줄이 딴 결정을 말하면 이 줄의 기호에 씌우지 않는다**(검토 30 · 중요).
+          //    안 그러면 닫힌 `PWA3-X` 바로 아래에 열린 `PWA3-Y` 가 있다는 이유로 X 가 실패한다.
+          if (m.index > ln.length) {
+            const nx = tail.join(" ");
+            const mine = new RegExp(id + "(?![0-9a-z])").test(nx);
+            const other = [...ids].some((o) => o !== id && new RegExp(o + "(?![0-9a-z])").test(nx));
+            if (!mine && other) continue;
+          }
+          out.push({ line: i + 1, id, why });
+          return;
+        }
+      }
+    });
+    return out;
+  };
+
+  // ⛔ **기호가 같은 줄에 없으면 위 검사는 못 본다**(검토 30 · 차단) — 실제 모순 대부분이 그 무늬였다.
+  //    문패가 같은 줄에 붙어 있을 때만 방을 찾는 경비원과 같다.
+  // ⚠️ **그래서 범위로 잡는다** — 「정해졌다」·「정한 값」 제목 아래부터 **다음 제목 전까지**는
+  //    결정이 끝난 구역이므로, 그 안의 열린 표현은 기호가 없어도 낡은 것이다.
+  // ⚠️ **보존한 옛 선택지는 제 제목을 갖는다**(「### 근거 — 그때의 선택지와 대가」) — 제목이 바뀌는
+  //    순간 구역이 끝나므로 그것들은 자동으로 면제다. ⛔ **면제를 따로 손으로 적지 않는다.**
+  const DECIDED_HEAD = /^#{2,6}\s.*(?:정해졌다|정한\s*값|확정한\s*(?:값|선택))/;
+  const HEAD = /^#{1,6}\s/;
+  const openInDecidedBlocks = (text) => {
+    const lines = String(text).split("\n");
+    const out = [];
+    let inBlock = false, head = 0;
+    lines.forEach((ln, i) => {
+      // ⚠️ 제목 줄 자체는 위 기호 검사가 본다 — 여기서는 구역만 연다.
+      if (HEAD.test(ln)) { inBlock = DECIDED_HEAD.test(ln); head = i + 1; return; }
+      if (!inBlock) return;
+      for (const [re, why] of OPEN) {
+        const m = ln.match(re);
+        if (!m) continue;
+        if (HIST.test(ln.slice(0, m.index))) continue;
+        out.push({ line: i + 1, head, why });
+        return;
+      }
+    });
+    return out;
+  };
+
+  // ⚠️ **대상은 `DOCS` 보다 넓다** — 사용자 결정이 사는 곳은 설계서와 단계표이고, 그 둘은
+  //    `DOCS` 에 없다. 세 회차 연속으로 낡은 자리가 **정확히 그 둘**이었다.
+  // ⛔ **손으로 든 목록을 쓰지 않는다**(검토 29) — 새 결정 문서가 생기면 조용히 감시 밖이 된다.
+  // ⛔ **바로 아래 `.md` 만 읽던 것을 고쳤다**(검토 30 · 중요) — 하위 폴더 문서가 조용히 감시 밖이었다.
+  // ⛔ **`docs/history/` 만 뺀다. 실수가 아니라 선언이다** — 그 폴더의 존재 이유가 「지난 판」이고
+  //    (`docs/history/README.md`), 거기까지 현재형으로 재면 역사 기록을 지우게 만든다.
+  const walkDocs = (rel) => readdirSync(new URL("../" + rel, import.meta.url), { withFileTypes: true })
+    .flatMap((e) => e.isDirectory()
+      ? (rel === "docs" && e.name === "history" ? [] : walkDocs(rel + "/" + e.name))
+      : (e.name.endsWith(".md") ? [rel + "/" + e.name] : []));
+  const G16_DOCS = [...new Set([...DOCS, ...walkDocs("docs")])];
+  const ids = new Set();
+  for (const f of G16_DOCS) for (const id of decidedIds(R(f))) ids.add(id);
+  if (ids.size < 5) bad(`「정한 값」 표에서 찾은 기호가 ${ids.size}개다 — 검사 38 이 아무것도 안 재고 있다`);
+  for (const f of G16_DOCS)
+    for (const b of staleOpenClaims(R(f), ids))
+      bad(`${f}:${b.line} ${b.id} 는 「정한 값」에 올라 있는데 같은 자리가 ${b.why}라고 말한다 — `
+        + "결정한 뒤에 옆자리를 안 고친 무늬다(검토 25·26·27)");
+  for (const f of G16_DOCS)
+    for (const b of openInDecidedBlocks(R(f)))
+      bad(`${f}:${b.line} 은 ${b.head}줄의 「정해졌다」 구역 안인데 ${b.why}라고 말한다 — `
+        + "결정을 적고 그 앞뒤 문장을 안 고친 무늬다(검토 30 · 차단)");
+
+  // 자기검사 — 판정과 면제가 둘 다 살아 있는지 합성 입력으로 잰다.
+  const D = new Set(["PWA3-15a", "ADM-4"]);
+  const cases = [
+    ["G16-N1 같은 줄",   "| 8 | 별명 | `PWA3-15a` 는 ⛔ **미정** 이다 |", 1],
+    ["G16-N2 다음 줄",   "`PWA3-15a` 에는 착수 전 선행조건 둘이\n그대로 남아 있다", 1],
+    ["G16-N3 다른 기호", "`PWA3-15` 는 ⛔ **미정** 이다", 0],
+    ["G16-N4 제목 줄",   "### ⛔ 열려 있다 — **ADM-4**", 1],
+    ["G16-N5 동의어",    "`ADM-4` 는 아직 끝나지 않았다", 1],
+    ["G16-N6 꼬리 면제", "`ADM-4` 는 ⛔ **미정** 이다 — 당시 사실은 달랐다", 1],
+    ["G16-P1 역사 면제", "⛔ **당시 사실**: `ADM-4` 는 ⛔ **미정** 이었다", 0],
+    ["G16-P2 정상",      "| **PWA3-15a** | 어느 목록을 쓰나 | 나 — 큰 목록 |", 0],
+    ["G16-P3 역사 제목", "### ⛔ **당시 사실** — 열려 있다 — **ADM-4**", 0],
+    // 검토 29 가 뚫은 자리 — ⛔ 없는 「미정」과 같은 뜻의 다른 말.
+    ["G16-N10 맨 미정",  "`ADM-4` 의 값은 미정이다", 1],
+    ["G16-N11 미확정",   "`ADM-4` 는 아직 미확정 상태다", 1],
+    ["G16-N12 보류",     "`ADM-4` 는 보류중이다", 1],
+    ["G16-N13 정해야",   "`ADM-4` 는 다음 회차에 정해야 한다", 1],
+    // 검토 30 이 뚫은 자리.
+    ["G16-N17 새로열림",  "### ⛔ 새로 열렸다 — **ADM-4**", 1],
+    ["G16-N18 정해지지",  "`ADM-4` 는 아직 정해지지 않았다", 1],
+    ["G16-N19 못고른다",  "`ADM-4` 는 나는 아직 못 고른다", 1],
+    ["G16-N20 다음회차",  "`ADM-4` 는 다음 회차의 결정이다", 1],
+    ["G16-N21 정해져야",  "`ADM-4` 가 정해져야 한다", 1],
+    // ⛔ **거짓 실패를 안 내는지도 잰다**(검토 30 · 중요) — 다음 줄이 딴 결정이면 씌우지 않는다.
+    ["G16-P4 다음줄딴것", "`ADM-4` 는 정해졌다\n`PWA3-15a` 는 아직 미정이다", 1],
+    // ⛔ **검토 41 이 뚫은 자리** — 설명 한 줄을 끼워 넣으면 그냥 빠져나갔다.
+    ["G16-N26 한 줄 건너", "`ADM-4` 상태\n설명 한 줄\n아직 미정이다", 1],
+    ["G16-P6 세 줄 뒤",   "`ADM-4` 상태\n설명 한 줄\n설명 두 줄\n아직 미정이다", 0],
+  ];
+  for (const [name, text, expect] of cases) {
+    const got = staleOpenClaims(text, D).length;
+    if (got !== expect) bad(`${name}: 자기검사가 ${got}건을 냈다 — ${expect}건이어야 한다`);
+  }
+  // ⛔ **기호 없는 현재형을 구역으로 잡는지 잰다**(검토 30 · 차단).
+  const blk = openInDecidedBlocks("##### ✅ 정해졌다 — **ADM-4**\n값을 적었다\n무엇으로 셀지 아직 안 정했다");
+  if (blk.length !== 1) bad(`G16-N22: 결정 구역 안의 기호 없는 현재형을 ${blk.length}건 잡았다 — 1건이어야 한다`);
+  // ⛔ **보존한 옛 선택지는 제 제목이 있으므로 면제인지 잰다** — 아니면 역사를 지우게 만든다.
+  const keep = openInDecidedBlocks("##### ✅ 정해졌다 — **ADM-4**\n값을 적었다\n### 근거 — 그때의 선택지\n나는 아직 못 고른다");
+  if (keep.length !== 0) bad(`G16-P5: 보존한 옛 선택지 구역까지 잡는다(${keep.length}건) — 역사를 지우게 만든다`);
+  // ⛔ **역사 보관소를 뺀 것이 선언인지 잰다** — 실수로 빠진 것과 구분한다.
+  if (G16_DOCS.some((p) => p.startsWith("docs/history/")))
+    bad("G16-N23: 역사 보관소가 검사 38 대상에 들어왔다 — 지난 판을 현재형으로 재게 된다");
+  if (!G16_DOCS.includes("docs/SIGN-AUDIT.md"))
+    bad("G16-N23: 문서 목록 파생이 docs 아래를 다 훑지 않는다");
+  const found = decidedIds("#### ✅ 정한 값 — PWA3-9\n\n| 기호 | 무엇 | 정한 값 |\n|---|---|---|\n| **PWA3-9** | 무엇 | 값 |");
+  // ⛔ **굵게 표시가 없어도 줍는지 따로 잰다** — 서식 하나로 감시에서 빠지면 안 된다(검토 28 · 중요).
+  const plain = decidedIds("#### ✅ 정한 값\n| 기호 | 무엇 | 값 |\n|---|---|---|\n| PWA3-8 | 무엇 | 값 |");
+  if (!plain.has("PWA3-8")) bad("G16-N7: 굵게 표시가 없는 결정 행을 못 줍는다 — 서식으로 감시를 피할 수 있다");
+  const alt = decidedIds("#### 확정한 선택\n| **ADM-9** | 무엇 | 값 |");
+  if (!alt.has("ADM-9")) bad("G16-N9: 「확정한 선택」 표를 못 줍는다");
+  if (!found.has("PWA3-9")) bad("G16-N8: 「정한 값」 표에서 기호를 못 뽑는다 — 검사 38 이 빈 집합으로 돈다");
+  // ⛔ **표가 길어도 끝까지 줍는지 잰다**(검토 29) — 옛 12줄 창은 13번째 행부터 놓쳤다.
+  const rows = Array.from({ length: 20 }, (_, k) => "| **ADM-" + (k + 20) + "** | 무엇 | 값 |").join("\n");
+  const long = decidedIds("#### ✅ 정한 값\n| 기호 | 무엇 | 값 |\n|---|---|---|\n" + rows);
+  if (!long.has("ADM-39")) bad("G16-N14: 결정 표의 20번째 행을 못 줍는다 — 긴 표의 뒷부분이 감시 밖이다");
+  // ⛔ **표가 끝나면 무장을 푼다** — 아무 표 행이나 줍기 시작하면 검사가 무의미해진다.
+  const off = decidedIds("#### ✅ 정한 값\n| **ADM-7** | 무엇 | 값 |\n\n본문 한 줄\n\n| **ADM-8** | 딴 표 | 값 |");
+  if (off.has("ADM-8")) bad("G16-N15: 「정한 값」과 상관없는 뒤쪽 표까지 줍는다 — 무장이 안 풀린다");
+  // ⛔ **제목과 첫 표 사이가 멀어도 줍는지 잰다**(검토 40 · 중요) — 옛 12줄 창은 그 표를 통째로 놓쳤다.
+  const far = decidedIds("#### ✅ 정한 값\n" + Array.from({ length: 13 }, (_, k) => "설명 " + (k + 1)).join("\n")
+    + "\n| **ADM-41** | 무엇 | 값 |");
+  if (!far.has("ADM-41")) bad("G16-N24: 「정한 값」 제목과 첫 표 사이가 멀면 그 표를 통째로 놓친다");
+  // ⛔ **그래도 다음 제목 뒤의 표는 안 줍는지 잰다** — 줄 수 대신 구역으로 끊은 것이 맞는지 본다.
+  const nextHead = decidedIds("#### ✅ 정한 값\n설명\n### 딴 제목\n| **ADM-42** | 딴 표 | 값 |");
+  if (nextHead.has("ADM-42")) bad("G16-N25: 다음 제목 뒤의 딴 표까지 줍는다 — 구역이 안 끊긴다");
+  // ⛔ **문서 목록을 손으로 들지 않는지 잰다**(검토 29) — 새 결정 문서가 조용히 감시 밖이 되면 안 된다.
+  for (const must of ["docs/ROADMAP.md", "docs/PWA3_SHARED_API_DESIGN.md"])
+    if (!G16_DOCS.includes(must)) bad("G16-N16: 검사 38 의 대상에 " + must + " 가 없다");
+  // ⚠️ **한계를 그대로 적는다**(검토 28): 표를 「정한 값」·「확정한 값/선택」 말고 다른 이름으로 적거나,
+  //    OPEN 목록에 없는 표현을 쓰면 못 잡는다. **목록은 언제나 늦는다** — 이 검사는 사람의 전수검토를
+  //    대신하지 않고, 세 회차 연속 났던 그 무늬만 자동으로 막는다.
+  ok(`정한 값 기호 ${ids.size}개 · 문서 ${G16_DOCS.length}개 · 낡은 「미정」류 0건 · 자기검사 ${cases.length + 12}건`);
+}
+
+// ── 39. **규칙 원장 — 규칙마다 원본 한 자리** (2026-09-15 · G17 · `PWA3-66` 나) ──
+//
+// ⛔ **같은 규칙을 여러 절에 본문으로 베껴 적고, 한 자리만 고치는 무늬가 여러 판 되풀이됐다**
+//    (검토 72~79). 손으로 옆자리를 찾는 방식으로는 「베낀 자리 0」을 입증할 수 없다 — 그래서 센다.
+// 재는 것(구조만 · ⛔ 한국어 뜻은 판정하지 않는다):
+//   ⓐ 원장 표가 설계서에 정확히 하나 있고, 행마다 칸이 여섯이며 규칙 번호가 겹치지 않는다.
+//   ⓑ 문서 어디서든 `[R-…]` 가리키기가 원장에 있는 번호만 가리킨다(죽은 참조 0).
+//   ⓒ 검사 명세 표에 있는 검사 번호는 전부 원장 어느 행의 「재는 검사」 칸에 나온다(검사 쪽 외톨이 0) ·
+//      원장이 적은 검사 번호는 전부 명세 표에 있다(없는 검사를 가리키지 않는다).
+//   ⓓ 원장 행의 「재는 검사」 칸이 비어 있지 않다 — 검사가 없으면 「검사 없음 — 이유」라고 적는다.
+//   ⓔ 원장 행의 「옛 문구」(낡은 사본의 지문)가 원장 밖에서 나오면 실패 — 단 역사 기록은 면제다.
+// ⚠️ **한계**: 말을 바꿔 베낀 사본은 지문으로 못 잡는다 — 그것은 사람·독립 검토 몫이다.
+//    ⛔ 「베낀 자리 0」을 이 검사의 통과로만 주장하지 않는다.
+{
+  const DESIGN = "docs/PWA3_SHARED_API_DESIGN.md";
+  const RULE_ID = /^R-[A-Z]+-\d+[a-z]?$/;
+  const REF = /\[(R-[A-Z]+-\d+[a-z]?)\]/g;
+  const TEST_NO = /(?<![0-9A-Za-z-])[1-9]\d{2}[a-z]?(?![0-9a-z])/g;
+  // 강조(**145**)도 번호로 읽는다 — 검토 84 · 중요.
+  const SPEC_ROW = /^\|\s*\**\s*([1-9]\d{2}[a-z]?)\s*\**\s*\|\s*\**\s*(?:앱|운영)\s*\**\s*\|/;
+  // 역사 표식 — 검사 38 의 목록에 「대체된 역사」를 더했다(정한 값 표의 대체된 행이 그 표식을 단다).
+  const HIST = /당시\s*사실|당시\s*물음|첫\s*판|되돌렸다|처음엔|옛\s*판|그때\s*무엇을|그때의\s*선택지|대체된\s*역사/;
+  // 역사 구역 제목 — 「근거 — 그때의 선택지」 구역만. ⛔ 「### PWA3-47 — …」 제목 전체를 면제하지 않는다 —
+  // 그 아래에 현행 규칙을 적으면 통째로 숨었다(검토 84 · 중요). 선택지 기록은 선택지 표(options 블록)만 면제한다.
+  const HIST_HEAD = /^#{2,6}\s.*(?:근거|당시\s*사실|당시\s*물음|그때의)/;
+  const cells = (ln) => ln.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split(/(?<!\\)\|/).map((c) => c.trim());
+  const parseLedger = (text) => {
+    const lines = String(text).split("\n");
+    const out = { errs: [], rows: [], start: -1, end: -1 };
+    const s = lines.flatMap((l, i) => (l.trim() === "<!-- rules:start -->" ? [i] : []));
+    const e = lines.flatMap((l, i) => (l.trim() === "<!-- rules:end -->" ? [i] : []));
+    if (s.length !== 1 || e.length !== 1 || s[0] > e[0]) {
+      out.errs.push(`원장 표지가 시작 ${s.length}개 · 끝 ${e.length}개다 — 각각 하나씩, 시작이 먼저여야 한다`);
+      return out;
+    }
+    out.start = s[0]; out.end = e[0];
+    const seen = new Set();
+    for (let i = s[0] + 1; i < e[0]; i++) {
+      const ln = lines[i];
+      if (!/^\s*\|/.test(ln)) continue;
+      if (/^\s*\|\s*-/.test(ln) || /^\s*\|\s*규칙\s*\|/.test(ln)) continue;   // 구분선 · 머리줄
+      const c = cells(ln);
+      if (c.length !== 6) { out.errs.push(`${i + 1}: 원장 행의 칸이 ${c.length}개다 — 여섯이어야 한다`); continue; }
+      const [id, easy, body, dec, tests, prints] = c;
+      const bare = id.replace(/\*/g, "");
+      if (!RULE_ID.test(bare)) { out.errs.push(`${i + 1}: 규칙 번호 「${id}」가 R-영문-숫자 모양이 아니다`); continue; }
+      if (seen.has(bare)) out.errs.push(`${i + 1}: 규칙 번호 ${bare} 가 원장에 두 번 있다`);
+      seen.add(bare);
+      if (!easy || /`|§|[A-Z]{2,}/.test(easy)) out.errs.push(`${i + 1}: ${bare} 의 「쉬운 말」이 비었거나 코드·절 번호·대문자 약어를 담았다`);
+      if (!body) out.errs.push(`${i + 1}: ${bare} 의 규칙 본문이 비었다`);
+      if (!dec || dec === "—") out.errs.push(`${i + 1}: ${bare} 의 「나온 결정」 칸이 비었다 — 없으면 「—」가 아니라 출처를 적는다`);
+      const tnos = tests.match(TEST_NO) || [];
+      if (!tnos.length && !/^검사\s*없음\s*—\s*\S/.test(tests))
+        out.errs.push(`${i + 1}: ${bare} 의 「재는 검사」가 번호도 「검사 없음 — 이유」도 아니다`);
+      const fps = prints === "—" ? [] : [...prints.matchAll(/「([^」]+)」/g)].map((m) => m[1]);
+      if (prints !== "—" && !fps.length) out.errs.push(`${i + 1}: ${bare} 의 「옛 문구」가 「—」도 「…」 목록도 아니다`);
+      out.rows.push({ line: i + 1, id: bare, tests: tnos, prints: fps });
+    }
+    if (!out.rows.length) out.errs.push("원장에 규칙 행이 0개다 — 검사 39 가 아무것도 안 재고 있다");
+    return out;
+  };
+  // 원장 밖에서 역사가 아닌 줄만 돌려준다 — 제목이 역사 구역을 열면 다음 같은 급 이상의 제목까지 면제다.
+  const liveLines = (text, led) => {
+    const lines = String(text).split("\n");
+    const out = [];
+    let histLevel = 0, inOpts = false;
+    lines.forEach((ln, i) => {
+      if (ln.trim() === "<!-- options:start -->") inOpts = true;
+      if (ln.trim() === "<!-- options:end -->") { inOpts = false; return; }
+      if (inOpts) return;
+      const h = ln.match(/^(#{1,6})\s/);
+      if (h) {
+        const lv = h[1].length;
+        if (histLevel && lv <= histLevel) histLevel = 0;
+        if (!histLevel && HIST_HEAD.test(ln)) histLevel = lv;
+      }
+      if (led && i >= led.start && i <= led.end) return;
+      if (histLevel) return;
+      out.push({ n: i + 1, ln });
+    });
+    return out;
+  };
+  const staleCopies = (text, led) => {
+    const out = [];
+    const prints = led.rows.flatMap((r) => r.prints.map((p) => ({ id: r.id, p })));
+    for (const { n, ln } of liveLines(text, led))
+      for (const { id, p } of prints) {
+        const at = ln.indexOf(p);
+        if (at < 0) continue;
+        // ⛔ 면제는 문구보다 **앞**에 있어야 한다 — 꼬리의 「당시 사실」이 앞쪽 현재 주장까지 덮지 않게(검사 38 과 같은 규칙).
+        if (HIST.test(ln.slice(0, at))) continue;
+        out.push({ line: n, id, p });
+      }
+    return out;
+  };
+  // 역사 구역의 표 행은 명세가 아니다 — 현행 행을 지우고 역사 구역에 같은 번호를 두면 통과하던 구멍(검토 84 · 중요).
+  const specTests = (text, led) => {
+    const s = new Set();
+    // 명세 표는 머리줄이 「번호 | 갈래 | 무엇을 재나」인 표뿐이다 — 같은 모양의 위협 표(95~)를 검사로 읽지 않게.
+    let inSpec = false;
+    for (const { ln } of liveLines(text, led)) {
+      if (!/^\s*\|/.test(ln)) { inSpec = false; continue; }
+      if (/^\|\s*번호\s*\|\s*갈래\s*\|\s*무엇을\s*재나/.test(ln)) { inSpec = true; continue; }
+      const m = inSpec && ln.match(SPEC_ROW);
+      if (m) s.add(m[1]);
+    }
+    return s;
+  };
+  const ledgerProblems = (text, otherTexts = []) => {
+    const led = parseLedger(text);
+    const errs = [...led.errs];
+    if (led.start < 0) return errs;
+    const known = new Set(led.rows.map((r) => r.id));
+    for (const [name, t] of [["설계서", text], ...otherTexts])
+      String(t).split("\n").forEach((ln, i) => {
+        for (const m of ln.matchAll(REF))
+          if (!known.has(m[1])) errs.push(`${name}:${i + 1} 이 없는 규칙 [${m[1]}] 를 가리킨다`);
+      });
+    const spec = specTests(text, led);
+    const inLedger = new Set(led.rows.flatMap((r) => r.tests));
+    for (const t of spec) if (!inLedger.has(t)) errs.push(`검사 ${t} 가 원장 어느 규칙에도 안 붙어 있다 — 외톨이 검사`);
+    for (const r of led.rows)
+      for (const t of r.tests) if (!spec.has(t)) errs.push(`${r.id} 가 명세 표에 없는 검사 ${t} 를 적었다`);
+    for (const b of staleCopies(text, led))
+      errs.push(`설계서:${b.line} 에 ${b.id} 의 옛 문구 「${b.p}」가 역사 표식 없이 남아 있다 — 원장을 가리키게 고친다`);
+    return errs;
+  };
+
+  // 가리키기는 설계서 밖(단계표·인계 문서)에도 생긴다 — 검사 38 과 같은 방식으로 docs 아래를 훑는다(역사 보관소 제외).
+  const walk = (rel) => readdirSync(new URL("../" + rel, import.meta.url), { withFileTypes: true })
+    .flatMap((e) => e.isDirectory()
+      ? (rel === "docs" && e.name === "history" ? [] : walk(rel + "/" + e.name))
+      : (e.name.endsWith(".md") ? [rel + "/" + e.name] : []));
+  const otherDocs = [...new Set([...DOCS, ...walk("docs")])].filter((p) => p !== DESIGN).map((p) => [p, R(p)]);
+  const found = ledgerProblems(R(DESIGN), otherDocs);
+  for (const m of found) bad("G17 " + m);
+  const led = parseLedger(R(DESIGN));
+  // 원장 행을 통째로 지우면 참조도 검사 번호도 없는 행은 아무 판정에도 안 걸린다(검토 84 · 중요).
+  // 그래서 규칙 번호를 여기 한 번 더 둔다 — ⛔ 원장에 행을 더하거나 빼면 이 목록도 같이 고친다(두 자리가 어긋나는 것을 잡는다).
+  const RULE_REGISTRY = `
+    R-SYM-1 R-SES-1 R-SES-2 R-ACC-1 R-ACC-2 R-APP-1 R-APP-2 R-APP-3 R-APP-4 R-APP-5 R-APP-6 R-APP-7 R-APP-8 R-APP-9
+    R-APP-10 R-APP-11 R-APP-12 R-APP-13 R-ADM-1 R-NICK-1 R-PROV-1 R-PROV-2 R-PROV-3 R-DI-1 R-DB-1 R-DB-2 R-DB-3
+    R-DB-4 R-ERR-1 R-ERR-2 R-ERR-3 R-ERR-4 R-ERR-5 R-ERR-6 R-ERR-7 R-ERR-8 R-ERR-9 R-ERR-10 R-ERR-11 R-ERR-12 R-ST-1
+    R-ST-2 R-ST-3 R-ST-4 R-ST-5 R-ST-6 R-ST-7 R-ST-8 R-ST-9 R-ST-10 R-SC-1 R-NUM-1 R-MIG-1 R-KEY-1 R-KEY-2 R-KEY-3
+    R-KEY-4 R-KEY-5 R-DUP-1 R-TIX-1 R-DEL-1 R-DEL-2 R-DEL-3 R-DEL-4 R-DEL-5 R-DEL-6 R-DEL-7 R-DEL-8 R-DEL-9 R-IDV-1 R-IDV-2 R-IDV-3
+    R-BK-1 R-BK-2 R-BK-3 R-BK-4 R-NA-1 R-SEAL-1 R-SEAL-2 R-SEAL-3 R-SEAL-4 R-SEAL-5 R-SEAL-6 R-SEAL-7 R-SEAL-8
+    R-SEAL-9 R-OUT-1 R-LOST-1 R-LOST-2 R-STUCK-1
+  `.trim().split(/\s+/);
+  const regDiff = (rows, reg) => {
+    const have = new Set(rows.map((r) => r.id));
+    return [...reg.filter((x) => !have.has(x)).map((x) => `원장에서 ${x} 가 사라졌다 — 목록과 원장을 함께 고친다`),
+      ...[...have].filter((x) => !reg.includes(x)).map((x) => `원장에 목록에 없는 ${x} 가 생겼다 — 목록과 원장을 함께 고친다`)];
+  };
+  for (const m of regDiff(led.rows, RULE_REGISTRY)) bad("G17 " + m);
+  if (regDiff([{ id: "R-AB-1" }], ["R-AB-1", "R-AB-2"]).length !== 1 || regDiff([{ id: "R-AB-1" }, { id: "R-AB-3" }], ["R-AB-1"]).length !== 1)
+    bad("G17-N16 규칙 목록 대조가 사라진 행이나 늘어난 행을 못 잡는다");
+
+  // 자기검사 — 판정과 면제가 둘 다 살아 있는지 합성 입력으로 잰다.
+  const H = "| 규칙 | 쉬운 말 | 규칙 본문 | 나온 결정 | 재는 검사 | 옛 문구 |\n|---|---|---|---|---|---|\n";
+  const L = (rows) => "<!-- rules:start -->\n" + H + rows + "\n<!-- rules:end -->\n";
+  const SPEC = "| 번호 | 갈래 | 무엇을 재나 | 결정 |\n|---|---|---|---|\n| 115 | 앱 | 잰다 | 가 |\n";
+  const good = L("| R-AB-1 | 한 번만 쓴다 | 한 번만 | 가 | 115 | 「두 번 써도 된다」 |");
+  const g17 = [
+    ["G17-P1 정상", good + SPEC + "본문은 [R-AB-1] 을 가리킨다\n", 0],
+    ["G17-N1 표지 없음", SPEC, 1],
+    ["G17-N2 번호 겹침", L("| R-AB-1 | 가 | 가 | 가 | 115 | — |\n| R-AB-1 | 나 | 나 | 나 | 115 | — |") + SPEC, 1],
+    ["G17-N3 죽은 참조", good + SPEC + "[R-ZZ-9] 를 보라\n", 1],
+    ["G17-N4 외톨이 검사", good + SPEC + "| 116 | 앱 | 잰다 | 나 |\n", 1],
+    ["G17-N5 없는 검사", L("| R-AB-1 | 가 | 가 | 가 | 115 · 119 | — |") + SPEC, 1],
+    ["G17-N6 검사 칸 빔", L("| R-AB-1 | 가 | 가 | 가 | 없다 | — |") + SPEC, 1],
+    ["G17-P2 검사 없음 이유", L("| R-AB-1 | 가 | 가 | 가 | 115 | — |\n| R-AB-2 | 나 | 나 | 나 | 검사 없음 — 이름 규칙이다 | — |") + SPEC, 0],
+    ["G17-N7 옛 문구 사본", good + SPEC + "여기서는 두 번 써도 된다고 적었다\n본문에 「두 번 써도 된다」가 남았다\n", 1],
+    ["G17-P3 역사 줄 면제", good + SPEC + "⛔ 당시 사실: 「두 번 써도 된다」였다\n", 0],
+    ["G17-N8 꼬리 면제 금지", good + SPEC + "「두 번 써도 된다」 — 당시 사실은 달랐다\n", 1],
+    ["G17-P4 선택지 표 면제", good + SPEC + "### PWA3-47 — 무엇이 먼저인가\n<!-- options:start -->\n| 가 | 「두 번 써도 된다」 |\n<!-- options:end -->\n## 13. 다음 장\n", 0],
+    ["G17-N12 표식 없는 선택지 제목은 면제 아님", good + SPEC + "### PWA3-47 — 무엇이 먼저인가\n지금 규칙: 「두 번 써도 된다」\n", 1],
+    ["G17-P5 당시 물음 제목 면제", good + SPEC + "### PWA3-47 — 무엇이 먼저인가 ⛔ 당시 물음\n「두 번 써도 된다」\n## 13. 다음 장\n", 0],
+    ["G17-N13 역사 구역의 명세 행", L("| R-AB-1 | 가 | 가 | 가 | 115 · 116 | — |") + SPEC + "## 근거 — 그때의 표\n| 번호 | 갈래 | 무엇을 재나 | 결정 |\n| 116 | 앱 | 잰다 | 가 |\n", 1],
+    ["G17-P6 위협 표는 명세 아님", good + SPEC + "\n| 번호 | 갈래 | 무엇이 일어나나 | 어떻게 막나 |\n| 116 | 앱 | 샌다 | 막는다 |\n", 0],
+    ["G17-N14 강조한 명세 번호", good + SPEC.trimEnd() + "\n| **116** | 앱 | 잰다 | 나 |\n", 1],
+    ["G17-N15 결정 칸이 줄표", L("| R-AB-1 | 가 | 가 | — | 115 | — |") + SPEC, 1],
+    ["G17-N9 구역이 끝난 뒤", good + SPEC + "### PWA3-47 — 무엇이 먼저인가\n기록\n## 13. 다음 장\n「두 번 써도 된다」\n", 1],
+    ["G17-N10 쉬운 말에 코드", L("| R-AB-1 | `ticket` 을 쓴다 | 가 | 가 | 115 | — |") + SPEC, 1],
+    ["G17-N11 다른 문서 죽은 참조", good + SPEC, 1, [["다른문서", "[R-QQ-1]"]]],
+  ];
+  for (const [name, text, expect, others] of g17) {
+    const got = ledgerProblems(text, others || []).length;
+    if ((got > 0 ? 1 : 0) !== expect) bad(`${name}: 자기검사가 ${got}건을 냈다 — ${expect ? "1건 이상" : "0건"}이어야 한다`);
+  }
+  ok(`규칙 원장 ${led.rows.length}행 · 옛 문구 ${led.rows.reduce((a, r) => a + r.prints.length, 0)}개 · `
+    + `검사 번호 ${specTests(R(DESIGN), led).size}개가 전부 원장에 붙음 · 죽은 참조 0 · 자기검사 ${g17.length}건 `
+    + "(⚠️ 말을 바꾼 사본은 못 잡는다)");
+}
+
 console.log(fails
   ? `test-docs: 실패 ${fails}건`
-  : "test-docs: 통과 — 낡은 문구 · 죽은 § 참조 · 번호 연속성 · 선언된 개수 · 판 번호 · 필수 절 · 완료 범위 · 보유기간 단정 · 스위트 수 · 낡은 운영 상태 · 공식 단계 계약(**구조만** — CLAUDE.md §1-1 의 stage-contract 1개 · 키 7개·순서·값·현재 사실 · 비원본 문서 5개에 계약 0개 · 참조 문장 각 1개 · 「현재 판정:」 6개 문서에서 0건 · 자기 기준 선언 0건 · 자기검사 음수 N1~N21 · 정상 P1~P4. ⚠️ **문서의 한국어 의미는 재지 않는다** — 사람의 전수검토 몫이다) · 주 D1 접근 분류 등재 · 법률 자료 현재 사실 · 인수인계 현재성 · 현재 상태 구간의 낡은 drain·구현·lease·T6 서술 · drain 미구현 0건 · 정리 대상 개수 = 코드 · 2단계 결정서 현재성 · 재검증 후 현재 사실 9종 · 모순 5종 · 운영현황 실측값 · 날짜별 운영 기록 · 움직이는 해시 · Access 이후 현재형 401 · 돌연변이 개수=MUTATIONS · 배포 경계(배포=git 파생 · 미배포=현재 · self-test) · §13-6 매핑 합계=maxT · 현재 상태 블록의 배포 ID · 「로컬 완료·미배포」 현재형 0건 · timing-safe 서술=구현 · 외부 전문가 상담 해당없음 · 법률·사례 자료 현재성 · 2026-08-26 결정 보존 · 운영 개인정보 비저장 · KILLED 조건 개수=코드 · 「close=그룹 종료」 0건");
+  : "test-docs: 통과 — 낡은 문구 · 죽은 § 참조 · 번호 연속성 · 선언된 개수 · 판 번호 · 필수 절 · 완료 범위 · 보유기간 단정 · 스위트 수 · 낡은 운영 상태 · 공식 단계 계약(**구조만** — CLAUDE.md §1-1 의 stage-contract 1개 · 키 7개·순서·값·현재 사실 · 비원본 문서 5개에 계약 0개 · 참조 문장 각 1개 · 「현재 판정:」 6개 문서에서 0건 · 자기 기준 선언 0건 · 자기검사 음수 N1~N21 · 정상 P1~P4. ⚠️ **문서의 한국어 의미는 재지 않는다** — 사람의 전수검토 몫이다) · 주 D1 접근 분류 등재 · 법률 자료 현재 사실 · 인수인계 현재성 · 현재 상태 구간의 낡은 drain·구현·lease·T6 서술 · drain 미구현 0건 · 정리 대상 개수 = 코드 · 2단계 결정서 현재성 · 재검증 후 현재 사실 9종 · 모순 5종 · 운영현황 실측값 · 날짜별 운영 기록 · 움직이는 해시 · Access 이후 현재형 401 · 돌연변이 개수=MUTATIONS · 배포 경계(배포=git 파생 · 미배포=현재 · self-test) · §13-6 매핑 합계=maxT · 현재 상태 블록의 배포 ID · 「로컬 완료·미배포」 현재형 0건 · timing-safe 서술=구현 · 외부 전문가 상담 해당없음 · 법률·사례 자료 현재성 · 2026-08-26 결정 보존 · 운영 개인정보 비저장 · KILLED 조건 개수=코드 · 「close=그룹 종료」 0건 · **정한 값인데 옆자리가 「미정」이라 말하는 곳 0건**");
 process.exit(fails ? 1 : 0);

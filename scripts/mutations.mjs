@@ -2008,6 +2008,104 @@ export const MUTATIONS = [
     replace: "",
   },
 
+  // ── 2026-09-08 · 검사 38(G16) — 정한 값인데 옆자리가 「미정」이라 말하는 곳 ──
+  // ⛔ 같은 지적을 세 회차 연속 받았다(Codex 25·26·27). 사람이 옆자리를 훑는 방식이 실패했으므로
+  //    기계가 훑는다. 그 검사가 조용히 무력해지면 같은 무늬가 그대로 돌아온다.
+  {
+    id: "D49", file: "scripts/test-docs.mjs", suite: "test-docs", kind: "정적",
+    what: "「정한 값」 표에서 기호를 못 뽑게 만든다 — 검사 38 이 빈 집합으로 돈다",
+    invariant: "감시 대상이 0개가 되면 검사가 실패해야 한다(하한 · 자기검사 G16-N8·N14)",
+    find: '      const isArm = /정한\\s*값|확정한\\s*(?:값|선택)/.test(ln);',
+    replace: '      const isArm = /정한 값 없음/.test(ln);',
+  },
+  {
+    id: "D50", file: "scripts/test-docs.mjs", suite: "test-docs", kind: "정적",
+    what: "검사 38 의 「미정」 패턴을 뺀다",
+    invariant: "정해진 기호를 「미정」이라 적은 줄이 있으면 검사가 실패해야 한다",
+    find: '    [/미정|미확정/, "「미정」"],',
+    replace: "",
+  },
+
+  {
+    id: "D53", file: "scripts/test-docs.mjs", suite: "test-docs", kind: "정적",
+    what: "검사 38 의 문서 목록을 다시 손으로 든 목록으로 되돌린다",
+    invariant: "결정이 사는 문서가 목록에서 빠지면 검사가 실패해야 한다(자기검사 G16-N16)",
+    find: '  const G16_DOCS = [...new Set([...DOCS, ...walkDocs("docs")])];',
+    replace: '  const G16_DOCS = [...new Set([...DOCS, ...["docs/HANDOFF.md"]])];',
+  },
+
+  {
+    id: "D51", file: "scripts/test-docs.mjs", suite: "test-docs", kind: "정적",
+    what: "검사 38 의 면제를 「주장 앞」이 아니라 「줄 전체」에서 보게 되돌린다",
+    invariant: "꼬리의 「당시 사실」 한 마디가 앞쪽 현재 주장까지 덮으면 실패해야 한다(자기검사 G16-N6)",
+    find: "          if (HIST.test(ctx.slice(0, m.index))) continue;",
+    replace: "          if (HIST.test(ctx)) continue;",
+  },
+  {
+    id: "D52", file: "scripts/test-docs.mjs", suite: "test-docs", kind: "정적",
+    what: "검사 38 이 제목 줄을 다시 통째로 면제하게 만든다",
+    invariant: "낡은 「열려 있다」는 정확히 제목에 살았다 — 제목을 면제하면 실패해야 한다(자기검사 G16-N4)",
+    find: '      const ctx = [ln, ...tail].join(" ");',
+    replace: '      if (ln.startsWith("#")) return;\n      const ctx = [ln, ...tail].join(" ");',
+  },
+  {
+    id: "D54", file: "scripts/test-docs.mjs", suite: "test-docs", kind: "정적",
+    what: "검사 38 의 「정해졌다」 구역을 아예 안 열게 만든다 — 기호 없는 낡은 현재형이 통째로 감시 밖이 된다",
+    invariant: "결정 구역 안의 기호 없는 열린 표현이 잡혀야 한다(자기검사 G16-N22)",
+    find: "      if (HEAD.test(ln)) { inBlock = DECIDED_HEAD.test(ln); head = i + 1; return; }",
+    replace: "      if (HEAD.test(ln)) { inBlock = false; head = i + 1; return; }",
+  },
+  {
+    id: "D55", file: "scripts/test-docs.mjs", suite: "test-docs", kind: "정적",
+    what: "검사 38 의 결정 기호 수집을 다시 12줄 창으로 되돌린다 — 제목과 첫 표 사이가 멀면 그 표가 통째로 감시 밖이 된다",
+    invariant: "제목에서 13줄 넘게 떨어진 결정 표의 기호도 수집돼야 한다(자기검사 G16-N24)",
+    find: "      if (armed === -99) return;",
+    replace: "      if (armed === -99 || i - armed > 12) return;",
+  },
+  {
+    id: "D56", file: "scripts/test-docs.mjs", suite: "test-docs", kind: "정적",
+    what: "검사 38 의 낡은 주장 창을 다시 한 줄로 줄인다 — 설명 한 줄만 끼워 넣으면 낡은 「미정」이 빠져나간다",
+    invariant: "기호 줄에서 두 줄 뒤의 낡은 주장도 잡혀야 한다(자기검사 G16-N26)",
+    find: "  const CTX_AFTER = 2;",
+    replace: "  const CTX_AFTER = 1;",
+  },
+  // ── 2026-09-15 · 검사 39(G17 · 규칙 원장) 를 지키는 변이 ──────────────────
+  {
+    id: "D57", file: "scripts/test-docs.mjs", suite: "test-docs", kind: "정적",
+    what: "검사 39 의 옛 문구 탐지를 통째로 끈다 — 원장과 어긋난 사본이 다시 조용히 남는다",
+    invariant: "원장의 옛 문구가 역사 표식 없이 원장 밖에 나오면 실패해야 한다(자기검사 G17-N7)",
+    find: "        if (HIST.test(ln.slice(0, at))) continue;",
+    replace: "        if (true) continue;",
+  },
+  {
+    id: "D58", file: "scripts/test-docs.mjs", suite: "test-docs", kind: "정적",
+    what: "검사 39 의 외톨이 검사 판정을 끈다 — 어느 규칙에도 안 붙은 검사가 통과한다",
+    invariant: "명세 표의 검사가 원장 어느 규칙에도 없으면 실패해야 한다(자기검사 G17-N4)",
+    find: "    for (const t of spec) if (!inLedger.has(t)) errs.push(`검사 ${t} 가 원장 어느 규칙에도 안 붙어 있다 — 외톨이 검사`);",
+    replace: "    for (const t of spec) if (false) errs.push(`검사 ${t} 가 원장 어느 규칙에도 안 붙어 있다 — 외톨이 검사`);",
+  },
+  {
+    id: "D59", file: "scripts/test-docs.mjs", suite: "test-docs", kind: "정적",
+    what: "검사 39 의 역사 면제를 「문구 앞」이 아니라 「줄 전체」에서 보게 한다 — 꼬리의 「당시 사실」이 앞쪽 현재 사본을 덮는다",
+    invariant: "문구 뒤에만 역사 표식이 있으면 면제되지 않아야 한다(자기검사 G17-N8)",
+    find: "        if (HIST.test(ln.slice(0, at))) continue;",
+    replace: "        if (HIST.test(ln)) continue;",
+  },
+  {
+    id: "D60", file: "scripts/test-docs.mjs", suite: "test-docs", kind: "정적",
+    what: "검사 39 의 규칙 번호 목록 대조가 언제나 빈 결과를 낸다 — 원장 행을 통째로 지워도 통과한다",
+    invariant: "사라진 행과 늘어난 행을 각각 잡아야 한다(자기검사 G17-N16)",
+    find: "  const regDiff = (rows, reg) => {",
+    replace: "  const regDiff = (rows, reg) => { return [];",
+  },
+  {
+    id: "D61", file: "scripts/test-docs.mjs", suite: "test-docs", kind: "정적",
+    what: "검사 39 가 명세 표 머리줄을 안 보고 같은 모양의 모든 표 행을 검사 번호로 읽는다 — 위협 표가 명세로 섞인다",
+    invariant: "머리줄이 「무엇을 재나」인 표만 명세다(자기검사 G17-P6)",
+    find: "      const m = inSpec && ln.match(SPEC_ROW);",
+    replace: "      const m = ln.match(SPEC_ROW);",
+  },
+
   // ── 2026-08-31 · 검증기 정리 경로 4건 (실행기 수명주기 보완) ─────────────
   // ⚠️ 넷 다 「테스트가 전부 통과하는 상태」에서 성립했다 — 방어를 지우면 어느 검사가 실제로
   //    빨개지는지가 유일한 증거다.
