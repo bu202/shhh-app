@@ -2549,7 +2549,7 @@ ok("「로컬 완료 · 미배포」 현재형 서술 0건");
     R-ST-2 R-ST-3 R-ST-4 R-ST-5 R-ST-6 R-ST-7 R-ST-8 R-ST-9 R-ST-10 R-HUM-1 R-SC-1 R-NUM-1 R-MIG-1 R-KEY-1 R-KEY-2 R-KEY-3
     R-KEY-4 R-KEY-5 R-KEY-6 R-DUP-1 R-TIX-1 R-RES-1 R-DEL-1 R-DEL-2 R-DEL-3 R-DEL-4 R-DEL-5 R-DEL-6 R-DEL-7 R-DEL-8 R-DEL-9 R-IDV-1 R-IDV-2 R-IDV-3
     R-BK-1 R-BK-2 R-BK-3 R-BK-4 R-NA-1 R-SEAL-1 R-SEAL-2 R-SEAL-3 R-SEAL-4 R-SEAL-5 R-SEAL-6 R-SEAL-7 R-SEAL-8
-    R-SEAL-9 R-OUT-1 R-LOST-1 R-LOST-2 R-STUCK-1
+    R-SEAL-9 R-SEAL-10 R-OUT-1 R-LOST-1 R-LOST-2 R-STUCK-1
   `.trim().split(/\s+/);
   const regDiff = (rows, reg) => {
     const have = new Set(rows.map((r) => r.id));
