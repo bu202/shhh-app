@@ -2414,6 +2414,7 @@ ok("「로컬 완료 · 미배포」 현재형 서술 0건");
 //      원장이 적은 검사 번호는 전부 명세 표에 있다(없는 검사를 가리키지 않는다).
 //   ⓓ 원장 행의 「재는 검사」 칸이 비어 있지 않다 — 검사가 없으면 「검사 없음 — 이유」라고 적는다.
 //   ⓔ 원장 행의 「옛 문구」(낡은 사본의 지문)가 원장 밖에서 나오면 실패 — 단 역사 기록은 면제다.
+//   ⓕ 「검사 없음 —」 조각이 정해진 세 모양이고 가리킨 뒤 단계 표 행 · 단계 · 출시 단계표 게이트가 실제로 있다(2026-11-04 · 회의 81).
 // ⚠️ **한계**: 말을 바꿔 베낀 사본은 지문으로 못 잡는다 — 그것은 사람·독립 검토 몫이다.
 //    ⛔ 「베낀 자리 0」을 이 검사의 통과로만 주장하지 않는다.
 {
@@ -2592,9 +2593,94 @@ ok("「로컬 완료 · 미배포」 현재형 서술 0건");
     const got = ledgerProblems(text, others || []).length;
     if ((got > 0 ? 1 : 0) !== expect) bad(`${name}: 자기검사가 ${got}건을 냈다 — ${expect ? "1건 이상" : "0건"}이어야 한다`);
   }
+
+  // ⓕ **「검사 없음」 칸의 모양**(2026-11-04 · 회의 81 · 사용자 결정 가) — 마감 기준 ④ 의 새 뜻은
+  //    「검사 명세 번호가 있거나, 지금 검사할 수 없는 이유 · 담당 단계 · 그 전까지 막을 동작이 기록돼 있다」다.
+  //    그래서 원장 칸의 「검사 없음 —」 조각은 셋 가운데 하나여야 한다:
+  //      (가) 「검사 없음 — 잴 수 없음: 이유」
+  //      (나) 「검사 없음 — <단계> 몫: 무엇을 잴지 → 뒤 단계 표 「행 머리」」 — 그 행이 §13 「뒤 단계로 옮긴 것」 표에
+  //           정확히 하나 있고 그 행의 「맡을 단계」 칸에 적은 단계가 다 있어야 한다(그 전까지의 동작은 그 행의 넷째 칸이다)
+  //      (다) 「검사 없음 — 운영 확인: 이유 → 출시 단계표 게이트 「번호」」 — 그 번호가 `docs/ROADMAP.md` 에 있어야 한다
+  // ⛔ **이 검사는 ④ 를 참으로 만들지 않는다** — 칸의 모양과 가리킨 행이 있는지만 재고, 그 검사가 정말 그 규칙을
+  //    재는지(짝)는 재지 않는다. 그것은 사람과 독립 검토의 전수 대조 몫이다(설계서 §13 의 ④ 판정).
+  const DEFER_HEAD = "**뒤 단계로 옮긴 것**";
+  const STAGE = /(?:PWA|APP)-\d+[A-Z]?/g;
+  const deferRows = (text) => {
+    const lines = String(text).split("\n");
+    const h = lines.findIndex((l) => l.includes(DEFER_HEAD));
+    if (h < 0) return null;
+    let i = h + 1;
+    while (i < lines.length && !/^\|/.test(lines[i])) i++;
+    const rows = [];
+    for (; i < lines.length && /^\|/.test(lines[i]); i++) {
+      if (/^\|\s*-/.test(lines[i]) || /^\|\s*무엇\s*\|/.test(lines[i])) continue;
+      const c = cells(lines[i]);
+      rows.push({ what: (c[0] || "").replace(/[*`]/g, ""), stage: (c[1] || "").replace(/[*`]/g, ""), rest: c.slice(2, 5) });
+    }
+    return rows;
+  };
+  const shapeProblems = (text, roadmap) => {
+    const errs = [];
+    const led = parseLedger(text);
+    const defer = deferRows(text);
+    if (!defer) return ["설계서에 「뒤 단계로 옮긴 것」 표가 없다"];
+    const lines = String(text).split("\n");
+    for (const r of led.rows) {
+      const parts = cells(lines[r.line - 1])[4].split(/검사\s*없음\s*—\s*/).slice(1);
+      for (const p of parts) {
+        if (/^잴\s*수\s*없음:\s*\S/.test(p)) continue;
+        let m = p.match(/^운영\s*확인:\s*[^→]*\S\s*→\s*출시\s*단계표\s*게이트\s*「([^」]+)」/);
+        if (m) {
+          // 게이트는 출시 단계표의 표 행 첫 칸(굵게 · 지운 줄 포함)이어야 한다 — 글 속 언급은 게이트가 아니다(검토 262).
+          const gid = m[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          if (!new RegExp(`^\\|\\s*(?:~~)?\\*\\*${gid}\\*\\*`, "m").test(String(roadmap)))
+            errs.push(`${r.line}: ${r.id} 가 가리킨 출시 단계표 게이트 ${m[1]} 의 표 행이 없다`);
+          continue;
+        }
+        m = p.match(/^((?:PWA|APP)-\d+[A-Z]?(?:\s*·\s*(?:PWA|APP)-\d+[A-Z]?)*)\s*몫:\s*[^→]*\S\s*→\s*뒤\s*단계\s*표\s*「([^」]+)」/);
+        if (!m) { errs.push(`${r.line}: ${r.id} 의 「검사 없음」이 정해진 세 모양(잴 수 없음 · 단계 몫 → 뒤 단계 표 · 운영 확인 → 게이트)이 아니다`); continue; }
+        const hit = defer.filter((d) => d.what.startsWith(m[2]));
+        if (hit.length !== 1) { errs.push(`${r.line}: ${r.id} 가 가리킨 뒤 단계 표 행 「${m[2]}」가 ${hit.length}개다 — 정확히 하나여야 한다`); continue; }
+        if (hit[0].rest.length !== 3 || hit[0].rest.some((x) => !x || /^[—-]$/.test(x.trim())))
+          errs.push(`${r.line}: ${r.id} 가 가리킨 뒤 단계 표 「${m[2]}」 행의 확인 방법 · 출시를 막나 · 그 전까지의 동작 가운데 빈 칸이 있다`);
+        for (const s of m[1].match(STAGE)) if (!(hit[0].stage.match(STAGE) || []).includes(s))
+          errs.push(`${r.line}: ${r.id} 는 ${s} 몫이라 적었는데 뒤 단계 표 「${m[2]}」 행의 맡을 단계에 ${s} 가 없다`);
+      }
+    }
+    return errs;
+  };
+  for (const m of shapeProblems(R(DESIGN), R("docs/ROADMAP.md"))) bad("G17 " + m);
+  {
+    const DT = (rows) => "- ✅ **뒤 단계로 옮긴 것** — 표\n\n| 무엇 | 맡을 단계 | 확인 방법 | 출시를 막나 | 그 전까지의 동작 |\n|---|---|---|---|---|\n" + rows + "\n\n끝\n";
+    const ROW = "| 원장 검사 칸 — 가 길([R-AB-1]) | `PWA-4` | 쓴다 | 막는다 | 내보내지 않는다 |\n| 원장 검사 칸 — 나 방식 | `APP-1`·`APP-2` | 여쭌다 | 막는다 | 내보내지 않는다 |";
+    const RM = "| ~~**R9-a**~~ ✅ 닫혔다 |\n그 뒤 R9-b 를 잰다\n";
+    const one = (cell) => L(`| R-AB-1 | 가 | 가 | 가 | ${cell} | — |`) + DT(ROW);
+    const shapes = [
+      ["G17-P7 잴 수 없음", one("검사 없음 — 잴 수 없음: 이름 규칙이다"), 0],
+      ["G17-P8 단계 몫", one("검사 없음 — PWA-4 몫: 새로 쓴다 → 뒤 단계 표 「원장 검사 칸 — 가 길」"), 0],
+      ["G17-P9 두 단계 몫", one("검사 없음 — APP-1 · APP-2 몫: 정한 뒤 쓴다 → 뒤 단계 표 「원장 검사 칸 — 나 방식」"), 0],
+      ["G17-P10 운영 확인", one("검사 없음 — 운영 확인: 사람이 콘솔에서 본다 → 출시 단계표 게이트 「R9-a」"), 0],
+      ["G17-P11 번호와 섞임", one("115 · 나머지는 검사 없음 — 잴 수 없음: 결정이다 · 그 밖은 검사 없음 — PWA-4 몫: 쓴다 → 뒤 단계 표 「원장 검사 칸 — 가 길」"), 0],
+      ["G17-N17 이유만 적은 옛 모양", one("검사 없음 — 이름 규칙이다"), 1],
+      ["G17-N18 없는 뒤 단계 행", one("검사 없음 — PWA-4 몫: 쓴다 → 뒤 단계 표 「원장 검사 칸 — 다 길」"), 1],
+      ["G17-N19 단계가 행과 다름", one("검사 없음 — APP-3 몫: 쓴다 → 뒤 단계 표 「원장 검사 칸 — 가 길」"), 1],
+      ["G17-N20 없는 게이트", one("검사 없음 — 운영 확인: 본다 → 출시 단계표 게이트 「R7-z」"), 1],
+      ["G17-N21 행을 안 가리킴", one("검사 없음 — PWA-4 몫: 나중에 쓴다"), 1],
+      ["G17-N22 섞인 칸의 둘째 조각이 옛 모양", one("115 · 나머지는 검사 없음 — 결정이다"), 1],
+      ["G17-N24 뒤 단계 행의 그 전 동작이 빔", L("| R-AB-1 | 가 | 가 | 가 | 검사 없음 — PWA-4 몫: 쓴다 → 뒤 단계 표 「원장 검사 칸 — 다 길」 | — |") + DT(ROW + "\n| 원장 검사 칸 — 다 길 | `PWA-4` | 쓴다 | 막는다 | — |"), 1],
+      ["G17-N25 뒤 단계 행의 확인 방법이 빔", L("| R-AB-1 | 가 | 가 | 가 | 검사 없음 — PWA-4 몫: 쓴다 → 뒤 단계 표 「원장 검사 칸 — 다 길」 | — |") + DT(ROW + "\n| 원장 검사 칸 — 다 길 | `PWA-4` |  | 막는다 | 내보내지 않는다 |"), 1],
+      ["G17-N26 게이트가 글 속에만 있음", one("검사 없음 — 운영 확인: 본다 → 출시 단계표 게이트 「R9-b」"), 1],
+      ["G17-N23 뒤 단계 표가 없음", L("| R-AB-1 | 가 | 가 | 가 | 검사 없음 — 잴 수 없음: 이름 규칙이다 | — |"), 1],
+    ];
+    for (const [name, text, expect] of shapes) {
+      const got = shapeProblems(text, RM).length;
+      if ((got > 0 ? 1 : 0) !== expect) bad(`${name}: 자기검사가 ${got}건을 냈다 — ${expect ? "1건 이상" : "0건"}이어야 한다`);
+    }
+    g17.push(...shapes);   // 자기검사 수에 함께 센다
+  }
   ok(`규칙 원장 ${led.rows.length}행 · 옛 문구 ${led.rows.reduce((a, r) => a + r.prints.length, 0)}개 · `
     + `검사 번호 ${specTests(R(DESIGN), led).size}개가 전부 원장에 붙음 · 죽은 참조 0 · 자기검사 ${g17.length}건 `
-    + "(⚠️ 말을 바꾼 사본은 못 잡는다)");
+    + "· 「검사 없음」 칸 모양 셋 · 가리킨 뒤 단계 표 행 있음 (⚠️ 말을 바꾼 사본은 못 잡는다 · ⛔ 짝이 맞는지는 재지 않는다)");
 }
 
 // ── 40. **설계서가 깃허브 화면에서 원문과 다르게 그려지는 모양 셋** (2026-11-03 · 회의 77 · 결정 4 乙) ──
